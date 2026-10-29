@@ -6,8 +6,8 @@ import {
   branchSelectedPullRequestDiffQuerySchema,
   branchSelectedPullRequestFilesQuerySchema,
 } from "@repo/api/src/types/branch-selected-pull-request-files";
+import { LONG_RUNNING_API_TIMEOUT_MS } from "@repo/api/src/types/long-running-api-timeout";
 import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
-import { LONG_RUNNING_API_TIMEOUT_MS } from "../../shared/api/api-timeout";
 import { useApiClient } from "../../shared/api/use-api-client";
 import { useBranchesQueryContext } from "../data-source/provider";
 import {
@@ -15,7 +15,8 @@ import {
   branchSelectedPullRequestQueryKeys,
 } from "./branch-query-keys";
 
-const BRANCH_SELECTED_PULL_REQUEST_HTTP_SCOPE = "http";
+/** Source scope for the cloud selected-PR evidence query keys. */
+export const BRANCH_SELECTED_PULL_REQUEST_HTTP_SCOPE = "http";
 
 export type BranchSelectedPullRequestFilesHookInput = {
   branchId: string;
@@ -130,9 +131,10 @@ export function useBranchSelectedPullRequestDiff(
   );
 }
 
-function selectedPullRequestPath(
+/** Build a Branch selected-PR evidence route path with its validated query. */
+export function selectedPullRequestPath(
   branchId: string,
-  operation: "files" | "diff",
+  operation: "files" | "diff" | "checks",
   query: Record<string, string | number>
 ) {
   const searchParams = new URLSearchParams();

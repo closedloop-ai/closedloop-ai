@@ -1,23 +1,39 @@
 import { execFile, execFileSync } from "node:child_process";
 import { access } from "node:fs/promises";
-import { getResolvedGitPath } from "./symphony-loop.js";
+import { isTccProtectedPath } from "../../shared/sandbox-policy.js";
+import { execFileNonBlocking } from "../non-blocking-exec.js";
+import {
+  getResolvedGitPath,
+  getResolvedGitPathAsync,
+} from "./binary-path-overrides.js";
 
 /**
  * Resolve the git remote full name (org/repo) from a local repo path.
  * Returns null if the remote origin URL cannot be parsed.
+ *
+ * Synchronous on purpose, and only for the db-host session import
+ * (`resolveSessionAttribution` from `buildImportSessionContext`), which runs
+ * inside `importSessionWithTx`'s caller-supplied transaction. Main-process
+ * callers use {@link resolveRepoFullNameAsync} (ISS-11414).
+ *
+ * ISS-11914: never spawns `git` in a TCC-protected folder, where it would read
+ * `.git/config` and raise a macOS permission prompt.
  */
 export function resolveRepoFullName(repoPath: string): string | null {
+  if (isTccProtectedPath(repoPath)) {
+    return null;
+  }
+  // Resolved outside the try (ISS-10194): these catches return `null`/`[]`, so
+  // an absorbed strict-override refusal would read as "this path has no
+  // origin" — a plausible negative, not a failure.
+  const gitPath = getResolvedGitPath();
   try {
-    const remoteUrl = execFileSync(
-      getResolvedGitPath(),
-      ["remote", "get-url", "origin"],
-      {
-        cwd: repoPath,
-        encoding: "utf-8",
-        stdio: "pipe",
-        timeout: 10_000,
-      }
-    ).trim();
+    const remoteUrl = execFileSync(gitPath, ["remote", "get-url", "origin"], {
+      cwd: repoPath,
+      encoding: "utf-8",
+      stdio: "pipe",
+      timeout: 10_000,
+    }).trim();
 
     const sshMatch = ORIGIN_REMOTE_FULL_NAME_PATTERN.exec(remoteUrl);
     if (sshMatch) {
@@ -41,13 +57,14 @@ export async function resolveRepoFullNameAsync(
 }
 
 /** Find existing worktree for a branch name. Returns null when not checked out. */
-export function findWorktreeForBranch(
+export async function findWorktreeForBranch(
   expandedRepoPath: string,
   branchName: string
-): string | null {
+): Promise<string | null> {
+  const gitPath = await getResolvedGitPathAsync();
   try {
-    const output = execFileSync(
-      getResolvedGitPath(),
+    const output = await execFileNonBlocking(
+      gitPath,
       ["worktree", "list", "--porcelain"],
       {
         cwd: expandedRepoPath,
@@ -70,35 +87,6 @@ export function findWorktreeForBranch(
     // fall through
   }
   return null;
-}
-
-/**
- * List every worktree directory for a repository. Returns an empty array when
- * the repo is not a git repository or the command fails.
- */
-export function listAllWorktrees(expandedRepoPath: string): string[] {
-  try {
-    const output = execFileSync(
-      getResolvedGitPath(),
-      ["worktree", "list", "--porcelain"],
-      {
-        cwd: expandedRepoPath,
-        encoding: "utf-8",
-        stdio: "pipe",
-        timeout: 10_000,
-      }
-    );
-
-    const worktrees: string[] = [];
-    for (const line of output.split("\n")) {
-      if (line.startsWith("worktree ")) {
-        worktrees.push(line.slice("worktree ".length));
-      }
-    }
-    return worktrees;
-  } catch {
-    return [];
-  }
 }
 
 function execFileText(
@@ -155,9 +143,16 @@ export type RepoFullNameOutcome =
 
 /**
  * ISS-5272: the classifying variant of {@link resolveRepoFullNameAsync}. Same
- * command, same parsing, same never-throws contract — it only reports WHY a null
- * happened so a caller that memoizes can tell a durable "this path has no
- * origin" from a transient process failure.
+ * command, same parsing — it only reports WHY a null happened so a caller that
+ * memoizes can tell a durable "this path has no origin" from a transient
+ * process failure.
+ *
+ * It does NOT never-throw. That clause stopped being true when the git
+ * resolution moved out of the try (ISS-10194): under the desktop test lane's
+ * strict var an unusable EXPLICIT override rejects here instead of degrading to
+ * the host git, and `resolveAttributionRepoFullName` passes that rejection
+ * straight through to its caller. A packaged build never sets the var, so in
+ * production this still only ever returns.
  */
 export async function resolveRepoFullNameOutcomeAsync(
   repoPath: string
@@ -169,13 +164,17 @@ export async function resolveRepoFullNameOutcomeAsync(
   if (!(await pathExists(repoPath))) {
     return { status: RepoFullNameStatus.NoOrigin, repoFullName: null };
   }
+  // The ASYNC resolver: the sync one bottoms out in `getShellPathSync`, which on
+  // a cold cache runs `execFileSync($SHELL, "-ilc", …)` twice at 5s each, and
+  // this function's only caller is `attribution-path-memo`, which runs off the
+  // main thread. Same override semantics and the same ISS-10194 refusal.
+  const gitPath = await getResolvedGitPathAsync();
   let stdout: string;
   try {
-    stdout = await execFileText(
-      getResolvedGitPath(),
-      ["remote", "get-url", "origin"],
-      { cwd: repoPath, timeout: 10_000 }
-    );
+    stdout = await execFileText(gitPath, ["remote", "get-url", "origin"], {
+      cwd: repoPath,
+      timeout: 10_000,
+    });
   } catch (error) {
     return classifyExecFileFailure(error);
   }

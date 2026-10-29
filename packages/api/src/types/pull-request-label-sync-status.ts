@@ -29,6 +29,12 @@ export type PullRequestLabelSyncStatus =
 
 export type PullRequestLabelSyncResult = {
   status: PullRequestLabelSyncStatus;
+  /**
+   * Requested labels known to be present on the pull request after this pass.
+   * Older producers may omit it; consumers should fall back to `addedLabels`
+   * when they only know what this pass wrote.
+   */
+  knownAppliedLabels?: string[];
   /** Labels this pass created in the repository. */
   createdLabels: string[];
   /** Labels this pass added to the pull request. */

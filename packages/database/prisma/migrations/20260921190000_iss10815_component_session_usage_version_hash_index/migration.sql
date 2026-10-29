@@ -1,0 +1,54 @@
+-- ISS-10815: the index the detail route's usage-fingerprint resolution exists to
+-- use.
+--
+-- SHAPE: `(component_kind, component_version_hash)`, in that order — the same
+-- prefix argument as the ISS-6756 sibling one column over.
+-- `resolveUsageContentIdentity` (apps/api/app/agent-components/content-hash-identity.ts)
+-- groups this table by `component_key_normalized` to answer "which name families
+-- does this content fingerprint reach", so the folded key is the value it is
+-- SOLVING FOR and cannot be bound — the ISS-6756 index's second column is
+-- therefore unusable here, leaving `component_kind` alone. That prefix admits
+-- the same-kind partition of EVERY TENANT (this table has no `organization_id`
+-- column; org arrives through the `session.artifact` join), and
+-- `component_version_hash` carried no index at all, so the aggregate discarded
+-- the rest with a post-scan filter.
+--
+-- REACHABLE ONLY BECAUSE THE READ PROBES ITS TWO ARMS SEPARATELY (tamsinb,
+-- measured): unioned into one `OR`, Prisma renders the `definitionVersion` arm
+-- as a LEFT JOIN, the `OR` spans two tables, and Postgres pushes NEITHER side
+-- into an index scan on this table — it bitmap-scans the whole cross-tenant
+-- `component_kind` partition and applies the hash as a post-join filter, which
+-- is the plan this index exists to replace. `resolveUsageContentIdentity` was
+-- split into two grouped reads for that reason; re-fusing them makes this index
+-- dead weight on a hot ingest table.
+--
+-- The read's OTHER arm resolves the linked version by `(organization_id,
+-- definition_hash)`, which `definition_versions`' existing unique index already
+-- serves exactly (the read binds the org inside that join for precisely this
+-- reason), so only the carried-hash arm was uncovered.
+--
+-- NOT a third key column: the resolution filters on nothing else — no window, no
+-- key equality — so anything further would widen every entry for no arm's benefit.
+--
+-- The `(component_kind, component_key_normalized)` index stays: it serves the
+-- identity reads that DO bind the folded key, which this one cannot.
+--
+-- CONCURRENTLY, so this file is ONE bare statement: do not add BEGIN/COMMIT or a
+-- `DO` block.
+--
+-- NO `IF NOT EXISTS`: required by the concurrent-index lint
+-- (scripts/lint/destructive-migrations/index-ddl.ts) so a retry after a cancelled
+-- or crashed build fails closed on SQLSTATE 42P07 against the same-named INVALID
+-- remnant instead of recording the migration APPLIED over a permanently-unusable
+-- index. Recovery is operator-driven: `DROP INDEX CONCURRENTLY` the remnant in
+-- psql autocommit, then re-run migrate deploy.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations-core.mjs) — a pure
+-- non-unique perf-only index, and CONCURRENTLY's instance-wide transaction wait
+-- is the ISS-4437 P1002 advisory-lock amplifier on ephemeral `preview_*` schemas.
+--
+-- Purely additive: a non-unique index changes plan choice only, never results.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "agent_component_session_usage_kind_version_hash_idx" ON "agent_component_session_usage"("component_kind", "component_version_hash");

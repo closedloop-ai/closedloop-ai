@@ -2,9 +2,9 @@ import { ConfirmationDialog } from "@repo/app/shared/components/confirmation-dia
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Primitives/Confirmation Dialog",
+  title: "Primitives v1.0/Overlays/Confirmation Dialog",
   component: ConfirmationDialog,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     open: true,
     onOpenChange: () => undefined,

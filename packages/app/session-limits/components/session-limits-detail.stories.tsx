@@ -15,8 +15,9 @@ import { SessionLimitsDetail } from "./session-limits-detail";
  * arriving as a bare drawer (whitlockk, PR #4572).
  */
 const meta = {
-  title: "App Core/Session Limits/Session Limits Detail",
+  title: "Primitives v1.0/Data Display/Session Limits Detail",
   component: SessionLimitsDetail,
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },

@@ -1,5 +1,27 @@
+import type { ApiResult } from "@repo/api/src/types/common";
+import type { NextResponse } from "next/server";
 import { teamsService } from "@/app/teams/service";
-import { isOrgAdmin } from "@/lib/auth/org-admin";
+import { getOrgAdminStatus } from "@/lib/auth/org-admin";
+import {
+  OrgAdminDenialReason,
+  roleUnresolvedResponse,
+} from "@/lib/auth/org-admin-denial";
+import { forbiddenResponse } from "@/lib/route-utils";
+
+/**
+ * The verdict on a team-scoped read.
+ *
+ * `Unresolved` exists because the org-admin fallback below can fail to answer:
+ * folding that into `Denied` told the caller they lack access when the truth
+ * was that nobody could check (ISS-8661).
+ */
+export const TeamScopeAuthorization = {
+  Allowed: "allowed",
+  Denied: "denied",
+  Unresolved: "unresolved",
+} as const;
+export type TeamScopeAuthorization =
+  (typeof TeamScopeAuthorization)[keyof typeof TeamScopeAuthorization];
 
 /**
  * Authorizes a team-scoped read before any resource-specific data access.
@@ -19,19 +41,53 @@ export async function authorizeTeamScopeRead(input: {
   clerkUserId: string;
   teamId?: string;
   requiresTeamScope: boolean;
-}): Promise<boolean> {
+}): Promise<TeamScopeAuthorization> {
   if (!input.teamId) {
-    return !input.requiresTeamScope;
+    return input.requiresTeamScope
+      ? TeamScopeAuthorization.Denied
+      : TeamScopeAuthorization.Allowed;
   }
 
-  const team = await teamsService.findById(input.teamId, input.organizationId);
-  if (!team) {
-    return false;
+  const teamExists = await teamsService.existsInOrganization(
+    input.teamId,
+    input.organizationId
+  );
+  if (!teamExists) {
+    return TeamScopeAuthorization.Denied;
   }
 
   if (await teamsService.isMember(input.teamId, input.userId)) {
-    return true;
+    return TeamScopeAuthorization.Allowed;
   }
 
-  return isOrgAdmin(input.clerkOrgId, input.clerkUserId);
+  const adminStatus = await getOrgAdminStatus(
+    input.clerkOrgId,
+    input.clerkUserId
+  );
+  if (adminStatus.isAdmin) {
+    return TeamScopeAuthorization.Allowed;
+  }
+  return adminStatus.reason === OrgAdminDenialReason.ProviderError
+    ? TeamScopeAuthorization.Unresolved
+    : TeamScopeAuthorization.Denied;
 }
+
+/**
+ * The response a team-scoped read owes its caller, or `null` when the read may
+ * proceed. Exhaustive by construction so a new {@link TeamScopeAuthorization}
+ * fails typecheck until it is deliberately answered.
+ */
+export function teamScopeRefusalResponse(
+  authorization: TeamScopeAuthorization
+): NextResponse<ApiResult<never>> | null {
+  return TEAM_SCOPE_REFUSALS[authorization]();
+}
+
+const TEAM_SCOPE_REFUSALS: Record<
+  TeamScopeAuthorization,
+  () => NextResponse<ApiResult<never>> | null
+> = {
+  [TeamScopeAuthorization.Allowed]: () => null,
+  [TeamScopeAuthorization.Denied]: () => forbiddenResponse(),
+  [TeamScopeAuthorization.Unresolved]: () => roleUnresolvedResponse(),
+};

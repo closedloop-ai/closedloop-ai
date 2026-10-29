@@ -1,34 +1,20 @@
-import type { TurnActor, TurnItem } from "@repo/api/src/types/agent-session";
-import type { ToolItem } from "@repo/api/src/types/agent-session-tool-call";
+import type { TurnItem } from "@repo/api/src/types/agent-session";
 import { describe, expect, it } from "vitest";
+import {
+  actor,
+  iso,
+  promptTurn,
+  sayTurn,
+  session,
+  toolItem,
+  toolsTurn,
+} from "./__tests__/merged-trace-fixtures";
 import {
   buildMergedTrace,
   MERGED_TRACE_IDLE_THRESHOLD_MS,
-  type MergedTraceSessionInput,
   mapTurnItemToTrace,
   parseSubagentCostUsd,
 } from "./merged-trace";
-
-const iso = (secondsFromEpochBase: number): string =>
-  new Date(Date.UTC(2026, 6, 3, 0, 0, secondsFromEpochBase)).toISOString();
-
-function actor(sessionId: string): TurnActor {
-  return { name: "Ada", sessionId, human: "Ada", color: "#64748B" };
-}
-
-const toolItem: ToolItem = { label: "bash", detail: "ls", err: false };
-
-function session(
-  overrides: Partial<MergedTraceSessionInput> & { sessionId: string }
-): MergedTraceSessionInput {
-  return {
-    startedAt: iso(0),
-    actorName: "Ada",
-    harness: "claude",
-    turnItems: [],
-    ...overrides,
-  };
-}
 
 describe("mapTurnItemToTrace", () => {
   it("synthesized-only turn item types map to null", () => {
@@ -212,5 +198,153 @@ describe("buildMergedTrace", () => {
       session({ sessionId: "a", startedAt: "not-a-date", turnItems: [] }),
     ]);
     expect(trace).toEqual([]);
+  });
+});
+
+/**
+ * ISS-8720. The span is the PAUSE, not the delta between two start instants: a
+ * `tools` run occupies the trace until its `endMs`, so a marker sized
+ * start-to-start prints wall time the reader spent watching tools run as time
+ * nothing happened.
+ */
+describe("buildMergedTrace — idle spans measure from the previous item's end", () => {
+  const TEN_MINUTES_S = 600;
+
+  it("sizes the pause after a long tool run from its end, not its start", () => {
+    const trace = buildMergedTrace([
+      session({
+        sessionId: "a",
+        startedAt: iso(0),
+        turnItems: [
+          toolsTurn({ atSeconds: 0, endMs: Date.parse(iso(TEN_MINUTES_S)) }),
+          sayTurn(TEN_MINUTES_S + 360),
+        ],
+      }),
+    ]);
+    const idle = trace.filter((item) => item.type === "idle");
+    expect(idle).toHaveLength(1);
+    // 6 minutes of real pause, not the 16 minutes separating the two starts.
+    expect(idle[0]).toMatchObject({ gapMs: 360_000 });
+  });
+
+  it("synthesizes nothing when the tool run leaves a sub-threshold pause", () => {
+    const trace = buildMergedTrace([
+      session({
+        sessionId: "a",
+        startedAt: iso(0),
+        turnItems: [
+          toolsTurn({ atSeconds: 0, endMs: Date.parse(iso(TEN_MINUTES_S)) }),
+          // 11 minutes after the run STARTED — a 1-minute real pause.
+          sayTurn(TEN_MINUTES_S + 60),
+        ],
+      }),
+    ]);
+    expect(trace.some((item) => item.type === "idle")).toBe(false);
+  });
+
+  it("measures start-to-start between point events, which have no extent", () => {
+    const trace = buildMergedTrace([
+      session({
+        sessionId: "a",
+        startedAt: iso(0),
+        turnItems: [promptTurn(0), sayTurn(300)],
+      }),
+    ]);
+    const idle = trace.filter((item) => item.type === "idle");
+    expect(idle).toHaveLength(1);
+    // A prompt is an instant, so its end is its start and the whole 5 minutes
+    // between the two really is a pause — no extent to subtract.
+    expect(idle[0]).toMatchObject({ gapMs: 300_000 });
+  });
+
+  it("anchors the marker at the instant the pause began", () => {
+    const trace = buildMergedTrace([
+      session({
+        sessionId: "a",
+        startedAt: iso(0),
+        turnItems: [
+          toolsTurn({ atSeconds: 0, endMs: Date.parse(iso(TEN_MINUTES_S)) }),
+          sayTurn(TEN_MINUTES_S + 360),
+        ],
+      }),
+    ]);
+    const idle = trace.find((item) => item.type === "idle");
+    // The run's END, not its start: `t` + `gapMs` has to land on the next item,
+    // or the marker describes an interval it does not span.
+    expect(idle).toMatchObject({ t: iso(TEN_MINUTES_S) });
+  });
+
+  it("ignores a tool extent that ends before the run started", () => {
+    const trace = buildMergedTrace([
+      session({
+        sessionId: "a",
+        startedAt: iso(200),
+        turnItems: [
+          // An earlier item to out-rank, so the skewed run really is the last
+          // thing active and the running max cannot cover for the floor.
+          sayTurn(250),
+          // Clock-skewed producer: `endMs` precedes `tMs`. Believing it would
+          // rewind the trace and OVERSTATE the pause this change shortens.
+          toolsTurn({ atSeconds: 300, endMs: Date.parse(iso(0)) }),
+          sayTurn(600),
+        ],
+      }),
+    ]);
+    const idle = trace.filter((item) => item.type === "idle");
+    expect(idle).toHaveLength(1);
+    expect(idle[0]).toMatchObject({ gapMs: 300_000 });
+  });
+
+  it("ignores a non-finite tool extent rather than sizing the pause from it", () => {
+    const trace = buildMergedTrace([
+      session({
+        sessionId: "a",
+        startedAt: iso(0),
+        turnItems: [
+          // `endMs: last.tMs ?? Date.parse(last.t)` in the detail projection is
+          // NaN for an unparseable source stamp, and the wire type says
+          // `number`, so the boundary sees it even though callers cannot.
+          toolsTurn({ atSeconds: 0, endMs: Number.NaN }),
+          sayTurn(300),
+        ],
+      }),
+    ]);
+    const idle = trace.filter((item) => item.type === "idle");
+    expect(idle).toHaveLength(1);
+    expect(idle[0]).toMatchObject({ gapMs: 300_000 });
+  });
+
+  it("suppresses the marker when a tool run encloses the next item", () => {
+    const trace = buildMergedTrace([
+      session({
+        sessionId: "a",
+        startedAt: iso(0),
+        turnItems: [
+          toolsTurn({ atSeconds: 0, endMs: Date.parse(iso(TEN_MINUTES_S)) }),
+          // Starts INSIDE the run: there is no pause between them at all.
+          sayTurn(300),
+        ],
+      }),
+    ]);
+    expect(trace.some((item) => item.type === "idle")).toBe(false);
+  });
+
+  it("measures from the longest-running prior item, not the nearest one", () => {
+    const trace = buildMergedTrace([
+      session({
+        sessionId: "a",
+        startedAt: iso(0),
+        turnItems: [
+          toolsTurn({ atSeconds: 0, endMs: Date.parse(iso(TEN_MINUTES_S)) }),
+          // Sorts AFTER the run's start and ends long before the run does, so
+          // reading only the immediately previous item would report 12m40s.
+          sayTurn(20),
+          sayTurn(TEN_MINUTES_S + 180),
+        ],
+      }),
+    ]);
+    const idle = trace.filter((item) => item.type === "idle");
+    expect(idle).toHaveLength(1);
+    expect(idle[0]).toMatchObject({ gapMs: 180_000 });
   });
 });

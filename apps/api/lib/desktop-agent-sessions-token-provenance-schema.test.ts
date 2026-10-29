@@ -7,10 +7,7 @@ import {
   TokenSourceIdentityUnavailableReason,
 } from "@repo/api/src/types/token-cost-provenance";
 import { describe, expect, it } from "vitest";
-import {
-  MAX_SYNCED_TOKEN_EVENTS_PER_SESSION,
-  parseDesktopAgentSessionsPayload,
-} from "./desktop-agent-sessions-schema";
+import { parseDesktopAgentSessionsPayload } from "./desktop-agent-sessions-schema";
 
 const TRANSPORT_ID = "transport:session-1:usage-1";
 
@@ -182,17 +179,37 @@ describe("desktop token provenance sync schema (ISS-4882)", () => {
     }
   });
 
-  it("rejects a token-event chunk above the bounded ingest cardinality", () => {
+  // ISS-8051: the retired cap was 10,000, so 10,001 crosses the old boundary by
+  // exactly one. Pinned as a literal, never derived from a constant, so deleting
+  // or reintroducing one cannot move the case this test actually exercises.
+  // The explicit timeout is for payload SIZE, not for a suspected hang: sanitizing
+  // and validating ten thousand token events is linear work that outruns the
+  // default 5s budget on a loaded host (measured 0.4s idle, 2.7-6.8s under load
+  // here). 30s is ~5x the worst measurement — enough headroom for a slow runner,
+  // and deliberately NOT so large that a future parse regression turns a fast red
+  // into a multi-minute CI stall.
+  it("accepts and preserves a token-event array past the retired 10,000 cap", () => {
+    const overCapEventCount = 10_001;
     const payload = buildPayload(buildEvent()) as {
       sessions: Array<{ tokenEvents: unknown[] }>;
     };
     payload.sessions[0]!.tokenEvents = Array.from(
-      { length: MAX_SYNCED_TOKEN_EVENTS_PER_SESSION + 1 },
+      { length: overCapEventCount },
       (_, index) => buildEvent({ externalEventId: `transport-${index}` })
     );
 
-    expect(parseDesktopAgentSessionsPayload(payload).ok).toBe(false);
-  });
+    const parsed = parseDesktopAgentSessionsPayload(payload);
+
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      const tokenEvents = parsed.payload.sessions[0]?.tokenEvents;
+      // In FULL: not merely accepted, and not silently shortened to the old cap.
+      expect(tokenEvents).toHaveLength(overCapEventCount);
+      expect(tokenEvents?.at(-1)?.externalEventId).toBe(
+        `transport-${overCapEventCount - 1}`
+      );
+    }
+  }, 30_000);
 
   it("rejects a transport identity that is not already normalized", () => {
     const parsed = parseDesktopAgentSessionsPayload(

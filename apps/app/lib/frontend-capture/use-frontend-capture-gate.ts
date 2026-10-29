@@ -1,64 +1,72 @@
 "use client";
 
-import { useAnalytics, useFeatureFlag } from "@repo/analytics/client";
-import { isStaffEmail } from "@repo/app/shared/auth/staff-email";
+import {
+  postHogFeatureFlagsEnabled,
+  useAnalytics,
+} from "@repo/analytics/client";
+import {
+  startWebSessionReplay,
+  stopWebSessionReplay,
+} from "@repo/analytics/session-replay";
+import { isStaffEmail } from "@repo/api/src/types/staff-email";
+import { WEB_FRONTEND_CAPTURE_FLAG_KEY } from "@repo/api/src/types/web-frontend-capture-flag";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { useUser } from "@repo/auth/client";
 import { useEffect } from "react";
+import { useFeatureFlagsSettledForUser } from "@/components/feature-flags-settled";
 import {
   disableDatadogRumStaffCapture,
   enableDatadogRumStaffCapture,
 } from "@/lib/datadog-rum/staff-capture";
-import { WEB_FRONTEND_CAPTURE_FLAG_KEY } from "./flag";
 
 /**
- * Staff-gated frontend capture (FEA-2400).
+ * Flag-gated frontend capture (FEA-2400, ISS-10650).
  *
- * When the `web-frontend-capture` flag is enabled for an identified staff user
- * (PostHog targets it to the `@closedloop.ai` staff org), start masked PostHog
- * session replay + dead-click autocapture and Datadog RUM interaction/replay
- * capture. When the flag flips off, or the user signs out, or the component
- * unmounts, all added capture is stopped — keeping capture fully reversible.
+ * When the `web-frontend-capture` flag is enabled for an identified product-app
+ * user, start masked PostHog session replay + dead-click autocapture through
+ * the package-owned `startWebSessionReplay`. Datadog
+ * RUM interaction capture remains staff-only; Datadog replay is off
+ * (ISS-12356(f)). When the flag flips off,
+ * the user signs out, or the component unmounts, all added capture is stopped.
  *
- * Nothing is enabled until identity resolves, the user is staff, and the flag
- * reads enabled — so non-staff/customer sessions never start any added capture.
- * The staff-email check is intentional defense-in-depth: `useFeatureFlag` fails
- * open when PostHog is unconfigured, so the flag alone is not fail-closed.
+ * PostHog recording is fail-closed when the SDK is unconfigured. This prevents
+ * the explicit local/QA feature-flag fallback from starting a replay without a
+ * real PostHog client while allowing PostHog targeting to be the only rollout
+ * policy for signed-in customer sessions.
  */
 export function useFrontendCaptureGate(): void {
   const posthog = useAnalytics();
   const { user, isLoaded } = useUser();
-  const captureFlag = useFeatureFlag(WEB_FRONTEND_CAPTURE_FLAG_KEY);
+  const captureFlagEnabled = useFeatureFlagEnabled(
+    WEB_FRONTEND_CAPTURE_FLAG_KEY
+  );
+  const flagsSettledForUser = useFeatureFlagsSettledForUser();
 
   const userId = user?.id;
   const staff = isStaffEmail(user?.primaryEmailAddress?.emailAddress);
   const enabled =
-    isLoaded && !!userId && staff && captureFlag?.enabled === true;
+    postHogFeatureFlagsEnabled &&
+    isLoaded &&
+    flagsSettledForUser &&
+    !!userId &&
+    captureFlagEnabled;
 
   useEffect(() => {
     if (!(enabled && userId)) {
       return;
     }
 
-    // PostHog: masked replay + dead-click autocapture for this staff session.
-    // Guard SDK calls so a PostHog failure can't take down the authenticated
-    // layout — mirroring the Datadog staff-capture helpers' fail-safe posture.
-    try {
-      posthog.startSessionRecording();
-      posthog.set_config({ capture_dead_clicks: true });
-    } catch {
-      // Telemetry must never affect app behavior.
+    startWebSessionReplay(posthog);
+    // Datadog's separate enhanced-capture path remains staff-scoped.
+    if (staff) {
+      enableDatadogRumStaffCapture(userId);
     }
-    // Datadog RUM: forward actions, attach the user, force replay.
-    enableDatadogRumStaffCapture(userId);
 
     return () => {
-      try {
-        posthog.stopSessionRecording();
-        posthog.set_config({ capture_dead_clicks: false });
-      } catch {
-        // Telemetry must never affect app behavior.
+      stopWebSessionReplay(posthog);
+      if (staff) {
+        disableDatadogRumStaffCapture();
       }
-      disableDatadogRumStaffCapture();
     };
-  }, [enabled, userId, posthog]);
+  }, [enabled, userId, staff, posthog]);
 }

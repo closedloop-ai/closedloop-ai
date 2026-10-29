@@ -1,54 +1,37 @@
+import {
+  clampScrollRestoreTarget,
+  computeMaxScrollTop,
+  hasStoredScrollPosition,
+  runSessionsScrollContractConformance,
+} from "@repo/app/shared/lib/sessions-scroll-contract";
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  clampSessionsPageIndex,
-  parseSessionsPageIndex,
+  hasWebStoredScrollPosition,
+  MAX_SCROLL_RESTORE_ATTEMPTS,
   readSessionsPageIndex,
   useSessionsHistoryScroll,
   useSessionsPageReset,
   useSessionsUrlPageIndex,
-  writeSessionsPageParam,
 } from "../sessions-route-state";
 
 describe("sessions route page state", () => {
-  it.each([
-    [null, 0],
-    ["", 0],
-    ["0", 0],
-    ["-1", 0],
-    ["1.5", 0],
-    ["Infinity", 0],
-    ["abc", 0],
-    ["1", 0],
-    ["2", 1],
-    ["12", 11],
-  ])("parses %s to page index %s", (value, expected) => {
-    expect(parseSessionsPageIndex(value)).toBe(expected);
-  });
-
-  it("writes canonical page params while preserving unrelated params", () => {
-    const params = new URLSearchParams("userId=user-123&page=3");
-
-    writeSessionsPageParam(params, 0);
-    expect(params.toString()).toBe("userId=user-123");
-
-    writeSessionsPageParam(params, 2);
-    expect(params.toString()).toBe("userId=user-123&page=3");
-  });
-
-  it.each([
-    [{ pageIndex: 3, pageSize: 25, total: 0 }, 0],
-    [{ pageIndex: 3, pageSize: 25, total: 10 }, 0],
-    [{ pageIndex: 3, pageSize: 25, total: 51 }, 2],
-    [{ pageIndex: 1, pageSize: 25, total: 51 }, 1],
-  ])("clamps page indexes from list totals", (input, expected) => {
-    expect(clampSessionsPageIndex(input)).toBe(expected);
-  });
-
   it("falls back to the browser page query when the navigation snapshot is empty", () => {
     globalThis.history.replaceState(null, "", "/sessions?page=4");
 
-    expect(readSessionsPageIndex(new URLSearchParams())).toBe(3);
+    expect(readSessionsPageIndex(new URLSearchParams(), "/sessions")).toBe(3);
+  });
+
+  // ISS-8187: Branches names its page param `page` too, so an unscoped browser
+  // read seeded the Sessions list's FIRST request from the Branches page index
+  // left in the address bar mid-transition. Sibling of the case above: same
+  // empty snapshot, same populated address bar, different route.
+  it("ignores a browser page query that belongs to another surface", () => {
+    globalThis.history.replaceState(null, "", "/acme/branches?page=5");
+
+    expect(readSessionsPageIndex(new URLSearchParams(), "/acme/sessions")).toBe(
+      0
+    );
   });
 
   // FEA-3664: an absent `page` param means page 1. Post-mount the reactive
@@ -58,7 +41,7 @@ describe("sessions route page state", () => {
     globalThis.history.replaceState(null, "", "/sessions?page=4");
 
     expect(
-      readSessionsPageIndex(new URLSearchParams(), {
+      readSessionsPageIndex(new URLSearchParams(), "/sessions", {
         allowBrowserFallback: false,
       })
     ).toBe(0);
@@ -68,7 +51,7 @@ describe("sessions route page state", () => {
     globalThis.history.replaceState(null, "", "/sessions?page=4");
 
     const { result } = renderHook(() =>
-      useSessionsUrlPageIndex(new URLSearchParams())
+      useSessionsUrlPageIndex(new URLSearchParams(), "/sessions")
     );
 
     expect(result.current).toBe(0);
@@ -173,6 +156,7 @@ describe("sessions history scroll state", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     if (originalRequestAnimationFrame) {
@@ -207,15 +191,9 @@ describe("sessions history scroll state", () => {
     });
   });
 
-  it("coalesces multiple scroll events into one history write per frame", () => {
-    let frameCallback: FrameRequestCallback | undefined;
-    vi.stubGlobal(
-      "requestAnimationFrame",
-      vi.fn((callback: FrameRequestCallback) => {
-        frameCallback = callback;
-        return 1;
-      })
-    );
+  it("writes on the leading edge and coalesces the rest of a burst into one trailing write", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-22T00:00:00.000Z"));
     const replaceStateSpy = vi.spyOn(globalThis.history, "replaceState");
     const container = createScrollableElement({ scrollTop: 10 });
 
@@ -235,17 +213,61 @@ describe("sessions history scroll state", () => {
       container.dispatchEvent(new Event("scroll"));
     });
 
-    expect(replaceStateSpy).not.toHaveBeenCalled();
-    expect(globalThis.requestAnimationFrame).toHaveBeenCalledTimes(1);
-
-    act(() => {
-      frameCallback?.(0);
-    });
-
+    // Leading edge captures a position immediately, so navigating away right
+    // after a single scroll still restores.
     expect(replaceStateSpy).toHaveBeenCalledTimes(1);
     expect(globalThis.history.state).toMatchObject({
       __symphonySessionsScroll: {
+        "sessions:page:1": 10,
+      },
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(250);
+    });
+
+    // The rest of the burst settles into exactly one trailing write.
+    expect(replaceStateSpy).toHaveBeenCalledTimes(2);
+    expect(globalThis.history.state).toMatchObject({
+      __symphonySessionsScroll: {
         "sessions:page:1": 30,
+      },
+    });
+  });
+
+  it("stays under the browser replaceState rate limit while scrolling (ISS-7493)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-22T00:00:00.000Z"));
+    const replaceStateSpy = vi.spyOn(globalThis.history, "replaceState");
+    const container = createScrollableElement({ scrollTop: 0 });
+
+    renderHook(() =>
+      useSessionsHistoryScroll({
+        scrollKey: "sessions:page:1",
+        container,
+        restoreWhen: false,
+      })
+    );
+
+    // Ten seconds of continuous scrolling at ~60fps. The previous
+    // per-animation-frame save wrote once per tick (600 calls), which is what
+    // tripped the browser cap and produced the production error.
+    act(() => {
+      for (let tick = 0; tick < 600; tick++) {
+        container.scrollTop = tick;
+        container.dispatchEvent(new Event("scroll"));
+        vi.advanceTimersByTime(1000 / 60);
+      }
+    });
+
+    expect(replaceStateSpy.mock.calls.length).toBeLessThan(100);
+    // The final position is still persisted, so restoration is unaffected.
+    act(() => {
+      vi.advanceTimersByTime(250);
+    });
+    expect(globalThis.history.state).toMatchObject({
+      __symphonySessionsScroll: {
+        "sessions:page:1": 599,
       },
     });
   });
@@ -281,6 +303,34 @@ describe("sessions history scroll state", () => {
     rerender({ restoreWhen: true });
 
     expect(container.scrollTop).toBe(80);
+  });
+
+  it("does not restore a remembered position of exactly 0", () => {
+    globalThis.history.replaceState(
+      {
+        __symphonySessionsScroll: {
+          "sessions:page:9": 0,
+        },
+      },
+      "",
+      "/sessions?page=10"
+    );
+    const container = createScrollableElement({
+      clientHeight: 100,
+      scrollHeight: 300,
+      scrollTop: 42,
+    });
+
+    renderHook(() =>
+      useSessionsHistoryScroll({
+        scrollKey: "sessions:page:9",
+        container,
+        restoreWhen: true,
+      })
+    );
+
+    expect(container.scrollTop).toBe(42);
+    expect(globalThis.requestAnimationFrame).not.toHaveBeenCalled();
   });
 
   it("clamps saved scroll to the container maximum", () => {
@@ -397,6 +447,45 @@ describe("sessions history scroll state", () => {
       expect.any(Function)
     );
     expect(frameCallback).toHaveBeenCalledWith(9);
+  });
+});
+
+// PLN-1950 slice 5: pins web's own bindings against the shared contract --
+// MAX_SCROLL_RESTORE_ATTEMPTS and hasWebStoredScrollPosition are this host's
+// real exports from `sessions-route-state.ts` (not hand-copied duplicates).
+// The shared factory only exercises undefined/null/120, so this pins that
+// web's gate rejects an absent value exactly like the shared contract does --
+// it does NOT exercise web's extra `> 0` narrowing (a remembered 0 also
+// counts as nothing to restore on web, unlike the shared gate, which accepts
+// 0); that clause is pinned separately by the hook-driven "does not restore a
+// remembered position of exactly 0" case above. computeMaxScrollTop and
+// clampScrollRestoreTarget are the shared module's own exports, forwarded
+// here unwrapped exactly as web's retry loop calls them -- this only checks
+// that the shared clamp math is internally consistent, not that web's retry
+// loop actually calls it; that wiring is covered by the other hook-driven
+// cases earlier in this file, which drive useSessionsHistoryScroll end to
+// end and assert container.scrollTop.
+describe("sessions scroll contract conformance (PLN-1950 slice 5)", () => {
+  it("passes the shared gate, retry-bound and clamp contract", () => {
+    runSessionsScrollContractConformance({
+      hostLabel: "web sessions history scroll",
+      maxRestoreAttempts: MAX_SCROLL_RESTORE_ATTEMPTS,
+      computeMaxScrollTop,
+      clampScrollRestoreTarget,
+      hasStoredScrollPosition: hasWebStoredScrollPosition,
+    });
+  });
+
+  // Nothing else pins that web's gate is a strict REFINEMENT of the shared
+  // one, not an independent, possibly-incompatible check: the shared gate
+  // accepts a remembered 0 (desktop restores it); web's own gate rejects it
+  // (see hasWebStoredScrollPosition's docstring in sessions-route-state.ts
+  // and the shared module's header for why). Pin the divergence itself so a
+  // change to either boundary is caught here rather than only surfacing as a
+  // behavior mismatch between hosts.
+  it("pins that web's gate rejects a remembered 0 where the shared gate accepts it", () => {
+    expect(hasStoredScrollPosition(0)).toBe(true);
+    expect(hasWebStoredScrollPosition(0)).toBe(false);
   });
 });
 

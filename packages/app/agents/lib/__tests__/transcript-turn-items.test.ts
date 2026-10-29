@@ -472,3 +472,34 @@ describe("buildTurnItemsFromNormalizedSession", () => {
     expect(order).toEqual(["prompt", "tools", "say"]);
   });
 });
+
+/**
+ * ISS-8565: `asJsonValue` recopied JSON-parsed tool input/output onto a plain
+ * `{}`, dropping a `__proto__` key that `JSON.parse` had delivered as a real own
+ * key. Twin of the `redactRecordStrings` defect in `parse-transcript.ts`.
+ *
+ * The fixture comes from `JSON.parse`, not an object literal: a quoted
+ * `"__proto__"` in a LITERAL is the prototype-setter form and creates no own
+ * key, so the fixture itself would drop it before the projection ran.
+ */
+describe("transcript turn items keep a __proto__ tool-input key (ISS-8565)", () => {
+  it("keeps it as an own key on the projected tool row", () => {
+    const timestamp = "2026-07-09T10:00:01.000Z";
+    const items = build({
+      toolUses: [
+        {
+          name: "Bash",
+          timestamp,
+          id: "toolu_proto",
+          providerToolUseId: "toolu_proto",
+          input: JSON.parse('{"__proto__":{"nested":1},"cmd":"ls"}'),
+        },
+      ],
+    });
+
+    const toolRows = ofType(items, "tools");
+    expect(toolRows.length).toBeGreaterThan(0);
+    const serialized = JSON.stringify(toolRows[0]);
+    expect(serialized).toContain("__proto__");
+  });
+});

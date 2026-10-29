@@ -55,7 +55,7 @@ export function AgentSessionDetailAnalyticsTabs({
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Activity className="h-4 w-4" />
-          Agent Analytics
+          {AGENT_ANALYTICS_TITLE}
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -119,3 +119,5 @@ const ANALYTICS_TABS: readonly AgentSessionAnalyticsTab[] = [
   AgentSessionAnalyticsTab.ToolFlow,
   AgentSessionAnalyticsTab.Errors,
 ];
+
+export const AGENT_ANALYTICS_TITLE = "Agent Analytics";

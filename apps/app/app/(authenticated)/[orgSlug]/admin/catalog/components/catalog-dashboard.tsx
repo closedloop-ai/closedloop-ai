@@ -20,14 +20,20 @@ import { useAdminPackViews } from "@repo/app/packs/hooks/use-admin-pack-views";
 import { useMemberTargetsInstall } from "@repo/app/packs/hooks/use-member-targets-install";
 import { usePackDashboardSelection } from "@repo/app/packs/hooks/use-pack-dashboard-selection";
 import { usePackDistributionWithdrawal } from "@repo/app/packs/hooks/use-pack-distribution-withdrawal";
+import { usePacksRouteSelection } from "@repo/app/packs/hooks/use-packs-route-selection";
 import {
   createPacksContext,
   PacksMode,
 } from "@repo/app/packs/lib/packs-context";
-import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import {
+  type FeatureFlagGate,
+  useFeatureFlagEnabled,
+  useFeatureFlagGate,
+} from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import {
   MEMBER_SELF_SERVICE_INSTALL_FEATURE_FLAG_KEY,
   PACK_UNDISTRIBUTE_FEATURE_FLAG_KEY,
+  PACKS_DETAIL_ROUTE_FEATURE_FLAG_KEY,
 } from "@repo/app/shared/lib/feature-flags";
 import { Button } from "@repo/design-system/components/ui/button";
 import { useQueryClient } from "@tanstack/react-query";
@@ -95,7 +101,29 @@ export function CatalogDashboard({ isAdmin }: CatalogDashboardProps) {
     MEMBER_SELF_SERVICE_INSTALL_FEATURE_FLAG_KEY
   );
 
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // ISS-6925: the web shell's ONE read of the addressable-detail gate, at its
+  // mount site. It picks between two whole selection shapes — the route owns the
+  // selection, or this component's own state does — and neither the workspace
+  // nor anything below it is told a flag exists.
+  const packsDetailRouteGate = useFeatureFlagGate(
+    PACKS_DETAIL_ROUTE_FEATURE_FLAG_KEY
+  );
+  const routeSelection = usePacksRouteSelection();
+  // `isReady` matters: an unresolved flag reads `false`, so swapping on the raw
+  // boolean would hand a card clicked during that window to component state and
+  // then pull it away the moment PostHog answered, snapping an open detail back
+  // to the grid with no user action.
+  const packsDetailRouteEnabled = routedSelectionActive(
+    packsDetailRouteGate,
+    routeSelection.isPacksRoute
+  );
+  const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
+  const selectedId = packsDetailRouteEnabled
+    ? routeSelection.selectedPackId
+    : localSelectedId;
+  const selectPack = packsDetailRouteEnabled
+    ? routeSelection.selectPack
+    : setLocalSelectedId;
   const [createOpen, setCreateOpen] = useState(false);
   const [componentOpen, setComponentOpen] = useState(false);
   const [editingComponent, setEditingComponent] =
@@ -112,13 +140,14 @@ export function CatalogDashboard({ isAdmin }: CatalogDashboardProps) {
   // Shared selection/detail/analytics pipeline (identical to the member
   // dashboard): the admin surface folds distribution into the detail view and
   // gates the analytics overlay on `isAdmin`.
-  const { selectedItem, detailPack } = usePackDashboardSelection({
-    items,
-    selectedId,
-    distribution: distDetail.data ?? selectedDist ?? null,
-    analyticsEnabled: isAdmin,
-    memberTargets: memberPackTargets.targets,
-  });
+  const { selectedItem, detailPack, detailPending, detailFailed } =
+    usePackDashboardSelection({
+      items,
+      selectedId,
+      distribution: distDetail.data ?? selectedDist ?? null,
+      analyticsEnabled: isAdmin,
+      memberTargets: memberPackTargets.targets,
+    });
 
   const memberTargetsInstall = useMemberTargetsInstall({
     packId: selectedItem?.id ?? null,
@@ -156,12 +185,12 @@ export function CatalogDashboard({ isAdmin }: CatalogDashboardProps) {
     async (id: string) => {
       try {
         await archiveItem.mutateAsync(id);
-        setSelectedId(null);
+        selectPack(null);
       } catch {
         // Error surfaced by the mutation.
       }
     },
-    [archiveItem]
+    [archiveItem, selectPack]
   );
 
   // ISS-5002: give the failure state a real way forward. Refetching both
@@ -171,6 +200,15 @@ export function CatalogDashboard({ isAdmin }: CatalogDashboardProps) {
     queryClient.refetchQueries({ queryKey: catalogKeys.all });
     queryClient.refetchQueries({ queryKey: distributionKeys.all });
   }, [queryClient]);
+
+  // ISS-6925 review: the routed detail's own retry. The list-level
+  // `handleRetryPacks` above refetches the catalog LIST, which is not the read
+  // that failed when a direct load's `/catalog/{id}` errored.
+  const handleRetrySelectedPack = useCallback(() => {
+    if (selectedId) {
+      queryClient.refetchQueries({ queryKey: catalogKeys.detail(selectedId) });
+    }
+  }, [queryClient, selectedId]);
 
   const handleComponentSaved = useCallback(() => {
     if (selectedId) {
@@ -278,18 +316,25 @@ export function CatalogDashboard({ isAdmin }: CatalogDashboardProps) {
   return (
     <>
       <PacksWorkspace
+        backHref={packsDetailRouteEnabled ? routeSelection.backHref : undefined}
         context={context}
         detailContentsSlot={detailContentsSlot}
+        detailFailed={detailFailed}
         detailHeaderActions={detailHeaderActions}
         detailPack={detailPack}
+        detailPending={detailPending}
         memberTargetsDescription="Where this pack stands on the machines registered to your account."
         memberTargetsError={memberPackTargets.hasErrored}
         memberTargetsInstall={memberTargetsInstall}
         memberTargetsLoading={memberPackTargets.isLoading}
+        onDetailRetry={handleRetrySelectedPack}
         onManageDistribution={isAdmin ? handleManageDistribution : undefined}
-        onSelectPack={setSelectedId}
+        onSelectPack={selectPack}
         onWithdrawDistribution={withdrawal.requestWithdraw}
         packs={packViews}
+        selectedPackId={
+          packsDetailRouteEnabled ? routeSelection.selectedPackId : undefined
+        }
         toolbarSlot={
           <CatalogToolbar
             isAdmin={isAdmin}
@@ -300,7 +345,7 @@ export function CatalogDashboard({ isAdmin }: CatalogDashboardProps) {
       />
 
       <CreatePackDialog
-        onCreated={(pack) => setSelectedId(pack.id)}
+        onCreated={(pack) => selectPack(pack.id)}
         onOpenChange={setCreateOpen}
         open={createOpen}
       />
@@ -329,10 +374,11 @@ export function CatalogDashboard({ isAdmin }: CatalogDashboardProps) {
       ) : null}
 
       {/*
-        The withdraw confirmation. The control lives inside the selected pack's
-        detail, so `selectedItem` is the pack being withdrawn.
+        The withdraw confirmation. It names the pack the flow captured when the
+        control was pressed, not the current selection — with detail addressable
+        (ISS-6925) Back/Forward can move the selection while the dialog is open.
       */}
-      <WithdrawDistributionDialog pack={selectedItem} withdrawal={withdrawal} />
+      <WithdrawDistributionDialog withdrawal={withdrawal} />
     </>
   );
 }
@@ -414,4 +460,17 @@ function CatalogHeading() {
       </p>
     </div>
   );
+}
+
+/**
+ * Routed pack-detail selection is active only for a RESOLVED, enabled flag on
+ * the Packs surface. An unresolved flag reads `false`, so acting on the raw
+ * boolean would hand a card clicked during that window to component state and
+ * then pull it away once PostHog answered.
+ */
+function routedSelectionActive(
+  gate: FeatureFlagGate,
+  isPacksRoute: boolean
+): boolean {
+  return gate.isReady && gate.enabled && isPacksRoute;
 }

@@ -3,8 +3,8 @@
  * client (FEA-1510): the default handler toasts via the generic
  * `toastMutationError` primitive and honors the `suppressDefaultErrorToast`
  * meta opt-out. Domain-specific behavior (Branch View identity-blocker
- * suppression, the loops "View loop" action) is owned by each domain's own
- * mutation `onError` and tested in its slice — not here.
+ * suppression) is owned by each domain's own mutation `onError` and tested in
+ * its slice, not here.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -80,10 +80,10 @@ describe("toastMutationError", () => {
 
   it("attaches an action when one is supplied", () => {
     const onClick = vi.fn();
-    toastMutationError(new Error("boom"), { label: "View loop", onClick });
+    toastMutationError(new Error("boom"), { label: "View item", onClick });
 
     const action = mockToastError.mock.calls.at(-1)?.[1]?.action;
-    expect(action?.label).toBe("View loop");
+    expect(action?.label).toBe("View item");
     action?.onClick?.();
     expect(onClick).toHaveBeenCalledOnce();
   });

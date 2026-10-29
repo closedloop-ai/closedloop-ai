@@ -158,20 +158,6 @@ export type RunStatus =
 
 export type RunMode = "conversation" | "headless";
 
-export type RunSummary = {
-  id: string;
-  title: string;
-  promptPreview: string;
-  status: RunStatus;
-  mode: RunMode;
-  cwd: string;
-  model?: string | null;
-  permissionMode: string;
-  startedAt: string;
-  endedAt?: string | null;
-  sessionId?: string | null;
-};
-
 export type RunComposer = {
   mode: RunMode;
   source: "fresh" | "resume";
@@ -186,24 +172,6 @@ export type RunComposer = {
     description: string;
     source: "builtin" | "user" | "project";
   }>;
-};
-
-export type RunSessionRecord = {
-  handle: RunSummary;
-  transcript: ConversationTranscript;
-  followUp?: string;
-  tokenUsage: {
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadTokens: number;
-    cacheCreationTokens: number;
-    contextWindow: number;
-  };
-  result?: {
-    durationLabel: string;
-    turns: number;
-    costUsd: number;
-  };
 };
 
 export type CcScope = "all" | "user" | "project";
@@ -1088,7 +1056,6 @@ export type SessionAgent = {
   type: "main" | "subagent";
   subagentType?: string | null;
   status: AgentStatus;
-  task?: string | null;
   currentTool?: string | null;
   startedAt: string;
   updatedAt?: string | null;

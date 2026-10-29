@@ -14,7 +14,6 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 // The DISPLAY harness contract ({claude,codex,both}) + the canonical component
 // kind const — imported as values so the test asserts against the SSOT, never a
 // re-declared literal.
@@ -23,6 +22,7 @@ import {
   Harness,
 } from "@repo/api/src/types/agent-component";
 import { SYNCED_COMPONENT_IDENTITY_MAX_CHARS } from "@repo/api/src/types/agent-session";
+import { test } from "vitest";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import { ComponentScope } from "../src/main/packs/definition-content-collector.js";
 import { discoverMcpServers } from "../src/main/packs/mcp-discovery.js";
@@ -233,13 +233,17 @@ test("discoverMcpServers reads Codex `[mcp_servers.<name>]` TOML headers without
   }
 });
 
-test("discoverMcpServers rejects an over-limit server name before persistence and still registers a valid sibling", async () => {
+test("discoverMcpServers persists an over-limit server name and still drops a blank one", async () => {
   const home = mkdtempSync(path.join(os.tmpdir(), "mcpdisc-limit-"));
   const configPath = path.join(home, ".claude.json");
-  // A name longer than the sync contract's identity bound would be rejected by
-  // the cloud once it reached the ordered component batch, wedging the cursor.
-  // Discovery must drop it BEFORE persistence — while a valid sibling in the
-  // same config still registers.
+  // DELIBERATE BEHAVIOUR CHANGE, ISS-8201 (whitlockk review, PR #7220): this case
+  // used to assert the over-long name was DROPPED before persistence. The
+  // expectation moved because the behaviour it mirrored did: the cloud cap it
+  // stood in for is gone, the ingest admits any length, and the write-side
+  // projection bounds the value at the column — so dropping the server was no
+  // longer protecting a cursor from wedging, it was silently losing a configured
+  // MCP server. The blank-name half of the contract is unchanged and still
+  // asserted here, so this is a narrowed refusal, not a deleted one.
   const overlong = "x".repeat(SYNCED_COMPONENT_IDENTITY_MAX_CHARS + 1);
   writeFileSync(
     configPath,
@@ -256,14 +260,14 @@ test("discoverMcpServers rejects an over-limit server name before persistence an
     const summary = await discoverMcpServers(prisma, {
       claudeJsonConfigs: [{ path: configPath, scope: ComponentScope.User }],
     });
-    // Only the valid name is discovered/persisted; the over-limit and
-    // blank names never reach the store.
-    assert.equal(summary.discovered, 1);
-    assert.equal(summary.upserted, 1);
+    // The over-limit name is now persisted verbatim alongside its sibling; only
+    // the blank name is refused.
+    assert.equal(summary.discovered, 2);
+    assert.equal(summary.upserted, 2);
     const rows = await mcpComponents(prisma);
     assert.deepEqual(
-      rows.map((r) => r.external_id),
-      ["context7"]
+      rows.map((r) => r.external_id).sort(),
+      [overlong, "context7"].sort()
     );
   } finally {
     await close();

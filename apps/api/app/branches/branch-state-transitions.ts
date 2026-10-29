@@ -33,6 +33,10 @@ export type HeadTransitionResult = HeadTransitionState & {
 const baseBranchSourcePriority: Record<BranchBaseBranchSource, number> = {
   [BranchBaseBranchSource.PullRequestBase]: 50,
   [BranchBaseBranchSource.HarnessInput]: 40,
+  // ISS-8175, operator decision 2026-08-28: below HarnessInput. Above McpInput
+  // because it is gh's own answer rather than an agent's assertion, below
+  // PullRequestBase because it can be stale by the time it syncs.
+  [BranchBaseBranchSource.DesktopPullRequestBase]: 35,
   [BranchBaseBranchSource.McpInput]: 30,
   [BranchBaseBranchSource.MigrationPrBase]: 20,
   [BranchBaseBranchSource.RepositoryDefault]: 10,
@@ -261,7 +265,8 @@ export function scheduleFileChangeCacheRefresh(input: {
   };
 }
 
-function isGitHubZeroSha(value: string | null | undefined): boolean {
+/** GitHub's "nothing on this side" marker — the `before` of a branch create. */
+export function isGitHubZeroSha(value: string | null | undefined): boolean {
   return value === "0000000000000000000000000000000000000000";
 }
 
@@ -326,4 +331,38 @@ function latestDate(first: Date | null, second: Date): Date {
     return second;
   }
   return first.getTime() > second.getTime() ? first : second;
+}
+
+export function resolveDeletedAtUpdate(
+  deleteTransition: { deletedAt: Date | null } | null,
+  shouldClearDeletedAt: boolean
+): Date | null | undefined {
+  if (deleteTransition) {
+    return deleteTransition.deletedAt;
+  }
+  if (shouldClearDeletedAt) {
+    return null;
+  }
+  return undefined;
+}
+
+export function resolveUpdateBranchStatus(input: {
+  deleteTransition: { status: GitHubPRStateValue } | null;
+  shouldClearDeletedAt: boolean;
+  pullRequestState: GitHubPRStateValue | null;
+  currentStatus: string | null;
+}): GitHubPRStateValue {
+  if (input.deleteTransition) {
+    return input.deleteTransition.status;
+  }
+  if (input.pullRequestState) {
+    return input.pullRequestState;
+  }
+  if (
+    input.shouldClearDeletedAt &&
+    parseGitHubPRState(input.currentStatus) !== GitHubPRState.Merged
+  ) {
+    return GitHubPRState.Open;
+  }
+  return decideBranchStatus({ currentStatus: input.currentStatus });
 }

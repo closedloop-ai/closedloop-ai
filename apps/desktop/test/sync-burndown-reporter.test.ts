@@ -5,17 +5,28 @@
  * WORKING but not RECORDING PROGRESS visible.
  */
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import type {
-  SyncBurndownQuery,
-  SyncBurndownStoreSample,
-} from "../src/main/database/sync-burndown-store.js";
+import { describe, it } from "vitest";
+import { OutboxResumeOutcome } from "../src/main/agent-sync/session-outbox-engine-state.js";
 import {
   SyncBurndownLogLevel,
   SyncBurndownReporter,
-  type SyncLaneStallReport,
 } from "../src/main/sync/sync-burndown-reporter.js";
-import { SyncLaneId } from "../src/shared/sync-burndown-contract.js";
+import {
+  areAllLanesFullySynced,
+  type SyncLaneBurndown,
+  SyncLaneDrainState,
+  SyncLaneId,
+  SyncLaneRemainderBasis,
+} from "../src/shared/sync-burndown-contract.js";
+import {
+  buildHarness,
+  COMPONENT_KEY,
+  emptySample,
+  type LoggedLine,
+  messages,
+  SESSION_KEY,
+  TEMPLATE_KEY,
+} from "./sync-burndown-reporter-harness.js";
 
 const REPORTER_RE_1 = /fully synced to cloud/;
 const REPORTER_RE_2 =
@@ -23,15 +34,17 @@ const REPORTER_RE_2 =
 const REPORTER_RE_3 = /ALL LANES FULLY SYNCED/;
 const REPORTER_RE_4 =
   /not fully synced — session_metadata=drained_with_dead_letters/;
-const REPORTER_RE_5 = /ALL LANES FULLY SYNCED to cloud \(5 lane\(s\)/;
+const REPORTER_RE_4_LANES = /ALL LANES FULLY SYNCED to cloud \(4 lane\(s\)/;
 const REPORTER_RE_6 = /session_metadata\] drained/;
 const REPORTER_RE_7 = /session_metadata\] idle_not_running/;
 const REPORTER_RE_8 = /session_metadata\] fully synced/;
 const REPORTER_RE_9 = /not fully synced — /;
+const UNQUERIED_LINE_RE =
+  /session_metadata\] remaining_unknown items=n\/a chunks=n\/a bytes=unknown/;
+const UNQUERIED_CAUSE_RE =
+  /session_metadata\] NOT reported as fully synced .* it had no source key this sample, so the store never queried its queue/;
 const REPORTER_RE_10 = /session_metadata\] never_started/;
 const REPORTER_RE_11 = /session_metadata\] draining/;
-const REPORTER_RE_12 = /DURABLE CURSOR NOT ADVANCING/;
-const REPORTER_RE_13 = /stayed at 2026-08-03T20:56:53\.196Z/;
 const REPORTER_RE_14 = /invocation_parts\] draining items=6/;
 const REPORTER_RE_15 = /invocation_parts\] fully synced/;
 const REPORTER_RE_16 = /\/(Users|home)\//;
@@ -44,123 +57,9 @@ const REPORTER_RE_21 = /sent=1\.0KiB/;
 const SESSION_NO_CARRIED_WORK_RE =
   /session_metadata\].*sinceLastPass: done=0 sent=0B/;
 const COMPONENT_DRAINING_RE = /component_inventory\] draining items=3200/;
-const TRACE_COMMENTS_DRAINING_RE = /trace_comments\] draining items=6/;
 const ALL_LANES_SYNCED_RE = /ALL LANES FULLY SYNCED/;
-
-const TEMPLATE_KEY = "agent_component_invocations";
-const SESSION_KEY = "agent_sessions:ct-1";
-const COMPONENT_KEY = "agent_components:v3:ct-1";
-
-type LoggedLine = { level: SyncBurndownLogLevel; message: string };
-
-function emptySample(): SyncBurndownStoreSample {
-  return {
-    sessionOutbox: {
-      pending: 0,
-      readyPending: 0,
-      deadLettered: 0,
-      oldestPendingEnqueuedAtIso: null,
-      unmeasuredRows: 0,
-    },
-    invocationOutbox: {
-      pending: 0,
-      readyPending: 0,
-      deadLettered: 0,
-      oldestPendingEnqueuedAtIso: null,
-      unmeasuredRows: 0,
-      pendingSessions: 0,
-      pendingParts: 0,
-      pendingPayloadBytes: 0,
-      pendingTemplateSessions: 0,
-      pendingTemplateSessionsTruncated: false,
-    },
-    transcript: {
-      inFlightFiles: 0,
-      strandedIdleFiles: 0,
-      deadFiles: 0,
-      bytesRemaining: 0,
-      oldestInFlightUpdatedAtIso: null,
-      unmeasuredRows: 0,
-    },
-    componentInventory: { rowsRemaining: 0, deadLetteredCount: 0 },
-    traceComments: {
-      pendingComments: 0,
-      pendingReplyComments: 0,
-      oldestPendingCreatedAtIso: null,
-      unmeasuredRows: 0,
-    },
-    cursorsBySourceKey: {},
-  };
-}
-
-type Harness = {
-  reporter: SyncBurndownReporter;
-  lines: LoggedLine[];
-  stalls: SyncLaneStallReport[];
-  queries: SyncBurndownQuery[];
-  readCount: () => number;
-  setSample: (sample: SyncBurndownStoreSample) => void;
-  setRunning: (running: boolean) => void;
-  setComputeTargetId: (computeTargetId: string | null) => void;
-};
-
-function buildHarness(
-  options: { running?: boolean; sample?: SyncBurndownStoreSample } = {}
-): Harness {
-  const lines: LoggedLine[] = [];
-  const stalls: SyncLaneStallReport[] = [];
-  const queries: SyncBurndownQuery[] = [];
-  let sample = options.sample ?? emptySample();
-  let running = options.running ?? true;
-  let computeTargetId: string | null = "ct-1";
-  let reads = 0;
-  const reporter = new SyncBurndownReporter({
-    getSource: () => ({
-      readSyncBurndown: (query) => {
-        reads += 1;
-        queries.push(query);
-        return Promise.resolve(sample);
-      },
-    }),
-    getSessionSourceKey: () => SESSION_KEY,
-    getInvocationSourceKey: () => `${TEMPLATE_KEY}:ct-1`,
-    invocationTemplateSourceKey: TEMPLATE_KEY,
-    getComponentSourceKey: () => COMPONENT_KEY,
-    getTranscriptComputeTargetId: () => computeTargetId,
-    isSessionLaneRunning: () => running,
-    isInvocationLaneRunning: () => running,
-    isTranscriptLaneRunning: () => running,
-    isComponentLaneRunning: () => running,
-    isTraceCommentLaneRunning: () => running,
-    log: (level, message) => {
-      lines.push({ level, message });
-    },
-    onLaneStall: (report) => {
-      stalls.push(report);
-    },
-    now: () => new Date("2026-08-06T12:00:00.000Z"),
-  });
-  return {
-    reporter,
-    lines,
-    stalls,
-    queries,
-    readCount: () => reads,
-    setSample: (next) => {
-      sample = next;
-    },
-    setRunning: (next) => {
-      running = next;
-    },
-    setComputeTargetId: (next) => {
-      computeTargetId = next;
-    },
-  };
-}
-
-function messages(lines: LoggedLine[]): string {
-  return lines.map((line) => line.message).join("\n");
-}
+const ITEM5_UNKNOWN_VERDICT_RE =
+  /\[session_metadata\] NOT reported as fully synced — nothing known outstanding, but 3 row\(s\) carry a status this build cannot classify/;
 
 describe("SyncBurndownReporter — the fully-synced signal", () => {
   it("does NOT log fully synced for a lane drained WITH dead-lettered rows", async () => {
@@ -183,7 +82,7 @@ describe("SyncBurndownReporter — the fully-synced signal", () => {
     );
     assert.match(text, REPORTER_RE_2);
     assert.doesNotMatch(text, REPORTER_RE_3);
-    // The other three lanes ARE drained; the verdict must still be withheld.
+    // The other four lanes ARE drained; the verdict must still be withheld.
     assert.match(text, REPORTER_RE_4);
   });
 
@@ -206,7 +105,7 @@ describe("SyncBurndownReporter — the fully-synced signal", () => {
         `${lane} reports its own drain`
       );
     }
-    assert.match(text, REPORTER_RE_5);
+    assert.match(text, REPORTER_RE_4_LANES);
   });
 
   it("distinguishes idle-not-running from drained", async () => {
@@ -252,7 +151,7 @@ describe("SyncBurndownReporter — the fully-synced signal", () => {
     // New work arrives.
     const busy = emptySample();
     busy.sessionOutbox.pending = 7;
-    busy.sessionOutbox.oldestPendingEnqueuedAtIso = "2026-08-06T11:00:00.000Z";
+    busy.sessionOutbox.oldestPendingSinceIso = "2026-08-06T11:00:00.000Z";
     harness.setSample(busy);
     await harness.reporter.sampleOnce();
     assert.match(messages(harness.lines), REPORTER_RE_11);
@@ -274,168 +173,6 @@ describe("SyncBurndownReporter — the fully-synced signal", () => {
       REPORTER_RE_3.test(line.message)
     ).length;
     assert.equal(allSynced, 2, "the all-lanes verdict re-arms too");
-  });
-});
-
-describe("SyncBurndownReporter — cursor stall (the ISS-5347 shape)", () => {
-  function frozenCursorSample(): SyncBurndownStoreSample {
-    const sample = emptySample();
-    sample.cursorsBySourceKey = {
-      [COMPONENT_KEY]: {
-        sourceKey: COMPONENT_KEY,
-        observedTopUpdatedAt: "2026-08-03T20:56:53.196Z",
-        observedIdsAtTopUpdatedAt: [],
-        deadLetteredIds: [],
-        updatedAt: "2026-08-03T20:57:50.000Z",
-        dataRevision: 65,
-      },
-    };
-    return sample;
-  }
-
-  it("makes a lane that uploads while its durable cursor stands still visible", async () => {
-    const harness = buildHarness({ sample: frozenCursorSample() });
-    harness.reporter.start();
-
-    // First pass establishes the baseline; a single sample cannot prove a stall.
-    harness.reporter.recordComponentRecordsSent(50);
-    await harness.reporter.sampleOnce();
-    assert.equal(harness.stalls.length, 0);
-
-    // Second pass: the lane keeps uploading, the cursor has not moved.
-    harness.reporter.recordComponentRecordsSent(50);
-    await harness.reporter.sampleOnce();
-    harness.reporter.stop();
-
-    assert.equal(
-      harness.stalls.length,
-      1,
-      "the stall must reach the monitored sink, not only the log"
-    );
-    assert.equal(harness.stalls[0]?.lane, SyncLaneId.ComponentInventory);
-    assert.equal(harness.stalls[0]?.workCompletedSincePrevious, 50);
-    const warn = harness.lines.filter(
-      (line) => line.level === SyncBurndownLogLevel.Warn
-    );
-    assert.ok(
-      warn.some((line) => REPORTER_RE_12.test(line.message)),
-      "and it must be legible in the log"
-    );
-    assert.match(
-      messages(harness.lines),
-      REPORTER_RE_13,
-      "the frozen position itself is named"
-    );
-  });
-
-  it("stays silent when the cursor advances, even with heavy upload activity", async () => {
-    const first = frozenCursorSample();
-    const harness = buildHarness({ sample: first });
-    harness.reporter.start();
-    harness.reporter.recordComponentRecordsSent(500);
-    await harness.reporter.sampleOnce();
-
-    const advanced = emptySample();
-    advanced.cursorsBySourceKey = {
-      [COMPONENT_KEY]: {
-        sourceKey: COMPONENT_KEY,
-        observedTopUpdatedAt: "2026-08-06T11:59:00.000Z",
-        observedIdsAtTopUpdatedAt: [],
-        deadLetteredIds: [],
-        updatedAt: "2026-08-06T11:59:01.000Z",
-        dataRevision: 68,
-      },
-    };
-    harness.setSample(advanced);
-    harness.reporter.recordComponentRecordsSent(500);
-    await harness.reporter.sampleOnce();
-    harness.reporter.stop();
-
-    assert.equal(harness.stalls.length, 0);
-    assert.doesNotMatch(messages(harness.lines), REPORTER_RE_12);
-  });
-
-  it("never flags the lanes that keep no durable cursor by design", async () => {
-    const harness = buildHarness({ sample: frozenCursorSample() });
-    harness.reporter.start();
-    // Drive real work through BOTH cursor-less lanes across two passes.
-    harness.reporter.recordInvocationPartSent();
-    await harness.reporter.sampleOnce();
-    const draining = emptySample();
-    draining.transcript.inFlightFiles = 12;
-    draining.cursorsBySourceKey = frozenCursorSample().cursorsBySourceKey;
-    harness.setSample(draining);
-    harness.reporter.recordInvocationPartSent();
-    await harness.reporter.sampleOnce();
-    harness.setSample(frozenCursorSample());
-    harness.reporter.recordInvocationPartSent();
-    await harness.reporter.sampleOnce();
-    harness.reporter.stop();
-
-    const flagged = harness.stalls.map((stall) => stall.lane);
-    assert.equal(
-      flagged.includes(SyncLaneId.InvocationParts),
-      false,
-      "the invocation lane's position lives in its own cursors table, not sync_state"
-    );
-    assert.equal(
-      flagged.includes(SyncLaneId.TranscriptArchive),
-      false,
-      "the transcript lane's durable state is a per-file byte offset, not a watermark"
-    );
-  });
-
-  it("stays silent for a quiet lane whose cursor simply has nothing to record", async () => {
-    const harness = buildHarness({ sample: frozenCursorSample() });
-    harness.reporter.start();
-    await harness.reporter.sampleOnce();
-    await harness.reporter.sampleOnce();
-    harness.reporter.stop();
-    assert.equal(
-      harness.stalls.length,
-      0,
-      "no work completed means no evidence the cursor should have moved"
-    );
-  });
-
-  it("raises the monitored signal once per stall episode, then re-arms after recovery", async () => {
-    const harness = buildHarness({ sample: frozenCursorSample() });
-    harness.reporter.start();
-    for (let pass = 0; pass < 4; pass += 1) {
-      harness.reporter.recordComponentRecordsSent(10);
-      await harness.reporter.sampleOnce();
-    }
-    assert.equal(
-      harness.stalls.length,
-      1,
-      "a multi-pass stall is one alert, not one per interval"
-    );
-
-    const advanced = emptySample();
-    advanced.cursorsBySourceKey = {
-      [COMPONENT_KEY]: {
-        sourceKey: COMPONENT_KEY,
-        observedTopUpdatedAt: "2026-08-06T11:00:00.000Z",
-        observedIdsAtTopUpdatedAt: [],
-        deadLetteredIds: [],
-        updatedAt: "2026-08-06T11:00:01.000Z",
-        dataRevision: 68,
-      },
-    };
-    harness.setSample(advanced);
-    harness.reporter.recordComponentRecordsSent(10);
-    await harness.reporter.sampleOnce();
-
-    harness.setSample(advanced);
-    harness.reporter.recordComponentRecordsSent(10);
-    await harness.reporter.sampleOnce();
-    harness.reporter.stop();
-
-    assert.equal(
-      harness.stalls.length,
-      2,
-      "a stall that recurs after a genuine advance must alert again"
-    );
   });
 });
 
@@ -493,7 +230,7 @@ describe("SyncBurndownReporter — cost and content discipline", () => {
   it("emits no session ids, file paths, payload bodies, or credentials", async () => {
     const busy = emptySample();
     busy.sessionOutbox.pending = 3;
-    busy.sessionOutbox.oldestPendingEnqueuedAtIso = "2026-08-06T11:00:00.000Z";
+    busy.sessionOutbox.oldestPendingSinceIso = "2026-08-06T11:00:00.000Z";
     busy.transcript.inFlightFiles = 2;
     busy.transcript.bytesRemaining = 4096;
     busy.transcript.oldestInFlightUpdatedAtIso = "2026-08-06T10:00:00.000Z";
@@ -547,11 +284,12 @@ describe("SyncBurndownReporter — cost and content discipline", () => {
       invocationTemplateSourceKey: TEMPLATE_KEY,
       getComponentSourceKey: () => COMPONENT_KEY,
       getTranscriptComputeTargetId: () => "ct-1",
+      getIdentity: () => null,
       isSessionLaneRunning: () => true,
       isInvocationLaneRunning: () => true,
       isTranscriptLaneRunning: () => true,
       isComponentLaneRunning: () => true,
-      isTraceCommentLaneRunning: () => true,
+      isLaneDeliveryConsented: () => true,
       log: (level, message) => {
         lines.push({ level, message });
       },
@@ -581,11 +319,12 @@ describe("SyncBurndownReporter — cost and content discipline", () => {
       invocationTemplateSourceKey: TEMPLATE_KEY,
       getComponentSourceKey: () => null,
       getTranscriptComputeTargetId: () => null,
+      getIdentity: () => null,
       isSessionLaneRunning: () => false,
       isInvocationLaneRunning: () => false,
       isTranscriptLaneRunning: () => false,
       isComponentLaneRunning: () => false,
-      isTraceCommentLaneRunning: () => false,
+      isLaneDeliveryConsented: () => true,
       log: (level, message) => {
         lines.push({ level, message });
       },
@@ -632,11 +371,12 @@ describe("SyncBurndownReporter — lifecycle and target scoping", () => {
       invocationTemplateSourceKey: TEMPLATE_KEY,
       getComponentSourceKey: () => COMPONENT_KEY,
       getTranscriptComputeTargetId: () => "ct-1",
+      getIdentity: () => null,
       isSessionLaneRunning: () => true,
       isInvocationLaneRunning: () => true,
       isTranscriptLaneRunning: () => true,
       isComponentLaneRunning: () => true,
-      isTraceCommentLaneRunning: () => true,
+      isLaneDeliveryConsented: () => true,
       log: (level, message) => {
         lines.push({ level, message });
       },
@@ -697,22 +437,6 @@ describe("SyncBurndownReporter — lifecycle and target scoping", () => {
       "a lane mid-backfill must not let the all-lanes verdict claim caught up"
     );
   });
-
-  it("counts pending trace comments as work owed to the cloud", async () => {
-    const harness = buildHarness();
-    const withComments = emptySample();
-    withComments.traceComments.pendingComments = 4;
-    withComments.traceComments.pendingReplyComments = 2;
-    harness.setSample(withComments);
-    await harness.reporter.sampleOnce();
-    const text = messages(harness.lines);
-    assert.match(text, TRACE_COMMENTS_DRAINING_RE);
-    assert.equal(
-      ALL_LANES_SYNCED_RE.test(text),
-      false,
-      "undelivered comments must disqualify the all-lanes verdict"
-    );
-  });
 });
 
 describe("SyncBurndownReporter — the latest-snapshot accessor (ISS-5477)", () => {
@@ -738,7 +462,7 @@ describe("SyncBurndownReporter — the latest-snapshot accessor (ISS-5477)", () 
     const readsAfterSample = harness.readCount();
     const snapshot = harness.reporter.getLatestSnapshot();
     assert.ok(snapshot, "a sample was taken, so there is one to report");
-    assert.equal(snapshot.lanes.length, 5);
+    assert.equal(snapshot.lanes.length, 4);
     const sessionLane = snapshot.lanes.find(
       (lane) => lane.lane === SyncLaneId.SessionMetadata
     );
@@ -746,6 +470,25 @@ describe("SyncBurndownReporter — the latest-snapshot accessor (ISS-5477)", () 
     // A reader must never make this observer participate in the lanes it
     // measures: reading the accessor issues no store query.
     assert.equal(harness.readCount(), readsAfterSample);
+    harness.reporter.stop();
+  });
+
+  it("reports a malformed persisted pending timestamp as an unknown age", async () => {
+    const sample = emptySample();
+    sample.sessionOutbox.pending = 1;
+    sample.sessionOutbox.oldestPendingSinceIso = "malformed";
+    const harness = buildHarness({ sample });
+    harness.reporter.start();
+
+    await harness.reporter.sampleOnce();
+
+    const snapshot = harness.reporter.getLatestSnapshot();
+    assert.ok(snapshot);
+    const sessionLane = snapshot.lanes.find(
+      (lane) => lane.lane === SyncLaneId.SessionMetadata
+    );
+    assert.ok(sessionLane);
+    assert.equal(sessionLane.oldestPendingAgeMs, null);
     harness.reporter.stop();
   });
 
@@ -778,202 +521,427 @@ describe("SyncBurndownReporter — the latest-snapshot accessor (ISS-5477)", () 
   });
 });
 
-/**
- * ISS-5973: the reporter must actually RAISE the no-progress stall.
- *
- * `detectNoProgressStall` is unit-tested next door as a pure function, but the
- * consecutive-sample counter, the per-episode latch, the re-arm, and the
- * `onLaneStall` emission all live HERE. Without these cases, deleting
- * `maybeWarnNoProgress` outright would leave the whole suite green.
- *
- * The fixture carries the live stalling condition: a session lane holding a
- * backlog it never touches, exactly as measured on the 2026-08-11 install
- * (2,928 ready rows, `attempt_count = 0`, never attempted).
- */
-describe("SyncBurndownReporter — no-progress stall (ISS-5973)", () => {
-  function stalledSessionSample(): SyncBurndownStoreSample {
-    const sample = emptySample();
-    sample.sessionOutbox = {
-      pending: 2928,
-      // Every one of them ELIGIBLE — `next_attempt_at` was NULL on all 2,928
-      // rows. That is what makes this a stall rather than a backoff.
-      readyPending: 2928,
-      deadLettered: 0,
-      oldestPendingEnqueuedAtIso: "2026-08-09T14:20:15.000Z",
-      unmeasuredRows: 0,
-    };
-    return sample;
+describe("SyncBurndownReporter — the blocked session resume (ISS-9823)", () => {
+  /**
+   * The session lane's row from the most recent sample, or `undefined` when no
+   * sample is on hand. Deliberately assertion-free: an assertion inside a helper
+   * runs outside the case that called it, so the runner cannot attribute it —
+   * each case below asserts the row is there before reading it.
+   */
+  function sessionLaneOf(
+    harness: ReturnType<typeof buildHarness>
+  ): SyncLaneBurndown | undefined {
+    return harness.reporter
+      .getLatestSnapshot()
+      ?.lanes.find((row) => row.lane === SyncLaneId.SessionMetadata);
   }
 
-  const sessionStalls = (harness: Harness) =>
-    harness.stalls.filter((stall) => stall.lane === SyncLaneId.SessionMetadata);
-
-  it("raises a monitored stall for a running lane that delivers nothing", async () => {
-    const harness = buildHarness({ sample: stalledSessionSample() });
+  it("reports a caught-up session lane as remaining_unknown while its resume read is failing", async () => {
+    // The whole defect, at the reporter: `emptySample()` is a device that owes
+    // nothing on every count the burn-down can measure, which is exactly the
+    // population the abort produces — it returns before the enqueue, so no row
+    // is ever written. `drained` here is a screen asserting health while local
+    // data never leaves the machine.
+    const harness = buildHarness();
     harness.reporter.start();
+    harness.reporter.recordSessionResumeOutcome(OutboxResumeOutcome.ReadFailed);
 
-    // The lane is never fed any completed work: it just sits on the backlog.
-    for (let pass = 0; pass < 4; pass += 1) {
-      await harness.reporter.sampleOnce();
-    }
-    harness.reporter.stop();
+    await harness.reporter.sampleOnce();
 
-    const stalls = sessionStalls(harness);
+    const lane = sessionLaneOf(harness);
+    assert.ok(lane, "a sample was taken and it carries the session lane");
+    assert.equal(lane.resumeBlocked, true, "the row carries the fact itself");
+    assert.equal(lane.state, SyncLaneDrainState.RemainingUnknown);
     assert.equal(
-      stalls.length,
-      1,
-      "a lane delivering nothing must reach the monitored sink, once per episode"
+      areAllLanesFullySynced(harness.reporter.getLatestSnapshot()?.lanes ?? []),
+      false,
+      "and ALL LANES FULLY SYNCED can no longer be printed for this device"
     );
-    assert.equal(stalls[0]?.workCompletedSincePrevious, 0);
-    assert.equal(stalls[0]?.itemsRemaining, 2928);
+    harness.reporter.stop();
   });
 
-  it("does not raise while the whole backlog is inside its backoff window", async () => {
-    // The same 2,928-row backlog, but every row is DEFERRED — the shape a
-    // `protocol_unavailable` outage produces, which parks invocation parts for
-    // five minutes against a one-minute sample. Nothing is eligible, so
-    // completing nothing is the retry schedule working. Alerting here would page
-    // on every routine outage and teach an operator to ignore the signal.
-    const sample = stalledSessionSample();
-    sample.sessionOutbox = { ...sample.sessionOutbox, readyPending: 0 };
-    const harness = buildHarness({ sample });
+  it("leaves every other lane's resumeBlocked structurally false", async () => {
+    // The scoping half. Only the session lane runs a once-per-identity resume
+    // hydration, so a fault on it must not disqualify the four lanes that have
+    // no such read to fail.
+    const harness = buildHarness();
     harness.reporter.start();
+    harness.reporter.recordSessionResumeOutcome(OutboxResumeOutcome.ReadFailed);
 
-    for (let pass = 0; pass < 6; pass += 1) {
-      await harness.reporter.sampleOnce();
+    await harness.reporter.sampleOnce();
+
+    const snapshot = harness.reporter.getLatestSnapshot();
+    assert.ok(snapshot);
+    for (const lane of snapshot.lanes) {
+      if (lane.lane === SyncLaneId.SessionMetadata) {
+        continue;
+      }
+      assert.equal(
+        lane.resumeBlocked,
+        false,
+        `${lane.lane} has no resume read of its own`
+      );
+      assert.equal(lane.state, SyncLaneDrainState.Drained);
     }
     harness.reporter.stop();
-
-    assert.equal(sessionStalls(harness).length, 0);
   });
 
-  it("carries the lower-bound flag into the monitored stall", async () => {
-    // The invocation lane's template probe caps at 200, so `itemsRemaining` is a
-    // FLOOR. Dropping that on the way to the alert reports a 3,500-session
-    // backfill as an exact, reassuring `200`.
-    const sample = emptySample();
-    sample.invocationOutbox = {
-      ...sample.invocationOutbox,
-      pendingTemplateSessions: 200,
-      pendingTemplateSessionsTruncated: true,
-    };
-    const harness = buildHarness({ sample });
+  it("holds the level ACROSS sampling windows, which reset the activity counters", async () => {
+    // Constraint on where the level may live. Every successful sample ends in
+    // `resetActivityCounters()`, which clears what one WINDOW observed — and
+    // this condition outlives a window by construction, because the lane is
+    // wedged until the durable read recovers. Held there, the fault would be
+    // erased between samples and the very next line would call the device
+    // drained again.
+    const harness = buildHarness();
     harness.reporter.start();
+    harness.reporter.recordSessionResumeOutcome(OutboxResumeOutcome.ReadFailed);
 
-    for (let pass = 0; pass < 4; pass += 1) {
-      await harness.reporter.sampleOnce();
-    }
-    harness.reporter.stop();
-
-    const stall = harness.stalls.find(
-      (entry) => entry.lane === SyncLaneId.InvocationParts
-    );
-    assert.equal(stall?.itemsRemaining, 200);
-    assert.equal(
-      stall?.itemsRemainingIsLowerBound,
-      true,
-      "the capped probe's floor was dropped — the alert presents 200 as exact"
-    );
-  });
-
-  it("does not raise before the threshold, so one quiet sample is not an alert", async () => {
-    const harness = buildHarness({ sample: stalledSessionSample() });
-    harness.reporter.start();
-
-    // Baseline plus one zero-work sample: below the consecutive-sample bar.
     await harness.reporter.sampleOnce();
     await harness.reporter.sampleOnce();
-    harness.reporter.stop();
+    await harness.reporter.sampleOnce();
 
-    assert.equal(sessionStalls(harness).length, 0);
+    const lane = sessionLaneOf(harness);
+    assert.ok(lane);
+    assert.equal(
+      lane.state,
+      SyncLaneDrainState.RemainingUnknown,
+      "the third window still reports the fault the first one recorded"
+    );
+    harness.reporter.stop();
   });
 
-  it("does not raise for a lane whose gate is shut rather than stalled", async () => {
-    const harness = buildHarness({
-      sample: stalledSessionSample(),
-      running: false,
-    });
+  it("survives a compute-target switch, because that boundary is observed a window late", async () => {
+    // ISS-9823 review. The expectation this replaces asserted that the scope
+    // boundary CLEARS the level, and the behavior deliberately changed: the
+    // switch is detected at SAMPLE time, one 60s window after the fact, while
+    // the outcome is teed at the sync lane's own 5s tick — so the fault sitting
+    // on the level by then is most likely the INCOMING target's, recorded by its
+    // first hydration. Clearing erased it and published `drained` for a lane
+    // already known to be wedged: one whole window of the exact false
+    // "up to date" this ticket exists to remove.
+    //
+    // Not clearing errs the other way and errs safely — an incoming HEALTHY
+    // target reads `remaining_unknown` until its own hydration answers `Seeded`,
+    // which is one tick away because a failed read re-arms `hydratedSourceKey`.
+    // Unknown-for-a-tick is a state a caller must wait on; drained-for-a-window
+    // is a claim it acts on.
+    const harness = buildHarness();
     harness.reporter.start();
+    harness.reporter.recordSessionResumeOutcome(OutboxResumeOutcome.ReadFailed);
+    await harness.reporter.sampleOnce();
+    assert.equal(
+      sessionLaneOf(harness)?.state,
+      SyncLaneDrainState.RemainingUnknown
+    );
 
-    for (let pass = 0; pass < 4; pass += 1) {
-      await harness.reporter.sampleOnce();
-    }
-    harness.reporter.stop();
-
-    // `idle_not_running` is a closed gate — a different defect with a different
-    // owner. Reporting it here would bury the real signal.
-    assert.equal(sessionStalls(harness).length, 0);
-  });
-
-  it("clears the latch on a compute-target switch, so the new target re-reports", async () => {
-    const harness = buildHarness({ sample: stalledSessionSample() });
-    harness.reporter.start();
-
-    for (let pass = 0; pass < 4; pass += 1) {
-      await harness.reporter.sampleOnce();
-    }
-    assert.equal(sessionStalls(harness).length, 1);
-
-    // The target switches. `discardCrossTargetBaselines` must drop the
-    // no-progress counter and latch with the rest of the baselines, or the new
-    // target's own stall would be suppressed as "already reported".
     harness.setComputeTargetId("ct-2");
-    for (let pass = 0; pass < 5; pass += 1) {
-      await harness.reporter.sampleOnce();
-    }
-    harness.reporter.stop();
-
-    assert.equal(
-      sessionStalls(harness).length,
-      2,
-      "the new target's stall must be reported under its own identity"
-    );
-  });
-
-  it("clears the latch across stop/start, so a fresh run re-reports", async () => {
-    const harness = buildHarness({ sample: stalledSessionSample() });
-    harness.reporter.start();
-    for (let pass = 0; pass < 4; pass += 1) {
-      await harness.reporter.sampleOnce();
-    }
-    assert.equal(sessionStalls(harness).length, 1);
-
-    harness.reporter.stop();
-    harness.reporter.start();
-    for (let pass = 0; pass < 4; pass += 1) {
-      await harness.reporter.sampleOnce();
-    }
-    harness.reporter.stop();
-
-    assert.equal(
-      sessionStalls(harness).length,
-      2,
-      "a restarted reporter must not inherit the previous run's latch"
-    );
-  });
-
-  it("re-arms after the lane drains, so a later stall is reported again", async () => {
-    const harness = buildHarness({ sample: stalledSessionSample() });
-    harness.reporter.start();
-
-    for (let pass = 0; pass < 4; pass += 1) {
-      await harness.reporter.sampleOnce();
-    }
-    assert.equal(sessionStalls(harness).length, 1);
-
-    // The lane recovers and drains completely, then backs up again.
-    harness.setSample(emptySample());
     await harness.reporter.sampleOnce();
-    harness.setSample(stalledSessionSample());
-    for (let pass = 0; pass < 4; pass += 1) {
+
+    assert.equal(
+      sessionLaneOf(harness)?.state,
+      SyncLaneDrainState.RemainingUnknown,
+      "the boundary alone does not attest that the new target's read landed"
+    );
+
+    // The new identity's own hydration is what settles it, and it can settle it
+    // either way — so the assertion above is not a level that never clears.
+    harness.reporter.recordSessionResumeOutcome(OutboxResumeOutcome.Seeded);
+    await harness.reporter.sampleOnce();
+
+    const lane = sessionLaneOf(harness);
+    assert.ok(lane, "the new target took its own sample");
+    assert.equal(lane.resumeBlocked, false);
+    assert.equal(
+      lane.state,
+      SyncLaneDrainState.Drained,
+      "the new target is judged on its own reads"
+    );
+    harness.reporter.stop();
+  });
+
+  it("leaves the level alone on a DISCARDED outcome, so an account switch raises nothing", async () => {
+    // The negative at this seam, and the reason `Discarded` is not simply
+    // folded into `Seeded`: a supersede that landed between a failing read and
+    // its retry must not clear a fault it knows nothing about, any more than it
+    // may set one.
+    const harness = buildHarness();
+    harness.reporter.start();
+
+    harness.reporter.recordSessionResumeOutcome(OutboxResumeOutcome.Discarded);
+    await harness.reporter.sampleOnce();
+    assert.equal(
+      sessionLaneOf(harness)?.state,
+      SyncLaneDrainState.Drained,
+      "a supersede on its own reports nothing"
+    );
+
+    harness.reporter.recordSessionResumeOutcome(OutboxResumeOutcome.ReadFailed);
+    harness.reporter.recordSessionResumeOutcome(OutboxResumeOutcome.Discarded);
+    await harness.reporter.sampleOnce();
+
+    assert.equal(
+      sessionLaneOf(harness)?.state,
+      SyncLaneDrainState.RemainingUnknown,
+      "and a supersede after a fault does not clear it"
+    );
+    harness.reporter.stop();
+  });
+});
+
+describe("SyncBurndownReporter — the RemainingUnknown verdict (ISS-8142, ISS-10082)", () => {
+  it("reports an unmeasurable-rows lane as RemainingUnknown, disqualifies the all-lanes verdict, and warns rather than informs", async () => {
+    // RemainingUnknown is exercised against the pure classifier and the
+    // renderer hook, but nothing drove an unmeasuredRows>0 sample through the
+    // REPORTER itself. If it collapsed to Drained here, the app would print
+    // ALL LANES FULLY SYNCED while rows this build cannot classify sit in the
+    // outbox — exactly the read the ISS-5477 cloud-read gate relies on being
+    // truthful.
+    const sample = emptySample();
+    sample.sessionOutbox.pending = 0;
+    sample.sessionOutbox.deadLettered = 0;
+    sample.sessionOutbox.unmeasuredRows = 3;
+    const harness = buildHarness({ sample });
+    harness.reporter.start();
+    await harness.reporter.sampleOnce();
+
+    const snapshot = harness.reporter.getLatestSnapshot();
+    assert.ok(snapshot);
+    const sessionLane = snapshot.lanes.find(
+      (lane) => lane.lane === SyncLaneId.SessionMetadata
+    );
+    assert.ok(sessionLane);
+    assert.equal(sessionLane.state, SyncLaneDrainState.RemainingUnknown);
+    assert.equal(
+      areAllLanesFullySynced(snapshot.lanes),
+      false,
+      "unmeasurable rows must disqualify the all-lanes verdict even though every count reads zero"
+    );
+
+    const verdictLine = harness.lines.find((line) =>
+      ITEM5_UNKNOWN_VERDICT_RE.test(line.message)
+    );
+    assert.ok(verdictLine, "the lane emitted its remaining-unknown verdict");
+    assert.equal(
+      verdictLine.level,
+      SyncBurndownLogLevel.Warn,
+      "an unproven remainder must page at WARN, not read as routine INFO"
+    );
+    harness.reporter.stop();
+  });
+
+  /**
+   * ISS-10082 (AC3), on the SESSION lane. Its key and its gate read the same
+   * getter (`desktop-sync-lane-composition.ts:477/500`), so the two disagree
+   * either across `sampleOnce`'s await — the scope is captured before the store
+   * read and the gate is read after it — or on a FALSY-BUT-NOT-NULL target id,
+   * where `computeTargetId ? … : null` yields a null key while
+   * `getSyncComputeTargetId() !== null` still holds the gate open.
+   *
+   * The simultaneous two-resolver disagreement is the INVOCATION and COMPONENT
+   * lanes' mechanism, not this one; the case below covers it.
+   */
+  it("reports an OPEN-gate lane whose queue was never queried as remaining_unknown, not drained", async () => {
+    const sample = emptySample();
+    // Everything else about this sample says "caught up". The single fact that
+    // changes is that nobody looked.
+    sample.sessionOutbox.remainderBasis = SyncLaneRemainderBasis.Unqueried;
+    const harness = buildHarness({ sample, running: true });
+    harness.setSourceKeys({ session: null });
+    harness.reporter.start();
+    await harness.reporter.sampleOnce();
+
+    const snapshot = harness.reporter.getLatestSnapshot();
+    harness.reporter.stop();
+    assert.ok(snapshot);
+    const lane = snapshot.lanes.find(
+      (candidate) => candidate.lane === SyncLaneId.SessionMetadata
+    );
+    assert.ok(lane);
+    assert.equal(
+      lane.state,
+      SyncLaneDrainState.RemainingUnknown,
+      "a lane the store never queried has not been shown to be caught up, and `drained` is the one state that claims it has"
+    );
+    assert.equal(
+      lane.itemsRemaining,
+      null,
+      "the placeholder zero must be published as the unknown it is — every consumer already reads null as unknown, and a 0 as measured"
+    );
+    assert.equal(
+      lane.readyItemsRemaining,
+      null,
+      "the eligible-now depth was not measured either, and a measured 0 there suppresses the no-progress stall"
+    );
+    assert.equal(
+      areAllLanesFullySynced(snapshot.lanes),
+      false,
+      "ALL LANES FULLY SYNCED must not print over a lane nobody read"
+    );
+    const logged = messages(harness.lines);
+    assert.match(
+      logged,
+      UNQUERIED_LINE_RE,
+      "the operator line must show the remainders as unknown rather than as a reassuring row of zeros"
+    );
+    assert.match(
+      logged,
+      UNQUERIED_CAUSE_RE,
+      "and must name THIS cause — not the structural 'exposes no measurable remainder' sentence, which describes a lane with no queue rather than a queue nobody read"
+    );
+  });
+
+  /**
+   * ISS-10082, on the INVOCATION lane — the one that needs no await window at
+   * all. `getInvocationSourceKey` resolves through
+   * `identityBoundTranscriptComputeTargetId`, which is null unless the raw
+   * online target and the identity-bound one AGREE, while
+   * `isInvocationLaneRunning` reads only `getTranscriptComputeTargetId()`. An
+   * account-switch flap makes them disagree at one instant: gate open, key null.
+   *
+   * The gated-backlog suite's invocation cases all run with the gate SHUT, so
+   * without this one the lane with the genuinely raceless path is uncovered.
+   */
+  it("reports an OPEN-gate INVOCATION lane whose delivery queue was never queried as remaining_unknown", async () => {
+    const sample = emptySample();
+    sample.invocationOutbox.remainderBasis = SyncLaneRemainderBasis.Unqueried;
+    const harness = buildHarness({ sample, running: true });
+    harness.setSourceKeys({ invocation: null });
+    harness.reporter.start();
+    await harness.reporter.sampleOnce();
+
+    const snapshot = harness.reporter.getLatestSnapshot();
+    harness.reporter.stop();
+    assert.ok(snapshot);
+    const lane = snapshot.lanes.find(
+      (candidate) => candidate.lane === SyncLaneId.InvocationParts
+    );
+    assert.ok(lane);
+    assert.equal(
+      lane.state,
+      SyncLaneDrainState.RemainingUnknown,
+      "gate open and delivery key null is reachable without a race, and the placeholder behind it must not read as caught up"
+    );
+    assert.equal(lane.itemsRemaining, null);
+    assert.equal(
+      lane.bytesRemaining,
+      null,
+      "`bytes=0` on a queue nobody read is the same confident zero one column over"
+    );
+    assert.equal(lane.chunksRemaining, null);
+  });
+});
+
+describe("SyncBurndownReporter — corrupt persisted timestamps and delta flooring (ISS-8142)", () => {
+  it("reports a corrupt persisted cursor write timestamp as an unknown age, not a fabricated zero", async () => {
+    // SQLite enforces no TEXT-column format: a value another process wrote, a
+    // partial write, or plain bit-rot reaches this column exactly as-is
+    // regardless of what the TypeScript type declares. `ageMsFrom` must read it
+    // as unknown rather than compute an age against garbage — a fabricated `0`
+    // would print as "brand new" for a cursor nobody can actually place in time.
+    for (const corruptUpdatedAt of ["not-a-date", ""]) {
+      const sample = emptySample();
+      sample.cursorsBySourceKey[SESSION_KEY] = {
+        sourceKey: SESSION_KEY,
+        observedTopUpdatedAt: "some-cursor-value",
+        updatedAt: corruptUpdatedAt,
+        dataRevision: 1,
+        observedIdsAtTopUpdatedAt: [],
+        deadLetteredIds: [],
+      };
+      const harness = buildHarness({ sample });
+      harness.reporter.start();
       await harness.reporter.sampleOnce();
+
+      const snapshot = harness.reporter.getLatestSnapshot();
+      assert.ok(snapshot);
+      const sessionLane = snapshot.lanes.find(
+        (lane) => lane.lane === SyncLaneId.SessionMetadata
+      );
+      assert.ok(sessionLane);
+      assert.equal(
+        sessionLane.durableCursorAgeMs,
+        null,
+        `a corrupt cursor write timestamp (${JSON.stringify(corruptUpdatedAt)}) must read as unknown, not zero`
+      );
+      harness.reporter.stop();
     }
+  });
+
+  it("carries the unknown cursor age into the monitored stall report instead of a fabricated zero", async () => {
+    // Reachable end to end: a batch completes (workCompletedSincePrevious > 0)
+    // against an unmoving cursor whose write timestamp is corrupt TEXT — the
+    // ISS-5347 shape this reporter exists to catch. Downstream,
+    // sync-lane-stall-telemetry.ts omits `durableCursorAgeMs` on `null` rather
+    // than emitting a zero that would read as the best possible outcome.
+    const busy = emptySample();
+    busy.sessionOutbox.pending = 5;
+    busy.cursorsBySourceKey[SESSION_KEY] = {
+      sourceKey: SESSION_KEY,
+      observedTopUpdatedAt: "cursor-v1",
+      updatedAt: "not-a-date",
+      dataRevision: 1,
+      observedIdsAtTopUpdatedAt: [],
+      deadLetteredIds: [],
+    };
+    const harness = buildHarness({ sample: busy });
+    harness.reporter.start();
+    await harness.reporter.sampleOnce();
+
+    // The queue holds steady and the cursor value is unchanged, but a batch
+    // completed — uploads landing, persistence motionless.
+    harness.reporter.recordSessionBatch({ accepted: true, payloadBytes: 4096 });
+    await harness.reporter.sampleOnce();
     harness.reporter.stop();
 
     assert.equal(
-      sessionStalls(harness).length,
-      2,
-      "the latch must re-arm after a genuine drain, not suppress the next episode"
+      harness.stalls.length,
+      1,
+      "the frozen cursor raises exactly one stall"
     );
+    assert.equal(
+      harness.stalls[0]?.durableCursorAgeMs,
+      null,
+      "a corrupt cursor write timestamp must reach the stall report as unknown, not a fabricated brand-new age"
+    );
+  });
+
+  it("floors a per-pass delta at zero rather than reporting a growing queue as negative progress, and reports zero with no previous sample to diff against (positiveDelta)", async () => {
+    const firstSample = emptySample();
+    firstSample.transcript.inFlightFiles = 5;
+    const harness = buildHarness({ sample: firstSample });
+    harness.reporter.start();
+    await harness.reporter.sampleOnce();
+
+    const firstSnapshot = harness.reporter.getLatestSnapshot();
+    assert.ok(firstSnapshot);
+    const firstTranscriptLane = firstSnapshot.lanes.find(
+      (lane) => lane.lane === SyncLaneId.TranscriptArchive
+    );
+    assert.ok(firstTranscriptLane);
+    assert.equal(
+      firstTranscriptLane.workCompletedSincePrevious,
+      0,
+      "positiveDelta has no previous sample to diff against yet, so it must report zero rather than the raw in-flight count"
+    );
+
+    // The in-flight count GROWS — new files entered flight — rather than shrinks.
+    const grownSample = emptySample();
+    grownSample.transcript.inFlightFiles = 12;
+    harness.setSample(grownSample);
+    await harness.reporter.sampleOnce();
+
+    const secondSnapshot = harness.reporter.getLatestSnapshot();
+    assert.ok(secondSnapshot);
+    const secondTranscriptLane = secondSnapshot.lanes.find(
+      (lane) => lane.lane === SyncLaneId.TranscriptArchive
+    );
+    assert.ok(secondTranscriptLane);
+    assert.equal(
+      secondTranscriptLane.workCompletedSincePrevious,
+      0,
+      "Math.max(0, previous - current) must floor a growing queue's delta at zero, never report it negative"
+    );
+    harness.reporter.stop();
   });
 });

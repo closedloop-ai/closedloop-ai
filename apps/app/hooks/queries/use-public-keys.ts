@@ -1,12 +1,12 @@
 "use client";
 
 import type { UserPublicKeySummary } from "@repo/api/src/types/compute-target";
-import { useMutation } from "@tanstack/react-query";
-import { useApiClient } from "@/hooks/use-api-client";
 import {
   deleteBrowserSigningKey,
   getOrCreateBrowserSigningKey,
-} from "@/lib/desktop-command-signing/key-store";
+} from "@repo/app/compute/lib/command-signing/key-store";
+import { useApiClient } from "@repo/app/shared/api/use-api-client";
+import { useMutation } from "@tanstack/react-query";
 
 /**
  * Registers this browser's command-signing public key with the current org.

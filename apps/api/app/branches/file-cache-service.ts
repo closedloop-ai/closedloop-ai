@@ -11,11 +11,13 @@ import { Result, Status } from "@repo/api/src/types/result";
 import { GitHubInstallationStatus, withDb } from "@repo/database";
 import {
   compareBranchFileChangesWithProviderResult,
+  GITHUB_COMPARE_FILE_LIMIT,
   type GitHubChangedFile,
   GitHubProviderResultStatus,
 } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { readWithInstallationClient } from "@/lib/github/installation-client";
+import { branchFileChangePersistenceCap } from "./branch-file-change-read-bounds";
 import {
   markBranchSyncCompleted,
   markBranchSyncFailed,
@@ -24,7 +26,6 @@ import {
   startBranchSync,
 } from "./branch-sync-status";
 
-const MAX_FILE_CHANGES = 500;
 const MAX_PATCH_BYTES = 64 * 1024;
 const MAX_TOTAL_PATCH_BYTES = 2 * 1024 * 1024;
 
@@ -58,6 +59,22 @@ export async function refreshBranchFileChangeCache(
   branchArtifactId: string,
   options: { organizationId: string; syncAlreadyStarted?: boolean }
 ): Promise<Result<RefreshBranchFileChangeCacheResult>> {
+  // ISS-6127: the persist bound is the PROVIDER's limit, not a second number.
+  // This was its own 500 — unreachable for the same reason the compare helper's
+  // was, and a second phantom threshold is how the first one went unnoticed.
+  // ISS-8480: checked per refresh rather than at module scope, so a provider
+  // limit that outruns the bounded reads fails THIS refresh instead of refusing
+  // to load the module — `route.ts` imports it statically for every GitHub event
+  // type, and a cap mismatch has nothing to do with a `check_run` payload. And
+  // checked FIRST, before the sync token is acquired and before any provider or
+  // write work: this refusal has no per-branch failure to record, so settling it
+  // through `markCacheRefreshFailed` would stamp `Failed` over a real cache's
+  // status for a build-time misconfiguration, and throwing after
+  // `startBranchSync` would strand the branch in `Syncing` for the full
+  // BRANCH_VIEW_IN_FLIGHT_STALE_MS lease with nothing settling it.
+  const maxFileChanges = branchFileChangePersistenceCap(
+    GITHUB_COMPARE_FILE_LIMIT
+  );
   const startedAt = new Date();
   const branch = await withDb((db) =>
     db.branchDetail.findFirst({
@@ -172,11 +189,11 @@ export async function refreshBranchFileChangeCache(
       throttleReason: BranchViewSyncThrottleReason.ProviderRateLimit,
     });
   }
-  const files =
+  const compared =
     filesResult.status === GitHubProviderResultStatus.Success
       ? filesResult.value
       : null;
-  if (!files) {
+  if (!compared) {
     await markCacheRefreshFailed(
       options.organizationId,
       branchArtifactId,
@@ -191,47 +208,13 @@ export async function refreshBranchFileChangeCache(
     return Result.err(Status.Error);
   }
 
-  const prepared = prepareFileChanges(files);
-  await withDb.tx(async (tx) => {
-    await tx.branchFileChange.deleteMany({
-      where: {
-        branchArtifactId,
-        branch: {
-          artifact: { organizationId: options.organizationId },
-        },
-      },
-    });
-    if (prepared.rows.length > 0) {
-      await tx.branchFileChange.createMany({
-        data: prepared.rows.map((file) => ({
-          branchArtifactId,
-          headSha,
-          path: file.path,
-          previousPath: file.previousPath,
-          status: file.status,
-          additions: file.additions,
-          deletions: file.deletions,
-          changes: file.changes,
-          patch: file.patch,
-          patchBytes: file.patchBytes,
-          patchOmittedReason: file.patchOmittedReason,
-          isBinary: file.isBinary,
-        })),
-      });
-    }
-    await tx.branchDetail.updateMany({
-      where: {
-        artifactId: branchArtifactId,
-        artifact: { organizationId: options.organizationId },
-      },
-      data: {
-        fileCacheStatus: BranchFileCacheStatus.Fresh,
-        fileCacheHeadSha: headSha,
-        fileCacheFileCount: prepared.rows.length,
-        fileCachePatchBytes: prepared.patchBytes,
-        fileCacheUpdatedAt: new Date(),
-      },
-    });
+  const prepared = await persistBranchFileChangeCache({
+    organizationId: options.organizationId,
+    branchArtifactId,
+    headSha,
+    files: compared.files,
+    capped: compared.capped,
+    maxFileChanges,
   });
   if (locallyAcquiredStartedAt) {
     await markBranchSyncCompleted({
@@ -244,7 +227,7 @@ export async function refreshBranchFileChangeCache(
 
   return Result.ok({
     throttled: false,
-    fileCount: prepared.rows.length,
+    fileCount: prepared.fileCount,
     patchBytes: prepared.patchBytes,
   });
 }
@@ -306,12 +289,15 @@ async function markCacheRefreshFailed(
   });
 }
 
-function prepareFileChanges(files: GitHubChangedFile[]): {
+function prepareFileChanges(
+  files: GitHubChangedFile[],
+  maxFileChanges: number
+): {
   rows: PreparedFileChange[];
   patchBytes: number;
 } {
   let totalPatchBytes = 0;
-  const rows = files.slice(0, MAX_FILE_CHANGES).map((file) => {
+  const rows = files.slice(0, maxFileChanges).map((file) => {
     const patch = preparePatch(file.patch, totalPatchBytes);
     totalPatchBytes += patch.patchBytes;
     return {
@@ -364,4 +350,70 @@ function preparePatch(
   }
 
   return { patch, patchBytes, patchOmittedReason: null };
+}
+
+/**
+ * Replace a branch's file-change cache with one compare result for `headSha`
+ * and mark the cache fresh. The write half of `refreshBranchFileChangeCache`,
+ * for a caller that already holds compare-shaped files.
+ */
+export async function persistBranchFileChangeCache(input: {
+  organizationId: string;
+  branchArtifactId: string;
+  headSha: string;
+  files: GitHubChangedFile[];
+  capped: boolean;
+  maxFileChanges: number;
+}): Promise<{ fileCount: number; patchBytes: number }> {
+  const { organizationId, branchArtifactId, headSha } = input;
+  const prepared = prepareFileChanges(input.files, input.maxFileChanges);
+  await withDb.tx(async (tx) => {
+    await tx.branchFileChange.deleteMany({
+      where: {
+        branchArtifactId,
+        branch: {
+          artifact: { organizationId },
+        },
+      },
+    });
+    if (prepared.rows.length > 0) {
+      await tx.branchFileChange.createMany({
+        data: prepared.rows.map((file) => ({
+          branchArtifactId,
+          headSha,
+          path: file.path,
+          previousPath: file.previousPath,
+          status: file.status,
+          additions: file.additions,
+          deletions: file.deletions,
+          changes: file.changes,
+          patch: file.patch,
+          patchBytes: file.patchBytes,
+          patchOmittedReason: file.patchOmittedReason,
+          isBinary: file.isBinary,
+        })),
+      });
+    }
+    await tx.branchDetail.updateMany({
+      where: {
+        artifactId: branchArtifactId,
+        artifact: { organizationId },
+      },
+      data: {
+        fileCacheStatus: BranchFileCacheStatus.Fresh,
+        fileCacheHeadSha: headSha,
+        fileCacheFileCount: prepared.rows.length,
+        // ISS-6127: the provider's own completeness verdict, stored beside
+        // freshness rather than folded into it. `Fresh` stays true of a capped
+        // read — it WAS fetched, at this head SHA — so the two facts need two
+        // fields. Reading it back off `fileCacheFileCount` is what the old code
+        // effectively did, and `>= cap` stops being knowable the moment the cap
+        // moves.
+        fileCacheCapped: input.capped,
+        fileCachePatchBytes: prepared.patchBytes,
+        fileCacheUpdatedAt: new Date(),
+      },
+    });
+  });
+  return { fileCount: prepared.rows.length, patchBytes: prepared.patchBytes };
 }

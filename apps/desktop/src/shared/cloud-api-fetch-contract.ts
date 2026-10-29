@@ -41,11 +41,10 @@ export const DESKTOP_AUTH_TOKEN_SENTINEL = "desktop-session-token-held-in-main";
  * {@link CloudApiFetchRequest.timeoutMs} to (ISS-5082).
  *
  * 5 minutes mirrors `LONG_RUNNING_API_TIMEOUT_MS` in
- * `packages/app/shared/api/api-timeout.ts` — the longest deadline any shared
- * call site legitimately asks for, itself pinned to the `maxDuration = 300` the
- * long-running routes declare. The value is restated here rather than imported
- * because `@repo/app` is browser/renderer code and must not enter the main
- * process. The two are kept equal by an executable assertion in
+ * `packages/api/src/types/long-running-api-timeout.ts` — the longest deadline
+ * any shared call site legitimately asks for, itself pinned to the
+ * `maxDuration = 300` the long-running routes declare. The value is restated
+ * here rather than imported. The two are kept equal by an executable assertion in
  * `apps/desktop/src/renderer/shared-agent-sessions/__tests__/cloud-api-adapter.test.ts`
  * (the renderer can see both modules), so raising the shared constant without
  * raising this one fails a test rather than silently re-capping desktop
@@ -64,9 +63,9 @@ export type CloudApiFetchRequest = {
   /** Flattened request headers; only an allowlist is forwarded upstream. */
   headers?: Record<string, string>;
   /**
-   * UTF-8 request body. Accepted for the mutating methods (POST/PATCH/DELETE)
-   * whose path matches the main handler's write allowlist (FEA-3522 — trace
-   * comments); rejected outright for GET. Absent for bodyless requests.
+   * UTF-8 request body. Accepted for the mutating methods
+   * (POST/PUT/PATCH/DELETE) whose path matches the main handler's write
+   * allowlist; rejected outright for GET. Absent for bodyless requests.
    */
   body?: string;
   /**

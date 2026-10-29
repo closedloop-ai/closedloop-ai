@@ -8,13 +8,10 @@
  * This module owns two corpora neither existing seeder in `seed-branches-db.ts`
  * can produce:
  *
- * 1. `seedSharedSessionLocPerDollarBranches` (ISS-4895, fixing ISS-4689): TWO
- *    branch artifacts sharing ONE session, both fully LOC-enriched, so the
- *    Branches "LOC / $" summary card's even-split divisor
- *    (`sumEvenSplitEnrichedSpend` in `packages/app/branches/lib/
- *    filtered-branch-analytics.ts`) has a genuine multi-branch corpus to divide
- *    by the session's GLOBAL branch count rather than its in-window count.
- *    `seedMergedUnenrichedSinglePrBranch`/`seedNoPullRequestBranch` each mint
+ * 1. `seedSharedSessionLocPerDollarBranches` (ISS-4895/ISS-6543): TWO verified
+ *    merged-PR publications sharing ONE session, so the Branches "LOC per $"
+ *    kernel exercises independent publication totals and one GLOBAL divisor.
+ *    `seedClosedAtOnlySinglePrBranch`/`seedNoPullRequestBranch` each mint
  *    exactly one branch artifact per session (keyed by
  *    `branchArtifactId(sessionId)`), which cannot express this shape.
  *
@@ -94,10 +91,6 @@ export type SharedSessionLocPerDollarSeed = {
   sessionId: string;
   /** ISS-4895/ISS-4689: the shared session's single priced cost — the even-split numerator's spend. */
   costUsd: number;
-  /** Fully LOC-enriched churn (`isLocEnrichedRow` requires all three) applied identically to both branches. */
-  linesAdded: number;
-  linesRemoved: number;
-  filesChanged: number;
   branches: readonly [SharedSessionBranchSeed, SharedSessionBranchSeed];
 };
 
@@ -121,7 +114,10 @@ export async function seedSharedSessionLocPerDollarBranches(
     await waitForLocPerDollarSchema(client, options.schemaTimeoutMs ?? 30_000);
 
     const endedAt = new Date();
-    const startedAt = new Date(endedAt.getTime() - 60 * 60 * 1000);
+    const earliestMergeAt = Math.min(
+      ...seed.branches.map((branch) => Date.parse(branch.mergedAt))
+    );
+    const startedAt = new Date(earliestMergeAt - 60 * 60 * 1000);
     const startedAtIso = startedAt.toISOString();
     const observedAt = endedAt.toISOString();
     await client.batch(
@@ -139,10 +135,37 @@ export async function seedSharedSessionLocPerDollarBranches(
             observedAt,
           ],
         },
-        // Two trace instants make the detail timeline chartable without adding
-        // the missing LOC event-time evidence this list test intentionally pins.
+        // Two trace instants make the detail timeline and cost event window
+        // chartable; merged-PR rows below own publication LOC event time.
         substantiveToolEventBatchItem(seed.sessionId, startedAtIso, "start"),
         substantiveToolEventBatchItem(seed.sessionId, observedAt, "end"),
+        {
+          sql: `INSERT INTO session_activity_segments
+                  (id, session_id, phase, start_ms, end_ms, confidence,
+                   evidence_layers, version, work_item_ref, subagent_id, observed_at)
+                VALUES (?, ?, 'implement', ?, ?, 1,
+                        '[]', 1, NULL, NULL, ?)`,
+          args: [
+            `${seed.sessionId}-segment-build`,
+            seed.sessionId,
+            startedAt.getTime(),
+            endedAt.getTime() + 1,
+            observedAt,
+          ],
+        },
+        {
+          sql: `INSERT INTO token_events
+                  (session_id, transport_id, model, created_at,
+                   input_tokens, output_tokens, cache_read_tokens,
+                   cache_write_tokens, cost_usd_estimated)
+                VALUES (?, ?, 'seed-model', ?, 1000, 500, 0, 0, ?)`,
+          args: [
+            seed.sessionId,
+            `${seed.sessionId}-canonical-cost`,
+            observedAt,
+            seed.costUsd,
+          ],
+        },
         ...seed.branches.flatMap((branch) =>
           sharedSessionBranchBatchItems(seed, branch, observedAt)
         ),
@@ -160,62 +183,78 @@ export async function seedSharedSessionLocPerDollarBranches(
   }
 }
 
-/** The three FK-ordered rows one seeded branch needs, for a shared-session corpus. */
+/** The four FK-ordered rows one seeded branch needs for this shared corpus. */
 function sharedSessionBranchBatchItems(
   seed: SharedSessionLocPerDollarSeed,
   branch: SharedSessionBranchSeed,
   observedAt: string
 ): Array<{ sql: string; args: Array<string | number> }> {
   const artifactId = `artifact-branch-${branch.branchId}`;
+  const pushObservedAt = new Date(
+    Date.parse(branch.mergedAt) - 30 * 60 * 1000
+  ).toISOString();
   return [
     {
       sql: `INSERT INTO artifacts
               (id, identity_key, kind, repo_full_name, branch_name,
-               lines_added, lines_removed, files_changed,
                created_at, last_seen_at, observed_at)
             VALUES (?, ?, 'branch', ?, ?,
-                    ?, ?, ?,
                     ?, ?, ?)`,
       args: [
         artifactId,
         `branch:${seed.repoFullName}:${branch.branchName}`,
         seed.repoFullName,
         branch.branchName,
-        seed.linesAdded,
-        seed.linesRemoved,
-        seed.filesChanged,
         observedAt,
         observedAt,
         observedAt,
       ],
     },
     {
-      // FEA-2531: `git_push` (write + push evidence) — same convention as
-      // `seedMergedUnenrichedSinglePrBranch` in `seed-branches-db.ts` — so both
-      // seeded rows pass the Branches display gate.
+      sql: `INSERT INTO artifacts
+              (id, identity_key, kind, repo_full_name, branch_name, pr_number,
+               url, title, created_at, last_seen_at, observed_at)
+            VALUES (?, ?, 'pull_request', ?, ?, ?,
+                    ?, ?, ?, ?, ?)`,
+      args: [
+        `artifact-pr-${branch.branchId}`,
+        `pull_request:${seed.repoFullName}:${branch.prNumber}`,
+        seed.repoFullName,
+        branch.branchName,
+        branch.prNumber,
+        `https://github.com/${seed.repoFullName}/pull/${branch.prNumber}`,
+        `Seeded merged PR #${branch.prNumber}`,
+        observedAt,
+        observedAt,
+        observedAt,
+      ],
+    },
+    {
+      // A canonical Created + git_push write supplies both Product Wrote and
+      // BranchWrite lifecycle evidence for phase attribution.
       sql: `INSERT INTO session_artifact_links
               (id, session_id, artifact_id, relation, method, evidence,
                is_primary, status, extractor_version, observed_at, created_at)
-            VALUES (?, ?, ?, 'authored', 'git_push', '{}',
+            VALUES (?, ?, ?, 'created', 'git_push', '{}',
                     1, 'confirmed', 1, ?, ?)`,
       args: [
         `link-${branch.branchId}`,
         seed.sessionId,
         artifactId,
-        observedAt,
-        observedAt,
+        pushObservedAt,
+        pushObservedAt,
       ],
     },
     {
       // A distinct `pull_requests` row per branch, keyed by
       // `(repo_full_name, branch_name)` (not by session) — this is what lets two
       // branches sharing one session still get genuinely different
-      // `lastActivityAt` values via each branch's own `merged_at`.
+      // `lastActivityAt` values via each branch's own `closed_at`.
       sql: `INSERT INTO pull_requests
               (id, session_id, pr_url, pr_number, repo_full_name, branch_name,
-               state, closed_at, merged_at, title, observed_at, created_at)
+               opened_at, closed_at, observed_at, created_at)
             VALUES (?, ?, ?, ?, ?, ?,
-                    'closed', ?, ?, ?, ?, ?)`,
+                    ?, ?, ?, ?)`,
       args: [
         `pr-${branch.branchId}`,
         seed.sessionId,
@@ -223,9 +262,8 @@ function sharedSessionBranchBatchItems(
         branch.prNumber,
         seed.repoFullName,
         branch.branchName,
+        new Date(Date.parse(branch.mergedAt) - 60 * 60 * 1000).toISOString(),
         branch.mergedAt,
-        branch.mergedAt,
-        `Seeded merged PR #${branch.prNumber}`,
         observedAt,
         observedAt,
       ],
@@ -238,15 +276,6 @@ export type SessionDetailLocPerDollarSeed = {
   sessionId: string;
   repoFullName: string;
   branchName: string;
-  /**
-   * The session-detail LOC read (`sync-source.ts`'s ungated `branchLocRows`
-   * query) requires all three non-null so `buildDiffStats` populates
-   * `session.branchDiffStats` — the numerator
-   * `sessionLocPerDollarNumeratorLoc` reads via `Math.max(gitLoc, branchLoc)`.
-   */
-  linesAdded: number;
-  linesRemoved: number;
-  filesChanged: number;
   /**
    * ISS-4667/4865: omit for the "no priced cost" control (session detail then
    * renders the not-applicable placeholder instead of a ratio); pass a positive
@@ -290,19 +319,14 @@ export async function seedSessionDetailLocPerDollarBranch(
         {
           sql: `INSERT INTO artifacts
                   (id, identity_key, kind, repo_full_name, branch_name,
-                   lines_added, lines_removed, files_changed,
                    created_at, last_seen_at, observed_at)
                 VALUES (?, ?, 'branch', ?, ?,
-                        ?, ?, ?,
                         ?, ?, ?)`,
           args: [
             artifactId,
             `branch:${seed.repoFullName}:${seed.branchName}`,
             seed.repoFullName,
             seed.branchName,
-            seed.linesAdded,
-            seed.linesRemoved,
-            seed.filesChanged,
             now,
             now,
             now,

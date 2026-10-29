@@ -44,6 +44,11 @@
  * Determinism: reads only `NormalizedSession` (+ the tiling) and the version
  * constant — no `Date.now()`, no randomness; every sort/tie-break is explicit.
  */
+
+import {
+  ACTIVITY_PHASE,
+  type ActivityPhase,
+} from "@repo/api/src/types/activity-phase";
 import { categoryMixForToolUses } from "../evidence/build-session-evidence.js";
 import { EvidenceLayer } from "../evidence/evidence-model.js";
 import type {
@@ -61,7 +66,6 @@ import {
   sortedUniqueMs,
   splitAtCuts,
 } from "./activity-segment-relabel.js";
-import { ACTIVITY_PHASE, type ActivityPhase } from "./activity-taxonomy.js";
 import { CARRIED_CONFIDENCE } from "./phase-carry.js";
 
 /**

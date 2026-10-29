@@ -2,15 +2,13 @@ import { GitHubAccessDenialReason } from "@repo/api/src/types/github";
 import { withDb } from "@repo/database";
 import { GitHubProviderResultStatus } from "@repo/github";
 import { classifyGitHubProviderError } from "@repo/github/provider-error-classification";
+import { log } from "@repo/observability/log";
 import {
   extractGitHubHttpStatus,
   GITHUB_SYNC_REPO_VERDICT_TTL_MS,
   GitHubSyncHealthState,
 } from "@/lib/github/github-access";
-import {
-  markGitHubConnectionRevoked,
-  saveCapabilityVerdict,
-} from "@/lib/github/github-capability-store";
+import { saveCapabilityVerdict } from "@/lib/github/github-capability-store";
 import {
   normalizeGitHubName,
   storedGitHubCredentialKind,
@@ -20,8 +18,9 @@ import {
  * PLN-1525 step 2a (PLN-1535 D9): the write-back half of the sync-read pool.
  * Selection and draw live in `github-sync-client-pool.ts` and READ the pool
  * credential state; everything here records observed provider behavior back
- * into that state after a draw — rate-limit windows, backoff, 401 revocation,
- * and lazily discovered repo access.
+ * into that state after a draw — rate-limit windows, backoff (including the
+ * 401 backoff that replaced PLN-1525's revocation write), and lazily
+ * discovered repo access.
  */
 
 /** Observed GraphQL `rateLimit { limit cost remaining resetAt }` block. */
@@ -48,19 +47,19 @@ export type GitHubSyncRepoAccessOutcome =
  */
 export const GITHUB_SYNC_DEFAULT_BACKOFF_MS = 15 * 60 * 1000;
 
+const POOL_OBSERVATION_LOG_PREFIX = "[github/sync-pool-observations]";
+
 /** The slice of a drawn pool connection the observation writers key on. */
 export type PoolCredentialRef = {
   id: string;
   organizationId: string;
-  accessTokenEncrypted: string;
   scopes: string[];
 };
 
 /**
- * The layer observes what rides on transport errors: a 401 revokes the
- * connection (unhealthy + capability rows dropped, one transaction, CAS'd on
- * the cipher the failing client was built from); a rate-limit response puts
- * the token into backoff for the provider's ETA or one tick.
+ * The layer observes what rides on transport errors: a 401 backs the row off
+ * and names it; a rate-limit response puts the token into backoff for the
+ * provider's ETA or one tick.
  */
 export async function observePoolRequestFailure(
   connection: PoolCredentialRef,
@@ -69,11 +68,19 @@ export async function observePoolRequestFailure(
   const status = extractGitHubHttpStatus(error);
   const observedAt = new Date();
   if (status === 401) {
-    await markGitHubConnectionRevoked({
+    // Clerk's token is not ours to revoke, so a 401 cannot mark the registry
+    // row revoked — but it must not be silent either: nothing else in
+    // `classifyPoolExclusion` can see a broken Clerk credential, so without
+    // this the same row is redrawn on every sweep, spending a Clerk
+    // round-trip and a GitHub 401 each time with no operator signal. Backoff
+    // keys on `id` alone, and the credential re-qualifies on its own once
+    // Clerk serves a working token.
+    await backOffPoolConnection(connection, observedAt, {
+      backoffMs: GITHUB_SYNC_DEFAULT_BACKOFF_MS,
+    });
+    log.warn(`${POOL_OBSERVATION_LOG_PREFIX} Clerk-sourced token rejected`, {
       organizationId: connection.organizationId,
       githubUserConnectionId: connection.id,
-      accessTokenEncrypted: connection.accessTokenEncrypted,
-      now: observedAt,
     });
     return;
   }
@@ -88,6 +95,14 @@ export async function observePoolRequestFailure(
     classification.retryAfterSeconds === null
       ? GITHUB_SYNC_DEFAULT_BACKOFF_MS
       : classification.retryAfterSeconds * 1000;
+  await backOffPoolConnection(connection, observedAt, { backoffMs });
+}
+
+async function backOffPoolConnection(
+  connection: PoolCredentialRef,
+  observedAt: Date,
+  options: { backoffMs: number }
+): Promise<void> {
   await withDb((db) =>
     db.gitHubUserConnection.updateMany({
       where: {
@@ -97,7 +112,7 @@ export async function observePoolRequestFailure(
       },
       data: {
         healthState: GitHubSyncHealthState.Backoff,
-        backoffUntil: new Date(observedAt.getTime() + backoffMs),
+        backoffUntil: new Date(observedAt.getTime() + options.backoffMs),
       },
     })
   );

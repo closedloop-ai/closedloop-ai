@@ -27,3 +27,32 @@ export function useMediaQuery(query: string): boolean {
 
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
+
+/** Tracks the effective visual viewport, including browser zoom changes. */
+export function useViewportWidth(): number | null {
+  return useSyncExternalStore(
+    subscribeToViewportWidth,
+    viewportWidthSnapshot,
+    serverViewportWidthSnapshot
+  );
+}
+
+function subscribeToViewportWidth(onChange: () => void): () => void {
+  const browserWindow = globalThis.window;
+  const visualViewport = browserWindow?.visualViewport;
+  browserWindow?.addEventListener("resize", onChange);
+  visualViewport?.addEventListener("resize", onChange);
+  return () => {
+    browserWindow?.removeEventListener("resize", onChange);
+    visualViewport?.removeEventListener("resize", onChange);
+  };
+}
+
+function viewportWidthSnapshot(): number | null {
+  const browserWindow = globalThis.window;
+  return browserWindow?.visualViewport?.width ?? browserWindow?.innerWidth ?? null;
+}
+
+function serverViewportWidthSnapshot(): null {
+  return null;
+}

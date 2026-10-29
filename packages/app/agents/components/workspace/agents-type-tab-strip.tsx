@@ -23,7 +23,7 @@
  *
  * With the flag off it renders every segment, exactly as it ships today.
  *
- * Domain component: lives in this feature slice, NOT in @closedloop-ai/design-system.
+ * Domain component: lives in this feature slice, NOT in @repo/design-system.
  */
 
 import { Button } from "@repo/design-system/components/ui/button";
@@ -131,9 +131,7 @@ export function AgentsTypeTabStrip({
   );
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 /**
  * The overflow disclosure: a real `<button>` opening a menu of the segments the

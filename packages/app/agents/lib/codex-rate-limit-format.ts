@@ -1,4 +1,4 @@
-import type { CodexRateLimitWindowView } from "../components/detail/detail-content";
+import type { CodexRateLimitWindowView } from "../components/detail/codex-runtime-metadata";
 
 const MINUTES_PER_HOUR = 60;
 const MINUTES_PER_DAY = 60 * 24;

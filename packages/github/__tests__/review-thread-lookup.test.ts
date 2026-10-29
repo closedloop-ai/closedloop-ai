@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  fetchReviewThreadNodeIdByCommentId,
+  fetchReviewThreadMetadataByCommentId,
   fetchReviewThreadResolutionByNodeId,
   MAX_PR_METADATA_PAGES,
   REVIEW_THREAD_CONFIRMATION_TIMEOUT_MS,
@@ -17,41 +17,339 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("fetchReviewThreadNodeIdByCommentId", () => {
-  it("returns null when GraphQL lookup fails", async () => {
-    const octokit = {
-      graphql: vi.fn().mockRejectedValue(new Error("graphql unavailable")),
-    };
+function threadsPage(
+  nodes: unknown[] | null,
+  pageInfo: { hasNextPage: boolean; endCursor: string | null }
+) {
+  return {
+    repository: { pullRequest: { reviewThreads: { pageInfo, nodes } } },
+  };
+}
 
-    await expect(
-      fetchReviewThreadNodeIdByCommentId(octokit, "acme", "repo", 12, 345)
-    ).resolves.toBeNull();
-  });
+function commentsConnection(
+  databaseIds: Array<number | null>,
+  pageInfo: { hasNextPage: boolean; endCursor: string | null }
+) {
+  return {
+    pageInfo,
+    nodes: databaseIds.map((databaseId) => ({ databaseId })),
+  };
+}
 
-  it("uses the shared route-time metadata page cap", async () => {
+const NO_NEXT_PAGE = { hasNextPage: false, endCursor: null };
+
+describe("fetchReviewThreadMetadataByCommentId", () => {
+  it("maps comment ids to their thread, skipping comments without a numeric database id", async () => {
     const octokit = {
-      graphql: vi.fn().mockImplementation(() =>
-        Promise.resolve({
-          repository: {
-            pullRequest: {
-              reviewThreads: {
-                pageInfo: { hasNextPage: true, endCursor: "next" },
-                nodes: [],
-              },
+      graphql: vi.fn().mockResolvedValue(
+        threadsPage(
+          [
+            {
+              id: "PRRT_a",
+              isResolved: true,
+              comments: commentsConnection([1, null], NO_NEXT_PAGE),
             },
-          },
-        })
+            {
+              id: "PRRT_b",
+              isResolved: false,
+              comments: commentsConnection([2], NO_NEXT_PAGE),
+            },
+          ],
+          NO_NEXT_PAGE
+        )
       ),
     };
 
-    await expect(
-      fetchReviewThreadNodeIdByCommentId(octokit, "acme", "repo", 12, 345)
-    ).resolves.toBeNull();
-    expect(octokit.graphql).toHaveBeenCalledTimes(MAX_PR_METADATA_PAGES);
+    const result = await fetchReviewThreadMetadataByCommentId(
+      octokit,
+      "acme",
+      "repo",
+      12,
+      MAX_PR_METADATA_PAGES
+    );
+
+    expect([...result.entries()]).toEqual([
+      [1, { id: "PRRT_a", isResolved: true }],
+      [2, { id: "PRRT_b", isResolved: false }],
+    ]);
+    expect(octokit.graphql).toHaveBeenCalledTimes(1);
+  });
+
+  it("follows the thread cursor until hasNextPage is false", async () => {
+    const octokit = {
+      graphql: vi
+        .fn()
+        .mockResolvedValueOnce(
+          threadsPage(
+            [
+              {
+                id: "PRRT_a",
+                isResolved: false,
+                comments: commentsConnection([1], NO_NEXT_PAGE),
+              },
+            ],
+            { hasNextPage: true, endCursor: "cursor-1" }
+          )
+        )
+        .mockResolvedValueOnce(
+          threadsPage(
+            [
+              {
+                id: "PRRT_b",
+                isResolved: true,
+                comments: commentsConnection([2], NO_NEXT_PAGE),
+              },
+            ],
+            NO_NEXT_PAGE
+          )
+        ),
+    };
+
+    const result = await fetchReviewThreadMetadataByCommentId(
+      octokit,
+      "acme",
+      "repo",
+      12,
+      MAX_PR_METADATA_PAGES
+    );
+
+    expect(octokit.graphql).toHaveBeenCalledTimes(2);
+    expect(octokit.graphql.mock.calls[0]?.[1]).toEqual({
+      owner: "acme",
+      repo: "repo",
+      pullNumber: 12,
+      cursor: null,
+    });
+    expect(octokit.graphql.mock.calls[1]?.[1]).toMatchObject({
+      cursor: "cursor-1",
+    });
+    expect(result.get(1)).toEqual({ id: "PRRT_a", isResolved: false });
+    expect(result.get(2)).toEqual({ id: "PRRT_b", isResolved: true });
+  });
+
+  it("returns an empty map after one call when the repository or pull request is missing", async () => {
+    const octokit = {
+      graphql: vi.fn().mockResolvedValue({ repository: { pullRequest: null } }),
+    };
+
+    const result = await fetchReviewThreadMetadataByCommentId(
+      octokit,
+      "acme",
+      "repo",
+      12,
+      MAX_PR_METADATA_PAGES
+    );
+
+    expect(result.size).toBe(0);
+    expect(octokit.graphql).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a null thread node list as empty and stops without hasNextPage", async () => {
+    const octokit = {
+      graphql: vi.fn().mockResolvedValue(threadsPage(null, NO_NEXT_PAGE)),
+    };
+
+    const result = await fetchReviewThreadMetadataByCommentId(
+      octokit,
+      "acme",
+      "repo",
+      12,
+      MAX_PR_METADATA_PAGES
+    );
+
+    expect(result.size).toBe(0);
+    expect(octokit.graphql).toHaveBeenCalledTimes(1);
+  });
+
+  it("pages a thread's remaining comments using the previous cursor", async () => {
+    const octokit = {
+      graphql: vi
+        .fn()
+        .mockResolvedValueOnce(
+          threadsPage(
+            [
+              {
+                id: "PRRT_a",
+                isResolved: true,
+                comments: commentsConnection([1], {
+                  hasNextPage: true,
+                  endCursor: "c1",
+                }),
+              },
+            ],
+            NO_NEXT_PAGE
+          )
+        )
+        .mockResolvedValueOnce({
+          node: {
+            comments: commentsConnection([2], {
+              hasNextPage: true,
+              endCursor: "c2",
+            }),
+          },
+        })
+        .mockResolvedValueOnce({
+          node: { comments: commentsConnection([3], NO_NEXT_PAGE) },
+        }),
+    };
+
+    const result = await fetchReviewThreadMetadataByCommentId(
+      octokit,
+      "acme",
+      "repo",
+      12,
+      MAX_PR_METADATA_PAGES
+    );
+
+    expect(octokit.graphql).toHaveBeenCalledTimes(3);
+    expect(octokit.graphql.mock.calls[1]?.[1]).toEqual({
+      threadId: "PRRT_a",
+      cursor: "c1",
+    });
+    expect(octokit.graphql.mock.calls[2]?.[1]).toEqual({
+      threadId: "PRRT_a",
+      cursor: "c2",
+    });
+    expect([...result.keys()]).toEqual([1, 2, 3]);
+    expect(result.get(3)).toEqual({ id: "PRRT_a", isResolved: true });
+  });
+
+  it("stops paging a thread's comments once maxPages is reached", async () => {
+    const octokit = {
+      graphql: vi
+        .fn()
+        .mockResolvedValueOnce(
+          threadsPage(
+            [
+              {
+                id: "PRRT_a",
+                isResolved: false,
+                comments: commentsConnection([1], {
+                  hasNextPage: true,
+                  endCursor: "c1",
+                }),
+              },
+            ],
+            NO_NEXT_PAGE
+          )
+        )
+        .mockResolvedValue({
+          node: {
+            comments: commentsConnection([2], {
+              hasNextPage: true,
+              endCursor: "more",
+            }),
+          },
+        }),
+    };
+
+    const result = await fetchReviewThreadMetadataByCommentId(
+      octokit,
+      "acme",
+      "repo",
+      12,
+      2
+    );
+
+    // One threads call plus a single comments page: page 2 is the last allowed.
+    expect(octokit.graphql).toHaveBeenCalledTimes(2);
+    expect([...result.keys()]).toEqual([1, 2]);
+  });
+
+  it("keeps recorded comments and stops when a thread comments page returns no node", async () => {
+    const octokit = {
+      graphql: vi
+        .fn()
+        .mockResolvedValueOnce(
+          threadsPage(
+            [
+              {
+                id: "PRRT_a",
+                isResolved: false,
+                comments: commentsConnection([1], {
+                  hasNextPage: true,
+                  endCursor: "c1",
+                }),
+              },
+            ],
+            NO_NEXT_PAGE
+          )
+        )
+        .mockResolvedValueOnce({ node: null }),
+    };
+
+    const result = await fetchReviewThreadMetadataByCommentId(
+      octokit,
+      "acme",
+      "repo",
+      12,
+      MAX_PR_METADATA_PAGES
+    );
+
+    expect(octokit.graphql).toHaveBeenCalledTimes(2);
+    expect([...result.keys()]).toEqual([1]);
   });
 });
 
 describe("fetchReviewThreadResolutionByNodeId", () => {
+  it("classifies a thread node whose isResolved is not a boolean as a terminal type mismatch", async () => {
+    const octokit = {
+      graphql: vi.fn().mockResolvedValue({
+        node: { __typename: "PullRequestReviewThread", isResolved: "yes" },
+      }),
+    };
+
+    await expect(
+      fetchReviewThreadResolutionByNodeId(octokit, "PRRT_node")
+    ).resolves.toEqual({
+      status: ReviewThreadResolutionResultStatus.Terminal,
+      reason: ReviewThreadResolutionTerminalReason.TypeMismatch,
+    });
+  });
+
+  it("classifies a 403 as rate limited", async () => {
+    const octokit = {
+      graphql: vi
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error("forbidden"), { status: 403 })
+        ),
+    };
+
+    await expect(
+      fetchReviewThreadResolutionByNodeId(octokit, "PRRT_node")
+    ).resolves.toMatchObject({
+      status: ReviewThreadResolutionResultStatus.RetryableError,
+      reason: ReviewThreadResolutionRetryableReason.RateLimited,
+    });
+  });
+
+  it("classifies a non-object rejection as a generic GraphQL error", async () => {
+    const octokit = { graphql: vi.fn().mockRejectedValue("plain failure") };
+
+    await expect(
+      fetchReviewThreadResolutionByNodeId(octokit, "PRRT_node")
+    ).resolves.toMatchObject({
+      status: ReviewThreadResolutionResultStatus.RetryableError,
+      reason: ReviewThreadResolutionRetryableReason.GraphqlError,
+    });
+  });
+
+  it("classifies an error with a non-numeric status as a generic GraphQL error", async () => {
+    const octokit = {
+      graphql: vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error("odd"), { status: "503" })),
+    };
+
+    await expect(
+      fetchReviewThreadResolutionByNodeId(octokit, "PRRT_node")
+    ).resolves.toMatchObject({
+      status: ReviewThreadResolutionResultStatus.RetryableError,
+      reason: ReviewThreadResolutionRetryableReason.GraphqlError,
+    });
+  });
+
   it("returns current provider resolution for a review-thread node", async () => {
     const octokit = {
       graphql: vi.fn().mockResolvedValue({

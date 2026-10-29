@@ -27,7 +27,7 @@ import {
   TableFilterMenu,
 } from "@repo/design-system/components/ui/table-filter-menu";
 import { TablePagination } from "@repo/design-system/components/ui/table-pagination";
-import { LayoutGridIcon, MonitorIcon, TerminalIcon } from "lucide-react";
+import { LayoutGridIcon, MonitorIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { InstallMatrixRollupCard } from "./install-matrix-rollup";
 import { InstallStateStatus } from "./install-state-status";
@@ -190,7 +190,6 @@ export const InstallMatrix = ({
       {
         id: "machine",
         label: "Machine",
-        icon: <MonitorIcon className="size-4" />,
         value: filter.computeTargetId,
         onValueChange: (value) =>
           handleFilterChange({ computeTargetId: value }),
@@ -205,7 +204,6 @@ export const InstallMatrix = ({
       {
         id: "harness",
         label: "Harness",
-        icon: <TerminalIcon className="size-4" />,
         value: filter.harness,
         onValueChange: (value) => handleFilterChange({ harness: value }),
         options: [
@@ -219,7 +217,6 @@ export const InstallMatrix = ({
       {
         id: "status",
         label: "Status",
-        icon: <LayoutGridIcon className="size-4" />,
         value: filter.state,
         onValueChange: (value) => handleFilterChange({ state: value }),
         options: STATUS_FILTER_OPTIONS,

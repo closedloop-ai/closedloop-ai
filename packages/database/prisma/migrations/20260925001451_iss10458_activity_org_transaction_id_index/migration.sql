@@ -1,0 +1,39 @@
+-- ISS-10458: the index the bulk-undo reference check exists to use.
+--
+-- ISS-9465 ruling 5 left `transaction_id` deliberately unindexed because this
+-- table's index maintenance was measured as the largest single cost in a
+-- project delete (ISS-8496), and nothing read by the column — "the index lands
+-- with its first reader". `validateUndoTransactionReference`
+-- (apps/api/app/documents/document-status-mutation-service.ts) is that reader:
+-- it resolves a caller-supplied `undoOfTransactionId` against the forward
+-- mutation's own receipts before the undo is allowed to write.
+--
+-- ORG-LEADING, matching every other read on this table. The check is a tenant
+-- boundary, not just a lookup — its whole point is that a real transaction id
+-- lifted from another organization's `/v2` response resolves to nothing — so
+-- `organization_id` is bound on every probe and belongs in front.
+--
+-- CONCURRENTLY, and therefore ONE BARE STATEMENT in this file: this table is
+-- written continuously, so a plain CREATE INDEX would hold ACCESS EXCLUSIVE for
+-- the whole build. CONCURRENTLY cannot run inside a transaction block (SQLSTATE
+-- 25001), and `prisma migrate deploy` falls back to single-transaction
+-- execution when a file carries a `DO $$ … $$` block or embedded semicolons —
+-- so do not add BEGIN/COMMIT or a second statement here.
+--
+-- NO `IF NOT EXISTS`: required by the concurrent-index lint
+-- (scripts/lint/destructive-migrations/index-ddl.ts) so a retry after a
+-- cancelled or crashed build fails closed on SQLSTATE 42P07 against the
+-- same-named INVALID remnant instead of recording the migration APPLIED over a
+-- permanently-unusable index. Recovery is operator-driven and follows
+-- docs/runbooks/prisma-deploy-migration-recovery.md.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations-core.mjs) — a pure
+-- non-unique perf-only index, and CONCURRENTLY's instance-wide transaction wait
+-- is the ISS-4437 P1002 advisory-lock amplifier on ephemeral `preview_*`
+-- schemas. CI-enforced by packages/database/__tests__/preview-heavy-migrations.test.ts.
+--
+-- Purely additive: a non-unique index changes plan choice only, never results.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "artifact_activity_events_organization_id_transaction_id_idx" ON "artifact_activity_events"("organization_id", "transaction_id");

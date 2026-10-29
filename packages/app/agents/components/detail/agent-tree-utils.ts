@@ -105,7 +105,6 @@ export function buildSessionAgents(
       type,
       subagentType: node.agent.subagentType,
       status: normalizeAgentStatus(node.agent.status),
-      task: node.agent.task,
       currentTool: node.agent.currentTool,
       startedAt:
         node.agent.startedAt ??

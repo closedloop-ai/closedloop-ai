@@ -1,23 +1,30 @@
 "use client";
 
+import { ArtifactDateField } from "@repo/api/src/types/artifact-date-filter";
+import { DISPLAYED_ARTIFACT_STATUS } from "@repo/api/src/types/artifact-status";
 import { Priority } from "@repo/api/src/types/common";
-import {
-  type ArtifactStatus,
-  DOCUMENT_STATUS_OPTIONS,
-  ISSUE_STATUS_OPTIONS,
-} from "@repo/api/src/types/document";
+import { PRIORITY_UNSET_VALUE } from "@repo/api/src/types/search-query";
+import { UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY } from "@repo/api/src/types/universal-artifact-status-flag";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
+import type { PriorityFacetValue } from "@repo/app/documents/components/table/document-table-filters";
 import {
   isDocumentRowItem,
   isRowItemCompleted,
 } from "@repo/app/documents/components/table/row-type-registry";
+import { ARTIFACT_PRIORITY_UNSET_FLAG_KEY } from "@repo/app/documents/lib/artifact-priority-unset-flag";
+import { documentRowStatusEvidence } from "@repo/app/documents/lib/artifact-row-adapter";
+import {
+  type ArtifactStatusFacetValue,
+  artifactStatusFacetValue,
+  isArtifactStatusFacetValue,
+} from "@repo/app/documents/lib/artifact-status-facet-value";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import {
   reviveDates,
   useViewStatePersistence,
 } from "@repo/app/shared/hooks/use-view-state-persistence";
 import { useCallback, useMemo } from "react";
-
-// ---- Const objects & types ----
+import { z } from "zod";
 
 export const DatePreset = {
   Last24h: "LAST_24H",
@@ -36,12 +43,15 @@ export const DATE_PRESET_LABELS: Record<DatePreset, string> = {
   [DatePreset.Custom]: "Custom range",
 };
 
-export const DateFilterField = {
-  CreatedAt: "CREATED_AT",
-  UpdatedAt: "UPDATED_AT",
-} as const;
-export type DateFilterField =
-  (typeof DateFilterField)[keyof typeof DateFilterField];
+/**
+ * Aliases the shared vocabulary. The values moved to
+ * `@repo/api/src/types/artifact-date-filter` when ISS-10471 gave the date
+ * filter a second consumer — the assigned-tree query, which cannot import this
+ * package — and the alias keeps every existing `DateFilterField` reference
+ * working against the one declaration.
+ */
+export const DateFilterField = ArtifactDateField;
+export type DateFilterField = ArtifactDateField;
 
 export type DateFilter = {
   field: DateFilterField;
@@ -55,8 +65,8 @@ export type TableFilters = {
   assignToMe: boolean;
   hideCompletedItems: boolean;
   favoritesOnly: boolean;
-  statuses: ArtifactStatus[];
-  priorities: Priority[];
+  statuses: ArtifactStatusFacetValue[];
+  priorities: PriorityFacetValue[];
   date: DateFilter | null;
   tagIds: string[];
 };
@@ -74,15 +84,26 @@ export const FilterPanelView = {
 export type FilterPanelView =
   (typeof FilterPanelView)[keyof typeof FilterPanelView];
 
-// ---- Date preset computation ----
-
-function getDateRangeForPreset(
-  preset: DatePreset
+/**
+ * A preset's absolute bounds against a GIVEN clock.
+ *
+ * Exported with `now` injected so a caller that must not re-read the clock can
+ * share this one definition (ISS-10472). The server-paged My Tasks board is
+ * that caller: it resolves the window once per selection and sends it on the
+ * wire, while the predicate below re-resolves per render — two clocks, but one
+ * set of preset arithmetic, so a change to what "Last 7 days" means cannot
+ * make the two disagree about which rows it selects.
+ *
+ * This keeps `artifact-date-filter.ts`'s claim true, that a preset becomes a
+ * range in exactly one place.
+ */
+export function dateRangeForPreset(
+  preset: DatePreset,
+  now: Date
 ): { start: Date; end: Date } | null {
   if (preset === DatePreset.Custom) {
     return null;
   }
-  const now = new Date();
   const start = new Date(now);
   switch (preset) {
     case DatePreset.Last24h:
@@ -97,13 +118,23 @@ function getDateRangeForPreset(
     case DatePreset.Last3m:
       start.setMonth(start.getMonth() - 3);
       break;
-    default:
-      break;
+    default: {
+      // Exhaustive over the non-custom presets: a new one must define its own
+      // window here rather than falling through to a zero-width start===end
+      // range that filters every row out.
+      const exhaustive: never = preset;
+      return exhaustive;
+    }
   }
   return { start, end: now };
 }
 
-// ---- Filter predicates ----
+/** The live-clock form the browser predicate uses. */
+function getDateRangeForPreset(
+  preset: DatePreset
+): { start: Date; end: Date } | null {
+  return dateRangeForPreset(preset, new Date());
+}
 
 function matchesAssigneeFilter(
   item: DocumentRowItem,
@@ -157,24 +188,28 @@ function matchesDateFilter(
  */
 function matchesDocumentOnlyFilters(
   item: Extract<DocumentRowItem, { kind: "document" }>,
-  filters: TableFilters
+  filters: TableFilters,
+  statusEvidence: (item: DocumentRowItem) => ArtifactStatusFacetValue | null
 ): boolean {
+  const status = statusEvidence(item);
   if (
     filters.statuses.length > 0 &&
-    !filters.statuses.includes(item.data.status)
+    (status === null || !filters.statuses.includes(status))
   ) {
     return false;
   }
+  // ISS-9665: an unset priority is matched EXPLICITLY, against its own facet
+  // value, instead of falling out of every priority filter by being falsy. A
+  // NULL silently excluded from a filter is the same defect class as a NULL
+  // silently serialized as MEDIUM.
   if (
     filters.priorities.length > 0 &&
-    !(item.data.priority && filters.priorities.includes(item.data.priority))
+    !filters.priorities.includes(item.data.priority ?? PRIORITY_UNSET_VALUE)
   ) {
     return false;
   }
   return matchesTagFilter(item, filters.tagIds);
 }
-
-// ---- Initial state ----
 
 const INITIAL_FILTERS: TableFilters = {
   assigneeIds: [],
@@ -192,45 +227,66 @@ const PERSISTENCE_DEFAULT: TableFilters = {
   hideCompletedItems: true,
 };
 
-// ---- Filter validation (strips invalid enum values on restore) ----
-
-// Mixed table renders Documents and Features; accept either vocabulary (PRD-495).
-const VALID_STATUSES = new Set<string>([
-  ...DOCUMENT_STATUS_OPTIONS,
-  ...ISSUE_STATUS_OPTIONS,
+// Restore-boundary validation: invalid enum values are stripped, not rejected.
+// Mixed table renders Documents and Features; accept either vocabulary plus the
+// one render-only Unknown sentinel (PRD-495 / ISS-10816).
+const VALID_PRIORITIES = new Set<string>([
+  ...Object.values(Priority),
+  PRIORITY_UNSET_VALUE,
 ]);
-const VALID_PRIORITIES = new Set<string>(Object.values(Priority));
 const VALID_DATE_FIELDS = new Set<string>(Object.values(DateFilterField));
 const VALID_DATE_PRESETS = new Set<string>(Object.values(DatePreset));
 
-function validateFilters(filters: TableFilters): TableFilters {
-  let date = filters.date;
-  if (date) {
-    if (
-      VALID_DATE_FIELDS.has(date.field) &&
-      VALID_DATE_PRESETS.has(date.preset)
-    ) {
-      date = reviveDates(date, ["startDate", "endDate"]);
-    } else {
-      date = null;
-    }
+function validateFilters(filters: unknown): TableFilters {
+  const parsedFilters = tableFiltersPersistenceSchema.parse(filters);
+  let date: DateFilter | null = null;
+  if (
+    parsedFilters.date &&
+    VALID_DATE_FIELDS.has(parsedFilters.date.field) &&
+    VALID_DATE_PRESETS.has(parsedFilters.date.preset)
+  ) {
+    date = reviveDates(parsedFilters.date, [
+      "startDate",
+      "endDate",
+    ]) as DateFilter;
   }
 
   return {
-    ...filters,
-    statuses: filters.statuses.filter((s) => VALID_STATUSES.has(s)),
-    priorities: filters.priorities.filter((p) => VALID_PRIORITIES.has(p)),
+    ...parsedFilters,
+    statuses: parsedFilters.statuses.filter(
+      (status): status is ArtifactStatusFacetValue =>
+        isArtifactStatusFacetValue(status)
+    ),
+    priorities: parsedFilters.priorities.filter(
+      (priority): priority is PriorityFacetValue =>
+        typeof priority === "string" && VALID_PRIORITIES.has(priority)
+    ),
     date,
   };
 }
 
-// ---- Hook ----
-
 type UseTableFiltersOptions = {
   items: DocumentRowItem[];
   currentUserId?: string;
-  persistenceKey?: string;
+  /**
+   * ISS-9726: `null` (the active organization has not resolved) takes the same
+   * memory-only branch an omitted key does — the persisted payload carries
+   * assignee and tag UUIDs, so there is no organization it could honestly be
+   * attributed to yet.
+   */
+  persistenceKey?: string | null;
   favoriteArtifactIds?: string[];
+  /**
+   * Whether this surface can express the `Unknown` status facet at all
+   * (ISS-10472, operator ruling 2026-10-21). Defaults to true.
+   *
+   * `Unknown` is the browser's bucket for a row whose stored status is off both
+   * vocabularies, so it only exists as a client-side predicate. A surface that
+   * filters SERVER-side cannot send it — the route's status enum is the stored
+   * inventory — so the My Tasks All tab passes false and the facet is neither
+   * offered nor applied there.
+   */
+  supportsUnknownStatusFacet?: boolean;
 };
 
 export function useTableFilters({
@@ -238,8 +294,9 @@ export function useTableFilters({
   currentUserId,
   persistenceKey,
   favoriteArtifactIds,
+  supportsUnknownStatusFacet = true,
 }: UseTableFiltersOptions) {
-  const [filters, setFilters, clearPersistedFilters] =
+  const [persistedFilters, setFilters, clearPersistedFilters] =
     useViewStatePersistence<TableFilters>(
       persistenceKey ?? null,
       PERSISTENCE_DEFAULT,
@@ -248,7 +305,57 @@ export function useTableFilters({
       }
     );
 
-  // ---- Mutators ----
+  // ISS-9665: the selection is persisted to localStorage for 7 days, but the
+  // flag can go off inside that window (rollback, cohort change, an
+  // unreachable provider). A restored "No priority" selection would then filter
+  // rows whose null priority the flag-off path has already folded back to
+  // MEDIUM, matching nothing — an empty table with no visible chip to clear,
+  // because the facet option that put it there is not rendered either. So it is
+  // dropped from the ACTIVE filters while the flag is off, and left untouched
+  // in storage so turning the flag back on restores what the user chose.
+  const unsetPriorityEnabled = useFeatureFlagEnabledOptional(
+    ARTIFACT_PRIORITY_UNSET_FLAG_KEY
+  );
+  const universalStatusEnabled = useFeatureFlagEnabledOptional(
+    UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY
+  );
+  const statusEvidence = universalStatusEnabled
+    ? projectedDocumentStatusEvidence
+    : storedStatusEvidence;
+  // Both have to hold: the flag decides whether the vocabulary exists, the
+  // surface decides whether it can express it.
+  const canSelectUnknownStatus =
+    universalStatusEnabled && supportsUnknownStatusFacet;
+  const filters = useMemo<TableFilters>(() => {
+    const priorities =
+      unsetPriorityEnabled ||
+      !persistedFilters.priorities.includes(PRIORITY_UNSET_VALUE)
+        ? persistedFilters.priorities
+        : persistedFilters.priorities.filter(
+            (priority) => priority !== PRIORITY_UNSET_VALUE
+          );
+    // Dropped from the ACTIVE filters for the same reason the priority strip
+    // above drops its token, and left untouched in storage: a selection this
+    // surface cannot apply would otherwise narrow the board with no chip to
+    // clear it, because the facet option that put it there is not rendered
+    // here either.
+    const statuses = canSelectUnknownStatus
+      ? persistedFilters.statuses
+      : persistedFilters.statuses.filter(
+          (status) => status !== DISPLAYED_ARTIFACT_STATUS.Unknown
+        );
+    if (
+      priorities === persistedFilters.priorities &&
+      statuses === persistedFilters.statuses
+    ) {
+      return persistedFilters;
+    }
+    return {
+      ...persistedFilters,
+      priorities,
+      statuses,
+    };
+  }, [persistedFilters, canSelectUnknownStatus, unsetPriorityEnabled]);
 
   const setAssignees = useCallback(
     (ids: string[]) => {
@@ -305,7 +412,7 @@ export function useTableFilters({
   }, [currentUserId, setFilters]);
 
   const toggleStatus = useCallback(
-    (status: ArtifactStatus) => {
+    (status: ArtifactStatusFacetValue) => {
       setFilters((prev) => {
         const next = prev.statuses.includes(status)
           ? prev.statuses.filter((s) => s !== status)
@@ -317,7 +424,7 @@ export function useTableFilters({
   );
 
   const togglePriority = useCallback(
-    (priority: Priority) => {
+    (priority: PriorityFacetValue) => {
       setFilters((prev) => {
         const next = prev.priorities.includes(priority)
           ? prev.priorities.filter((p) => p !== priority)
@@ -400,8 +507,6 @@ export function useTableFilters({
     setFilters(INITIAL_FILTERS);
   }, [setFilters]);
 
-  // ---- Derived counts ----
-
   const assigneeCounts = useMemo(() => {
     const counts = new Map<string, number>();
     let unassigned = 0;
@@ -418,27 +523,42 @@ export function useTableFilters({
   }, [items]);
 
   const statusCounts = useMemo(() => {
-    const counts = new Map<string, number>();
+    const counts = new Map<ArtifactStatusFacetValue, number>();
     for (const item of items) {
-      const status = item.data.status;
+      const status = statusEvidence(item);
+      if (status === null) {
+        continue;
+      }
       counts.set(status, (counts.get(status) ?? 0) + 1);
     }
     return counts;
-  }, [items]);
+  }, [items, statusEvidence]);
 
   const priorityCounts = useMemo(() => {
-    const counts = new Map<Priority, number>();
+    const counts = new Map<PriorityFacetValue, number>();
     for (const item of items) {
-      const priority = item.data.priority;
-      if (!priority) {
+      // ISS-9444: counted over the SAME population the priority filter decides.
+      // `items` is typed `DocumentRowItem[]` and `applyFilters` passes every
+      // non-document row straight through, so a branch or session reaching here
+      // was counted under a dimension it cannot be narrowed by — and since its
+      // `priority` is absent, under the UNSET value specifically, which per the
+      // artifacts-only ownership ruling (2026-09-11) states that a branch has a
+      // priority and it is unset. LATENT, not shipped: both production callers
+      // reach this through `useProjectFilters`, whose items are
+      // `DocumentRowData[]` mapped to document rows, so no rendered count
+      // changes. The guard is here because the signature admits the case and
+      // the count and the filter must not disagree by construction.
+      if (!isDocumentRowItem(item)) {
         continue;
       }
+      // ISS-9665: unset rows are counted under their own facet value rather
+      // than dropped, so the "No priority" option can state how many rows it
+      // would keep — the same promise every other option in this menu makes.
+      const priority = item.data.priority ?? PRIORITY_UNSET_VALUE;
       counts.set(priority, (counts.get(priority) ?? 0) + 1);
     }
     return counts;
   }, [items]);
-
-  // ---- Active filter accounting ----
 
   const hasCategoryFilters = useMemo(() => {
     return (
@@ -484,8 +604,6 @@ export function useTableFilters({
 
   const isAnyFilterActive = activeFilterCount > 0;
 
-  // ---- Custom date range validity ----
-
   const isCustomRangeValid = useMemo(() => {
     if (!filters.date || filters.date.preset !== DatePreset.Custom) {
       return true;
@@ -495,8 +613,6 @@ export function useTableFilters({
     }
     return filters.date.endDate >= filters.date.startDate;
   }, [filters.date]);
-
-  // ---- Apply filters ----
 
   const favoriteIdSet = useMemo(
     () => new Set(favoriteArtifactIds ?? []),
@@ -540,13 +656,17 @@ export function useTableFilters({
         if (!isDocumentRowItem(item)) {
           return true;
         }
-        return matchesDocumentOnlyFilters(item, filters);
+        return matchesDocumentOnlyFilters(item, filters, statusEvidence);
       });
     },
-    [filters, hasCategoryFilters, isCustomRangeValid, favoriteIdSet]
+    [
+      filters,
+      hasCategoryFilters,
+      isCustomRangeValid,
+      favoriteIdSet,
+      statusEvidence,
+    ]
   );
-
-  // ---- Chip labels ----
 
   const activeChips = useMemo(() => {
     const chips: {
@@ -607,6 +727,13 @@ export function useTableFilters({
   }, [filters]);
 
   return {
+    /**
+     * Whether the `Unknown` status option may be OFFERED. Read from here rather
+     * than re-derived at the facet UI, so the set of values that can be
+     * selected and the set that are applied cannot disagree — a dead option
+     * the user can click with no effect is the failure this prevents.
+     */
+    canSelectUnknownStatus,
     filters,
     setAssignees,
     toggleAssignee,
@@ -632,3 +759,45 @@ export function useTableFilters({
 }
 
 export type TableFiltersReturn = ReturnType<typeof useTableFilters>;
+
+function storedStatusEvidence(
+  item: DocumentRowItem
+): ArtifactStatusFacetValue | null {
+  return item.kind === "document" ? item.data.status : null;
+}
+
+function projectedDocumentStatusEvidence(
+  item: DocumentRowItem
+): ArtifactStatusFacetValue | null {
+  return item.kind === "document"
+    ? artifactStatusFacetValue(
+        item.data.type,
+        documentRowStatusEvidence(item.data)
+      )
+    : null;
+}
+
+const persistedDateFilterSchema = z
+  .object({
+    field: z.string(),
+    preset: z.string(),
+    startDate: z.union([z.iso.datetime(), z.date()]).optional(),
+    endDate: z.union([z.iso.datetime(), z.date()]).optional(),
+  })
+  .nullable()
+  .catch(null);
+
+const tableFiltersPersistenceShape = {
+  assigneeIds: z.array(z.string()).catch(PERSISTENCE_DEFAULT.assigneeIds),
+  assignToMe: z.boolean().catch(PERSISTENCE_DEFAULT.assignToMe),
+  hideCompletedItems: z.boolean().catch(PERSISTENCE_DEFAULT.hideCompletedItems),
+  favoritesOnly: z.boolean().catch(PERSISTENCE_DEFAULT.favoritesOnly),
+  statuses: z.array(z.unknown()).catch(PERSISTENCE_DEFAULT.statuses),
+  priorities: z.array(z.unknown()).catch(PERSISTENCE_DEFAULT.priorities),
+  date: persistedDateFilterSchema,
+  tagIds: z.array(z.string()).catch(PERSISTENCE_DEFAULT.tagIds),
+} satisfies Record<keyof TableFilters, z.ZodTypeAny>;
+
+const tableFiltersPersistenceSchema = z
+  .object(tableFiltersPersistenceShape)
+  .catch(PERSISTENCE_DEFAULT);

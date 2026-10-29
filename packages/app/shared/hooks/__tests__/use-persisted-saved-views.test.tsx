@@ -2,7 +2,12 @@ import {
   emptySavedViewCollection,
   type SavedViewCollection,
 } from "@repo/design-system/lib/table-saved-views";
-import { act, renderHook } from "@testing-library/react";
+import {
+  act,
+  render as renderComponent,
+  renderHook,
+} from "@testing-library/react";
+import { useEffect, useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { usePersistedSavedViews } from "../use-persisted-saved-views";
 
@@ -256,4 +261,427 @@ describe("usePersistedSavedViews", () => {
     setItemSpy.mockRestore();
     expect(localStorage.getItem(`${KEY_PREFIX}surface`)).toBeNull();
   });
+
+  it("adopts a remote view between two flushed local edits, and the next write carries all three (ISS-9568)", () => {
+    const { result } = render("surface");
+    act(() => {
+      result.current.createView("Mine", { sortKey: "name", hidden: [] });
+    });
+    const stored = JSON.parse(
+      localStorage.getItem(`${KEY_PREFIX}surface`) ?? "{}"
+    );
+    const withTheirs = {
+      views: [
+        ...stored.views,
+        {
+          id: "theirs-1",
+          name: "Theirs",
+          arrangement: { sortKey: "repo", hidden: [] },
+        },
+      ],
+      activeViewId: stored.activeViewId,
+    };
+
+    act(() => {
+      globalThis.dispatchEvent(
+        new StorageEvent("storage", {
+          key: `${KEY_PREFIX}surface`,
+          newValue: JSON.stringify(withTheirs),
+        })
+      );
+    });
+
+    act(() => {
+      result.current.createView("Ours", { sortKey: "owner", hidden: [] });
+    });
+
+    const finalStored = JSON.parse(
+      localStorage.getItem(`${KEY_PREFIX}surface`) ?? "{}"
+    );
+    const names = finalStored.views.map((view: { name: string }) => view.name);
+    expect(names).toEqual(expect.arrayContaining(["Mine", "Theirs", "Ours"]));
+  });
+
+  it("ignores a remote write that lands before this tab's own mutation has flushed (ISS-9568)", () => {
+    const key = `${KEY_PREFIX}surface`;
+    const theirs = JSON.stringify({
+      activeViewId: null,
+      views: [
+        {
+          arrangement: { hidden: [], sortKey: "repo" },
+          id: "theirs-1",
+          name: "Theirs",
+        },
+      ],
+    });
+
+    const captured: { current: SavedViewsStore | null } = { current: null };
+    function Harness() {
+      const value = usePersistedSavedViews<Arrangement>({
+        keyPrefix: KEY_PREFIX,
+        parse,
+        persistKey: "surface",
+      });
+      captured.current = value;
+      return (
+        <RemoteWriteOnCommit
+          payload={theirs}
+          storageKey={key}
+          when={value.views.some((view) => view.name === "Mine")}
+        />
+      );
+    }
+
+    renderComponent(<Harness />);
+    act(() => {
+      captured.current?.createView("Mine", { hidden: [], sortKey: "name" });
+    });
+
+    // The remote write fired in the same flush that carried "Mine", before the
+    // persist effect wrote it. Adopting there would have replaced "Mine" in
+    // memory and seeded the write-back baseline to the adopted collection, so
+    // the pending flush would have found nothing to do: gone from memory and
+    // never on disk. Both assertions fail without the guard.
+    expect(captured.current?.views.map((view) => view.name)).toEqual(["Mine"]);
+    const stored = JSON.parse(localStorage.getItem(key) ?? "{}");
+    expect(stored.views.map((view: { name: string }) => view.name)).toEqual([
+      "Mine",
+    ]);
+  });
+
+  it("adopts a remote view without writing it back, and counts the adoption", () => {
+    const { result } = render("surface");
+    act(() => {
+      result.current.createView("Mine", { sortKey: "name", hidden: [] });
+    });
+    const stored = JSON.parse(
+      localStorage.getItem(`${KEY_PREFIX}surface`) ?? "{}"
+    );
+    const withTheirs = {
+      views: [
+        ...stored.views,
+        {
+          id: "theirs-1",
+          name: "Theirs",
+          arrangement: { sortKey: "repo", hidden: [] },
+        },
+      ],
+      activeViewId: stored.activeViewId,
+    };
+    const setItemSpy = vi.spyOn(localStorage, "setItem");
+    const callsBefore = setItemSpy.mock.calls.length;
+
+    act(() => {
+      globalThis.dispatchEvent(
+        new StorageEvent("storage", {
+          key: `${KEY_PREFIX}surface`,
+          newValue: JSON.stringify(withTheirs),
+        })
+      );
+    });
+
+    expect(result.current.views.map((view) => view.name)).toEqual(
+      expect.arrayContaining(["Theirs"])
+    );
+    expect(setItemSpy.mock.calls.length).toBe(callsBefore);
+    expect(result.current.adoptionCount).toBe(1);
+  });
+
+  it("rolls a failed local write back to the adopted collection, not the pre-adoption one", () => {
+    const onPersistError = vi.fn();
+    const { result } = renderHook(() =>
+      usePersistedSavedViews<Arrangement>({
+        persistKey: "surface",
+        keyPrefix: KEY_PREFIX,
+        parse,
+        onPersistError,
+      })
+    );
+    act(() => {
+      result.current.createView("Mine", { sortKey: "name", hidden: [] });
+    });
+    const stored = JSON.parse(
+      localStorage.getItem(`${KEY_PREFIX}surface`) ?? "{}"
+    );
+    const withTheirs = {
+      views: [
+        ...stored.views,
+        {
+          id: "theirs-1",
+          name: "Theirs",
+          arrangement: { sortKey: "repo", hidden: [] },
+        },
+      ],
+      activeViewId: stored.activeViewId,
+    };
+    act(() => {
+      globalThis.dispatchEvent(
+        new StorageEvent("storage", {
+          key: `${KEY_PREFIX}surface`,
+          newValue: JSON.stringify(withTheirs),
+        })
+      );
+    });
+    expect(result.current.views.map((view) => view.name)).toEqual(
+      expect.arrayContaining(["Theirs"])
+    );
+
+    const setItemSpy = vi
+      .spyOn(localStorage, "setItem")
+      .mockImplementation(() => {
+        throw new DOMException("quota", "QuotaExceededError");
+      });
+
+    act(() => {
+      result.current.createView("Ours", { sortKey: "owner", hidden: [] });
+    });
+
+    expect(onPersistError).toHaveBeenCalledTimes(1);
+    const names = result.current.views.map((view) => view.name);
+    expect(names).toEqual(expect.arrayContaining(["Mine", "Theirs"]));
+    expect(names).not.toContain("Ours");
+    setItemSpy.mockRestore();
+  });
+
+  it("ignores a storage event whose newValue is null", () => {
+    const { result } = render("surface");
+    act(() => {
+      result.current.createView("Mine", { sortKey: "name", hidden: [] });
+    });
+    const before = result.current.views;
+    const setItemSpy = vi.spyOn(localStorage, "setItem");
+    const callsBefore = setItemSpy.mock.calls.length;
+
+    act(() => {
+      globalThis.dispatchEvent(
+        new StorageEvent("storage", {
+          key: `${KEY_PREFIX}surface`,
+          newValue: null,
+        })
+      );
+    });
+
+    expect(result.current.views).toEqual(before);
+    expect(setItemSpy.mock.calls.length).toBe(callsBefore);
+    expect(result.current.adoptionCount).toBe(0);
+  });
+
+  it("ignores a storage event whose newValue is not valid JSON", () => {
+    const { result } = render("surface");
+    act(() => {
+      result.current.createView("Mine", { sortKey: "name", hidden: [] });
+    });
+    const before = result.current.views;
+    const setItemSpy = vi.spyOn(localStorage, "setItem");
+    const callsBefore = setItemSpy.mock.calls.length;
+
+    act(() => {
+      globalThis.dispatchEvent(
+        new StorageEvent("storage", {
+          key: `${KEY_PREFIX}surface`,
+          newValue: "not json{",
+        })
+      );
+    });
+
+    expect(result.current.views).toEqual(before);
+    expect(setItemSpy.mock.calls.length).toBe(callsBefore);
+    expect(result.current.adoptionCount).toBe(0);
+  });
+
+  it("ignores a storage event whose newValue the parser rejects", () => {
+    const { result } = render("surface");
+    act(() => {
+      result.current.createView("Mine", { sortKey: "name", hidden: [] });
+    });
+    const before = result.current.views;
+    const setItemSpy = vi.spyOn(localStorage, "setItem");
+    const callsBefore = setItemSpy.mock.calls.length;
+
+    act(() => {
+      globalThis.dispatchEvent(
+        new StorageEvent("storage", {
+          key: `${KEY_PREFIX}surface`,
+          newValue: JSON.stringify({ nope: true }),
+        })
+      );
+    });
+
+    expect(result.current.views).toEqual(before);
+    expect(setItemSpy.mock.calls.length).toBe(callsBefore);
+    expect(result.current.adoptionCount).toBe(0);
+  });
+
+  it("ignores a storage event when the parser throws", () => {
+    const throwingParse = (): SavedViewCollection<Arrangement> | null => {
+      throw new Error("boom");
+    };
+    const { result } = renderHook(() =>
+      usePersistedSavedViews<Arrangement>({
+        persistKey: "surface",
+        keyPrefix: KEY_PREFIX,
+        parse: throwingParse,
+      })
+    );
+    const setItemSpy = vi.spyOn(localStorage, "setItem");
+    const callsBefore = setItemSpy.mock.calls.length;
+
+    act(() => {
+      globalThis.dispatchEvent(
+        new StorageEvent("storage", {
+          key: `${KEY_PREFIX}surface`,
+          newValue: JSON.stringify({ views: [], activeViewId: null }),
+        })
+      );
+    });
+
+    expect(result.current.views).toHaveLength(0);
+    expect(setItemSpy.mock.calls.length).toBe(callsBefore);
+    expect(result.current.adoptionCount).toBe(0);
+  });
+
+  it("never adopts a remote write on a memory-only surface (no persistKey)", () => {
+    const { result } = render(undefined);
+
+    act(() => {
+      globalThis.dispatchEvent(
+        new StorageEvent("storage", {
+          key: `${KEY_PREFIX}undefined`,
+          newValue: JSON.stringify({
+            views: [
+              {
+                id: "x",
+                name: "X",
+                arrangement: { sortKey: "name", hidden: [] },
+              },
+            ],
+            activeViewId: "x",
+          }),
+        })
+      );
+    });
+    expect(result.current.views).toHaveLength(0);
+    expect(result.current.adoptionCount).toBe(0);
+
+    act(() => {
+      globalThis.dispatchEvent(
+        new StorageEvent("storage", {
+          key: `${KEY_PREFIX}surface`,
+          newValue: JSON.stringify({
+            views: [
+              {
+                id: "y",
+                name: "Y",
+                arrangement: { sortKey: "name", hidden: [] },
+              },
+            ],
+            activeViewId: "y",
+          }),
+        })
+      );
+    });
+    expect(result.current.views).toHaveLength(0);
+    expect(result.current.adoptionCount).toBe(0);
+  });
+
+  it("stops listening for storage events after unmount", () => {
+    const { result, unmount } = render("surface");
+    act(() => {
+      result.current.createView("Mine", { sortKey: "name", hidden: [] });
+    });
+    const storedBefore = localStorage.getItem(`${KEY_PREFIX}surface`);
+    unmount();
+
+    expect(() => {
+      act(() => {
+        globalThis.dispatchEvent(
+          new StorageEvent("storage", {
+            key: `${KEY_PREFIX}surface`,
+            newValue: JSON.stringify({ views: [], activeViewId: null }),
+          })
+        );
+      });
+    }).not.toThrow();
+    expect(localStorage.getItem(`${KEY_PREFIX}surface`)).toBe(storedBefore);
+  });
+
+  it("only adopts a storage event on the currently active key after an in-place identity change", () => {
+    const { result, rerender } = renderWithKey("orgA");
+    act(() => {
+      result.current.createView("A View", { sortKey: "name", hidden: [] });
+    });
+
+    act(() => rerender({ persistKey: "orgB" }));
+    expect(result.current.views).toHaveLength(0);
+
+    act(() => {
+      globalThis.dispatchEvent(
+        new StorageEvent("storage", {
+          key: `${KEY_PREFIX}orgA`,
+          newValue: JSON.stringify({
+            views: [
+              {
+                id: "ignored",
+                name: "Ignored",
+                arrangement: { sortKey: "name", hidden: [] },
+              },
+            ],
+            activeViewId: null,
+          }),
+        })
+      );
+    });
+    expect(result.current.views).toHaveLength(0);
+
+    act(() => {
+      globalThis.dispatchEvent(
+        new StorageEvent("storage", {
+          key: `${KEY_PREFIX}orgB`,
+          newValue: JSON.stringify({
+            views: [
+              {
+                id: "b-adopt",
+                name: "B Adopted",
+                arrangement: { sortKey: "name", hidden: [] },
+              },
+            ],
+            activeViewId: "b-adopt",
+          }),
+        })
+      );
+    });
+    expect(result.current.views).toHaveLength(1);
+    expect(result.current.views[0].name).toBe("B Adopted");
+  });
 });
+
+/**
+ * Dispatches ONE remote `storage` write on the first commit where `when` is
+ * true, from a CHILD of the hook host. React flushes a child's passive effect
+ * before its parent's, so the write lands after the mutation's render has
+ * committed but before the parent's persist effect has run — the same gap a
+ * real browser opens between a commit and the passive flush that writes it.
+ */
+function RemoteWriteOnCommit({
+  when,
+  storageKey,
+  payload,
+}: {
+  when: boolean;
+  storageKey: string;
+  payload: string;
+}) {
+  const firedRef = useRef(false);
+  useEffect(() => {
+    if (!when || firedRef.current) {
+      return;
+    }
+    firedRef.current = true;
+    globalThis.dispatchEvent(
+      new StorageEvent("storage", { key: storageKey, newValue: payload })
+    );
+  });
+  return null;
+}
+
+type SavedViewsStore = ReturnType<typeof usePersistedSavedViews<Arrangement>>;

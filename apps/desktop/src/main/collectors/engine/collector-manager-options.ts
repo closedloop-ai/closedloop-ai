@@ -2,24 +2,43 @@
  * @file collector-manager-options.ts
  * @description The injected-dependency contract for `CollectorManager` — every
  * sink, seam, gate, and bound the engine is constructed with. Extracted from
- * `collector-manager.ts` so that grandfathered file stays shrink-only: this is a
+ * `collector-manager.ts` so that file shrinks rather than grows: this is a
  * pure declaration surface (no behavior), and it is the piece that grows every
  * time a new capture sink or bound is threaded into the manager.
  */
+import type { ImportIngestFailure } from "@closedloop-ai/telemetry-contract/app";
 import type { Importer } from "../../dashboard/agent-dashboard-db-types.js";
 import type { captureInvocationDefinitionEvidence } from "../../packs/definition-content-collector.js";
 import type { OpencodeWithheldSubagentReport } from "../opencode/opencode-withheld-subagents.js";
 import type { Harness, HarnessCollector } from "../types.js";
 import type { CollectionMode } from "./collection-mode.js";
+import type { BatchResumeCursorStore } from "./collector-manager-batch-resume.js";
+import type { E2eAbandonHistoricalPass } from "./e2e-boot-import-abandon-seam.js";
 import type { HistoricalParseRunner } from "./historical-parse-runner.js";
+import type { IngestStoreProvider } from "./ingest-store-port.js";
 import type { HarnessWatcherOptions } from "./watcher.js";
 
 export type CollectorManagerOptions = {
   importer: Importer;
-  /** Resolve a billing mode for a harness at session creation (FEA-1434). */
-  detectBillingMode: (harness: string, model?: string | null) => string;
-  /** Durable dir for persisted catchup caches. */
+  /** Durable dir for the persisted state that is still a FILE (see ingest-paths). */
   stateDir: string;
+  /**
+   * ISS-9838: durable ports for the SQLite-backed ingest stores (catchup cache,
+   * parse quarantine, Codex linkage). Every hydrate is already resolved when
+   * this arrives (ISS-9837 R1), so the store constructors stay synchronous, and
+   * the port keeps the `collectors/` subtree free of any DB import (R2).
+   * Omitted → the stores are memory-only, exactly as an omitted persist path was.
+   */
+  ingestStores?: IngestStoreProvider;
+  /**
+   * ISS-9839 (ISS-9837 R1c): durable backing for the ISS-5161 BATCH resume
+   * cursor, which lives in SQLite rather than in {@link stateDir}. Injected
+   * rather than imported because `collectors/` may not reach for
+   * `agentDatabase` or `@repo/database` — the same shape as `importer` and
+   * `emit` above. Omitted → the cursor is memory-only, which is the
+   * pre-ISS-5161 behavior (an interrupted batch backfill replays its prefix).
+   */
+  batchResumeCursorStore?: BatchResumeCursorStore;
   /** Push a renderer live-update after an import batch wrote rows. */
   emit: (sessionId?: string) => void;
   /**
@@ -47,6 +66,45 @@ export type CollectorManagerOptions = {
    * watcher emitting for a session the hook handler also captured.
    */
   onWatcherEmission?: (harness: Harness, externalSessionId: string) => void;
+  /**
+   * ISS-6336: invoked once per collector ingest failure the IMPORTER never sees
+   * — a source whose historical parse threw or timed out, and a source the
+   * pending scan skipped because it is quarantined. Wired to the import-health
+   * tracker, which counts by reason and ships the tally on the record it already
+   * emits every tick.
+   *
+   * Injected rather than imported so the engine keeps no static edge to the
+   * telemetry RUNTIME (mirrors `emit` / `onWatcherEmission`). The reason values
+   * themselves come from `collector-ingest-failure.ts`, a pure mapping module
+   * inside this directory that holds no emitter and no state — naming a failure
+   * is the engine's own concern; shipping it is not.
+   *
+   * Best-effort: a throwing sink must never fail an import pass, and an omitted
+   * one restores the pre-ISS-6336 silence exactly.
+   *
+   * Counts and closed enums only — the reason names a KIND of failure and never
+   * the source path, session id, or any transcript content (PRD-389 §8).
+   */
+  onIngestFailure?: (reason: ImportIngestFailure) => void;
+  /**
+   * ISS-8600: a harness's fast re-attach loop gave up, so its live delivery is
+   * now catch-up-poll only (30 minutes on Desktop). Reported once per
+   * exhaustion, never for the routine flap that recovers, and never for a
+   * harness whose roots never existed — every collector is registered and
+   * enabled by default, so exhaustion alone is dominated by uninstalled tools.
+   * An installed harness whose watch could not be armed at all (an `fs.watch`
+   * that threw on a descriptor or inotify limit) IS reported: it has no live
+   * delivery, which is the condition this names.
+   *
+   * Injected rather than imported for the same reason `onIngestFailure` is: the
+   * engine keeps no static edge to the telemetry runtime. Best-effort and
+   * non-fatal — a throwing sink must never fail an import pass, and an omitted
+   * one restores the pre-ISS-8600 silence exactly.
+   *
+   * Counts and closed enums only: the harness names WHICH collector went dark
+   * and never the watch root's path (PRD-389 §8).
+   */
+  onWatchLost?: (harness: Harness) => void;
   /**
    * FEA-3640: invoked for each session imported via a harness's LIVE WATCHER,
    * carrying the transcript source that changed. Lets the transcript-archive
@@ -117,13 +175,32 @@ export type CollectorManagerOptions = {
    * FEA-4156: fires when the bounded boot-import watchdog gives up because the
    * import did not settle within `bootImportWatchdogMs` (a genuinely wedged
    * harness whose first-import promise never resolves). This is DISTINCT from
-   * `onBootImportComplete`: the import did not complete, so post-boot maintenance
-   * must NOT run (it would re-queue onto the wedged boundary and strand the
-   * splash in Compute). The manager instead flips a degraded `timedOut` signal
-   * (see `getIngestProgress`) so the splash resolves into its graceful
-   * partial-import outcome while the still-running collectors keep filling the DB.
+   * `onBootImportComplete`: the import did not complete, so the cloud-read
+   * cutover must NOT run over sources that were never imported. The manager
+   * instead flips a degraded `timedOut` signal (see `getIngestProgress`) so the
+   * splash resolves into its graceful partial-import outcome while the
+   * still-running collectors keep filling the DB.
+   *
+   * ISS-8601: post-boot maintenance is no longer dropped for the launch, only
+   * DEFERRED. Running it as this fires would re-queue onto the wedged boundary
+   * and strand the splash in Compute, so the consumer of this hook re-arms it for
+   * the next renderer idle (bounded by a ceiling), by which point the splash has
+   * resolved. The re-armed run does not claim the import finished.
    */
   onBootImportTimeout?: () => void;
+  /**
+   * ISS-6207: fires when the boot import SETTLES but at least one harness gave
+   * up with source files outstanding after its bounded automatic re-drive budget
+   * was spent. A third terminal outcome distinct from BOTH siblings: the import
+   * did stop (unlike a live one) and it did not finish (unlike
+   * `onBootImportComplete`), so post-boot maintenance and the cloud-read
+   * import-complete gate must NOT fire over sources that were never imported.
+   * Wired to the same deferred-startup release as `onBootImportTimeout` so a
+   * partial import cannot hold best-effort work forever, and the renderer reads
+   * the degraded `retriesExhausted` ingest signal (see `getIngestProgress`) to
+   * resolve the splash honestly rather than claiming Ready.
+   */
+  onBootImportRetriesExhausted?: () => void;
   /**
    * FEA-4156: bound for the boot-import watchdog (see `BootImportLifecycle`). If a
    * harness import wedges so its first-import promise never settles, the
@@ -131,8 +208,10 @@ export type CollectorManagerOptions = {
    * splash would hang with `complete` never flipping — and the renderer's
    * per-harness stall backstop can't help while OTHER harnesses keep advancing
    * the aggregate count. After this window the watchdog surfaces `timedOut`
-   * (degraded, NOT complete). An intentional pause re-arms it rather than firing.
-   * Tests pin it small; defaults to a generous production value (30 minutes).
+   * (degraded, NOT complete). An intentional pause re-arms it rather than firing,
+   * and so (ISS-8058) does an import still landing sources — this is the interval
+   * between wedge checks, not a deadline the import must beat.
+   * Tests pin it small; defaults to 30 minutes.
    */
   bootImportWatchdogMs?: number;
   /**
@@ -147,11 +226,15 @@ export type CollectorManagerOptions = {
    */
   listExistingSessionIds?: () => Promise<ReadonlySet<string>>;
   /**
-   * Deletes a local session and all derived child rows. Called only when a
-   * collector positively classifies an empty parse as an import artifact that
-   * current semantics fold under another source.
+   * Deletes a local session and all derived child rows, and reports whether it
+   * did. Called only when a collector positively classifies an empty parse as an
+   * import artifact that current semantics fold under another source.
+   *
+   * ISS-8601: this caller deliberately does NOT consult the outcome — it keeps no
+   * tally and makes no claim about the row, so a refusal is simply a no-op here.
+   * The rebuild's two delete paths DO consult it, because they count and log.
    */
-  deleteSessionRow?: (sessionId: string) => Promise<void>;
+  deleteSessionRow?: (sessionId: string) => Promise<boolean>;
   /**
    * Test seam for the FEA-3294 focused post-invocation capture. Production uses
    * the exact definition collector and this is called only for a live watcher
@@ -207,6 +290,22 @@ export type CollectorManagerOptions = {
    * it to 1 to quarantine on the first wedge.
    */
   parseQuarantineMaxAttempts?: number;
+  /**
+   * ISS-8982 (TEST-ONLY): invoked with the harness key immediately after
+   * `beginPass` opens a TRACKED first pass with a non-empty pending set — never
+   * on a live-watcher batch, and never on a pass with nothing to import — by a
+   * seam that throws a recoverable `DbHostExitError` for that harness's first N
+   * invocations, so the launched-app E2E can drive `RetriesExhausted` by
+   * counting passes instead of racing real db-host kills.
+   *
+   * Built only by `createE2eBootImportAbandonFault`, and only for an UNPACKAGED
+   * build launched with the E2E env var set to a small positive integer — see
+   * `e2e-boot-import-abandon-seam.ts` for the gate, for why the countdown is
+   * per harness, and for what the seam deliberately leaves real. `undefined` in
+   * every production run, which is the only state `scanImportPass` can observe
+   * there.
+   */
+  e2eAbandonHistoricalPass?: E2eAbandonHistoricalPass;
   /**
    * ISS-5266: durable sink for the OpenCode WITHHELD-subagent record.
    *

@@ -19,6 +19,7 @@ import {
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { makeBranchDetail } from "../../../__tests__/branch-fixtures";
+import { deriveLifecycleBadge } from "../../../lib/merge-status-derivation";
 import { BranchPrStatusPanel } from "../branch-pr-status-panel";
 
 const HEAD_SHA = "b".repeat(40);
@@ -29,6 +30,7 @@ const NEUTRAL_RE = /Neutral/;
 const NEUTRAL_REMAINDER_RE =
   /Passed 1 · Failed 0 · Pending 0 · Skipped 1 · Canceled 1 · Neutral 1/;
 const PARTIAL_PROVIDER_COUNTS_RE = /1 of 2 provider checks returned/i;
+const UNAVAILABLE_CHECKS_VALUE = "Unavailable";
 
 describe("BranchPrStatusPanel", () => {
   it("renders nothing when the producer resolved no selected pull request", () => {
@@ -72,7 +74,7 @@ describe("BranchPrStatusPanel", () => {
               pending: 1,
               neutral: 2,
             },
-          }).response,
+          }),
         })}
       />
     );
@@ -121,7 +123,7 @@ describe("BranchPrStatusPanel", () => {
               pending: 0,
               neutral: 3,
             },
-          }).response,
+          }),
         })}
       />
     );
@@ -150,13 +152,13 @@ describe("BranchPrStatusPanel", () => {
     const unavailable = branchSelectedPullRequestChecksEvidenceUnavailable({
       status: SelectedPullRequestEvidenceAvailability.Unavailable,
       reason: SelectedPullRequestEvidenceUnavailableReason.ProviderFailure,
-    }).response;
+    });
     const { rerender } = render(
       <BranchPrStatusPanel
         detail={selectedDetail({ selectedPullRequestChecks: unavailable })}
       />
     );
-    expect(screen.getByText("Unavailable")).toBeInTheDocument();
+    expect(screen.getByText(UNAVAILABLE_CHECKS_VALUE)).toBeInTheDocument();
 
     rerender(
       <BranchPrStatusPanel
@@ -175,12 +177,52 @@ describe("BranchPrStatusPanel", () => {
               pending: 0,
               neutral: 0,
             },
-          }).response,
+          }),
         })}
       />
     );
     expect(screen.getByText("N/A")).toBeInTheDocument();
-    expect(screen.queryByText("Unavailable")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(UNAVAILABLE_CHECKS_VALUE)
+    ).not.toBeInTheDocument();
+  });
+
+  // ISS-8422. This badge renders ONLY when a pull request is selected and is
+  // presented as THAT pull request's lifecycle, so it may not print a confident
+  // lifecycle word about one nobody observed. Two paths had to be closed: the
+  // placeholder OPEN on `selected.state`, and `detail.status`, which
+  // `persistedBadge` reads FIRST and which is never null — so the branch-level
+  // word won and the Gated tone below was unreachable.
+  it("says the status is unavailable for an unobserved selected PR, not Open", () => {
+    render(
+      <BranchPrStatusPanel
+        detail={selectedDetail({
+          status: BranchStatus.Open,
+          selectedPullRequest: {
+            ...selectedDetail().selectedPullRequest,
+            lifecycleObserved: false,
+            state: GitHubPRState.Open,
+          },
+        })}
+      />
+    );
+
+    expect(screen.getByText("Status unavailable")).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        deriveLifecycleBadge({
+          persisted: { prState: null, status: BranchStatus.Open },
+        }).label
+      )
+    ).not.toBeInTheDocument();
+  });
+
+  it("still reads the branch status for an OBSERVED selected PR", () => {
+    // The counterfactual: nulling `status` unconditionally would have made every
+    // branch's badge read "Status unavailable".
+    render(<BranchPrStatusPanel detail={selectedDetail()} />);
+
+    expect(screen.queryByText("Status unavailable")).not.toBeInTheDocument();
   });
 });
 
@@ -200,6 +242,8 @@ function selectedDetail(overrides = {}) {
       closedAt: null,
       mergedAt: null,
       body: "Description",
+      baseRefName: "main",
+      authorLogin: "octocat",
       headRefOid: HEAD_SHA,
       mergeCommitSha: null,
       changedFiles: 1,
@@ -211,8 +255,7 @@ function selectedDetail(overrides = {}) {
 }
 
 function checksProjection(incomplete: boolean) {
-  return projectBranchSelectedPullRequestChecks(checksEvidence(incomplete))
-    .response;
+  return projectBranchSelectedPullRequestChecks(checksEvidence(incomplete));
 }
 
 function checksEvidence(incomplete: boolean) {

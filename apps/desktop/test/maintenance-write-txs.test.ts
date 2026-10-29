@@ -11,7 +11,7 @@
  * data-revision-rebuild.test.ts test 12.)
  */
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { SessionListCursorSortKey } from "../src/main/agent-sync/agent-session-read-model.js";
 import {
   sweepExpiredSessions,
@@ -305,16 +305,12 @@ async function seedSessionAnalytics(
     "INSERT INTO session_analytics (session_id, started_at, est_cost) VALUES ($1, $2, $3)",
     [sessionId, EXPIRED_ACTIVITY, 1.23]
   );
-  await store.query(
-    "INSERT INTO session_tool_analytics (session_id, tool_name, invocations) VALUES ($1, $2, $3)",
-    [sessionId, "Bash", 5]
-  );
-  // FEA-2347: agent_component_session_usage is the third orphan-prone rollup.
+  // FEA-2347: agent_component_session_usage is also orphan-prone.
   await store.query(
     "INSERT INTO agent_component_session_usage (session_id, component_kind, component_key) VALUES ($1, $2, $3)",
     [sessionId, "tool", "Bash"]
   );
-  // FEA-2273: session_activity_metrics is the fourth no-FK derived rollup.
+  // FEA-2273: session_activity_metrics is another no-FK derived rollup.
   await store.query(
     "INSERT INTO session_activity_metrics (session_id, autonomy_band, length_band, version) VALUES ($1, $2, $3, $4)",
     [sessionId, "mixed", "short", 4]
@@ -337,9 +333,26 @@ async function seedPullRequest(
     "INSERT INTO pull_requests (id, session_id, pr_url, repo_full_name) VALUES ($1, $2, $3, $4)",
     [id, sessionId, "https://github.com/acme/repo/pull/1", "acme/repo"]
   );
+}
+
+/**
+ * ISS-7352 item F — one `claude_code_session_identity` row for a session.
+ *
+ * The table has NO foreign key to `sessions`, so nothing but the explicit
+ * `deleteMany` in `purgeExpiredChunk` removes it. Seeded here (davetho on
+ * #7131) because the facade's `deleteSessionRow` coverage cannot stand in for
+ * the retention sweep: they are separate delete lists, and an omission from
+ * this one would leave an expired session's account and organization
+ * identifiers behind with no test failing.
+ */
+async function seedClaudeCodeSessionIdentity(
+  store: Store,
+  sessionId: string
+): Promise<void> {
   await store.query(
-    "INSERT INTO pr_backfill_seen (session_id, scanned_at) VALUES ($1, $2)",
-    [sessionId, EXPIRED_ACTIVITY]
+    `INSERT INTO claude_code_session_identity (session_id, observed_at, organization_id, user_account_uuid)
+     VALUES ($1, $2, $3, $4)`,
+    [sessionId, EXPIRED_ACTIVITY, "org_retention", "acct_retention"]
   );
 }
 
@@ -367,6 +380,7 @@ test("sweepExpiredSessions purges terminal sessions past the retention window an
     await seedSessionAnalytics(store, "old");
     await seedTurnBucket(store, "old");
     await seedPullRequest(store, "old-pr", "old");
+    await seedClaudeCodeSessionIdentity(store, "old");
 
     // Expired but still active → must survive (only terminal sessions purge).
     await seedSessionWithActivity(
@@ -378,6 +392,7 @@ test("sweepExpiredSessions purges terminal sessions past the retention window an
     // Terminal but recent → inside the window, must survive.
     await seedSessionWithActivity(store, "recent", "error", RECENT_ACTIVITY);
     await seedEvent(store, "recent-event", "recent");
+    await seedClaudeCodeSessionIdentity(store, "recent");
 
     const { purged } = await sweepExpiredSessions(prisma, NOW);
     assert.equal(purged, 1);
@@ -389,11 +404,8 @@ test("sweepExpiredSessions purges terminal sessions past the retention window an
     assert.equal(await countBySession(store, "token_usage", "old"), 0);
     assert.equal(await countBySession(store, "token_events", "old"), 0);
     assert.equal(await countBySession(store, "session_analytics", "old"), 0);
-    assert.equal(
-      await countBySession(store, "session_tool_analytics", "old"),
-      0
-    );
-    // FEA-2347: the third rollup must be purged too (previously missed).
+    // FEA-2347: agent_component_session_usage must be purged too (previously
+    // missed).
     assert.equal(
       await countBySession(store, "agent_component_session_usage", "old"),
       0
@@ -405,12 +417,22 @@ test("sweepExpiredSessions purges terminal sessions past the retention window an
     );
     assert.equal(await countBySession(store, "session_turn_bucket", "old"), 0);
     assert.equal(await countBySession(store, "pull_requests", "old"), 0);
-    assert.equal(await countBySession(store, "pr_backfill_seen", "old"), 0);
+    // ISS-7352: the FK-less identity side table must go with the session.
+    assert.equal(
+      await countBySession(store, "claude_code_session_identity", "old"),
+      0
+    );
 
     // Active-but-old and terminal-but-recent sessions are untouched.
     assert.equal((await getSession(store, "old-active"))?.status, "active");
     assert.equal((await getSession(store, "recent"))?.status, "error");
     assert.equal(await countBySession(store, "events", "recent"), 1);
+    // The counterfactual for the assertion above: a sweep that emptied the
+    // whole table rather than the purged session's rows would pass it.
+    assert.equal(
+      await countBySession(store, "claude_code_session_identity", "recent"),
+      1
+    );
   } finally {
     await close();
   }

@@ -10,6 +10,7 @@ import {
 import { SeedSetupFailureMarker } from "../../setup-failure";
 
 const SANDBOX_ENV_KEYS = [
+  "SEED_BOOTSTRAP_ORG_NAMESPACE",
   "SEED_SANDBOX_CLERK_ORG_ID",
   "SEED_SANDBOX_CLERK_USER_ID",
   "SEED_SANDBOX_ORG_SLUG",
@@ -263,3 +264,111 @@ describe("ensureBootstrapUser — Sandbox identity binding", () => {
     expect(userArgs.create.id).not.toBe(BOOTSTRAP_USER_ID);
   });
 });
+
+describe("ensureBootstrapUser isolated database identity", () => {
+  it("isolates two databases without changing Clerk identity or default IDs", async () => {
+    const first = makeIsolatedPrisma();
+    const second = makeIsolatedPrisma();
+    const repeated = makeIsolatedPrisma();
+    const identity = {
+      SEED_SANDBOX_CLERK_ORG_ID: "org_shared_sandbox",
+      SEED_SANDBOX_CLERK_USER_ID: "user_shared_sandbox",
+    };
+    const firstEnv = {
+      ...identity,
+      SEED_BOOTSTRAP_ORG_NAMESPACE: "80f6b8f2-57d3-472b-9bf8-d44f5a7a523b",
+    };
+    const secondEnv = {
+      ...identity,
+      SEED_BOOTSTRAP_ORG_NAMESPACE: "c6e71dd5-5832-41a6-b781-6f141b464e56",
+    };
+
+    const firstResult = await ensureBootstrapUser(first.prisma, firstEnv);
+    const secondResult = await ensureBootstrapUser(second.prisma, secondEnv);
+    const repeatedResult = await ensureBootstrapUser(repeated.prisma, firstEnv);
+    const defaultResult = await ensureBootstrapUser(
+      makeIsolatedPrisma().prisma,
+      identity
+    );
+
+    expect(firstResult.organizationId).not.toBe(secondResult.organizationId);
+    expect(firstResult.organizationId).not.toBe(defaultResult.organizationId);
+    expect(repeatedResult).toEqual(firstResult);
+    expect(firstResult.userId).toBe(defaultResult.userId);
+    expect(secondResult.userId).toBe(defaultResult.userId);
+    for (const database of [first, second]) {
+      expect(database.orgUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { clerkId: identity.SEED_SANDBOX_CLERK_ORG_ID },
+          create: expect.objectContaining({
+            clerkId: identity.SEED_SANDBOX_CLERK_ORG_ID,
+          }),
+        })
+      );
+      const organizationId = database.orgUpsert.mock.calls[0][0].create.id;
+      expect(database.userUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            clerkId_organizationId: {
+              clerkId: identity.SEED_SANDBOX_CLERK_USER_ID,
+              organizationId,
+            },
+          },
+          create: expect.objectContaining({ organizationId }),
+        })
+      );
+    }
+  });
+
+  it("keeps the existing database identity when a retry supplies a fresh namespace", async () => {
+    const database = makeIsolatedPrisma();
+    const first = await ensureBootstrapUser(database.prisma, {
+      SEED_BOOTSTRAP_ORG_NAMESPACE: "80f6b8f2-57d3-472b-9bf8-d44f5a7a523b",
+    });
+    const retry = await ensureBootstrapUser(database.prisma, {
+      SEED_BOOTSTRAP_ORG_NAMESPACE: "c6e71dd5-5832-41a6-b781-6f141b464e56",
+    });
+    expect(retry).toEqual(first);
+    expect(first.organizationId).not.toBe(BOOTSTRAP_ORG_ID);
+    expect(database.orgUpsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({ update: {} })
+    );
+    expect(database.userUpsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          organizationId: first.organizationId,
+        }),
+      })
+    );
+  });
+
+  it.each(["", " ", "not-a-uuid"])(
+    "rejects invalid namespace %j before writing identity",
+    async (namespace) => {
+      const database = makePrisma();
+      await expect(
+        ensureBootstrapUser(database.prisma, {
+          SEED_BOOTSTRAP_ORG_NAMESPACE: namespace,
+        })
+      ).rejects.toThrow(SeedSetupFailureMarker.Bootstrap);
+      expect(database.orgUpsert).not.toHaveBeenCalled();
+      expect(database.userUpsert).not.toHaveBeenCalled();
+    }
+  );
+});
+
+function makeIsolatedPrisma() {
+  const database = makePrisma();
+  let organizationId: string | undefined;
+  database.orgUpsert.mockImplementation(
+    ({ create }: { create: { id: string } }) => {
+      organizationId ??= create.id;
+      return Promise.resolve({ id: organizationId });
+    }
+  );
+  database.userUpsert.mockImplementation(
+    ({ create }: { create: { id: string } }) =>
+      Promise.resolve({ id: create.id })
+  );
+  return database;
+}

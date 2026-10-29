@@ -62,11 +62,7 @@ type PullRequestInput = {
   prNumber: number;
   repoFullName: string;
   branchName?: string | null;
-  headSha?: string | null;
-  title?: string | null;
-  state?: string | null;
   closedAt?: string | null;
-  mergedAt?: string | null;
   harness: string;
   observedAt?: string | null;
 };
@@ -78,17 +74,12 @@ type PullRequestInput = {
  * The rebuild still DROPS rows the re-parse no longer references — stale-row
  * removal is deliberate and pinned by `pr-store-write.test.ts` — but a row that
  * comes back must not come back stripped. `createdAt`/`observedAt` are
- * first-observation provenance, and (ISS-4606) `state`/`mergedAt`/`closedAt`/
- * `openedAt` are written ONLY by the GitHub enrichment runner
- * (`syncPullRequestLifecycle`); the importer never emits them, so a transcript
- * re-read cannot re-derive them and the rebuild was silently blanking a merged
- * PR back to "no known state" on every DATA_REVISION bump.
+ * first-observation provenance, and (ISS-4606) `closedAt`/`openedAt` are not
+ * re-derivable from a transcript re-read, so the rebuild carries them over.
  */
 export type PullRequestPreservedFields = {
   createdAt: string | null;
   observedAt: string | null;
-  state: string | null;
-  mergedAt: string | null;
   closedAt: string | null;
   openedAt: string | null;
 };
@@ -113,8 +104,7 @@ export async function upsertPullRequest(
     // `$transaction` on the one DesktopPrisma client (see module header).
     //
     // INVARIANT: this function is the only pull_requests.observed_at writer
-    // (write-core's UPDATE sets branch_name only; enrichment-runner's sets
-    // state/branch_name/merged_at/closed_at/opened_at), so the stored value is
+    // (write-core's UPDATE sets branch_name only), so the stored value is
     // always the valid ISO this function last wrote. validIso() still guards
     // the stored side so a corrupted row loses to valid incoming evidence
     // instead of pinning the row stale forever; a NULL incoming never touches
@@ -127,25 +117,15 @@ export async function upsertPullRequest(
     await tx.$executeRawUnsafe(
       // branch_name is AUTHORITATIVE from the import (not COALESCE-preserved):
       // it is the per-session head ref for a PR this session created, or null for
-      // a merely-referenced PR. The import is the sole writer of this per-session
-      // row, so "latest import wins" is correct AND lets a re-derive clear rows
-      // mis-stamped by the prior session-branch behavior. The remaining fields
-      // stay COALESCE — enrichment fills state/closed_at/merged_at later.
+      // a merely-referenced PR. "Latest import wins" lets a re-derive clear rows
+      // mis-stamped by the prior session-branch behavior.
       `UPDATE pull_requests
          SET branch_name = $1,
-             head_sha    = COALESCE(head_sha, $2),
-             title       = COALESCE(title, $3),
-             state       = COALESCE($4, state),
-             closed_at   = COALESCE($5, closed_at),
-             merged_at   = COALESCE($6, merged_at),
-             observed_at = COALESCE($7, observed_at)
-       WHERE id = $8`,
+             closed_at   = COALESCE($2, closed_at),
+             observed_at = COALESCE($3, observed_at)
+       WHERE id = $4`,
       pr.branchName || null,
-      pr.headSha || null,
-      pr.title || null,
-      pr.state || null,
       pr.closedAt || null,
-      pr.mergedAt || null,
       advancedObservedAt,
       id
     );
@@ -158,29 +138,20 @@ export async function upsertPullRequest(
     resolveCanonicalObservedAt(seed?.observedAt ?? null, incomingObservedAt) ??
     now;
 
-  // ISS-4606: the lifecycle columns fall back to the pre-teardown seed. The
-  // import never supplies them (`persistNormalizedPullRequests` passes no
-  // `state`), so without this a rebuild re-inserts the row with a NULL state and
-  // NULL merge/close instants — discarding what enrichment learned from GitHub.
-  // Incoming still wins when present, so a genuine live update is never pinned
-  // to a stale seed.
+  // ISS-4606: closed_at falls back to the pre-teardown seed so a rebuild does
+  // not discard it; incoming still wins when present.
   await tx.$executeRawUnsafe(
     `INSERT INTO pull_requests
        (id, session_id, pr_url, pr_number, repo_full_name, branch_name,
-        head_sha, title, state, closed_at, merged_at, opened_at, harness,
-        observed_at, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        closed_at, opened_at, harness, observed_at, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     id,
     pr.externalSessionId || null,
     pr.prUrl,
     pr.prNumber,
     pr.repoFullName,
     pr.branchName || null,
-    pr.headSha || null,
-    pr.title || null,
-    pr.state || seed?.state || null,
     pr.closedAt || seed?.closedAt || null,
-    pr.mergedAt || seed?.mergedAt || null,
     seed?.openedAt ?? null,
     pr.harness,
     observedAt,
@@ -239,7 +210,6 @@ async function findPrArtifacts(
       prNumber: true,
       repoFullName: true,
       branchName: true,
-      headSha: true,
       title: true,
       harness: true,
       observedAt: true,
@@ -256,7 +226,7 @@ async function findPrArtifacts(
     prNumber: row.prNumber,
     repoFullName: row.repoFullName,
     branchName: row.branchName,
-    headSha: row.headSha,
+    headSha: null,
     title: row.title,
     harness: row.harness,
     observedAt: row.observedAt,

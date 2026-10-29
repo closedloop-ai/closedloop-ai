@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { BranchStatus } from "@repo/api/src/types/branch.js";
 import { BranchVisibleLifecyclePhase } from "@repo/api/src/types/branch-phase-attribution.js";
 import { ArtifactRefRelation } from "@repo/api/src/types/session-artifact-link";
-import { projectCanonicalBranchListMetrics } from "@repo/lib/branches/branch-list-metric-projection";
+import { costFactsFromContributions } from "@repo/lib/branches/branch-cost-facts-from-contributions";
+import {
+  projectCanonicalBranchListMetrics,
+  resolveCanonicalBranchMetricWindows,
+} from "@repo/lib/branches/branch-list-metric-projection";
+import { branchMetricFactWindows } from "@repo/lib/branches/branch-pull-request-metrics";
+import { describe, test, vi } from "vitest";
+import { buildBranchAnalyticsResult } from "../src/main/branch/branch-analytics-builder.js";
 import { readCanonicalBranchMetricEventRows } from "../src/main/branch/branch-metric-event-read.js";
-import { buildBranchAnalyticsResult } from "../src/main/branch/shared-branches-api.js";
 import {
   readBranchAnalyticsActivitySegmentRows,
   readBranchAnalyticsLifecycleEventRows,
@@ -18,6 +23,14 @@ import {
   readLocalBranchPrRows,
 } from "../src/main/database/branch-reads.js";
 import { seeder, withAcDb } from "./branch-reads-ac-test-helpers.js";
+
+vi.mock(
+  "../src/main/branch/shared-branches-default-eligibility.js",
+  async (importOriginal) =>
+    (
+      await import("./helpers/complete-eligibility-snapshot.js")
+    ).withCompleteEligibility(await importOriginal())
+);
 
 const endIso = "2026-07-01T00:00:00.000Z";
 const periodDays = [7, 30, 90] as const;
@@ -163,6 +176,24 @@ function projectCostMetric(
   rows: Awaited<ReturnType<typeof readBranchUsageEventRows>>,
   fixture: ParityFixture
 ) {
+  const costContributions = rows.flatMap((row) =>
+    row.costUsdEstimated !== null &&
+    Number.isFinite(row.costUsdEstimated) &&
+    row.costUsdEstimated >= 0
+      ? [
+          {
+            sourceEventId:
+              row.eventFingerprint ?? row.eventRowId ?? row.createdAt ?? "",
+            branchId: "branch-1",
+            sessionId: row.sessionId,
+            occurredAt: row.createdAt,
+            phase: BranchVisibleLifecyclePhase.Build,
+            costUsd: row.costUsdEstimated,
+            qualifyingBranchCount: 1,
+          },
+        ]
+      : []
+  );
   return projectCanonicalBranchListMetrics({
     branches: [
       {
@@ -174,25 +205,18 @@ function projectCostMetric(
     pullRequests: [],
     pullRequestCoverageComplete: true,
     lastActiveCoverageComplete: false,
-    costContributions: rows.flatMap((row) =>
-      row.costUsdEstimated !== null &&
-      Number.isFinite(row.costUsdEstimated) &&
-      row.costUsdEstimated >= 0
-        ? [
-            {
-              sourceEventId:
-                row.eventFingerprint ?? row.eventRowId ?? row.createdAt ?? "",
-              branchId: "branch-1",
-              sessionId: row.sessionId,
-              occurredAt: row.createdAt,
-              phase: BranchVisibleLifecyclePhase.Build,
-              costUsd: row.costUsdEstimated,
-              qualifyingBranchCount: 1,
-            },
-          ]
-        : []
-    ),
+    costContributions,
     costCompleteBranchIds: ["branch-1"],
+    aiSpendFacts: costFactsFromContributions(
+      costContributions,
+      branchMetricFactWindows(
+        resolveCanonicalBranchMetricWindows({
+          startDate: fixture.request.startDate,
+          endDate: fixture.request.endDate,
+          now: fixture.boundary,
+        })
+      )
+    ),
     startDate: fixture.request.startDate,
     endDate: fixture.request.endDate,
     now: fixture.boundary,
@@ -241,7 +265,6 @@ async function projectWithMetricRead(
     activityRows,
     usageTokenRows,
     fixture.request,
-    undefined,
     metricEventRead,
     metricEventRead.activitySegments,
     lifecycleEvidence

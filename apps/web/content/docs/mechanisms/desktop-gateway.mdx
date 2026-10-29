@@ -22,17 +22,19 @@ GATEWAY_PROTOCOL_VERSION = "0.1.0"
 
 ## Unauthenticated endpoint
 
-`GET /health` is the only unauthenticated route and is used for liveness and capability detection.
+`GET /health` is the only unauthenticated route and is used for liveness.
 
 ```json
 {
   "status": "ok",
   "machineName": "string",
-  "capabilities": { "tools": { "...": true }, "versions": { "...": "..." } },
+  "capabilities": { "versions": { "...": "..." }, "commandSigning": false },
   "version": "string",
   "port": 19432
 }
 ```
+
+`capabilities` advertises protocol support, not which CLI tools the machine has.
 
 The response carries the CORS headers mandated by contract DG-001.
 
@@ -46,7 +48,7 @@ A `X-Desktop-Gateway-Token` header carrying a process-local random 24-byte hex t
 
 ### Browser session token
 
-A `X-Desktop-Session-Token` header paired with a bound `Origin` header. Sessions are issued after the challenge-exchange flow.
+A `X-Desktop-Session-Token` header paired with a bound `Origin` header.
 
 The `Origin` header alone is not sufficient. Sessions are in-memory only (`LocalSessionStore`) — 32-byte hex tokens, sha256-digested for comparison, default TTL 10 minutes, max 8 concurrent.
 
@@ -71,16 +73,11 @@ Every request (and every security event) is captured to `ActivityLogStore`, pers
 
 ## Operations the gateway exposes
 
-The operation dispatcher supports `:param` and `*splat` path patterns. The full set of supported operation IDs is defined in `src/main/approval-operations.ts` (28 IDs):
+The operation dispatcher supports `:param` and `*splat` path patterns. The full set of supported operation IDs is defined in `src/main/approval-operations.ts`:
 
 ```
-symphony_launch, symphony_loop, symphony_loop_kill, symphony_plan_loop,
-symphony_status, symphony_kill, symphony_chat, symphony_comment_chat,
-symphony_commit_message, symphony_sessions, symphony_plan, symphony_judges,
-symphony_logs, symphony_chat_history, terminal_chat, ticket_chat,
-run_viewer_chat, codex_review, codex_argue, git_action, git_pr,
-git_branch_worktree, health_check, repos_config, deploy, learnings,
-filesystem, binary_paths_settings
+git_action, git_pr, git_branch_worktree,
+repos_config, filesystem, binary_paths_settings
 ```
 
 See the [gateway endpoints reference](../resources/gateway-endpoints-reference) for the full route table.
@@ -118,6 +115,6 @@ Invoke via `just desktop-debug-auth`, `just desktop-no-auth`, or `just desktop-p
 
 ## Fail-closed behavior
 
-- With no API key configured: `/health` still works; `POST /gateway-auth/exchange` returns 503; every `/api/gateway/*` route returns 401.
+- With no API key configured: `/health` still works; every `/api/gateway/*` route returns 401.
 - On port conflicts: auto-falls back within the configured range. Full failure moves the tray to `error`.
 - On sandbox violations: `HTTP 403 {"error":"directory not allowed"}` plus a `sandbox_blocked_operation` telemetry event plus a `SECURITY` entry in the activity log.

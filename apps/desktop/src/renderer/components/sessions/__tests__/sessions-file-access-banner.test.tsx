@@ -6,7 +6,7 @@ import {
   screen,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { parseFileAccessBlocks } from "../../../hooks/use-ingest-progress";
+import { parseFileAccessBlocks } from "../../../hooks/use-file-access-blocks";
 import { SessionsFileAccessBanner } from "../sessions-file-access-banner";
 
 // The banner's older-preload copy, asserted when the reimport IPC is absent.

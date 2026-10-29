@@ -1,8 +1,41 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useOptionalAuthSnapshot } from "../auth/use-auth-snapshot";
-import { useResolvedOrDeadline } from "./use-resolved-or-deadline";
+import type { GridPreferenceGridKey } from "@repo/api/src/types/grid-preferences";
+import { GridPreferenceScopeKey } from "@repo/api/src/types/grid-preferences";
+import { DEFAULT_TABLE_PAGE_SIZE } from "@repo/design-system/components/ui/table-page-size-select";
+import {
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useFeatureFlagEnabledOptional } from "../feature-flags/use-feature-flag-enabled";
+import { TABLE_PAGE_SIZE_LADDER_FEATURE_FLAG_KEY } from "../lib/feature-flags";
+import {
+  filterValidColumnOrder,
+  filterValidColumnWidths,
+  NO_PRESERVED_COLUMN_IDS,
+  type PreservedColumnIds,
+  resizeColumnWidth,
+} from "../lib/preserved-column-ids";
+import {
+  NO_OPAQUE_STORED_VIEW_FIELDS,
+  normalizeStoredTableView,
+  opaqueStoredViewFields,
+  type StoredViewSnapshot,
+  serializeTableView,
+  serializeTableViewWithinCeiling,
+} from "./persisted-table-view-snapshot";
+import {
+  decodeStoredRecord,
+  readFallbackStoredRecord,
+  readStoredRecord,
+  subscribeToStorageKey,
+} from "./subscribe-to-storage-key";
+import { useGridPreferenceRemote } from "./use-grid-preference-remote";
+import { useTableViewStorageKey } from "./use-table-view-storage-key";
 
 /**
  * A table view restored from persistence: the sort dimensions, the hidden-column
@@ -26,6 +59,19 @@ export type RestoredTableView<TSort, TSortDir, TExtra> = {
    * predating the field) degrades to the table's natural column widths.
    */
   columnWidths?: Record<string, number>;
+  /**
+   * ISS-9692: persisted rows-per-page. Optional so a feature that does not
+   * persist a page size (or a saved view written before this field existed)
+   * degrades to the caller's `defaultPageSize`.
+   *
+   * Stored as the raw number the reader chose, NOT clamped to a ladder here:
+   * this hook is generic and does not know which rungs a surface offers, and the
+   * ladder itself moves with a feature flag. The surface resolves it against the
+   * ladder in force at the point of use (`useTablePageSizeOptions`), which is
+   * what lets a 500 chosen while the flag was on come back as 500 when it is
+   * turned on again instead of having been flattened to 100 on disk.
+   */
+  pageSize?: number;
   extras: TExtra;
 };
 
@@ -45,6 +91,15 @@ export type PersistedTableViewConfig<
    */
   columnIds: readonly TColumnId[];
   /**
+   * ISS-10356: ids OUTSIDE `columnIds` whose WIDTH this view holds, and only
+   * their width. Such an id is restored, resized and persisted like a declared
+   * one, but it never enters the hidden set or the order, so the view restores
+   * how that column looks without deciding whether it shows. Pass a stable
+   * (module-level) function. Omit it and every id outside `columnIds` is
+   * version skew: carried, not applied (ISS-9447 D1).
+   */
+  isWidthOnlyColumnId?: (id: string) => boolean;
+  /**
    * ISS-5315: column ids a NEVER-SAVED view starts with hidden, and the set
    * `resetColumns` restores to. Pass a stable (module-level) reference.
    *
@@ -53,18 +108,63 @@ export type PersistedTableViewConfig<
    * showed, so a column they deliberately turned ON is never turned back off by
    * a later change to this default. Omit for "everything visible", the prior
    * behavior every existing caller keeps.
+   *
+   * "A user HAS a saved view" means they shaped one — see `viewEditedRef`. A
+   * surface nobody has touched writes nothing, so it cannot manufacture the very
+   * saved view that would then outrank this default.
    */
   defaultHiddenColumns?: readonly TColumnId[];
   defaultSortKey: TSort;
   defaultSortDir: TSortDir;
+  /**
+   * ISS-9692: the rows-per-page a never-saved view starts on. Omit and the
+   * surface holds `DEFAULT_TABLE_PAGE_SIZE`, which is what every list shipped.
+   */
+  defaultPageSize?: number;
   /** The two sort directions `toggleSortDir` flips between. */
   sortDirs: readonly [TSortDir, TSortDir];
   defaultExtras: TExtra;
+  /**
+   * ISS-9447: fold the `extras` a COLUMN RESET invalidates back to what this
+   * build ships, applied by `resetColumns` in the same gesture.
+   *
+   * `resetColumns` rewrites the hidden-column set and the column order to this
+   * build's defaults. A surface that also persists a MIGRATION STAMP for those
+   * axes has to move it with them: a stamp a NEWER build wrote is kept verbatim
+   * on read (see `runViewStateMigration`), so left behind it would go on
+   * vouching — back on that newer build — for a repair the reset has just
+   * undone, and the default-hidden column that repair exists to hide would
+   * render permanently. That is ISS-6065, reached through Reset view rather
+   * than through the mount-time erasure ISS-9447 D1 removed.
+   *
+   * Declared by the feature because `extras` is opaque here: only the surface
+   * knows which of its fields stamp the two axes this reset rewrites. Pass a
+   * stable (module-level) function reference. Omit it when the surface stamps
+   * neither — Branches stores no stamp at all, and Agent Components stamps only
+   * its SORT axis, which a column reset does not touch.
+   */
+  resetColumnVersions?: (extras: TExtra) => TExtra;
   /**
    * Validate an already-JSON-parsed value into a restored view, or `null` when
    * it is missing/malformed. Pass a stable (module-level) function reference.
    */
   parse: (raw: unknown) => RestoredTableView<TSort, TSortDir, TExtra> | null;
+  /**
+   * ISS-9450: which `grid_preferences` row this surface's view is the
+   * account-level copy of. Omit and the view stays `localStorage`-only, which is
+   * also what every surface does while the closed-by-default PostHog gate in
+   * `useGridPreferenceRemote` is shut.
+   *
+   * The selector, not a boolean: the flag is read at the one site that swaps on
+   * it (`no-threaded-feature-flag`), and what a caller declares here is which row
+   * it owns, which does not change with the gate.
+   */
+  gridKey?: GridPreferenceGridKey;
+  /**
+   * ISS-9450: the scope within {@link gridKey}. Defaults to `default`; only
+   * Branches has a second projection (`approved`) that keeps its own layout.
+   */
+  scopeKey?: GridPreferenceScopeKey;
 };
 
 /**
@@ -73,48 +173,37 @@ export type PersistedTableViewConfig<
  * restore must run again (see `restoredInputsRef` / `committedRestoreInputs`).
  */
 type RestoreInputs<TSort, TSortDir, TExtra> = {
-  storageKey: string | null;
+  restoreKey: string | null;
+  fallbackKeys: readonly string[];
   parse: (raw: unknown) => RestoredTableView<TSort, TSortDir, TExtra> | null;
+  /**
+   * ISS-5528: the default-hidden set is in the guard for exactly the reason the
+   * parser is (see `restoredInputsRef`). A feature may SELECT its
+   * `defaultHiddenColumns` from a flag that resolves AFTER mount, and the
+   * no-saved-view branch below is the only thing that applies it — so guarding
+   * on key+parser alone meant whichever set won the race was the only one that
+   * ever landed, and a late-resolving flag silently never hid its column.
+   *
+   * The effect already declared this in its dependency array; the guard is what
+   * threw the re-run away.
+   *
+   * Compared by IDENTITY, like `parse` beside it — this is the memoized `Set`,
+   * which only changes when the feature's own `defaultHiddenColumns` input does,
+   * so identity is exactly "the feature answered differently" and never a
+   * per-render churn.
+   */
+  defaultHiddenColumnIds: ReadonlySet<string>;
 };
-
-/**
- * How long a surface gating a data request on `isViewReady` waits for auth to
- * hydrate before proceeding on the DEFAULT view (ISS-4655).
- *
- * `authLoaded` is the one input to `isViewReady` that can stall indefinitely: if
- * Clerk never initializes it stays false forever. {@link useResolvedOrDeadline}
- * carries the mechanism and the reasoning; this is only the duration, kept
- * separate from FEA-1626's `FEATURE_FLAG_RESOLUTION_DEADLINE_MS` because the two
- * answer to different services and should be tunable apart, even though both are
- * 3s today.
- */
-export const VIEW_RESTORE_AUTH_DEADLINE_MS = 3000;
-
-function loadRestoredView<TSort, TSortDir, TExtra>(
-  storageKey: string,
-  parse: (raw: unknown) => RestoredTableView<TSort, TSortDir, TExtra> | null
-): RestoredTableView<TSort, TSortDir, TExtra> | null {
-  if (typeof localStorage === "undefined") {
-    return null;
-  }
-  try {
-    const raw = localStorage.getItem(storageKey);
-    if (!raw) {
-      return null;
-    }
-    return parse(JSON.parse(raw));
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Generic sort + hidden-columns + persistence machinery for a client-side table
  * view, shared by both the web app and the desktop renderer. Owns the sort key /
  * direction, the visible-column set, and the single `localStorage` object that
  * persists them alongside a feature-specific `extras` blob — keyed by surface and
- * fail-soft (private mode, malformed JSON, unknown enum/column values all degrade
- * to defaults rather than throwing).
+ * fail-soft (private mode, malformed JSON and unknown enum values all degrade to
+ * defaults rather than throwing). A column id this build does not declare is the
+ * one exception: it is not applied, but it is carried and written back, so
+ * version skew between two shells costs nobody their layout (ISS-9447 D1).
  *
  * Concrete hooks (`useSessionsViewState`, `useAgentComponentsViewState`,
  * `useBranchViewState`) wrap this with their own column list, sort enums, and
@@ -134,46 +223,47 @@ export function usePersistedTableViewState<
     persistKey,
     keyPrefix,
     columnIds,
+    isWidthOnlyColumnId,
     defaultHiddenColumns,
     defaultSortKey,
     defaultSortDir,
+    defaultPageSize = DEFAULT_TABLE_PAGE_SIZE,
     sortDirs,
     defaultExtras,
+    resetColumnVersions,
     parse,
+    gridKey,
+    scopeKey = GridPreferenceScopeKey.Default,
   } = config;
   const [ascSortDir, descSortDir] = sortDirs;
 
-  // Namespace the saved view by the authenticated user so two accounts sharing
-  // one OS profile / browser (common on the desktop) never read or write each
-  // other's layout (whitlockk review, FEA-4168). While auth is still hydrating we
-  // hold off (`storageKey` null) so an anonymous default can't land under — and
-  // shadow — a real user's key. Once loaded: a signed-in user gets a per-user
-  // key; a genuinely signed-out surface (or a mount with no auth provider at
-  // all, e.g. Storybook) falls back to the legacy un-namespaced key, preserving
-  // prior behavior rather than silently dropping persistence.
-  const { userId, isLoaded: authLoaded } = useOptionalAuthSnapshot();
-  const storageKey = useMemo(() => {
-    if (!(persistKey && authLoaded)) {
-      return null;
-    }
-    return userId
-      ? `${keyPrefix}${persistKey}:u:${userId}`
-      : `${keyPrefix}${persistKey}`;
-  }, [persistKey, keyPrefix, authLoaded, userId]);
-  // Legacy un-namespaced key. Before the per-user namespacing above (FEA-4168),
-  // every user's view was saved under this single key. A signed-in user whose
-  // per-user key is still empty — because they saved a view *before* this change
-  // shipped — must still restore that pre-existing view, so the restore reads
-  // the legacy key as a one-time migration fallback. Null when signed out (the
-  // signed-out key already IS the legacy key) or before persistence is possible,
-  // so the fallback never shadows the primary read in those cases.
-  const legacyStorageKey = useMemo(() => {
-    if (!(persistKey && authLoaded && userId)) {
-      return null;
-    }
-    return `${keyPrefix}${persistKey}`;
-  }, [persistKey, keyPrefix, authLoaded, userId]);
-
+  /**
+   * ISS-9692: whether a page-size choice made here is DURABLE.
+   *
+   * Read HERE rather than threaded in from each feature hook — that would hand a
+   * flag boolean across a module boundary, which `no-threaded-feature-flag`
+   * forbids and which would let two surfaces answer the same question
+   * differently. A reader without the gate gets exactly the behaviour that
+   * shipped: the control still moves for this visit, and the next visit opens on
+   * the default.
+   *
+   * It does NOT stop the restore, and does not erase what is on disk: the write
+   * puts back the value this view was restored with (see
+   * `restoredPageSizeRef`), so a reader whose gate is later closed keeps their
+   * stored choice for when it opens again.
+   */
+  const persistPageSize = useFeatureFlagEnabledOptional(
+    TABLE_PAGE_SIZE_LADDER_FEATURE_FLAG_KEY
+  );
+  // FEA-4168 / ISS-8262 / ISS-10091: resolve write/read/migration keys once so
+  // the ISS-9450 server sync reads the same key this hook writes.
+  const { storageKey, restoreStorageKey, fallbackStorageKeys, authSettled } =
+    useTableViewStorageKey({ keyPrefix, persistKey });
+  // ISS-9450: the account-level copy of this same record. Inert unless the
+  // caller declared a `gridKey` AND the closed-by-default gate inside is open,
+  // so a surface that declares nothing — and every surface while the gate is
+  // shut — keeps exactly the `localStorage`-only behaviour that shipped.
+  const remote = useGridPreferenceRemote({ gridKey, scopeKey, storageKey });
   const validColumnIds = useMemo(() => new Set<string>(columnIds), [columnIds]);
 
   // ISS-5315: the hidden set a never-saved view starts from (and the one
@@ -208,15 +298,41 @@ export function usePersistedTableViewState<
     () => new Set<TColumnId>(defaultHiddenColumnIds)
   );
   // FEA-4021: persisted data-column order (ids). Empty ⇒ the table's natural
-  // order. Only ids in `columnIds` survive a restore so a stale/unknown id
-  // cannot reorder a column the table no longer has.
+  // order. Only ids in `columnIds` are APPLIED, so a stale/unknown id cannot
+  // reorder a column the table no longer has; the rest ride in
+  // `preservedColumnIds` below rather than being dropped.
   const [columnOrder, setColumnOrder] = useState<string[]>(() => []);
   // FEA-4168: persisted per-column widths (px), keyed by data-column id. Empty ⇒
-  // the table's natural widths. Only ids in `columnIds` survive a restore so a
-  // stale/unknown id cannot inject a width for a column the table no longer has.
+  // the table's natural widths. Only ids in `columnIds` (and width-only ids,
+  // ISS-10356) are APPLIED, so a stale/unknown id cannot inject a width for a
+  // column the table no longer has;
+  // a well-formed width for one of those ids rides in `preservedColumnIds`.
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>(
     () => ({})
   );
+  // ISS-9447 D1: the stored ids this build has no column for. Held apart from
+  // the applied state above — which stays strictly typed, so nothing the table
+  // cannot draw reaches the render path — and merged back by the persist effect,
+  // so the stored record round-trips whole. Before this, restoring FILTERED all
+  // three axes and the write below put the filtered set back, which destroyed a
+  // reader's arrangement on mount alone.
+  const [preservedColumnIds, setPreservedColumnIds] =
+    useState<PreservedColumnIds>(NO_PRESERVED_COLUMN_IDS);
+  // ISS-9692: persisted rows-per-page. Seeded from the feature's own default (a
+  // module constant, not storage) so the first client render still matches the
+  // SSR markup — the FEA-4125 hydration contract above covers this dimension
+  // exactly as it covers the sort.
+  const [pageSize, setPageSizeState] = useState<number>(defaultPageSize);
+  // The page size this view was RESTORED with. Written back verbatim while
+  // `persistPageSize` is false, so a gated-off session neither makes its own
+  // choice durable nor destroys a choice made while the gate was open.
+  const restoredPageSizeRef = useRef<number>(defaultPageSize);
+  // ISS-9568: a page size adopted from another tab while this reader's ladder
+  // gate was still closed. Promoted into the visible state the moment the gate
+  // opens (see the effect below the persist effect), because the write-back
+  // becomes durable at that instant and must carry the adopted value, not the
+  // pre-adoption one still on screen.
+  const pendingAdoptedPageSizeRef = useRef<number | null>(null);
   // The inputs the restore has COMMITTED for, in state so committing them
   // re-renders. Gates the persistence write below — non-null and matching the
   // current inputs only AFTER the restore effect has applied the saved view (or
@@ -254,89 +370,196 @@ export function usePersistedTableViewState<
     TSortDir,
     TExtra
   > | null>(null);
+  // Whether the last restore found a view IN STORAGE (as opposed to falling back
+  // to the defaults), and whether anything the user did has since changed the
+  // view. Together they answer the one question the persist effect below has to
+  // ask before it writes: is there a view here that somebody would miss?
+  //
+  // ISS-5528 (whitlockk review, PR #6592). Without them the answer was always yes,
+  // and that made a flag-selected `defaultHiddenColumns` a no-op on every
+  // PERSISTING surface — the case every real viewer is in. The first restore
+  // runs before the flag resolves, finds nothing, commits the pre-flag defaults,
+  // and the write below immediately materializes them as a saved view. The
+  // re-run the resolved flag triggers then finds THAT view, takes the `saved`
+  // branch, and never reaches `defaultHiddenColumnIds` at all — so the column
+  // the flag exists to hide stayed visible forever, while the memory-only path
+  // (no `persistKey`, which is what the ISS-5528 test drove) worked fine.
+  //
+  // A view the user actually shaped still outranks the default, which is the
+  // ISS-5315 contract one paragraph up: `viewEditedRef` is what distinguishes it
+  // from this hook's own echo of the defaults.
+  const savedViewRestoredRef = useRef(false);
+  const viewEditedRef = useRef(false);
+  // ISS-9568: the bytes last written to, or adopted from, `key`. The persist
+  // effect skips a write whose bytes match, which is what makes a cross-tab
+  // adoption write-free — the adopted snapshot is serialized into this ref by
+  // the same function the persist effect uses, so the next run computes the
+  // identical string and writes nothing. Keyed by storage key and cleared at
+  // every restore boundary so the load-bearing re-save under a newly resolved
+  // per-user key (the legacy-key migration below) is never suppressed.
+  const lastWrittenRef = useRef<{ key: string; serialized: string } | null>(
+    null
+  );
+  // ISS-9568: this tab has committed an edit that the passive persist effect has
+  // not written yet. Set by every setter that marks the view edited, cleared the
+  // moment that effect takes responsibility for the bytes. It exists because a
+  // sibling-tab event can land in the commit-to-flush gap, and adopting there
+  // would replace the edit in memory AND seed `lastWrittenRef` with the remote
+  // bytes, so the pending run would find nothing to do — the edit would be gone
+  // from screen and disk having never existed on either. A boolean rather than a
+  // re-serialization of the live state, because the handler runs from a closure
+  // one render behind whenever two events arrive before a flush.
+  const unflushedEditRef = useRef(false);
+  // ISS-9450: the top-level fields of the record this view was restored from
+  // that this build does not write — a whole axis a newer build added, which the
+  // feature's `z.object` parser strips on the way in. Held here, never
+  // rendered, and folded back by every serialization below, so neither a mount
+  // nor an edit deletes it. A ref rather than state because it only ever
+  // changes alongside a restore, an adoption, or a server delivery, each of
+  // which already commits the state change that re-runs the persist effect.
+  const opaqueFieldsRef = useRef<Record<string, unknown>>(
+    NO_OPAQUE_STORED_VIEW_FIELDS
+  );
+
+  // Setting the two together is the whole contract: `viewEditedRef` is "this
+  // reader shaped a view" (durable, ISS-5528), `unflushedEditRef` is "and disk
+  // does not have it yet" (cleared per flush). A setter that marks one without
+  // the other is the bug this helper exists to make unwritable.
+  const markViewEdited = useCallback(() => {
+    viewEditedRef.current = true;
+    unflushedEditRef.current = true;
+  }, []);
+
+  const normalizeStoredView = useCallback(
+    (saved: RestoredTableView<TSort, TSortDir, TExtra>) =>
+      normalizeStoredTableView<TSort, TSortDir, TColumnId, TExtra>(
+        saved,
+        validColumnIds,
+        defaultPageSize,
+        isWidthOnlyColumnId
+      ),
+    [validColumnIds, defaultPageSize, isWidthOnlyColumnId]
+  );
+
+  // Push a normalized snapshot onto the seven state slices.
+  // `applyPageSizeToState` false updates only the write-back ref: a reader whose page-size gate is
+  // closed keeps the rows-per-page they are looking at (ISS-9692 promised
+  // them exactly the behaviour that shipped) while the next write still
+  // carries the stored value rather than a stale one.
+  const applySnapshot = useCallback(
+    (
+      snapshot: StoredViewSnapshot<TSort, TSortDir, TColumnId, TExtra>,
+      applyPageSizeToState: boolean
+    ) => {
+      setSortKey(snapshot.sortKey);
+      setSortDir(snapshot.sortDir);
+      setExtras(snapshot.extras);
+      setHiddenColumns(snapshot.hiddenColumns);
+      setColumnOrder(snapshot.columnOrder);
+      setColumnWidths(snapshot.columnWidths);
+      // ISS-9447 D1: the ids this build has no column for ride along with the
+      // applied halves, so a cross-tab adoption carries a sibling tab's newer
+      // columns instead of erasing them on its next write.
+      setPreservedColumnIds(snapshot.preservedColumnIds);
+      restoredPageSizeRef.current = snapshot.pageSize;
+      if (applyPageSizeToState) {
+        pendingAdoptedPageSizeRef.current = null;
+        setPageSizeState(snapshot.pageSize);
+      } else {
+        pendingAdoptedPageSizeRef.current = snapshot.pageSize;
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     if (
-      restoredInputsRef.current?.storageKey === storageKey &&
-      restoredInputsRef.current?.parse === parse
+      restoredInputsRef.current?.restoreKey === restoreStorageKey &&
+      restoredInputsRef.current?.fallbackKeys === fallbackStorageKeys &&
+      restoredInputsRef.current?.parse === parse &&
+      restoredInputsRef.current?.defaultHiddenColumnIds ===
+        defaultHiddenColumnIds
     ) {
       return;
     }
+    lastWrittenRef.current = null;
+    // A restore replaces the view wholesale, so whatever a setter marked before
+    // it is no longer work this tab owes disk — the persist run that follows
+    // writes the RESTORED bytes, not the superseded edit.
+    unflushedEditRef.current = false;
     // One object marks both edges of this run: assigned to the ref now ("this
     // run has started", closing the re-entry guard) and committed to state at
     // the end ("this run has finished"), so the two can never describe
     // different runs.
     const inputs: RestoreInputs<TSort, TSortDir, TExtra> = {
+      defaultHiddenColumnIds,
+      fallbackKeys: fallbackStorageKeys,
       parse,
-      storageKey,
+      restoreKey: restoreStorageKey,
     };
     restoredInputsRef.current = inputs;
-    // Read the per-user key first; if it holds nothing (a signed-in user who
-    // saved a view before per-user namespacing shipped), fall back to the legacy
-    // un-namespaced key so the pre-existing view still restores. The follow-up
-    // persist effect then re-saves it under the per-user key.
-    const saved = storageKey
-      ? (loadRestoredView(storageKey, parse) ??
-        (legacyStorageKey ? loadRestoredView(legacyStorageKey, parse) : null))
+    // Read the primary identity key first, then older identities in migration
+    // order. The follow-up persist effect re-saves whichever record restored
+    // under the current write key, without deleting the old one.
+    const saved = restoreStorageKey
+      ? (readStoredRecord(restoreStorageKey, parse) ??
+        readFallbackStoredRecord(fallbackStorageKeys, parse))
       : null;
     if (saved) {
-      setSortKey(saved.sortKey);
-      setSortDir(saved.sortDir);
-      setExtras(saved.extras);
-      setHiddenColumns(
-        new Set<TColumnId>(
-          saved.hiddenColumns.filter((id): id is TColumnId =>
-            validColumnIds.has(id)
-          )
-        )
+      savedViewRestoredRef.current = true;
+      opaqueFieldsRef.current = opaqueStoredViewFields(
+        saved.raw,
+        saved.parsed.extras
       );
-      setColumnOrder(
-        (saved.columnOrder ?? []).filter((id) => validColumnIds.has(id))
-      );
-      setColumnWidths(
-        filterValidColumnWidths(saved.columnWidths, validColumnIds)
-      );
+      applySnapshot(normalizeStoredView(saved.parsed), true);
     } else {
       // No saved view for this key (fresh user, signed out, or first visit):
       // fall back to defaults so a prior account's in-memory view never leaks
-      // across a switch.
+      // across a switch. Both refs go back to "nothing here yet" — an account
+      // switch inherits neither the previous key's storage nor its edits.
+      savedViewRestoredRef.current = false;
+      viewEditedRef.current = false;
+      opaqueFieldsRef.current = NO_OPAQUE_STORED_VIEW_FIELDS;
       setSortKey(defaultSortKey);
       setSortDir(defaultSortDir);
       setExtras(defaultExtras);
       setHiddenColumns(new Set<TColumnId>(defaultHiddenColumnIds));
       setColumnOrder([]);
       setColumnWidths({});
+      setPreservedColumnIds(NO_PRESERVED_COLUMN_IDS);
+      restoredPageSizeRef.current = defaultPageSize;
+      pendingAdoptedPageSizeRef.current = null;
+      setPageSizeState(defaultPageSize);
     }
     // Enable persistence in a follow-up commit so any restored values above are
     // applied first — the persist effect then writes through real changes only.
     setCommittedRestoreInputs(inputs);
   }, [
-    storageKey,
-    legacyStorageKey,
+    restoreStorageKey,
+    fallbackStorageKeys,
     parse,
-    validColumnIds,
+    normalizeStoredView,
+    applySnapshot,
     defaultSortKey,
     defaultSortDir,
     defaultExtras,
     defaultHiddenColumnIds,
+    defaultPageSize,
   ]);
 
   // Whether the restore has committed for the inputs currently in force. False
   // both before the first run and across a mid-life input change (auth
-  // hydrating, an account switch, a parser swap) until that run's own restore
-  // lands — during which the in-memory view still describes the PREVIOUS inputs.
+  // hydrating, an account switch, a parser swap, a default-visibility swap)
+  // until that run's own restore lands — during which the in-memory view still
+  // describes the PREVIOUS inputs. Compares the same fields the re-entry
+  // guard does, so "started" and "finished" can never disagree about what an
+  // input change is.
   const restoredForCurrentInputs =
     committedRestoreInputs !== null &&
-    committedRestoreInputs.storageKey === storageKey &&
-    committedRestoreInputs.parse === parse;
-
-  // ISS-4655: bound the wait on auth hydration, via the shared latch that also
-  // backs `useFeatureFlagGate`. A memory-only surface has no stored view to wait
-  // for, so it counts as already resolved and never arms a timer.
-  const authSettled = useResolvedOrDeadline(
-    authLoaded || !persistKey,
-    VIEW_RESTORE_AUTH_DEADLINE_MS
-  );
+    committedRestoreInputs.restoreKey === restoreStorageKey &&
+    committedRestoreInputs.fallbackKeys === fallbackStorageKeys &&
+    committedRestoreInputs.parse === parse &&
+    committedRestoreInputs.defaultHiddenColumnIds === defaultHiddenColumnIds;
 
   useEffect(() => {
     // Do not persist until the restore effect has committed for the current
@@ -344,41 +567,225 @@ export function usePersistedTableViewState<
     // `persistKey`, or auth is not yet loaded / signed out); otherwise the
     // initial default state would overwrite the saved view before the restore
     // effect above reads it.
+    //
+    // ISS-8262: gating on `storageKey`, never on the restore key, is what keeps
+    // the deadline-expiry read one-way. A surface whose auth never hydrates
+    // restores the legacy view and then writes NOTHING, so an unidentified
+    // viewer can never overwrite the view it was allowed to read.
+    //
+    // ISS-5528: and never write a view nobody has. A surface whose restore found
+    // nothing and whose user has changed nothing holds the DEFAULTS, which are
+    // recomputed from the feature's own inputs on every mount — writing them
+    // stores no information and costs the one thing a stored view outranks, the
+    // default itself (see `savedViewRestoredRef`). The write resumes the instant
+    // either is true, so a restored view is still re-serialized (which is what
+    // re-saves a legacy view under the per-user key, and what carries a migrated
+    // sort back to disk) and a first edit still lands.
+    const hasViewWorthWriting =
+      savedViewRestoredRef.current || viewEditedRef.current;
     if (
-      !(storageKey && restoredForCurrentInputs) ||
+      !(storageKey && restoredForCurrentInputs && hasViewWorthWriting) ||
       typeof localStorage === "undefined"
     ) {
       return;
     }
+    // The page size written is the reader's choice only while their ISS-9692
+    // gate is open; otherwise the value the view was restored or adopted with
+    // goes back verbatim. And the gate may have just opened on an adopted page
+    // size the screen does not show yet: write the adopted value, not the
+    // on-screen one, and let the promotion effect below bring the screen into
+    // line. Resolved HERE so the flag never crosses into the serializer.
+    let pageSizeToWrite = restoredPageSizeRef.current;
+    if (persistPageSize) {
+      pageSizeToWrite = pendingAdoptedPageSizeRef.current ?? pageSize;
+    }
+    const serialized = serializeTableViewWithinCeiling(
+      {
+        extras,
+        sortKey,
+        sortDir,
+        hiddenColumns,
+        columnOrder,
+        columnWidths,
+        preservedColumnIds,
+        opaqueFields: opaqueFieldsRef.current,
+        pageSize: pageSizeToWrite,
+      },
+      validColumnIds
+    );
+    // This run now owns whatever the setters marked: these bytes are either
+    // already on disk or about to be. Cleared before the write rather than after
+    // it because the failure arms (quota, private mode, and ISS-9449's ceiling
+    // below) can never write them, and a flag left standing there would block
+    // cross-tab adoption for the life of the mount.
+    unflushedEditRef.current = false;
+    if (serialized === null) {
+      // ISS-9449: past the ceiling even with the carried ids and the
+      // width-only widths shed. Only the feature `extras` can do that, and
+      // this hook may not drop what the reader chose, so the record on disk
+      // stays as it was and this edit goes unpersisted. No log: this is
+      // browser code (no-client-debug-logging).
+      return;
+    }
+    if (
+      lastWrittenRef.current?.key === storageKey &&
+      lastWrittenRef.current.serialized === serialized
+    ) {
+      return;
+    }
+    // ISS-9450: the same bytes, offered to the account-level copy. Before the
+    // local write, not after it, because a runtime that refuses `localStorage`
+    // (private mode, quota) is exactly the one whose reader most needs the
+    // server copy — and the remote dedupes on what the SERVER confirmed, so an
+    // offer it has already stored costs nothing.
+    remote.publish(serialized);
     try {
-      localStorage.setItem(
-        storageKey,
-        JSON.stringify({
-          // Spread the feature `extras` FIRST, then the reserved canonical keys,
-          // so an `extras` blob that happens to carry a `sortKey`/`sortDir`/
-          // `hiddenColumns`/`columnOrder`/`columnWidths` key can never clobber
-          // the real view state on serialization (reserved keys always win).
-          ...extras,
-          sortKey,
-          sortDir,
-          hiddenColumns: [...hiddenColumns],
-          columnOrder,
-          columnWidths,
-        })
-      );
+      localStorage.setItem(storageKey, serialized);
+      lastWrittenRef.current = { key: storageKey, serialized };
     } catch {
       // Private mode / quota — persistence is best-effort.
     }
   }, [
+    remote.publish,
     storageKey,
     restoredForCurrentInputs,
+    validColumnIds,
     sortKey,
     sortDir,
     hiddenColumns,
     columnOrder,
     columnWidths,
+    preservedColumnIds,
+    pageSize,
+    persistPageSize,
     extras,
   ]);
+
+  useEffect(() => {
+    if (!persistPageSize || pendingAdoptedPageSizeRef.current === null) {
+      return;
+    }
+    setPageSizeState(pendingAdoptedPageSizeRef.current);
+    pendingAdoptedPageSizeRef.current = null;
+  }, [persistPageSize]);
+
+  // ISS-9450: apply a layout the SERVER is authoritative for — the account copy
+  // adopted on mount, or the last confirmed one handed back after a rejected or
+  // failed write. Applied by sequence number, so a rollback that re-delivers
+  // bytes already on screen still lands: it is the same layout arriving for a
+  // different reason, and the reader has to see the change they made come back
+  // out.
+  //
+  // Deliberately NOT routed through `adoptStoredValueRef` beside it: a
+  // cross-tab adoption yields to an unflushed local edit (there is no authority
+  // between two tabs), whereas this delivery IS the authority — the server has
+  // already refused the edit, so yielding would leave the screen showing a
+  // layout the account does not have. Not marked as an edit, for the same
+  // reason a cross-tab adoption is not: `viewEditedRef` records what THIS reader
+  // shaped, and the ISS-5528 ranking must not move because a server answered.
+  const appliedInboundSeqRef = useRef<number | null>(null);
+  useEffect(() => {
+    const delivery = remote.inbound;
+    if (
+      !(delivery && restoredForCurrentInputs) ||
+      appliedInboundSeqRef.current === delivery.seq
+    ) {
+      return;
+    }
+    appliedInboundSeqRef.current = delivery.seq;
+    const record = decodeStoredRecord(delivery.serialized, parse);
+    if (!record) {
+      // A stored record this build cannot decode. Keep what is on screen rather
+      // than fall back to the defaults — the server's copy is not lost, and a
+      // newer build will decode it.
+      return;
+    }
+    savedViewRestoredRef.current = true;
+    // Take the residue from the ACCOUNT copy along with the rest of it. This
+    // delivery is marked restored, so the persist effect re-serializes right
+    // after — and without the carry that write would put the stripped record
+    // back on the account, deleting a newer build's axis for every device on a
+    // mount this reader never edited.
+    opaqueFieldsRef.current = opaqueStoredViewFields(
+      record.raw,
+      record.parsed.extras
+    );
+    applySnapshot(normalizeStoredView(record.parsed), persistPageSize);
+  }, [
+    remote.inbound,
+    restoredForCurrentInputs,
+    parse,
+    normalizeStoredView,
+    applySnapshot,
+    persistPageSize,
+  ]);
+
+  // ISS-9568: adopt another same-origin tab's write to THIS key. Everything the
+  // handler needs is read through a ref so the subscription is keyed on the
+  // two things that actually decide whether adopting is legal — the write key
+  // and the committed restore — and is torn down the moment either changes.
+  // Deliberately NOT marked as an edit: `viewEditedRef` records what THIS
+  // reader shaped, and the ISS-5528 ranking of a shaped view over a
+  // flag-selected default must not move because another tab wrote.
+  const adoptStoredValueRef = useRef<(raw: string | null) => void>(() => {});
+  adoptStoredValueRef.current = (raw) => {
+    if (!storageKey) {
+      return;
+    }
+    if (raw === null) {
+      // The key was removed elsewhere. Keep what is on screen — a removal is
+      // not a view to adopt — but forget the last write so the next local edit
+      // lands instead of being deduped against bytes that are no longer there.
+      lastWrittenRef.current = null;
+      return;
+    }
+    if (unflushedEditRef.current) {
+      // This tab has an edit that has COMMITTED but whose persist effect has not
+      // run — a real gap, since a passive flush is a separate task from the one
+      // delivering this event. Adopting here would drop that edit from the
+      // screen and seed `lastWrittenRef` with the remote bytes, so the pending
+      // run would dedupe itself away and the edit would reach neither. Skip
+      // instead: the flush goes out and the OTHER tab adopts it in turn, which
+      // is what `usePersistedSavedViews` does over the same window and what
+      // `main` did by never adopting at all.
+      return;
+    }
+    const record = decodeStoredRecord(raw, parse);
+    if (!record) {
+      return;
+    }
+    const snapshot = normalizeStoredView(record.parsed);
+    savedViewRestoredRef.current = true;
+    opaqueFieldsRef.current = opaqueStoredViewFields(
+      record.raw,
+      record.parsed.extras
+    );
+    applySnapshot(snapshot, persistPageSize);
+    // Whichever way the gate reads, the write-back carries the adopted page
+    // size (see `pageSizeToWrite` in the persist effect), so the snapshot's own
+    // value is the byte-identical string. Seeded from the plain serializer, not
+    // the shedding one (ISS-9449): the ref must hold what is ON DISK, and a
+    // record past the ceiling is on disk exactly as the sibling wrote it. An
+    // oversized adoption therefore seeds nothing, so the persist run that
+    // follows answers for it — shedding the carry and writing that back, or
+    // refusing — instead of deduping against bytes this tab never wrote.
+    const adoptedSerialized = serializeTableView({
+      ...snapshot,
+      opaqueFields: opaqueFieldsRef.current,
+    });
+    lastWrittenRef.current =
+      adoptedSerialized === null
+        ? null
+        : { key: storageKey, serialized: adoptedSerialized };
+  };
+  useEffect(() => {
+    if (!(storageKey && restoredForCurrentInputs)) {
+      return;
+    }
+    return subscribeToStorageKey(storageKey, (event) =>
+      adoptStoredValueRef.current(event.newValue)
+    );
+  }, [storageKey, restoredForCurrentInputs]);
 
   /**
    * Whether the view has SETTLED on the dimensions it will keep — the signal a
@@ -391,6 +798,13 @@ export function usePersistedTableViewState<
    * (memory-only: Storybook, prototypes — nothing to wait for), or once auth has
    * resolved, or once {@link VIEW_RESTORE_AUTH_DEADLINE_MS} has elapsed waiting
    * for it. That last clause is what keeps this from being a way to never load.
+   *
+   * ISS-8262: past the deadline this opens on the view restored from
+   * `restoreStorageKey`, not on the defaults. Both conjuncts are load-bearing
+   * there — the deadline flips `authSettled` and `restoreStorageKey` in the same
+   * render, which makes `restoredForCurrentInputs` false until that key's own
+   * restore commits, so the one read a stalled surface issues still carries the
+   * saved sort rather than racing it.
    */
   const isViewReady = restoredForCurrentInputs && authSettled;
 
@@ -399,37 +813,84 @@ export function usePersistedTableViewState<
     [columnIds, hiddenColumns]
   );
 
-  const setSort = useCallback((key: NonNullable<TSort>, dir?: TSortDir) => {
-    setSortKey(key);
-    if (dir) {
-      setSortDir(dir);
-    }
-  }, []);
-
-  const toggleSortDir = useCallback(
-    () => setSortDir((dir) => (dir === ascSortDir ? descSortDir : ascSortDir)),
-    [ascSortDir, descSortDir]
+  // ISS-7052 Part A: `TSort`, not `NonNullable<TSort>`. The state and the
+  // persisted schema have always allowed a null sort — "no explicit sort", which
+  // is what lets a query omit `sortBy` and take the server's default order — but
+  // the setter could not express it, so a host wired to a control that CLEARS
+  // the sort (the v2 grid toolbar has one) could move that control and persist
+  // nothing. Widening a parameter is safe for every existing caller: they all
+  // pass a non-null key and still typecheck.
+  const setSort = useCallback(
+    (key: TSort, dir?: TSortDir) => {
+      markViewEdited();
+      setSortKey(key);
+      if (dir) {
+        setSortDir(dir);
+      }
+    },
+    [markViewEdited]
   );
 
-  const toggleColumn = useCallback((id: TColumnId) => {
-    setHiddenColumns((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
+  const toggleSortDir = useCallback(() => {
+    markViewEdited();
+    setSortDir((dir) => (dir === ascSortDir ? descSortDir : ascSortDir));
+  }, [ascSortDir, descSortDir, markViewEdited]);
+
+  // ISS-5528: the feature `extras` setter, wrapped so a grouping/date-range/
+  // metric-mode change counts as shaping the view exactly as a sort or a column
+  // toggle does. The restore effect keeps using the raw setter, so applying a
+  // stored view is never mistaken for editing one.
+  const setExtrasEdited = useCallback(
+    (value: SetStateAction<TExtra>) => {
+      markViewEdited();
+      setExtras(value);
+    },
+    [markViewEdited]
+  );
+
+  // ISS-9692: choose a rows-per-page. Marks the view EDITED for the same reason
+  // a sort or a column toggle does — it is a choice the reader made and would
+  // miss, and without the mark the ISS-5528 write gate would never flush it.
+  //
+  // NOT marked when the choice is not durable: a gated-off reader moving this
+  // control would otherwise materialize a saved view out of the defaults, which
+  // is the exact write ISS-5528 exists to prevent and which would then outrank a
+  // later change to those defaults.
+  const setPageSize = useCallback(
+    (next: number) => {
+      if (persistPageSize) {
+        markViewEdited();
       }
-      return next;
-    });
-  }, []);
+      pendingAdoptedPageSizeRef.current = null;
+      setPageSizeState(next);
+    },
+    [persistPageSize, markViewEdited]
+  );
+
+  const toggleColumn = useCallback(
+    (id: TColumnId) => {
+      markViewEdited();
+      setHiddenColumns((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) {
+          next.delete(id);
+        } else {
+          next.add(id);
+        }
+        return next;
+      });
+    },
+    [markViewEdited]
+  );
 
   // Reorder the data columns (FEA-4021). The primitive emits the full new id
   // order; keep only ids the table still has so a stale id can't linger.
   const setColumnOrderSafe = useCallback(
     (nextOrder: readonly string[]) => {
+      markViewEdited();
       setColumnOrder(nextOrder.filter((id) => validColumnIds.has(id)));
     },
-    [validColumnIds]
+    [validColumnIds, markViewEdited]
   );
 
   // Resize one data column (FEA-4168). The primitive emits an already-clamped
@@ -437,12 +898,22 @@ export function usePersistedTableViewState<
   // a phantom width. A merge (not replace) so each column's width is independent.
   const setColumnWidth = useCallback(
     (id: string, widthPx: number) => {
-      if (!validColumnIds.has(id)) {
+      if (!(validColumnIds.has(id) || isWidthOnlyColumnId?.(id))) {
         return;
       }
-      setColumnWidths((prev) => ({ ...prev, [id]: widthPx }));
+      markViewEdited();
+      // ISS-10356: the width-only cap holds live too, so a resize cannot keep
+      // what a reload would trim.
+      setColumnWidths((prev) =>
+        resizeColumnWidth(
+          prev,
+          { id, widthPx },
+          validColumnIds,
+          isWidthOnlyColumnId
+        )
+      );
     },
-    [validColumnIds]
+    [validColumnIds, isWidthOnlyColumnId, markViewEdited]
   );
 
   // Restore the feature's DEFAULT column visibility (all visible unless the
@@ -451,24 +922,59 @@ export function usePersistedTableViewState<
   // how the surface ships", so a feature whose default hides a column must land
   // there, not on a state the user has never seen.
   const resetColumns = useCallback(() => {
+    markViewEdited();
     setHiddenColumns(new Set<TColumnId>(defaultHiddenColumnIds));
     setColumnOrder([]);
     setColumnWidths({});
-  }, [defaultHiddenColumnIds]);
+    // The carried ids go too. A reset is the reader asking for the shipped
+    // arrangement outright, so dropping them here is a choice they made and can
+    // see — the opposite of the silent mount-time erasure ISS-9447 D1 removes.
+    setPreservedColumnIds(NO_PRESERVED_COLUMN_IDS);
+    // ISS-9447: and the stamps describing what was just rewritten, so the record
+    // does not keep claiming a newer build's repair for a payload this build has
+    // replaced. Here rather than in each surface's own "Reset view" because a
+    // consumer calling `resetColumns` directly rewrites exactly the same axes.
+    //
+    // Inside the same gesture as the payload above, so the stamp and what it
+    // describes reach `serializeTableView` in ONE commit — a sibling tab can
+    // never adopt a record whose stamp outranks its payload. The
+    // `markViewEdited` at the top is what holds that window shut: it raises
+    // `unflushedEditRef`, so a `storage` event landing before this reset flushes
+    // is skipped rather than adopted over it.
+    if (resetColumnVersions) {
+      setExtras(resetColumnVersions);
+    }
+  }, [defaultHiddenColumnIds, resetColumnVersions, markViewEdited]);
 
   // FEA-4180: apply a whole arrangement at once (switching to a named saved
   // view). Sets sort + order + visibility + extras together so a switch lands as
   // one coherent transition instead of a cascade of individual toggles. Unknown
-  // hidden/order ids are dropped exactly as on restore so a stale id from an old
-  // saved view cannot reorder or hide a column the table no longer has.
+  // hidden/order ids are not applied, exactly as on restore, so a stale id from
+  // an old saved view cannot reorder or hide a column the table no longer has.
   const applyView = useCallback(
     (view: {
       sortKey: TSort;
       sortDir: TSortDir;
       hiddenColumns: readonly string[];
       columnOrder?: readonly string[];
-      extras: TExtra;
+      /**
+       * ISS-9447 M5: widths and rows-per-page, for a surface whose named views
+       * capture them. Omitted means "this view has no opinion" and the live
+       * value stands — not capturing an axis is not asking for it cleared.
+       */
+      columnWidths?: Record<string, number>;
+      pageSize?: number;
+      /**
+       * An updater, not a value, because `extras` carries more than the
+       * arrangement: the ISS-9447 version envelope and any key only a NEWER
+       * build names ride there, and an incoming arrangement says nothing about
+       * either. Replacing the blob wholesale would erase them on every apply —
+       * the same erasure the carried column ids below are exempt from. A plain
+       * value still works for a surface whose extras are all arrangement.
+       */
+      extras: SetStateAction<TExtra>;
     }) => {
+      markViewEdited();
       setSortKey(view.sortKey);
       setSortDir(view.sortDir);
       setExtras(view.extras);
@@ -479,50 +985,59 @@ export function usePersistedTableViewState<
           )
         )
       );
-      setColumnOrder(
-        (view.columnOrder ?? []).filter((id) => validColumnIds.has(id))
-      );
+      setColumnOrder(filterValidColumnOrder(view.columnOrder, validColumnIds));
+      if (view.columnWidths) {
+        // Filtered exactly as a restore filters them, so a width for a column
+        // this build does not draw cannot enter state through the apply path
+        // either. What the RESTORE carried stays carried — `preservedColumnIds`
+        // is untouched below — but an unknown width in the INCOMING arrangement
+        // is dropped rather than added to it: an arrangement captured inside the
+        // app says nothing about a column its capturing build could not see,
+        // which is why `partitionPreservedColumnIds` reads storage and nothing
+        // else.
+        setColumnWidths(
+          filterValidColumnWidths(
+            view.columnWidths,
+            validColumnIds,
+            isWidthOnlyColumnId
+          )
+        );
+      }
+      if (view.pageSize !== undefined) {
+        // The same setter a reader's own choice takes, so the ISS-9692
+        // durability gate answers both identically — and inside this callback,
+        // so the whole arrangement reaches `serializeTableView` in ONE commit
+        // and no sibling tab can adopt a half-applied view (ISS-9568).
+        setPageSize(view.pageSize);
+      }
+      // The carried ids ride through untouched, on all three axes — the rule the
+      // widths axis already followed, now the rule for every axis. An
+      // arrangement captured on a build that could not see a column says nothing
+      // about that column, so "the view did not mention it" is not "the reader
+      // wants it gone"; re-deriving what to carry from the incoming view would
+      // erase the carried ids on every apply, selecting the default view
+      // included.
     },
-    [validColumnIds]
+    [validColumnIds, isWidthOnlyColumnId, markViewEdited, setPageSize]
   );
 
   return {
     sortKey,
     sortDir,
     extras,
-    setExtras,
+    setExtras: setExtrasEdited,
     isViewReady,
     visibleColumns,
     columnOrder,
     setColumnOrder: setColumnOrderSafe,
     columnWidths,
     setColumnWidth,
+    pageSize,
+    setPageSize,
     setSort,
     toggleSortDir,
     toggleColumn,
     resetColumns,
     applyView,
   };
-}
-
-/**
- * Keep only entries whose id is a known column and whose width is a finite
- * positive number (FEA-4168). A stale/unknown id from an older saved view, or a
- * malformed non-numeric width, is dropped so a restore never injects a phantom
- * or NaN width. Returns a new record; the input is never mutated.
- */
-function filterValidColumnWidths(
-  widths: Record<string, number> | undefined,
-  validColumnIds: ReadonlySet<string>
-): Record<string, number> {
-  if (!widths) {
-    return {};
-  }
-  const next: Record<string, number> = {};
-  for (const [id, width] of Object.entries(widths)) {
-    if (validColumnIds.has(id) && Number.isFinite(width) && width > 0) {
-      next[id] = width;
-    }
-  }
-  return next;
 }

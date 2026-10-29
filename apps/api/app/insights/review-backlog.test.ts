@@ -54,7 +54,7 @@ vi.mock("@repo/database", () => ({
 
 import { withDb } from "@repo/database";
 import { fetchReviewQueue } from "./review-backlog";
-import type { InsightsScopeContext } from "./service";
+import type { InsightsScopeContext } from "./service/scope";
 
 const ORG = "org-1";
 const ORG_CTX: InsightsScopeContext = {
@@ -140,6 +140,75 @@ describe("fetchReviewQueue (ISS-4629)", () => {
     expect(vi.mocked(withDb).mock.calls.length).toBe(1);
     expect(groupByArgs).toHaveLength(1);
     expect(groupByArgs[0]?.by).toEqual(["reviewDecision", "prState"]);
+  });
+
+  /**
+   * ISS-8052 — the bucket ORDER is decided here, not by the planner.
+   *
+   * `groupBy` returns rows in whatever order the chosen plan produces, and the
+   * emitted array reaches the byte-compared Layer 5.3 fixture, so building it
+   * from `Map` insertion order let the same data serialize two ways. The rows
+   * below arrive in the exact REVERSE of the declared label order, which is what
+   * makes the assertion fail if the emit order is taken from the rows.
+   */
+  it("emits buckets in the declared decision order, whatever order the rows arrive in", async () => {
+    const { run } = runReviewQueue([
+      {
+        reviewDecision: "DISMISSED",
+        prState: GitHubPRState.Closed,
+        _count: { _all: 1 },
+      },
+      {
+        reviewDecision: "COMMENTED",
+        prState: GitHubPRState.Open,
+        _count: { _all: 2 },
+      },
+      {
+        reviewDecision: "CHANGES_REQUESTED",
+        prState: GitHubPRState.Open,
+        _count: { _all: 3 },
+      },
+      {
+        reviewDecision: "APPROVED",
+        prState: GitHubPRState.Open,
+        _count: { _all: 4 },
+      },
+      {
+        reviewDecision: null,
+        prState: GitHubPRState.Open,
+        _count: { _all: 5 },
+      },
+    ]);
+
+    const { buckets } = await run();
+
+    expect(buckets.map((bucket) => bucket.key)).toEqual([
+      "PENDING",
+      "APPROVED",
+      "CHANGES_REQUESTED",
+      "COMMENTED",
+      "DISMISSED",
+    ]);
+    // The order is not bought by inventing bars: a decision with no rows is
+    // still absent, exactly as before.
+    expect(buckets.map((bucket) => bucket.value)).toEqual([5, 4, 3, 2, 1]);
+  });
+
+  it("omits a decision with no rows rather than emitting a zero bar", async () => {
+    // The positive sibling to the ordering case above: a fixed-order emit that
+    // walked the label map unconditionally would pad this to five buckets and
+    // report review states nobody is in.
+    const { run } = runReviewQueue([
+      {
+        reviewDecision: "COMMENTED",
+        prState: GitHubPRState.Open,
+        _count: { _all: 2 },
+      },
+    ]);
+
+    const { buckets } = await run();
+
+    expect(buckets.map((bucket) => bucket.key)).toEqual(["COMMENTED"]);
   });
 
   it("scopes the query to the org, drops MERGED, and excludes stale merged rows via mergedAt: null", async () => {

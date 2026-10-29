@@ -10,6 +10,12 @@ describe("DocumentTableHeader — select-all checkbox", () => {
     onSort: vi.fn(),
   };
 
+  it("keeps the flat table header at its max-content width", () => {
+    const { container } = render(<DocumentTableHeader {...baseProps} />);
+
+    expect(container.firstElementChild).toHaveClass("[.min-w-fit_&]:min-w-max");
+  });
+
   it("does not render a checkbox when showSelectAll is false", () => {
     render(<DocumentTableHeader {...baseProps} showSelectAll={false} />);
 

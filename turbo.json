@@ -173,6 +173,22 @@
     },
     "//#clean": {
       "cache": false
+    },
+    "prototypes#build": {
+      "dependsOn": ["^build", "storybook#build"],
+      "outputs": [".next/**", "!.next/cache/**"]
+    },
+    "doc-sync#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "realtime#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "relay#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
     }
   }
 }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { CommentAnchor, CommentAnchorState } from "./comment-anchor.js";
 import type { JsonObject } from "./common.js";
 import type { BasicUser } from "./user.js";
 
@@ -39,6 +40,13 @@ export type CommentThread = {
   createdById: string | null;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * PLN-2187 T-7.3: the typed anchor and its placement, on the reads that
+   * carry them (the T-7.2 document-thread adapter). Absent on the Liveblocks
+   * read, so a reader falls back to `metadata`.
+   */
+  anchor?: CommentAnchor | null;
+  anchorState?: CommentAnchorState | null;
 };
 
 export type CommentThreadWithComments = CommentThread & {
@@ -82,28 +90,30 @@ export type CommentAttachment = {
   createdAt: Date;
 };
 
-export const TraceCommentTargetType = {
+export const CommentTargetType = {
   Session: "session",
   Branch: "branch",
+  Document: "document",
 } as const;
-export type TraceCommentTargetType =
-  (typeof TraceCommentTargetType)[keyof typeof TraceCommentTargetType];
+export type CommentTargetType =
+  (typeof CommentTargetType)[keyof typeof CommentTargetType];
 
-export const TraceCommentSurface = {
+export const CommentSurface = {
   SessionDetail: "session_detail",
   BranchDetail: "branch_detail",
   BranchTimeline: "branch_timeline",
+  DocumentDetail: "document_detail",
 } as const;
-export type TraceCommentSurface =
-  (typeof TraceCommentSurface)[keyof typeof TraceCommentSurface];
+export type CommentSurface =
+  (typeof CommentSurface)[keyof typeof CommentSurface];
 
 /** Optional Branch collection scope; omission preserves Branch-detail behavior. */
 export const branchTraceCommentCollectionQuerySchema = z
   .object({
     surface: z
       .union([
-        z.literal(TraceCommentSurface.BranchDetail),
-        z.literal(TraceCommentSurface.BranchTimeline),
+        z.literal(CommentSurface.BranchDetail),
+        z.literal(CommentSurface.BranchTimeline),
       ])
       .optional(),
   })
@@ -145,7 +155,7 @@ export const TRACE_COMMENT_REQUEST_MAX_BYTES = 32_768;
 export const DOCUMENT_THREAD_REQUEST_MAX_BYTES = 32_768;
 
 export type TraceCommentTarget = {
-  type: TraceCommentTargetType;
+  type: CommentTargetType;
   /**
    * Surface identity from the caller. Web session/branch routes normally pass a
    * cloud artifact id; desktop may pass a local external session id or encoded
@@ -257,7 +267,7 @@ export type TraceComment = TraceCommentDraft & {
   threadId: string;
   target: TraceCommentTarget;
   artifactId: string;
-  surface: TraceCommentSurface;
+  surface: CommentSurface;
   /**
    * Classification of this comment (FEA-4171). Always present on a freshly mapped
    * row (defaulting to {@link TraceCommentKind.Comment} when the stored metadata
@@ -282,12 +292,81 @@ export type TraceComment = TraceCommentDraft & {
    * so consumers must normalize missing replies to an empty array.
    */
   replies?: TraceCommentReply[];
+  /**
+   * ISS-8597 (PRD-699 §5 D2): this comment's delivery to the cloud was
+   * permanently rejected and the desktop lane has stopped retrying it, so the
+   * author is the only one who can move it.
+   *
+   * OMITTED rather than `false` on every other row, and optional so an older
+   * payload or a source that cannot know says nothing instead of claiming
+   * delivery. Every reader must treat absence as "not abandoned", never as
+   * "unknown".
+   *
+   * ISS-10382 gave it a SECOND writer and a cloud representation. It is no
+   * longer desktop-only: the API persists it on the comment's thread metadata
+   * and serves it here, so a shell with no local queue can show its author a
+   * dead-lettered comment and offer the door. The two writers describe different
+   * rows — the desktop store answers for a row its own queue dead-lettered, the
+   * cloud for one it holds and was asked to mark — and each is cleared by a
+   * retry aimed at ITS OWN store.
+   *
+   * ISS-10827 GAVE IT ITS PRODUCER: the desktop lane of builds older than
+   * ISS-11213 reports every dead letter it has not yet reported through
+   * `traceCommentSyncAbandonedPath`, driven by its own store-wide sweep rather
+   * than by any renderer, and the verdict it reports is the one its SQL reached —
+   * the cloud stores it and never re-derives it. ISS-11213 deleted that lane from
+   * this tree, so those older installed builds are now the only producer.
+   *
+   * IN THOSE OLDER BUILDS THE TWO WRITERS ARE KEPT IN STEP, in one direction
+   * each. Up: the desktop reports. Down: the desktop's reconcile of the cloud LIST
+   * re-pends a row whose marker its author cleared here, so a web retry genuinely
+   * returns that row to the desktop drain. What the desktop CANNOT do is act on a
+   * cloud copy that has moved on — a later `update` clears this marker too, and the two are
+   * indistinguishable by absence alone, so the desktop compares generations and
+   * declines rather than overwrite a newer edit with the local one it still owes.
+   *
+   * IT IS STILL GATED, and the gate is the desktop terminal write's
+   * `trace-comment-sync-abandoned` key. This used to add that no PostHog flag
+   * carried that key (ISS-10531), so the field stayed absent in production;
+   * that was false when written — the flag was created 2026-09-16, a day before
+   * ISS-10531 recorded it absent, and is active at 100% behind a property
+   * filter. So the field DOES arrive in production for a reader that filter
+   * selects. It is still closed by construction rather than by a second read on
+   * this side: no row reaches `abandoned` while the gate is closed for its
+   * writer. The declaring module carries the correction.
+   *
+   * IT IS ALSO SERVED TO EVERY VIEWER of the thread, not only the author, so a
+   * reader can see a failure they cannot act on. Authorship used to be implicit
+   * — a local queue holds only its own user's outgoing rows — and is now
+   * explicit: both shells gate the retry affordance on `canEdit`, and the API
+   * answers `forbidden` to anyone else.
+   *
+   * WHAT THE CLOUD CANNOT REPRESENT, and why that is a boundary rather than a
+   * gap: a dead-lettered CREATE never reached the cloud, so no row exists here to
+   * carry this field and no cloud-backed shell can ever render it. The web shell
+   * therefore sees this only on a comment whose root already landed — an
+   * abandoned UPDATE. That is a property of where the row is, not of which shell
+   * is asking, so no implementation on this side can widen it.
+   *
+   * TWO THINGS CLEAR THE CLOUD COPY: a retry, and a later `update` that lands.
+   * The marker is a fact about the last delivery attempt, so a successful edit
+   * of the same row is evidence it is stale — without that, the badge would go
+   * on asserting a failure that is no longer true until its author clicked Retry
+   * on a comment with nothing left to retry.
+   */
+  syncAbandoned?: boolean;
 };
 
 /** Default page size for the org-scoped aggregate `GET /trace-comments` (FEA-3550). */
 export const TRACE_COMMENT_LIST_DEFAULT_LIMIT = 50;
 /** Upper bound on a single aggregate trace-comment page (FEA-3550). */
 export const TRACE_COMMENT_LIST_MAX_LIMIT = 100;
+/**
+ * ISS-8734: ceiling on the `offset` accepted by `GET /trace-comments`. Level
+ * with `SESSION_LIST_MAX_OFFSET` and its siblings; rejected at the schema,
+ * never clamped.
+ */
+export const TRACE_COMMENT_LIST_MAX_OFFSET = 10_000;
 
 /**
  * Paginated response for the aggregate `GET /trace-comments` endpoint (FEA-3550).
@@ -296,8 +375,13 @@ export const TRACE_COMMENT_LIST_MAX_LIMIT = 100;
  * artifact id) and `artifactId`, so a caller can deep-link back to the
  * session/branch and reply without a second lookup. `total` is the full
  * org-scoped match count for the applied filters. `nextCursor` is an opaque
- * offset token to pass back as `cursor` for the next page (`null` when the result
- * set is exhausted); newest-first ordering means it is a simple offset, not a
+ * offset token to pass back as `cursor` for the next page — `null` when the
+ * result set is exhausted, and equally when the next offset would exceed
+ * {@link TRACE_COMMENT_LIST_MAX_OFFSET}, because the schema rejects a `cursor`
+ * past that ceiling and minting one would answer 400 to a token this endpoint
+ * issued. `total` still reports the whole population, so more-rows-than-returned
+ * with no cursor means the pagination cannot reach the rest, not that there are
+ * none. Newest-first ordering means it is a simple offset, not a
  * keyset, so a page boundary can shift under concurrent writes — fine for the
  * "sweep all open comments" use case, not a stable snapshot.
  */
@@ -308,18 +392,38 @@ export type TraceCommentListResponse = {
 };
 
 /**
+ * The one constraint a trace-comment target id must satisfy, on any transport.
+ * Deliberately NOT a UUID: per {@link TraceCommentTarget.id} the API resolves
+ * either a cloud artifact id or a desktop-local external session id against the
+ * same artifact, so a client that demands a UUID rejects input the API would
+ * have served (ISS-6468). Import this wherever a target id is validated rather
+ * than restating a shape. Note what is NOT a target id and correctly stays
+ * UUID-typed: the `/sessions/{uuid}` canonical URL, and the `sessionId` FILTER
+ * on `GET /trace-comments`, which matches the `artifactId` column directly.
+ *
+ * Declared above {@link traceCommentTargetSchema} because that schema is
+ * evaluated at module load and would hit the temporal dead zone otherwise.
+ */
+export const traceCommentTargetIdSchema = z
+  .string()
+  .min(1)
+  .max(TRACE_COMMENT_ID_MAX_LENGTH);
+
+/**
  * Shared target validator for trace comment transports. Keeping this beside the
  * wire type prevents web, API, and desktop IPC from accepting different target
  * discriminators or unbounded ids.
  */
+const traceCommentTargetShape = {
+  type: z.union([
+    z.literal(CommentTargetType.Session),
+    z.literal(CommentTargetType.Branch),
+  ]),
+  id: traceCommentTargetIdSchema,
+} satisfies Record<keyof TraceCommentTarget, z.ZodTypeAny>;
+
 export const traceCommentTargetSchema: z.ZodType<TraceCommentTarget> = z.object(
-  {
-    type: z.union([
-      z.literal(TraceCommentTargetType.Session),
-      z.literal(TraceCommentTargetType.Branch),
-    ]),
-    id: z.string().min(1).max(TRACE_COMMENT_ID_MAX_LENGTH),
-  }
+  traceCommentTargetShape
 );
 
 /**
@@ -360,7 +464,7 @@ const traceTextAnchorActorShape = {
   human: z.string().max(TRACE_COMMENT_ID_MAX_LENGTH).nullable(),
 } satisfies Record<keyof NonNullable<TraceTextAnchor["actor"]>, z.ZodTypeAny>;
 
-const traceTextAnchorShape = {
+export const traceTextAnchorShape = {
   traceId: z.string().min(1).max(TRACE_COMMENT_ID_MAX_LENGTH),
   turnId: z.string().min(1).max(TRACE_COMMENT_ID_MAX_LENGTH),
   row: z.number().int().nonnegative(),
@@ -372,10 +476,13 @@ const traceTextAnchorShape = {
   actor: z.object(traceTextAnchorActorShape).nullable().optional(),
 } satisfies Record<keyof TraceTextAnchor, z.ZodTypeAny>;
 
+export const TRACE_TEXT_ANCHOR_OFFSET_ORDER_MESSAGE =
+  "endOffset must be greater than or equal to startOffset";
+
 export const traceTextAnchorSchema: z.ZodType<TraceTextAnchor> = z
   .object(traceTextAnchorShape)
-  .refine((anchor) => anchor.endOffset >= anchor.startOffset, {
-    message: "endOffset must be greater than or equal to startOffset",
+  .refine(hasTraceTextAnchorOffsetOrder, {
+    message: TRACE_TEXT_ANCHOR_OFFSET_ORDER_MESSAGE,
     path: ["endOffset"],
   });
 
@@ -445,29 +552,51 @@ export const traceCommentDraftKindSchema: z.ZodType<TraceCommentKind> = z
   .unknown()
   .transform(normalizeTraceCommentKind);
 
-/** Validates a new root trace comment payload. */
-export const traceCommentDraftSchema: z.ZodType<TraceCommentDraft> = z.object({
+/**
+ * Field validators for the trace comment WRITE payloads, kept as standalone
+ * literals so the keys-covered guard can see them. The rationale is the one
+ * spelled out on {@link traceTextAnchorShape} above and is not repeated per
+ * schema: `z.ZodType<T>` is covariant in its output, so the annotation alone
+ * lets a schema omit an optional key of `T` with no error, and because these are
+ * plain `z.object`s rather than `.strict()` the untaught key is silently
+ * STRIPPED rather than rejected.
+ *
+ * On these three that lands on user content: a field added to
+ * {@link TraceCommentDraft} but never taught here is dropped from every POST
+ * body before persistence, so the comment is created without it and the client
+ * sees a 201. `satisfies` makes that a `tsc` failure instead.
+ */
+const traceCommentDraftShape = {
   anchor: traceTextAnchorSchema,
   body: z.string().min(1).max(TRACE_COMMENT_BODY_MAX_LENGTH),
   mentions: traceCommentMentionsSchema.optional(),
   clientId: traceCommentClientIdSchema.optional(),
   kind: traceCommentDraftKindSchema.optional(),
-});
+} satisfies Record<keyof TraceCommentDraft, z.ZodTypeAny>;
+
+const traceCommentReplyDraftShape = {
+  body: z.string().min(1).max(TRACE_COMMENT_BODY_MAX_LENGTH),
+  mentions: traceCommentMentionsSchema.optional(),
+  clientId: traceCommentClientIdSchema.optional(),
+} satisfies Record<keyof TraceCommentReplyDraft, z.ZodTypeAny>;
+
+const traceCommentUpdateShape = {
+  body: z.string().min(1).max(TRACE_COMMENT_BODY_MAX_LENGTH),
+  mentions: traceCommentMentionsSchema.optional(),
+} satisfies Record<keyof TraceCommentUpdate, z.ZodTypeAny>;
+
+/** Validates a new root trace comment payload. */
+export const traceCommentDraftSchema: z.ZodType<TraceCommentDraft> = z.object(
+  traceCommentDraftShape
+);
 
 /** Validates a trace comment reply payload. */
 export const traceCommentReplyDraftSchema: z.ZodType<TraceCommentReplyDraft> =
-  z.object({
-    body: z.string().min(1).max(TRACE_COMMENT_BODY_MAX_LENGTH),
-    mentions: traceCommentMentionsSchema.optional(),
-    clientId: traceCommentClientIdSchema.optional(),
-  });
+  z.object(traceCommentReplyDraftShape);
 
 /** Validates a trace comment edit payload. */
 export const traceCommentUpdateSchema: z.ZodType<TraceCommentUpdate> = z.object(
-  {
-    body: z.string().min(1).max(TRACE_COMMENT_BODY_MAX_LENGTH),
-    mentions: traceCommentMentionsSchema.optional(),
-  }
+  traceCommentUpdateShape
 );
 
 /** Max plain-text length of a document-thread reply body (FEA-3950). */
@@ -483,18 +612,20 @@ export type DocumentThreadReplyDraft = {
   body: string;
 };
 
+const documentThreadReplyDraftShape = {
+  body: z.string().min(1).max(DOCUMENT_THREAD_REPLY_BODY_MAX_LENGTH),
+} satisfies Record<keyof DocumentThreadReplyDraft, z.ZodTypeAny>;
+
 /** Validates a document-thread reply payload (FEA-3950). */
 export const documentThreadReplyDraftSchema: z.ZodType<DocumentThreadReplyDraft> =
-  z.object({
-    body: z.string().min(1).max(DOCUMENT_THREAD_REPLY_BODY_MAX_LENGTH),
-  });
+  z.object(documentThreadReplyDraftShape);
 
 /** Canonical HTTP collection path for target-scoped trace comments. */
 export function traceCommentsPath(target: TraceCommentTarget): string {
-  const base =
-    target.type === TraceCommentTargetType.Session
-      ? "/agent-sessions"
-      : "/branches";
+  const base = TRACE_COMMENT_COLLECTION_BASES[target.type];
+  if (base === null) {
+    throw new Error(`No trace-comment route serves a ${target.type} target.`);
+  }
   return `${base}/${encodeURIComponent(target.id)}/trace-comments`;
 }
 
@@ -512,6 +643,40 @@ export function traceCommentRepliesPath(
   commentId: string
 ): string {
   return `${traceCommentPath(target, commentId)}/replies`;
+}
+
+/**
+ * ISS-10382: canonical HTTP path for the author's recovery door on a
+ * dead-lettered trace comment.
+ *
+ * Its own subpath rather than a field on the PATCH edit, because the two are
+ * different acts by different rules. An edit replaces content the author wrote
+ * and bumps `editedAt`; this changes only the row's delivery state and must NOT
+ * touch the body or the edit stamp — the same reason the desktop store's retry
+ * deliberately leaves `updated_at` alone.
+ */
+export function traceCommentRetrySyncPath(
+  target: TraceCommentTarget,
+  commentId: string
+): string {
+  return `${traceCommentPath(target, commentId)}/retry-sync`;
+}
+
+/**
+ * ISS-10382: canonical HTTP path for reporting that a trace comment's delivery
+ * has exhausted its terminal item budget.
+ *
+ * The producer half of the contract, and the reason the cloud can represent a
+ * dead letter at all. A client that owns a delivery queue — today only the
+ * desktop lane, which is the only place an item budget is charged — reports the
+ * verdict here; the cloud stores it and every shell reading that comment can
+ * then show its author the failure and the door.
+ */
+export function traceCommentSyncAbandonedPath(
+  target: TraceCommentTarget,
+  commentId: string
+): string {
+  return `${traceCommentPath(target, commentId)}/sync-abandoned`;
 }
 
 /**
@@ -558,4 +723,54 @@ export function resolveAnchorStatusKernel(input: {
   return input.anchorPreview === undefined
     ? null
     : DocumentThreadAnchorStatus.Anchored;
+}
+
+export function hasTraceTextAnchorOffsetOrder(
+  anchor: Pick<TraceTextAnchor, "startOffset" | "endOffset">
+): boolean {
+  return anchor.endOffset >= anchor.startOffset;
+}
+
+/**
+ * ISS-11113: canonical HTTP path for reading a target's root trace comment by
+ * the `clientId` its create carried (FEA-3598). It answers the target's list
+ * narrowed to that key — zero comments or one — and writes nothing, so a client
+ * can learn whether a create it never heard back about landed without
+ * re-sending it.
+ */
+export function traceCommentByClientIdPath(
+  target: TraceCommentTarget,
+  clientId: string
+): string {
+  return `${traceCommentsPath(target)}/by-client-id/${encodeURIComponent(clientId)}`;
+}
+
+/**
+ * ISS-11113: the `maxDuration` the trace-comment collection routes declare, so
+ * the platform ends a create no later than this after it starts. A client that
+ * has stopped sending a create and reads its `clientId` back as absent can
+ * believe that answer once it has stayed absent this long.
+ */
+export const TRACE_COMMENT_CREATE_MAX_DURATION_SECONDS = 300;
+
+/**
+ * ISS-11004: query param on a target's trace-comment GET naming one thread to
+ * return even when it falls past the collection's thread cap, so an Activity
+ * link to that thread still finds its card in the rail.
+ */
+export const TRACE_COMMENT_INCLUDE_THREAD_PARAM = "includeThreadId";
+
+/** A thread id the {@link TRACE_COMMENT_INCLUDE_THREAD_PARAM} read accepts. */
+export const traceCommentIncludeThreadIdSchema = z.uuid();
+
+/** Document comments are served only by the unified routes (PLN-2187). */
+const TRACE_COMMENT_COLLECTION_BASES = {
+  [CommentTargetType.Session]: "/agent-sessions",
+  [CommentTargetType.Branch]: "/branches",
+  [CommentTargetType.Document]: null,
+} as const satisfies Record<CommentTargetType, string | null>;
+
+/** Whether the legacy trace-comment routes serve this target type. */
+export function hasTraceCommentRoutes(type: CommentTargetType): boolean {
+  return TRACE_COMMENT_COLLECTION_BASES[type] !== null;
 }

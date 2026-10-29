@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mockUseOrganization = vi.fn();
 const mockUseAuth = vi.fn();
 const mockUseRouteParams = vi.fn();
+const mockUseLocalTrustedIdentity = vi.fn();
 
 vi.mock("@repo/auth/client", () => ({
   useOrganization: () => mockUseOrganization(),
@@ -16,6 +17,17 @@ vi.mock("@repo/auth/client", () => ({
 vi.mock("@repo/navigation/use-route-params", () => ({
   useRouteParams: () => mockUseRouteParams(),
 }));
+
+vi.mock("@repo/auth/local-trusted-client", () => ({
+  useLocalTrustedIdentity: () => mockUseLocalTrustedIdentity(),
+}));
+
+/** The synthetic session `AUTH_MODE=local_trusted` resolves server-side. */
+const LOCAL_TRUSTED_IDENTITY = {
+  orgId: "org_e2e_local_trusted",
+  orgSlug: "closedloop-ai",
+  userId: "user_e2e_local_trusted",
+};
 
 async function loadHook() {
   const mod = await import("@/hooks/use-org-slug");
@@ -28,6 +40,11 @@ describe("useOrgSlug", () => {
     vi.resetModules();
     // Default to a signed-in caller; the sign-out case overrides this.
     mockUseAuth.mockReturnValue({ isSignedIn: true });
+    // Every pre-existing case is a real deployment, where the server resolves
+    // no synthetic identity. Set explicitly, because an unset mock returns
+    // `undefined` and the new fallback would read as "no org" for the wrong
+    // reason.
+    mockUseLocalTrustedIdentity.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -112,4 +129,120 @@ describe("useOrgSlug", () => {
 
     expect(result.current).toBe("");
   });
+  it("names the synthetic session's org when Clerk has none (ISS-10335)", async () => {
+    // Above the `[orgSlug]` gate on the Clerk-free lane: no route param and no
+    // Clerk org, so before this the hook answered "" and every caller held its
+    // org-scoped link.
+    mockUseRouteParams.mockReturnValue({});
+    mockUseOrganization.mockReturnValue({ organization: null, isLoaded: true });
+    mockUseLocalTrustedIdentity.mockReturnValue(LOCAL_TRUSTED_IDENTITY);
+
+    const useOrgSlug = await loadHook();
+    const { result } = renderHook(() => useOrgSlug());
+
+    expect(result.current).toBe(LOCAL_TRUSTED_IDENTITY.orgSlug);
+  });
 });
+
+describe("useNavOrgSlug", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    mockUseAuth.mockReturnValue({ isSignedIn: true });
+    // Every pre-existing case is a real deployment, where the server resolves
+    // no synthetic identity. Set explicitly, because an unset mock returns
+    // `undefined` and the new fallback would read as "no org" for the wrong
+    // reason.
+    mockUseLocalTrustedIdentity.mockReturnValue(null);
+  });
+
+  it("prefers the active organization's slug over a foreign URL slug", async () => {
+    // ISS-6567: the gated state, where the URL names an org the user is not in
+    // and nav hrefs would otherwise carry it alongside active-org entity ids.
+    mockUseRouteParams.mockReturnValue({ orgSlug: "craft-five" });
+    mockUseOrganization.mockReturnValue({
+      organization: { slug: "closedloop-ai" },
+      isLoaded: true,
+    });
+
+    const useNavOrgSlug = await loadNavHook();
+    const { result } = renderHook(() => useNavOrgSlug());
+
+    expect(result.current).toBe("closedloop-ai");
+  });
+
+  it("returns empty rather than the URL slug while the active org is unresolved", async () => {
+    // ISS-7344, replacing the URL fallback this hook used to carry here. Mid
+    // org-switch the URL slug already names the org being switched TO while the
+    // cache still holds the org being switched FROM, so the fallback minted the
+    // very hybrid cross-org href it was added to prevent — and did it before the
+    // clearing effect ran. "" is the "not yet available" contract callers above
+    // the `[orgSlug]` gate hold their org-scoped links on.
+    mockUseRouteParams.mockReturnValue({ orgSlug: "acme" });
+    mockUseOrganization.mockReturnValue({
+      organization: null,
+      isLoaded: false,
+    });
+
+    const useNavOrgSlug = await loadNavHook();
+    const { result } = renderHook(() => useNavOrgSlug());
+
+    expect(result.current).toBe("");
+  });
+
+  it("returns empty when Clerk has loaded with no active organization", async () => {
+    // The signed-out / between-orgs window, distinct from the loading one above:
+    // Clerk is settled and there is genuinely no org to name. The URL slug is no
+    // more trustworthy here than it is mid-load.
+    mockUseRouteParams.mockReturnValue({ orgSlug: "acme" });
+    mockUseOrganization.mockReturnValue({
+      organization: null,
+      isLoaded: true,
+    });
+
+    const useNavOrgSlug = await loadNavHook();
+    const { result } = renderHook(() => useNavOrgSlug());
+
+    expect(result.current).toBe("");
+  });
+
+  it("names the synthetic session's org when Clerk has none (ISS-10335)", async () => {
+    // The Clerk-free lane: no Clerk session at all, so `useOrganization()` never
+    // resolves. Without this the hook answers "", `useOrgPathBuilder` emits the
+    // org-relative path unprefixed, and the shell comes to rest on
+    // `/my-tasks/dashboard` — an org route named after a landing segment.
+    mockUseRouteParams.mockReturnValue({});
+    mockUseOrganization.mockReturnValue({
+      organization: null,
+      isLoaded: true,
+    });
+    mockUseLocalTrustedIdentity.mockReturnValue(LOCAL_TRUSTED_IDENTITY);
+
+    const useNavOrgSlug = await loadNavHook();
+    const { result } = renderHook(() => useNavOrgSlug());
+
+    expect(result.current).toBe(LOCAL_TRUSTED_IDENTITY.orgSlug);
+  });
+
+  it("still prefers a resolved Clerk org over the synthetic identity", async () => {
+    // Belt and braces on the ordering: if both are somehow present, Clerk wins.
+    // A test that only set the synthetic one could not tell this from a hook
+    // that had stopped reading Clerk entirely.
+    mockUseRouteParams.mockReturnValue({});
+    mockUseOrganization.mockReturnValue({
+      organization: { slug: "globex" },
+      isLoaded: true,
+    });
+    mockUseLocalTrustedIdentity.mockReturnValue(LOCAL_TRUSTED_IDENTITY);
+
+    const useNavOrgSlug = await loadNavHook();
+    const { result } = renderHook(() => useNavOrgSlug());
+
+    expect(result.current).toBe("globex");
+  });
+});
+
+async function loadNavHook() {
+  const mod = await import("@/hooks/use-org-slug");
+  return mod.useNavOrgSlug;
+}

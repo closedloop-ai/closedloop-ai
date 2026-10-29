@@ -1,12 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MentionComposer } from "../mention-composer";
 
 const mockUseOrganizationUsers = vi.fn();
-vi.mock("@repo/app/users/hooks/use-users", () => ({
-  useOrganizationUsers: () => mockUseOrganizationUsers(),
-}));
 
 beforeEach(() => {
   mockUseOrganizationUsers.mockReturnValue({
@@ -43,7 +41,13 @@ describe("MentionComposer (FEA-3490)", () => {
   it("opens a filtered member picker on '@' and inserts the chosen mention", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
-    render(<MentionComposer onCancel={vi.fn()} onSubmit={onSubmit} />);
+    render(
+      <MentionComposer
+        members={mockUseOrganizationUsers().data}
+        onCancel={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
 
     const textarea = screen.getByRole("textbox");
     await user.click(textarea);
@@ -74,7 +78,13 @@ describe("MentionComposer (FEA-3490)", () => {
   it("drops a mention whose inserted label was deleted from the body", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
-    render(<MentionComposer onCancel={vi.fn()} onSubmit={onSubmit} />);
+    render(
+      <MentionComposer
+        members={mockUseOrganizationUsers().data}
+        onCancel={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
 
     const textarea = screen.getByRole("textbox");
     await user.click(textarea);
@@ -107,7 +117,13 @@ describe("MentionComposer (FEA-3490)", () => {
         },
       ],
     });
-    render(<MentionComposer onCancel={vi.fn()} onSubmit={onSubmit} />);
+    render(
+      <MentionComposer
+        members={mockUseOrganizationUsers().data}
+        onCancel={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
 
     const textarea = screen.getByRole("textbox");
     await user.click(textarea);
@@ -128,7 +144,13 @@ describe("MentionComposer (FEA-3490)", () => {
   it("submits with no mentions for a plain comment", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
-    render(<MentionComposer onCancel={vi.fn()} onSubmit={onSubmit} />);
+    render(
+      <MentionComposer
+        members={mockUseOrganizationUsers().data}
+        onCancel={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
 
     const textarea = screen.getByRole("textbox");
     await user.type(textarea, "just a note");
@@ -142,7 +164,13 @@ describe("MentionComposer (FEA-3490)", () => {
 
   it("opens an empty picker when the '@' toolbar button is clicked", async () => {
     const user = userEvent.setup();
-    render(<MentionComposer onCancel={vi.fn()} onSubmit={vi.fn()} />);
+    render(
+      <MentionComposer
+        members={mockUseOrganizationUsers().data}
+        onCancel={vi.fn()}
+        onSubmit={vi.fn()}
+      />
+    );
 
     await user.click(screen.getByRole("button", { name: "Mention" }));
 
@@ -163,7 +191,11 @@ describe("MentionComposer (FEA-3490)", () => {
     const user = userEvent.setup();
     render(
       <div data-testid="clipping-scroller" style={{ overflow: "hidden" }}>
-        <MentionComposer onCancel={vi.fn()} onSubmit={vi.fn()} />
+        <MentionComposer
+          members={mockUseOrganizationUsers().data}
+          onCancel={vi.fn()}
+          onSubmit={vi.fn()}
+        />
       </div>
     );
 
@@ -179,11 +211,47 @@ describe("MentionComposer (FEA-3490)", () => {
     expect(menu).toHaveTextContent("Ada Lovelace");
   });
 
+  // PLN-2189 T-2.8: the list moved to `mention-suggestion-list.tsx`; the
+  // composer's menu is unchanged by the editor picker's listbox mode.
+  it("keeps its menu as plain member buttons sized to the textarea", async () => {
+    const user = userEvent.setup();
+    render(
+      <MentionComposer
+        members={mockUseOrganizationUsers().data}
+        onCancel={vi.fn()}
+        onSubmit={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Mention" }));
+    const menu = await screen.findByTestId("mention-suggestions");
+
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(
+      within(menu)
+        .getAllByRole("button")
+        .map((row) => row.textContent)
+    ).toEqual([
+      // One initial on every avatar (Nerys, 2026-10-22).
+      "AAda Lovelaceada@example.com",
+      "GGrace Hoppergrace@example.com",
+    ]);
+    const textareaWidth = screen
+      .getByRole("textbox")
+      .getBoundingClientRect().width;
+    expect(menu.style.width).toBe(`${textareaWidth}px`);
+  });
+
   it("ignores a Cmd/Ctrl+Enter submit while a post is already in flight", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
     render(
-      <MentionComposer isPending onCancel={vi.fn()} onSubmit={onSubmit} />
+      <MentionComposer
+        isPending
+        members={mockUseOrganizationUsers().data}
+        onCancel={vi.fn()}
+        onSubmit={onSubmit}
+      />
     );
 
     const textarea = screen.getByRole("textbox");
@@ -202,7 +270,13 @@ describe("MentionComposer (FEA-3490)", () => {
       .fn()
       .mockRejectedValueOnce(new Error("boom"))
       .mockResolvedValueOnce(undefined);
-    render(<MentionComposer onCancel={vi.fn()} onSubmit={onSubmit} />);
+    render(
+      <MentionComposer
+        members={mockUseOrganizationUsers().data}
+        onCancel={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
 
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
     await user.click(textarea);
@@ -216,5 +290,95 @@ describe("MentionComposer (FEA-3490)", () => {
     await user.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(textarea.value).toBe(""));
     expect(onSubmit).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves a controlled draft to its owner after a submit (PLN-2162 decision 4)", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    function Owner() {
+      const [value, setValue] = useState("");
+      return (
+        <MentionComposer
+          members={mockUseOrganizationUsers().data}
+          onSubmit={onSubmit}
+          onValueChange={setValue}
+          value={value}
+        />
+      );
+    }
+    render(<Owner />);
+
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await user.click(textarea);
+    await user.type(textarea, "owner keeps this");
+    await user.click(screen.getByRole("button", { name: "Comment" }));
+
+    expect(onSubmit).toHaveBeenCalledExactlyOnceWith({
+      body: "owner keeps this",
+      mentions: [],
+    });
+    expect(textarea.value).toBe("owner keeps this");
+  });
+
+  it("carries no picked mention past a controlled draft its owner cleared", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    function Owner() {
+      const [value, setValue] = useState("");
+      return (
+        <MentionComposer
+          members={mockUseOrganizationUsers().data}
+          onSubmit={(payload) => {
+            onSubmit(payload);
+            setValue("");
+          }}
+          onValueChange={setValue}
+          value={value}
+        />
+      );
+    }
+    render(<Owner />);
+
+    const textarea = screen.getByRole("textbox");
+    await user.click(textarea);
+    await user.type(textarea, "@ad");
+    await user.click(await screen.findByText("Ada Lovelace"));
+    await user.click(screen.getByRole("button", { name: "Comment" }));
+    await user.type(textarea, "@Ada Lovelace again");
+    await user.click(screen.getByRole("button", { name: "Comment" }));
+
+    expect(onSubmit.mock.calls.map(([payload]) => payload.mentions)).toEqual([
+      ["u-ada"],
+      [],
+    ]);
+  });
+
+  it("keeps a controlled draft's picks while its owner keeps the text", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    function Owner() {
+      const [value, setValue] = useState("");
+      return (
+        <MentionComposer
+          members={mockUseOrganizationUsers().data}
+          onSubmit={onSubmit}
+          onValueChange={setValue}
+          value={value}
+        />
+      );
+    }
+    render(<Owner />);
+
+    const textarea = screen.getByRole("textbox");
+    await user.click(textarea);
+    await user.type(textarea, "@ad");
+    await user.click(await screen.findByText("Ada Lovelace"));
+    await user.click(screen.getByRole("button", { name: "Comment" }));
+    await user.click(screen.getByRole("button", { name: "Comment" }));
+
+    expect(onSubmit.mock.calls.map(([payload]) => payload.mentions)).toEqual([
+      ["u-ada"],
+      ["u-ada"],
+    ]);
   });
 });

@@ -136,7 +136,8 @@ type MockDb = {
   agentComponentSessionUsage: { findMany: ReturnType<typeof vi.fn> };
 };
 
-function installDb(usageRows: UsageRowFixture[]): void {
+/** Returns the `findMany` double, for the cases that assert on the emitted args. */
+function installDb(usageRows: UsageRowFixture[]): ReturnType<typeof vi.fn> {
   const db: MockDb = {
     agentComponentSessionUsage: {
       findMany: vi.fn().mockResolvedValue(usageRows),
@@ -146,6 +147,7 @@ function installDb(usageRows: UsageRowFixture[]): void {
   mocks.withDb.mockImplementation((callback: (db: MockDb) => unknown) =>
     callback(db)
   );
+  return db.agentComponentSessionUsage.findMany;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,14 +182,7 @@ describe("analyticsService.fetchTokenTrend", () => {
     });
 
     it("parses a valid kind::key slug and queries the DB with correct fields", async () => {
-      const findMany = vi.fn().mockResolvedValue([]);
-      mocks.withDb.mockImplementation(
-        (
-          cb: (db: {
-            agentComponentSessionUsage: { findMany: typeof findMany };
-          }) => unknown
-        ) => cb({ agentComponentSessionUsage: { findMany } })
-      );
+      const findMany = installDb([]);
 
       const result = await analyticsService.fetchTokenTrend(
         ORG,
@@ -203,14 +198,13 @@ describe("analyticsService.fetchTokenTrend", () => {
         expect.objectContaining({
           where: expect.objectContaining({
             componentKind: "command",
-            // FEA-3757: case-insensitive componentKey match (raw stored keys can
-            // be mixed-case while the slug key is lowercased). FEA-4335: the key
-            // predicate is now OR-wrapped over the full name set (`keys`) so a
-            // content-hash key installed under several names matches all of them;
-            // a legacy name-level slug resolves to a single-element OR.
-            OR: [
-              { componentKey: { equals: "code-review", mode: "insensitive" } },
-            ],
+            // FEA-3757: the match folds case (raw stored keys can be mixed-case
+            // while the slug key is lowercased). FEA-4335: it covers the full
+            // name set (`keys`), so a content-hash key installed under several
+            // names matches all of them. ISS-6756: an equality on the PERSISTED
+            // fold, not `mode: "insensitive"` — that compiles to an `ILIKE` no
+            // btree can serve.
+            componentKeyNormalized: { in: ["code-review"] },
           }),
         })
       );
@@ -621,38 +615,22 @@ describe("analyticsService.fetchTokenTrend", () => {
   });
 
   describe("query filters forwarded to Prisma", () => {
-    it("includes userId filter in the Prisma where clause when provided", async () => {
-      const findMany = vi.fn().mockResolvedValue([]);
-      mocks.withDb.mockImplementation(
-        (
-          cb: (db: {
-            agentComponentSessionUsage: { findMany: typeof findMany };
-          }) => unknown
-        ) => cb({ agentComponentSessionUsage: { findMany } })
-      );
+    it("scopes userId to the sessions that user created", async () => {
+      const findMany = installDb([]);
 
       await analyticsService.fetchTokenTrend(ORG, "command::build", {
         userId: "user-abc",
       });
 
-      expect(findMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            session: expect.objectContaining({ userId: "user-abc" }),
-          }),
-        })
-      );
+      const where = findMany.mock.calls[0]?.[0].where;
+      expect(where.session.artifact).toEqual({
+        organizationId: ORG,
+        createdById: "user-abc",
+      });
     });
 
     it("includes since/until date filters in the Prisma where clause when provided", async () => {
-      const findMany = vi.fn().mockResolvedValue([]);
-      mocks.withDb.mockImplementation(
-        (
-          cb: (db: {
-            agentComponentSessionUsage: { findMany: typeof findMany };
-          }) => unknown
-        ) => cb({ agentComponentSessionUsage: { findMany } })
-      );
+      const findMany = installDb([]);
 
       await analyticsService.fetchTokenTrend(ORG, "command::build", {
         since: "2026-06-01T00:00:00Z",
@@ -674,14 +652,7 @@ describe("analyticsService.fetchTokenTrend", () => {
     });
 
     it("FEA-3590: defaults a bounded lookback lower bound when neither since nor until is provided", async () => {
-      const findMany = vi.fn().mockResolvedValue([]);
-      mocks.withDb.mockImplementation(
-        (
-          cb: (db: {
-            agentComponentSessionUsage: { findMany: typeof findMany };
-          }) => unknown
-        ) => cb({ agentComponentSessionUsage: { findMany } })
-      );
+      const findMany = installDb([]);
 
       // Pinned so the lower bound is exact, not a ±1s window.
       vi.useFakeTimers();
@@ -699,24 +670,16 @@ describe("analyticsService.fetchTokenTrend", () => {
 
       // A default ~90-day lower bound stops a param-less request over a hot
       // component from materializing the whole usage corpus.
-      expect(startedAt?.gte).toBeInstanceOf(Date);
+      const lowerBound = startedAt?.gte;
+      expect(lowerBound).toBeInstanceOf(Date);
       const lookbackMs = 90 * 24 * 60 * 60 * 1000;
-      expect((startedAt?.gte as Date).getTime()).toBe(
-        PINNED_NOW_MS - lookbackMs
-      );
+      expect((lowerBound as Date).getTime()).toBe(PINNED_NOW_MS - lookbackMs);
       // No upper bound is forced when the caller supplies neither param.
       expect(startedAt?.lte).toBeUndefined();
     });
 
     it("FEA-3590: honors an explicit since verbatim without applying the default lookback", async () => {
-      const findMany = vi.fn().mockResolvedValue([]);
-      mocks.withDb.mockImplementation(
-        (
-          cb: (db: {
-            agentComponentSessionUsage: { findMany: typeof findMany };
-          }) => unknown
-        ) => cb({ agentComponentSessionUsage: { findMany } })
-      );
+      const findMany = installDb([]);
 
       await analyticsService.fetchTokenTrend(ORG, "command::build", {
         since: "2026-01-01T00:00:00Z",
@@ -728,30 +691,17 @@ describe("analyticsService.fetchTokenTrend", () => {
           where?: { session?: { sessionStartedAt?: { gte?: Date } } };
         }
       )?.where?.session?.sessionStartedAt;
-      expect((startedAt?.gte as Date).toISOString()).toBe(
+      const lowerBound = startedAt?.gte;
+      expect(lowerBound).toBeInstanceOf(Date);
+      expect((lowerBound as Date).toISOString()).toBe(
         "2026-01-01T00:00:00.000Z"
       );
     });
 
-    it("FEA-3590: bounds the read with a deterministic order and row cap", async () => {
-      const findMany = vi.fn().mockResolvedValue([]);
-      mocks.withDb.mockImplementation(
-        (
-          cb: (db: {
-            agentComponentSessionUsage: { findMany: typeof findMany };
-          }) => unknown
-        ) => cb({ agentComponentSessionUsage: { findMany } })
-      );
-
-      await analyticsService.fetchTokenTrend(ORG, "command::build", {});
-
-      expect(findMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          take: 20_000,
-          orderBy: [{ session: { sessionStartedAt: "desc" } }, { id: "asc" }],
-        })
-      );
-    });
+    // FEA-3590's deterministic order and row cap are asserted in
+    // `token-trend-row-ceiling.test.ts`, whose double actually executes `take`
+    // and `orderBy` — the doubles here return a fixed array however they are
+    // asked, so the bound was never observable through them.
   });
 
   describe("time-bucketing (sessions on different days)", () => {
@@ -851,14 +801,17 @@ describe("analyticsService.fetchTokenTrend", () => {
         {}
       );
 
-      // The Prisma where must be case-insensitive so the mixed-case row matches.
+      // The Prisma where must fold case so the mixed-case row matches. ISS-6756:
+      // the fold is the row's PERSISTED `componentKeyNormalized`, which the
+      // table's trigger derives as `lower(btrim(component_key))` — the same fold
+      // `normalizeComponentKey` applies to the slug key on the query side.
       expect(findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
             componentKind: "subagent",
-            // FEA-4335: OR-wrapped over the name set; a legacy name-level slug
-            // resolves to a single-element OR (same case-insensitive match).
-            OR: [{ componentKey: { equals: "explore", mode: "insensitive" } }],
+            // FEA-4335: covers the whole name set; a legacy name-level slug
+            // resolves to a single-element `in`.
+            componentKeyNormalized: { in: ["explore"] },
           }),
         })
       );
@@ -872,14 +825,7 @@ describe("analyticsService.fetchTokenTrend", () => {
 
   describe("FEA-3052: subagent rollup parity with the listing", () => {
     it("broadens the Prisma where for the rolled-up general-purpose subagent slug", async () => {
-      const findMany = vi.fn().mockResolvedValue([]);
-      mocks.withDb.mockImplementation(
-        (
-          cb: (db: {
-            agentComponentSessionUsage: { findMany: typeof findMany };
-          }) => unknown
-        ) => cb({ agentComponentSessionUsage: { findMany } })
-      );
+      const findMany = installDb([]);
 
       await analyticsService.fetchTokenTrend(
         ORG,
@@ -906,14 +852,7 @@ describe("analyticsService.fetchTokenTrend", () => {
     });
 
     it("keeps an exact componentKey match for a typed (non-rolled-up) subagent slug", async () => {
-      const findMany = vi.fn().mockResolvedValue([]);
-      mocks.withDb.mockImplementation(
-        (
-          cb: (db: {
-            agentComponentSessionUsage: { findMany: typeof findMany };
-          }) => unknown
-        ) => cb({ agentComponentSessionUsage: { findMany } })
-      );
+      const findMany = installDb([]);
 
       await analyticsService.fetchTokenTrend(
         ORG,
@@ -925,15 +864,11 @@ describe("analyticsService.fetchTokenTrend", () => {
         expect.objectContaining({
           where: expect.objectContaining({
             componentKind: "subagent",
-            // FEA-3757: typed (non-rolled-up) subagent slugs also match
-            // case-insensitively so a mixed-case stored subagent_type resolves.
-            // FEA-4335: OR-wrapped over the name set (single-element for a legacy
-            // name-level slug).
-            OR: [
-              {
-                componentKey: { equals: "code-reviewer", mode: "insensitive" },
-              },
-            ],
+            // FEA-3757: typed (non-rolled-up) subagent slugs fold case too.
+            // FEA-4335: covers the name set. ISS-6756: on the persisted fold, so
+            // the identity is index-served rather than `ILIKE`-scanned — the
+            // ROLLED-UP arm below deliberately keeps its raw `componentKey` OR.
+            componentKeyNormalized: { in: ["code-reviewer"] },
           }),
         })
       );

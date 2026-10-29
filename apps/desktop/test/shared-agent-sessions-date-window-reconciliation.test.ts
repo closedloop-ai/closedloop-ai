@@ -13,49 +13,42 @@
  *
  * These tests reconcile the two reads DIRECTLY — same seeded population, same
  * request, `usage.totalSessions === list.total` — rather than asserting each
- * against a constant, and they do it across every combination of the SQL and
- * hydrated implementations, because which one answers depends on the filters:
+ * against a constant, and they exercise both SQL and hydrated implementations
+ * selected by the filters:
  *
  *   | filters              | list         | usage        |
  *   | -------------------- | ------------ | ------------ |
  *   | (none)               | SQL cursor   | SQL aggregate|
- *   | search               | SQL cursor   | hydrated fold|
- *   | statuses             | hydrated fold| SQL aggregate|
+ *   | search               | hydrated fold| hydrated fold|
+ *   | statuses             | SQL cursor   | SQL aggregate|
  *   | search + statuses    | hydrated fold| hydrated fold|
  *
- * A basis that reverts on ANY ONE of the three paths breaks at least one row of
- * that table. Everything runs against the real production `db.syncSource` over a
+ * A basis that reverts on either path breaks at least one row of that table.
+ * Everything runs against the real production `db.syncSource` over a
  * real migrated SQLite database, so the SQL under test is the SQL that ships.
  *
  * Every case pins an explicit `sortBy`, and keeps doing so after goal stage 1b.
- * The original reason was that `canUseListCursorPage` REQUIRED a cursor sort
- * column, so a request without one silently answered the "SQL cursor" rows from
- * the hydrated fold instead — which is exactly how an earlier draft of this file
- * passed with the list's own SQL clause reverted. Stage 1b removed that specific
- * trap (an unsorted read now pages by `SessionListCursorSortKey.Updated`), but
- * pinning the sort is still what makes each case name the path it is testing
- * rather than inherit whatever the default happens to be.
+ * The original reason was that `canUseListCursorPage` required a cursor sort
+ * column. Stage 1b removed that condition, but pinning the sort still keeps
+ * each case's order explicit rather than inheriting a default.
  */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import {
   type AgentSessionUsageAggregateFilters,
   SessionListCursorSortKey,
 } from "../src/main/agent-sync/agent-session-read-model.js";
 import type { AgentSessionSyncSource } from "../src/main/agent-sync/agent-session-sync-source.js";
-import {
-  SESSIONS_ANALYTICS_DATE_WINDOW_FIELD,
-  SESSIONS_SURFACE_DATE_WINDOW_FIELD,
-} from "../src/main/agent-sync/session-date-window.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import {
   getSharedAgentSessionAnalytics,
   getSharedAgentSessions,
   getSharedAgentSessionUsage,
 } from "../src/main/session/shared-agent-sessions-api.js";
+import { SESSIONS_SURFACE_DATE_WINDOW_FIELD } from "../src/shared/session-date-window-contract.js";
 import type { SharedAgentSessionsListRequest } from "../src/shared/shared-agent-sessions-contract.js";
 
 type SqliteDb = Awaited<ReturnType<typeof openSqliteAgentDatabase>>;
@@ -194,25 +187,22 @@ test("desktop Sessions KPI reconciles with its own list on every path combinatio
   try {
     await seedPopulation(db);
     const source = db.syncSource as AgentSessionSyncSource;
-    // `sortBy` is what admits the request to the SQL cursor page; without it
-    // even an unfiltered read falls through to the hydrated fold.
+    // Keep order explicit while the filters choose SQL or hydration.
     const window = {
       startDate: WINDOW_START,
       endDate: WINDOW_END,
       sortBy: SessionListCursorSortKey.LastActivity,
     };
 
-    // Each entry names which implementation answers each half; see the table in
-    // the file header. `search` pushes usage onto the hydrated fold, `statuses`
-    // pushes the list onto it.
+    // Search needs hydrated repository context; Status can ride compact SQL.
     const cases: { name: string; request: SharedAgentSessionsListRequest }[] = [
       { name: "SQL list / SQL usage", request: { ...window } },
       {
-        name: "SQL list / hydrated usage",
+        name: "hydrated list / hydrated usage (search)",
         request: { ...window, search: SEARCH_TOKEN },
       },
       {
-        name: "hydrated list / SQL usage",
+        name: "SQL list / SQL usage (status)",
         request: { ...window, statuses: ["inactive"] },
       },
       {
@@ -274,17 +264,13 @@ test("a window with no activity still reads a genuine zero on both halves (ISS-5
   }
 });
 
-test("the analytics read keeps its own started-in-the-period cohort (ISS-5443)", async () => {
+test("the analytics read shares the surface activity window (ISS-9525/9526)", async () => {
   const { db, dir } = await openDb("analytics");
   try {
     await seedPopulation(db);
     const inner = db.syncSource as AgentSessionSyncSource;
     const seen: AgentSessionUsageAggregateFilters[] = [];
-    // Record what each read hands the SQL layer. Analytics is a DIFFERENT cohort
-    // by design ("a session belongs to the period it started in", the split
-    // cloud draws between SESSIONS_SURFACE_DATE_FIELD and
-    // SESSIONS_ANALYTICS_DATE_FIELD), so unifying the Sessions surface must not
-    // drag analytics onto the activity basis with it.
+    // Record that analytics and usage hand the same activity basis to SQL.
     const recording: AgentSessionSyncSource = {
       ...inner,
       aggregateAnalytics: (filters, cache) => {
@@ -301,7 +287,7 @@ test("the analytics read keeps its own started-in-the-period cohort (ISS-5443)",
     await getSharedAgentSessionAnalytics(recording, window);
     assert.deepEqual(
       seen.map((f) => f.dateWindowField),
-      [SESSIONS_ANALYTICS_DATE_WINDOW_FIELD]
+      [SESSIONS_SURFACE_DATE_WINDOW_FIELD]
     );
 
     seen.length = 0;

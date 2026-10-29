@@ -1,0 +1,34 @@
+-- ISS-8597 (davetho review of PR #7015): an ITEM-ONLY attempt clock, so
+-- Appendix A's abandon budget is spent by the failures it is a budget FOR.
+--
+-- ISS-8596 gave this lane one counter, `sync_attempt_count`, and ISS-8597 read
+-- the terminal threshold off it. But that counter is the row's PACING clock and
+-- every row-attributable rejection bumps it — a 404 whose parent session is
+-- still uploading, this lane's recorded 403 divergence, and (since ISS-9984
+-- reclassified it) a bare 400 from a desktop/API skew. None of those are
+-- Appendix A's ITEM class, and none of them may dead-letter a comment; but
+-- because they shared the counter with the ones that may, they SPENT the
+-- allowance. A row that collected four 404s reached the threshold on its very
+-- first 413, and the five-attempt budget the docstring promises was never
+-- actually spent on ITEM failures at all.
+--
+-- ISS-9984 made this sharper rather than milder. Taking the bare 400 out of the
+-- ITEM class stopped it dead-lettering a comment on its own, but it still paces
+-- the row — so a version skew now pre-charges the shared counter for every
+-- comment on a target, and the first genuine 413 after the upgrade abandons
+-- immediately, on a budget that was never its own.
+--
+-- `sync_item_attempt_count` is bumped ONLY by a failure that is both
+-- row-attributable and ITEM-class, and the terminal CASE reads only it. The two
+-- clocks now answer the two questions they were always meant to: how hard to
+-- pace this row, and how much of its permanent-rejection allowance is gone.
+-- They are cleared together on every recovery door, which is why the clearing
+-- clause has become one shared SQL constant instead of five hand-copied blocks.
+--
+-- Additive and safe under version skew, on the same argument as 0083. An install
+-- upgraded mid-outage reads `0` — "no ITEM rejection yet" — which is strictly
+-- MORE conservative than what it had: rows carrying a `sync_attempt_count`
+-- inflated by 404s arrive with a full, untouched abandon budget, which is the
+-- fix. Nothing is dead-lettered by this migration, and an older build that does
+-- not know the column keeps reading the pacing counter exactly as before.
+ALTER TABLE "trace_comments" ADD COLUMN "sync_item_attempt_count" INTEGER NOT NULL DEFAULT 0;

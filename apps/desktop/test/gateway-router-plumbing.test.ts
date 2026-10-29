@@ -2,21 +2,24 @@
  * ISS-5299 — Gateway router plumbing tests.
  *
  * Covers routing fallthrough, the fallback proxy, and the header/auth helpers
- * in apps/desktop/src/server/router.ts. Lives as a sibling of
+ * in apps/desktop/src/server/router.ts and, since ISS-8234 moved it out,
+ * `proxyToFallbackGateway` in apps/desktop/src/server/gateway-fallback-proxy.ts.
+ * Lives as a sibling of
  * gateway-server.test.ts because that file is on the shrink-only
  * noExcessiveLinesPerFile grandfather list in biome.jsonc and must not grow.
  *
- * SECURITY CRITICAL: tests include the loopback-only exchange guard (lines
- * 1236/1241) and the timing-safe token length-mismatch path (line 1229).
+ * SECURITY CRITICAL: tests include the timing-safe token length-mismatch path
+ * and the retired browser session exchange staying unreachable.
  */
 import assert from "node:assert/strict";
 import type http from "node:http";
 import os from "node:os";
 import { Readable } from "node:stream";
-import { afterEach, test } from "node:test";
 import { MEMBER_PACK_INSTALL_PATH } from "@repo/api/src/types/member-pack-install.js";
-import { LoopSchedulerContext } from "../src/main/loop/loop-scheduler-context.js";
+import { afterEach, expect, test } from "vitest";
+import { gatewayLog } from "../src/main/logging/gateway-logger.js";
 import { GatewayRouter } from "../src/server/router.js";
+import { DesktopGatewayServer } from "../src/server/server.js";
 import { EMPTY_CAPABILITIES } from "../src/shared/contracts.js";
 import {
   dispatchMockRequest,
@@ -31,6 +34,9 @@ const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  // gatewayLog is a module singleton with a 500-entry buffer and a
+  // consecutive-duplicate latch; the ISS-7958 cases below read it.
+  gatewayLog.clear();
 });
 
 // ---------------------------------------------------------------------------
@@ -48,7 +54,6 @@ function createRouter(
     capabilities: EMPTY_CAPABILITIES,
     getActivePort: () => 0,
     getGatewayId: () => "test-gateway-id",
-    schedulers: new LoopSchedulerContext(),
     ...overrides,
   });
 }
@@ -128,45 +133,8 @@ test("undefined request method defaults to GET and undefined url defaults to /",
 });
 
 // ---------------------------------------------------------------------------
-// Constructor conditional registration  (lines 469, 472, 484)
+// Constructor conditional registration  (line 484)
 // ---------------------------------------------------------------------------
-
-test("update-and-restart routes are registered when all three update options are provided", async () => {
-  // Without the optional functions the route is not registered → generic 501.
-  const withoutUpdate = createRouter();
-  const r1 = await dispatchMockRequest({
-    router: withoutUpdate,
-    method: "POST",
-    path: "/api/gateway/update-and-restart",
-  });
-  assert.equal(r1.statusCode, 501);
-  assert.equal(
-    r1.json().error,
-    "operation not implemented",
-    "unregistered route returns the generic 501 body"
-  );
-
-  // With all three options present (true branches at lines 469/472) the route
-  // IS registered. isUpdateAndRestartEnabled returns false so the handler runs
-  // its own 501 with a different, non-generic error body — proving the route
-  // handler executed rather than the generic unregistered-route fallback.
-  const withUpdate = createRouter({
-    checkForUpdate: async () => ({ updateAvailable: false }),
-    applyUpdate: async () => {},
-    isUpdateAndRestartEnabled: () => false,
-  });
-  const r2 = await dispatchMockRequest({
-    router: withUpdate,
-    method: "POST",
-    path: "/api/gateway/update-and-restart",
-  });
-  assert.equal(r2.statusCode, 501);
-  assert.equal(
-    r2.json().error,
-    "feature_disabled",
-    "registered but feature-disabled route returns its own body, not the generic one"
-  );
-});
 
 test("pack-install route is registered when installPack option is provided", async () => {
   // Without installPack (line 484 false branch): route not registered → 501.
@@ -199,7 +167,7 @@ test("pack-install route is registered when installPack option is provided", asy
 });
 
 // ---------------------------------------------------------------------------
-// Proxy fallback  (lines 1081, 1087, 1094, 1099, 1100, 1106, 1112)
+// Proxy fallback  (`proxyToFallbackGateway`, gateway-fallback-proxy.ts)
 // ---------------------------------------------------------------------------
 
 test("proxy skips falsy headers and always strips the host header", async () => {
@@ -207,7 +175,7 @@ test("proxy skips falsy headers and always strips the host header", async () => 
 
   let capturedHeaders: Headers | undefined;
   globalThis.fetch = ((_url: RequestInfo | URL, init?: RequestInit) => {
-    // init.headers is the Headers instance built inside proxyToFallback.
+    // init.headers is the Headers instance built inside the fallback proxy.
     capturedHeaders = init?.headers as Headers;
     return Promise.resolve(new Response(null, { status: 200 }));
   }) as typeof globalThis.fetch;
@@ -219,8 +187,8 @@ test("proxy skips falsy headers and always strips the host header", async () => 
     headers: {
       host: "localhost:3000",
       "x-present": "present-value",
-      // Falsy (undefined) value → skipped by the `if (!value) continue` at
-      // line 1081 of router.ts.
+      // Falsy (undefined) value → skipped by the proxy's
+      // `if (!value) continue` header filter.
       "x-falsy-header": undefined,
     },
   });
@@ -232,7 +200,7 @@ test("proxy skips falsy headers and always strips the host header", async () => 
   );
   assert.ok(
     !capturedHeaders.has("x-falsy-header"),
-    "falsy header must be skipped (line 1081)"
+    "falsy header must be skipped by the proxy header filter"
   );
   assert.equal(capturedHeaders.get("x-present"), "present-value");
 });
@@ -252,7 +220,7 @@ test("proxy joins array-valued headers with ', ' separator", async () => {
     path: UNREGISTERED_GATEWAY_PATH,
     headers: {
       // Node.js can provide string[] for multi-value headers; the proxy must
-      // join them (line 1087) rather than passing the raw array to fetch.
+      // join them rather than passing the raw array to fetch.
       "x-multi": ["first", "second", "third"],
     },
   });
@@ -261,14 +229,14 @@ test("proxy joins array-valued headers with ', ' separator", async () => {
   assert.equal(
     capturedHeaders.get("x-multi"),
     "first, second, third",
-    "array header must be joined with ', ' (line 1087)"
+    "array header must be joined with ', ' by the proxy"
   );
 });
 
 test("proxy falls back to GET when request method is undefined and sends no body", async () => {
   // Leaving method undefined exercises the ?? "GET" fallback at both
-  // line 498 (handle) and line 1094 (proxyToFallback). The GET path then
-  // takes the `? undefined` branch at lines 1099/1100.
+  // both in `handle` and in `proxyToFallbackGateway`. The GET path then takes
+  // the `? undefined` branch of the body ternary.
   const router = createRouter({ fallbackGatewayOrigin: FALLBACK_ORIGIN });
 
   let capturedMethod: string | undefined;
@@ -294,12 +262,12 @@ test("proxy falls back to GET when request method is undefined and sends no body
   assert.strictEqual(
     capturedBody,
     undefined,
-    "GET must not send a body to the upstream (lines 1099/1100)"
+    "GET must not send a body to the upstream"
   );
 });
 
 test("proxy forwards request body as Uint8Array for non-GET methods", async () => {
-  // The `new Uint8Array(rawBody)` at line 1100 (false branch of GET/HEAD ternary)
+  // The `new Uint8Array(rawBody)` (false branch of the GET/HEAD ternary)
   // is reached for POST requests.
   const router = createRouter({ fallbackGatewayOrigin: FALLBACK_ORIGIN });
 
@@ -317,7 +285,7 @@ test("proxy forwards request body as Uint8Array for non-GET methods", async () =
     chunks: [payload],
   });
 
-  // The proxy creates new Uint8Array(rawBody) for non-GET/HEAD (line 1100).
+  // The proxy creates new Uint8Array(rawBody) for non-GET/HEAD.
   assert.ok(
     capturedBody instanceof Uint8Array,
     "POST body must be forwarded as Uint8Array"
@@ -332,7 +300,7 @@ test("proxy forwards request body as Uint8Array for non-GET methods", async () =
 
 test("proxy strips access-control-allow-origin from upstream response headers", async () => {
   // The `if (name.toLowerCase() === "access-control-allow-origin") continue`
-  // at line 1106 prevents the upstream CORS header from being echoed back
+  // skip prevents the upstream CORS header from being echoed back
   // (the router sets its own CORS headers via applyCorsHeaders).
   const router = createRouter({ fallbackGatewayOrigin: FALLBACK_ORIGIN });
 
@@ -354,15 +322,15 @@ test("proxy strips access-control-allow-origin from upstream response headers", 
   });
 
   assert.equal(response.statusCode, 200);
-  // applyCorsHeaders (line 496) always sets access-control-allow-origin to the
-  // router's own policy value before any routing. Line 1106 in proxyToFallback
-  // then skips the upstream copy of this header so the upstream's value is
-  // never forwarded. The observable proof: the response header has the router's
-  // own value ("https://app.closedloop.ai"), not "must-be-stripped".
+  // `applyCorsHeaders` always sets access-control-allow-origin to the router's
+  // own policy value before any routing, and the proxy then skips the upstream
+  // copy of that header, so the upstream's value is never forwarded. The
+  // observable proof: the response header carries the router's own value
+  // ("https://app.closedloop.ai"), not "must-be-stripped".
   assert.equal(
     response.headers.get("access-control-allow-origin"),
     "https://app.closedloop.ai",
-    "header must contain the router CORS value, not the upstream value (line 1106)"
+    "header must contain the router CORS value, not the upstream value"
   );
   assert.equal(
     response.headers.get("x-upstream-custom"),
@@ -373,7 +341,7 @@ test("proxy strips access-control-allow-origin from upstream response headers", 
 
 test("proxy ends response immediately when upstream has no body", async () => {
   // A plain object with body: null simulates a null-body upstream response,
-  // triggering the `if (!upstreamResponse.body)` early-return at line 1112.
+  // triggering the `if (!upstreamResponse.body)` early return.
   const router = createRouter({ fallbackGatewayOrigin: FALLBACK_ORIGIN });
 
   globalThis.fetch = (() =>
@@ -407,7 +375,7 @@ test("proxy ends response immediately when upstream has no body", async () => {
 
 test("firstHeaderValue returns first element when header value is an array", async () => {
   // x-desktop-source is fed to evaluateApproval via firstHeaderValue().
-  // Passing an array exercises the Array.isArray branch (line 1133).
+  // Passing an array exercises `firstHeaderValue`'s Array.isArray branch.
   let capturedSource: string | null | undefined;
   const router = createRouter({
     evaluateApproval: (req) => {
@@ -429,13 +397,13 @@ test("firstHeaderValue returns first element when header value is an array", asy
   assert.equal(
     capturedSource,
     "primary-source",
-    "firstHeaderValue must return the first element of an array (line 1133)"
+    "firstHeaderValue must return the first element of an array"
   );
 });
 
 test("parseBooleanHeader returns true for '1' and case-insensitive 'true', false otherwise", async () => {
   // x-desktop-force-approval is processed by parseBooleanHeader(), which is
-  // called at line 1144. True values "1", "true", "TRUE" and false values
+  // called by `parseBooleanHeader`. True values "1", "true", "TRUE" and false values
   // "garbage", "0" all exercise that return statement.
   const capturedValues: boolean[] = [];
   const router = createRouter({
@@ -454,7 +422,7 @@ test("parseBooleanHeader returns true for '1' and case-insensitive 'true', false
     });
   }
 
-  // "1"→true, "true"→true, "TRUE"→true (line 1144 true branch),
+  // "1"→true, "true"→true, "TRUE"→true (parseBooleanHeader true branch),
   // "garbage"→false, "0"→false.
   assert.deepEqual(capturedValues, [true, true, true, false, false]);
 });
@@ -465,7 +433,7 @@ test("parseBooleanHeader returns true for '1' and case-insensitive 'true', false
 
 test("valid numeric content-length header enters BigInt parse path without rejecting", async () => {
   // content-length "50" is below the 256 KiB generic limit. BigInt("50") is
-  // computed at line 1198 but does not exceed the cap, so no 413 is thrown.
+  // computed but does not exceed the cap, so no 413 is thrown.
   // The request proceeds to dispatch and gets 501 (no handler registered).
   const router = createRouter();
   const response = await dispatchMockRequest({
@@ -526,56 +494,32 @@ test("safeEqualToken length mismatch short-circuits comparison and causes 401", 
   assert.equal(response.json().error, "unauthorized");
 });
 
-test("isLoopbackAddress returns false for undefined address, blocking the exchange", async () => {
-  // When socket.remoteAddress is undefined, isLoopbackAddress() hits the
-  // falsy guard at line 1236 and returns false → exchange returns 403.
+test("the retired /gateway-auth/exchange route mints no session and answers 404 (ISS-12749)", async () => {
+  // No gateway auth token is configured, which is the state the deleted
+  // exchange used to answer with a 24-hour session and no challenge at all.
   const router = createRouter();
   const response = await driveRouter(router, {
     method: "POST",
     url: "/gateway-auth/exchange",
     headers: { origin: "https://app.closedloop.ai" },
-    // remoteAddress intentionally omitted → undefined → isLoopbackAddress false
+    remoteAddress: "127.0.0.1",
+    chunks: [JSON.stringify({ challengeToken: "challenge-abc" })],
   });
 
-  assert.equal(response.statusCode, 403);
-  assert.equal(response.json().error, "loopback only");
-});
-
-test("isLoopbackAddress accepts IPv6 loopback addresses ::1 and ::ffff:127.0.0.1", async () => {
-  // Both IPv6 addresses pass the `address === "::1"` and
-  // `address === "::ffff:127.0.0.1"` checks at line 1241+, so the exchange
-  // endpoint does not return 403. In no-auth mode with no session store the
-  // handler returns 500 — a different status than 403, proving loopback passed.
-  for (const remoteAddress of ["::1", "::ffff:127.0.0.1"]) {
-    const router = createRouter();
-    const response = await driveRouter(router, {
-      method: "POST",
-      url: "/gateway-auth/exchange",
-      headers: { origin: "https://app.closedloop.ai" },
-      remoteAddress,
-    });
-
-    assert.equal(
-      response.statusCode,
-      500,
-      `${remoteAddress} should pass the loopback check (not 403)`
-    );
-    assert.equal(
-      response.json().error,
-      "session store not available",
-      "exchange proceeds past loopback guard but fails on missing session store"
-    );
-  }
+  assert.equal(response.statusCode, 404);
+  assert.equal(response.json().sessionToken, undefined);
 });
 
 // ---------------------------------------------------------------------------
 // Error propagation  (line 598)
 // ---------------------------------------------------------------------------
 
-test("non-body-too-large stream error propagates out of readBody unswallowed", async () => {
-  // The catch block at line 598 re-throws any error that is not an instance of
-  // RequestBodyTooLargeError. This verifies that non-413 errors are never
-  // silently swallowed by the body-size guard.
+test("a non-body-too-large stream error is answered, never rethrown", async () => {
+  // The body-size guard still refuses to swallow a non-413 error — it re-throws
+  // out of readBody exactly as before. What ISS-8566 changed is where that
+  // throw lands: `handle`'s top-level catch now answers it, instead of letting
+  // it escape as the unhandled rejection `handleUnhandledRejection` turns into
+  // exit(1) for the whole app.
   const router = createRouter();
 
   function* streamThatThrows() {
@@ -595,15 +539,361 @@ test("non-body-too-large stream error propagates out of readBody unswallowed", a
   errorStream.socket = { remoteAddress: "127.0.0.1" };
 
   const fakeResponse = new TestResponse();
-  await assert.rejects(
+  await assert.doesNotReject(
     router.handle(
       errorStream as unknown as http.IncomingMessage,
       fakeResponse as unknown as http.ServerResponse
     ),
-    (err: unknown) => {
-      assert.ok(err instanceof Error, "thrown value must be an Error");
-      assert.equal(err.message, "synthetic mid-stream read failure");
-      return true;
-    }
+    "handle() must not reject: server.ts discards it with a bare void"
   );
+  // The socket is still up — only the read failed — so this is our fault to
+  // report, and the caller gets a generic 500 rather than a dead connection.
+  assert.equal(fakeResponse.statusCode, 500);
+  assert.deepEqual(fakeResponse.json(), { error: "internal error" });
+  assert.equal(
+    fakeResponse.text().includes("synthetic mid-stream read failure"),
+    false,
+    "the 500 body must not leak the internal error"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Malformed request target  (ISS-7958)
+// ---------------------------------------------------------------------------
+
+/**
+ * Request targets llhttp accepts in absolute form but the WHATWG URL parser
+ * rejects. Before ISS-7958 each threw out of `handle`; because `server.ts`
+ * calls it as `void this.router.handle(...)` with no `.catch`, that throw
+ * became an unhandledRejection and quit the app (error-handlers.ts → exit(1)).
+ */
+const MALFORMED_REQUEST_TARGETS = ["http://[", "http://%"] as const;
+
+/** Mirrors MAX_LOGGED_REQUEST_TARGET_CHARS in router.ts (module-private there). */
+const MAX_LOGGED_REQUEST_TARGET_CHARS = 120;
+
+/** Counts calls to the private auth check without altering its verdict. */
+function spyOnAuthCheck(router: GatewayRouter): () => number {
+  const internals = router as unknown as {
+    isAuthorizedGatewayRequest: (request: http.IncomingMessage) => unknown;
+  };
+  const original = internals.isAuthorizedGatewayRequest.bind(router);
+  let calls = 0;
+  internals.isAuthorizedGatewayRequest = (request) => {
+    calls += 1;
+    return original(request);
+  };
+  return () => calls;
+}
+
+test("malformed request target answers 400 before auth instead of crashing", async () => {
+  for (const target of MALFORMED_REQUEST_TARGETS) {
+    const router = createRouter();
+    const authCalls = spyOnAuthCheck(router);
+    gatewayLog.clear();
+
+    // Awaiting IS the "handle resolves" assertion: without the guard this
+    // promise rejects and the case fails right here, which is the production
+    // unhandledRejection that reaches app.exit(1).
+    const response = await driveRouter(router, { method: "GET", url: target });
+
+    assert.equal(response.statusCode, 400, `status for ${target}`);
+    assert.deepEqual(response.json(), { error: "malformed request target" });
+    // Pins that the guard sits BEFORE auth. A fix that instead wrapped the
+    // whole handler body would run auth first and land this at 1.
+    assert.equal(authCalls(), 0, `auth must not run for ${target}`);
+    // The pre-fix input was loud in the worst way (crash telemetry + exit(1)).
+    // Rejecting it silently would trade a crash for invisibility, so the
+    // rejection owes the operator one warn-level entry naming the target.
+    const warnings = gatewayLog
+      .getEntries()
+      .filter(
+        (entry) => entry.level === "warn" && entry.tag === "gateway-router"
+      );
+    assert.equal(warnings.length, 1, `one warn entry for ${target}`);
+    assert.ok(
+      warnings[0].message.startsWith("malformed_request_target "),
+      `warn entry must carry the code, got: ${warnings[0].message}`
+    );
+    assert.ok(
+      warnings[0].message.includes(`target=${target}`),
+      `warn entry must name the rejected target, got: ${warnings[0].message}`
+    );
+  }
+});
+
+test("logged malformed target is capped so an unbounded one cannot flood the log", async () => {
+  const router = createRouter();
+  gatewayLog.clear();
+
+  // Malformed (unterminated IPv6 literal) AND far longer than the cap.
+  const target = `http://[${"a".repeat(4000)}`;
+  const response = await driveRouter(router, { method: "GET", url: target });
+
+  assert.equal(response.statusCode, 400);
+  const logged = gatewayLog
+    .getEntries()
+    .filter((entry) => entry.tag === "gateway-router")
+    .map((entry) => entry.message.split("target=")[1] ?? "");
+  assert.equal(logged.length, 1);
+  assert.equal(logged[0]?.length, MAX_LOGGED_REQUEST_TARGET_CHARS);
+  assert.ok(
+    target.startsWith(logged[0] ?? ""),
+    "cap must truncate, not mangle"
+  );
+});
+
+test("well-formed request target still reaches auth and routes unchanged", async () => {
+  // The allow case for the same branch: proves the guard rejects only invalid
+  // targets. A guard that 400s everything passes the case above and fails here.
+  const router = createRouter();
+  const authCalls = spyOnAuthCheck(router);
+
+  const response = await driveRouter(router, {
+    method: "GET",
+    url: "/totally-unknown-path",
+  });
+
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(response.json(), { error: "route not found" });
+  assert.equal(authCalls(), 1, "valid targets must still reach the auth check");
+});
+
+// ---------------------------------------------------------------------------
+// Fallback proxy failure containment  (ISS-8234)
+//
+// `server.ts` dispatches with a bare `void this.router.handle(...)`, so any
+// rejection escaping the fallback proxy reached `handleUnhandledRejection`,
+// which calls `app.exit(1)`: an unreachable dev fallback quit the whole Electron
+// app, and case 2 below did it with no error shown at all. Each case asserts the
+// returned promise RESOLVES as well as the status — the status alone is written
+// before the throw would happen and so cannot prove the app survived.
+// ---------------------------------------------------------------------------
+
+/** Drives `handle` without awaiting, so the test owns the returned promise. */
+function handleUnrouted(
+  router: GatewayRouter,
+  headers: http.IncomingHttpHeaders = {}
+): {
+  promise: Promise<void>;
+  response: TestResponse;
+} {
+  const stream = Readable.from([]) as Readable & {
+    method?: string;
+    url?: string;
+    headers: http.IncomingHttpHeaders;
+    socket: { remoteAddress?: string };
+  };
+  stream.method = "GET";
+  stream.url = UNREGISTERED_GATEWAY_PATH;
+  stream.headers = headers;
+  stream.socket = { remoteAddress: "127.0.0.1" };
+  const response = new TestResponse();
+  return {
+    promise: router.handle(
+      stream as unknown as http.IncomingMessage,
+      response as unknown as http.ServerResponse
+    ),
+    response,
+  };
+}
+
+test("a scheme-less fallback origin answers 502 instead of crashing the app", async () => {
+  // `new URL("/api/gateway/…", "localhost:3000")` throws TypeError: Invalid URL.
+  // Reachable because `fallbackGatewayOrigin` is a constructor option; the
+  // startup validation in server.ts guards only the env-var route to it.
+  const router = createRouter({ fallbackGatewayOrigin: "localhost:3000" });
+  let fetchCalled = false;
+  globalThis.fetch = (() => {
+    fetchCalled = true;
+    return Promise.resolve(new Response(null, { status: 200 }));
+  }) as typeof globalThis.fetch;
+
+  const { promise, response } = handleUnrouted(router);
+
+  await expect(promise).resolves.toBeUndefined();
+  assert.equal(response.statusCode, 502);
+  assert.deepEqual(response.json(), { error: "fallback gateway unreachable" });
+  assert.equal(
+    fetchCalled,
+    false,
+    "a malformed origin must fail before any request leaves the machine"
+  );
+});
+
+test("an unreachable fallback answers 502 instead of crashing the app", async () => {
+  // The easier case: a correctly formatted origin whose server was never
+  // started. The bare `await fetch` rejected with ECONNREFUSED.
+  const router = createRouter({ fallbackGatewayOrigin: FALLBACK_ORIGIN });
+  globalThis.fetch = (() =>
+    Promise.reject(
+      Object.assign(new Error("fetch failed"), { code: "ECONNREFUSED" })
+    )) as typeof globalThis.fetch;
+
+  const { promise, response } = handleUnrouted(router);
+
+  await expect(promise).resolves.toBeUndefined();
+  assert.equal(response.statusCode, 502);
+  assert.deepEqual(response.json(), { error: "fallback gateway unreachable" });
+});
+
+test("a fallback body that fails mid-read answers 502 with the upstream headers cleared", async () => {
+  // The upstream replied, so its headers are already staged on the response
+  // when the body read rejects. They must be cleared before the 502 body — a
+  // staged content-length describing the upstream body would make `end()` throw
+  // ERR_HTTP_CONTENT_LENGTH_MISMATCH, i.e. the crash this guard exists to stop.
+  const router = createRouter({ fallbackGatewayOrigin: FALLBACK_ORIGIN });
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new Error("upstream aborted mid-body"));
+          },
+        }),
+        { status: 200, headers: { "x-upstream-only": "must-be-cleared" } }
+      )
+    )) as typeof globalThis.fetch;
+
+  const { promise, response } = handleUnrouted(router);
+
+  await expect(promise).resolves.toBeUndefined();
+  assert.equal(response.statusCode, 502);
+  assert.equal(
+    response.headers.has("x-upstream-only"),
+    false,
+    "upstream headers must not survive onto the error response"
+  );
+  assert.deepEqual(response.json(), { error: "fallback gateway unreachable" });
+});
+
+test("the 502 keeps the gateway's own CORS headers so the caller can read it", async () => {
+  // `GatewayRouter.handle` stages the CORS headers via `applyCorsHeaders` before
+  // it delegates to the proxy, and the error path clears staged headers to make
+  // the 502 writable. Clearing the gateway's own headers along with the
+  // upstream's leaves the renderer — which reaches this gateway cross-origin —
+  // holding a generic browser CORS failure instead of the JSON error, i.e. the
+  // honest status replaced by no status at all.
+  const router = createRouter({ fallbackGatewayOrigin: FALLBACK_ORIGIN });
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new Error("upstream aborted mid-body"));
+          },
+        }),
+        { status: 200, headers: { "x-upstream-only": "must-be-cleared" } }
+      )
+    )) as typeof globalThis.fetch;
+
+  const { promise, response } = handleUnrouted(router, {
+    origin: "https://app.closedloop.ai",
+  });
+
+  await expect(promise).resolves.toBeUndefined();
+  assert.equal(response.statusCode, 502);
+  assert.equal(
+    response.headers.get("access-control-allow-origin"),
+    "https://app.closedloop.ai",
+    "the gateway's CORS grant must survive the clear that drops upstream headers"
+  );
+  assert.equal(
+    response.headers.has("x-upstream-only"),
+    false,
+    "upstream headers must still not survive onto the error response"
+  );
+  assert.deepEqual(response.json(), { error: "fallback gateway unreachable" });
+});
+
+// ---------------------------------------------------------------------------
+// SYMPHONY_GATEWAY_FALLBACK_ORIGIN startup validation  (ISS-8234)
+//
+// The env-var route to `fallbackGatewayOrigin`, which the constructor-option
+// cases above deliberately bypass. A misconfigured value must be a startup
+// error naming the variable, not a per-request 502 that never says why.
+// ---------------------------------------------------------------------------
+
+const FALLBACK_ORIGIN_ENV_NAME_PATTERN = /SYMPHONY_GATEWAY_FALLBACK_ORIGIN/;
+const SCHEME_LESS_ORIGIN_PATTERN = /localhost:3000/;
+const PATH_BEARING_ORIGIN_PATTERN = /gateway-prefix/;
+
+function withFallbackOriginEnv<T>(value: string, run: () => T): T {
+  const had = Object.hasOwn(process.env, "SYMPHONY_GATEWAY_FALLBACK_ORIGIN");
+  const previous = process.env.SYMPHONY_GATEWAY_FALLBACK_ORIGIN;
+  process.env.SYMPHONY_GATEWAY_FALLBACK_ORIGIN = value;
+  try {
+    return run();
+  } finally {
+    // Assigning `undefined` would leave the STRING "undefined" behind, which
+    // is truthy and would configure a bogus origin for every later test here.
+    if (had) {
+      process.env.SYMPHONY_GATEWAY_FALLBACK_ORIGIN = previous;
+    } else {
+      Reflect.deleteProperty(process.env, "SYMPHONY_GATEWAY_FALLBACK_ORIGIN");
+    }
+  }
+}
+
+function createDefaultGatewayServer(): DesktopGatewayServer {
+  return DesktopGatewayServer.createDefault(
+    "https://app.closedloop.ai",
+    () => undefined,
+    () => [os.tmpdir()],
+    "plumbing-test-machine",
+    "0.1.0-test",
+    EMPTY_CAPABILITIES
+  );
+}
+
+test("a scheme-less SYMPHONY_GATEWAY_FALLBACK_ORIGIN fails at startup, naming the variable", () => {
+  // The exact typo the ticket names. `URL.canParse("localhost:3000")` is TRUE —
+  // `localhost:` parses as a custom scheme — so the one-argument check this
+  // guard originally used waved the value through and every fallback request
+  // degraded to the generic 502. The two-argument form runs the same operation
+  // the proxy does and rejects it here, where the message can name the var.
+  withFallbackOriginEnv("localhost:3000", () => {
+    assert.throws(createDefaultGatewayServer, (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, FALLBACK_ORIGIN_ENV_NAME_PATTERN);
+      assert.match(error.message, SCHEME_LESS_ORIGIN_PATTERN);
+      return true;
+    });
+  });
+});
+
+test("a path-bearing SYMPHONY_GATEWAY_FALLBACK_ORIGIN fails at startup", () => {
+  // ISS-8234 review (whitlockk): a prefix does not survive the proxy. `requestPath`
+  // is always absolute, so `new URL("/api/gateway/x", "http://host/prefix")`
+  // resolves at the HOST ROOT and drops the prefix — the base parses, the join
+  // succeeds, and every proxied request quietly goes somewhere else. Accepting
+  // it would be a configuration that reads as applied and never is.
+  withFallbackOriginEnv("http://localhost:3000/gateway-prefix", () => {
+    assert.throws(createDefaultGatewayServer, (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, FALLBACK_ORIGIN_ENV_NAME_PATTERN);
+      assert.match(error.message, PATH_BEARING_ORIGIN_PATTERN);
+      return true;
+    });
+  });
+});
+
+test("a bare origin is accepted at startup", async () => {
+  // The false-positive guard on both rejection cases: the checks must not
+  // tighten into something that refuses the value the README documents.
+  const server = withFallbackOriginEnv(
+    "http://localhost:3000",
+    createDefaultGatewayServer
+  );
+  let fetchedUrl: string | undefined;
+  globalThis.fetch = ((url: RequestInfo | URL) => {
+    fetchedUrl = String(url);
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }) as typeof globalThis.fetch;
+  const router = (server as unknown as { router: GatewayRouter }).router;
+
+  await handleUnrouted(router).promise;
+
+  assert.ok(fetchedUrl?.startsWith("http://localhost:3000/api/gateway/"));
+  await server.stop();
 });

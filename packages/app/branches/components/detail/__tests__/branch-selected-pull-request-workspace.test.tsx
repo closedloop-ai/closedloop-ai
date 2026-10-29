@@ -24,9 +24,12 @@ vi.mock("../../../hooks/use-branches", () => ({
     isError: false,
     isLoading: false,
   }),
-  useBranchDetail: (_id: string, options: { enabled: boolean }) => ({
+}));
+
+vi.mock("../../../hooks/use-branch-selected-pull-request-detail", () => ({
+  useBranchSelectedPullRequestDetail: () => ({
     data: undefined,
-    isError: options.enabled,
+    isError: true,
     isFetching: false,
     isPending: false,
     isSuccess: false,
@@ -73,6 +76,8 @@ function detail() {
     selectedPullRequest: {
       ...first,
       body: "Current description",
+      baseRefName: "main",
+      authorLogin: "octocat",
       headRefOid: "a".repeat(40),
       mergeCommitSha: null,
       changedFiles: 1,

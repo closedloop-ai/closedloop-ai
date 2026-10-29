@@ -1,0 +1,14 @@
+-- ISS-11212 (PLN-2122 Step 5): the comment-reconcile cron's due-PR scan seeks
+-- open PRs and orders by `comments_reconcile_attempted_at`, then
+-- `comments_reconciled_at`, both NULLS FIRST, then `id`. This index carries
+-- that seek and order so the scan's LIMIT is an index walk, not a sort of every
+-- open PR. PSL has no `nulls` argument on `@@index`, so NULLS FIRST is
+-- hand-written here, and Prisma cannot express a concurrent build. Keep this as
+-- one bare statement so deployment does not block writes or accept an invalid
+-- prior index.
+--
+-- It supersedes `pull_request_detail_pr_state_comments_reconciled_at_idx`
+-- (20261001185259_iss11212_pr_comments_reconcile_index), which is left in place:
+-- its DROP belongs to ISS-11212's C8 cleanup (PLN-2120 Step 6 chunk).
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "pull_request_detail_comments_reconcile_due_idx" ON "pull_request_detail"("pr_state", "comments_reconcile_attempted_at" NULLS FIRST, "comments_reconciled_at" NULLS FIRST, "id");

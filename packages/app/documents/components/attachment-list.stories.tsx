@@ -1,4 +1,7 @@
-import type { FileAttachment } from "@repo/api/src/types/attachment";
+import {
+  AttachmentPurpose,
+  type FileAttachment,
+} from "@repo/api/src/types/attachment";
 import { AttachmentList } from "@repo/app/documents/components/attachment-list";
 import { Button } from "@repo/design-system/components/ui/button";
 import type { Meta, StoryObj } from "@storybook/react";
@@ -33,6 +36,20 @@ const defaultAttachments: FileAttachment[] = [
     sizeBytes: 2_650_000,
     createdAt: "2026-05-29T16:28:00.000Z",
     createdById: "user-2",
+  },
+];
+
+const unreferencedInlineAttachments: FileAttachment[] = [
+  {
+    id: "attachment-4",
+    artifactId: "artifact-1",
+    filename: "pasted-screenshot.png",
+    mimeType: "image/png",
+    sizeBytes: 96_000,
+    createdAt: "2026-05-29T16:41:00.000Z",
+    createdById: "user-1",
+    previewUrl: "https://placehold.co/96x96/png",
+    purpose: AttachmentPurpose.Inline,
   },
 ];
 
@@ -86,9 +103,9 @@ function InteractiveAttachmentList({
 }
 
 const meta = {
-  title: "App Core/Documents/Attachment List",
+  title: "Composites v1.0/Documents/Attachment List",
   component: AttachmentList,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "padded",
   },
@@ -119,6 +136,21 @@ export const HoverActions: Story = {
 export const ReadOnly: Story = {
   args: {
     attachments: defaultAttachments,
+  },
+};
+
+/**
+ * An image uploaded with `purpose: inline` that nothing in the document body
+ * references. It used to be listed nowhere at all, so the owner had no cue the
+ * file existed (ISS-8036). A referenced one still does not appear here — it
+ * renders in the body instead.
+ */
+export const UnreferencedInlineImage: Story = {
+  args: {
+    actionVisibility: "always",
+    attachments: unreferencedInlineAttachments,
+    onDelete: fn(),
+    onDownload: fn(),
   },
 };
 

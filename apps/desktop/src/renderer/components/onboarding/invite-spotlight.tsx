@@ -6,7 +6,6 @@ import {
 } from "@closedloop-ai/design-system/components/ui/popover";
 import { useSidebar } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { InviteTeamDialog } from "@repo/app/organizations/components/invite-team-dialog";
-import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import {
   createContext,
   type ReactNode,
@@ -17,27 +16,34 @@ import {
   useState,
 } from "react";
 import { DesktopAuthStatus } from "../../../shared/contracts";
-import { DESKTOP_GUEST_ONBOARDING_FEATURE_FLAG_KEY } from "../../../shared/feature-flags";
 import {
   hasRecordedSyncConsent,
   type SyncConsentRecord,
 } from "../../../shared/sync-consent";
-import { useDesktopFeatureFlagsResolved } from "../../feature-flags/desktop-feature-flag-provider";
 import { useDesktopAuth } from "../../shared-agent-sessions/desktop-auth-provider";
 import {
   inviteSpotlightDismissedStorageKey,
   readFlag,
   writeFlag,
 } from "../dashboard/dashboard-storage-keys";
-import {
-  isArrivalForIdentity,
-  useSyncConsentArrival,
-} from "./sync-consent-arrival";
+import { useBlockingOnboardingModalOpen } from "./blocking-onboarding-modal-store";
+import { readSettingsInviteSpotlightAnswers } from "./invite-spotlight-settings-answers";
 import { useSyncConsentRecord } from "./use-sync-consent-record";
 
 /** Which host element the pop-up hangs off. Exactly one is on screen at a time. */
 export const InviteSpotlightAnchor = {
-  /** The sidebar footer's "Invite your team" item — where invite actually lives. */
+  /**
+   * The sidebar's invite affordance. Which control that IS moved with ISS-10362:
+   * the footer item while the entry lives there, and the workspace-menu trigger
+   * once it does not — the menu is closed at rest, so the invite row inside it is
+   * not on screen to be pointed at.
+   *
+   * ISS-11247: "once it does not" is `useDesktopWorkspaceMenuHoldsInvite`, not
+   * the `workspace-menu-invite-entry` key. The entry only reaches that menu in
+   * the `Ready` standing, so in any other one the footer still holds the row and
+   * is still the host — both hosts reading one predicate is what keeps the
+   * one-at-a-time sentence above true, since nothing here enforces it.
+   */
   Sidebar: "sidebar",
   /**
    * The topbar's sidebar toggle. Below 768px the sidebar is an offcanvas sheet,
@@ -107,40 +113,47 @@ const UNREAD_DISMISSAL: InviteSpotlightDismissal = {
  * waits for the next launch.
  */
 export function shouldShowInviteSpotlight({
-  flagEnabled,
-  flagsResolved,
   authStatus,
+  guidedOnboardingOpen,
   organizationId,
   record,
   recordResolved,
   dismissal,
-  answeredThisRun,
 }: {
-  flagEnabled: boolean;
-  /** ISS-5037: an unresolved snapshot reads every flag as its default, so it counts as off. */
-  flagsResolved: boolean;
   authStatus: DesktopAuthStatus;
+  /**
+   * ISS-11315 Defect 5: the guided onboarding takeover is on screen.
+   *
+   * The wizard's own Continue on the sync step calls `recordSyncConsent`, which
+   * flips `hasRecordedSyncConsent` — and every other arm here was already
+   * satisfied by then, so the nudge opened UNDER the wizard while it advanced
+   * to its own invite step. Measured on the operator's 2026-09-27 recording:
+   * up at 109.875s behind the dialog, gone by 110.875s, never answered.
+   *
+   * IT IS NOT COSMETIC, which is why this is an arm and not a delay. `open`
+   * and `onOpenChange` are wired straight to Radix's `Popover`, and
+   * `onOpenChange(false)` is `answer()` — the write of
+   * `inviteSpotlightDismissedStorageKey`. Radix closes a popover on a
+   * focus-outside, and the wizard takes focus on every step change, so the
+   * auto-close ran `answer()` and PERMANENTLY consumed the arrival nudge for
+   * that org. Nothing downstream can tell that apart from a deliberate "Maybe
+   * later": `answer()` is the single sink for both.
+   *
+   * Named beside the other withholds rather than expressed as a timeout or a
+   * CSS hide, because a nudge that is merely INVISIBLE is still open, and still
+   * reachable by the auto-close that spends it.
+   */
+  guidedOnboardingOpen: boolean;
   organizationId: string | null;
   /** null = unreadable (no bridge / failed read), which withholds. */
   record: SyncConsentRecord | null;
   recordResolved: boolean;
   dismissal: InviteSpotlightDismissal;
-  /**
-   * The takeover committed an answer for THIS identity during this run.
-   *
-   * Load-bearing, not a shortcut. `useSyncConsentRecord` holds per-call-site
-   * state and re-reads only when the user id changes, so the takeover's
-   * post-save `refresh()` reaches its own instance and nothing else. Reading
-   * `record` alone therefore left this nudge suppressed for the whole run in
-   * which the user actually answered — the arrival run it is named after — and
-   * it surfaced only on some later launch.
-   */
-  answeredThisRun: boolean;
 }): boolean {
-  if (!(flagsResolved && flagEnabled)) {
+  if (authStatus !== DesktopAuthStatus.Authenticated) {
     return false;
   }
-  if (authStatus !== DesktopAuthStatus.Authenticated) {
+  if (guidedOnboardingOpen) {
     return false;
   }
   // The dialog this nudge points at mints real Clerk invitations against an org
@@ -149,28 +162,18 @@ export function shouldShowInviteSpotlight({
   if (organizationId === null) {
     return false;
   }
-  // The consent takeover is a hard block that makes everything behind it inert.
-  // Firing this while it is up would put a pop-up with two buttons behind a
-  // modal that swallows every click — the same defect ISS-5489 shipped a fix for.
-  //
-  // TWO signals, because one is not enough to answer "is the takeover shut".
-  // `record` is this component's own snapshot, and it is stale for the rest of
-  // the run once the takeover writes (see `answeredThisRun`); the arrival is the
-  // takeover publishing what it just committed. Either one settles it, and the
-  // takeover's own closing condition is the union of the same two.
-  //
-  // The arrival short-circuits the record entirely rather than being read
-  // alongside it. Gating on the record first put this fix behind the very read
-  // it exists to bypass: a rejected or never-settling IPC call withheld the
-  // nudge from a user who had just completed the consent flow, on the run it is
-  // named after.
-  if (!answeredThisRun) {
-    if (!(recordResolved && record)) {
-      return false;
-    }
-    if (!hasRecordedSyncConsent(record, organizationId)) {
-      return false;
-    }
+  // Consent must be on record before this nudge fires. ISS-5489 read a second
+  // signal here — the legacy post-auth takeover publishing what it had just
+  // committed — so that a rejected or never-settling consent read could not
+  // withhold the nudge from someone who had just finished that flow. ISS-10195
+  // retired that takeover with the workspace-experience gate, so the shared
+  // consent snapshot is the only signal left and the short-circuit it fed is
+  // gone with its producer.
+  if (!(recordResolved && record)) {
+    return false;
+  }
+  if (!hasRecordedSyncConsent(record, organizationId)) {
+    return false;
   }
   // An answer read for a DIFFERENT org (or not read yet) is not an answer for
   // this one. Withhold rather than flash the pop-up for one frame and retract it.
@@ -182,44 +185,14 @@ export function shouldShowInviteSpotlight({
 
 /**
  * ISS-5489 (PLN-1694 M2) — the arrival nudge that points at "Invite your team".
- *
- * Split from the armed half for the STRUCTURAL reason `SyncConsentTakeoverGate`
- * and `GuestLandingGate` split theirs: the armed half reads auth, which throws
- * without a `DesktopAuthProvider`, and the app-shell suites deliberately mount
- * none. Answering "is this launch even a candidate" first lets the flag-off
- * default — every existing user, and every one of those tests — render the shell
- * without ever mounting the hook that would throw.
  */
 export function InviteSpotlightProvider({ children }: { children: ReactNode }) {
-  const flagEnabled = useFeatureFlagEnabled(
-    DESKTOP_GUEST_ONBOARDING_FEATURE_FLAG_KEY
-  );
-  const flagsResolved = useDesktopFeatureFlagsResolved();
-  if (!(flagsResolved && flagEnabled)) {
-    return children;
-  }
-  return (
-    <ArmedInviteSpotlightProvider
-      flagEnabled={flagEnabled}
-      flagsResolved={flagsResolved}
-    >
-      {children}
-    </ArmedInviteSpotlightProvider>
-  );
-}
-
-function ArmedInviteSpotlightProvider({
-  children,
-  flagEnabled,
-  flagsResolved,
-}: {
-  children: ReactNode;
-  flagEnabled: boolean;
-  flagsResolved: boolean;
-}) {
   const { state } = useDesktopAuth();
+  // The same store the tour arming gate reads, and the same producer: the
+  // guided dialog host's `onOpenChange`. One definition of "the takeover is up"
+  // rather than a second predicate that can disagree with it.
+  const guidedOnboardingOpen = useBlockingOnboardingModalOpen();
   const { record, isResolved } = useSyncConsentRecord(state.userId);
-  const arrival = useSyncConsentArrival();
   const { isMobile, state: sidebarState } = useSidebar();
   const organizationId = state.organizationId;
   /** One string standing for "who is signed in", for the dialog's remount key. */
@@ -239,13 +212,29 @@ function ArmedInviteSpotlightProvider({
   const [inviteOpenFor, setInviteOpenFor] = useState<string | null>(null);
 
   useEffect(() => {
-    setDismissal({
-      organizationId,
-      dismissed:
-        organizationId === null
-          ? false
-          : readFlag(inviteSpotlightDismissedStorageKey(organizationId)),
-    });
+    if (
+      organizationId === null ||
+      readFlag(inviteSpotlightDismissedStorageKey(organizationId))
+    ) {
+      setDismissal({ organizationId, dismissed: organizationId !== null });
+      return;
+    }
+    // ISS-12135: an answer a seeded profile carries in its settings. Until it
+    // is read the dismissal stays on the previous org, which withholds.
+    let cancelled = false;
+    readSettingsInviteSpotlightAnswers()
+      .then((answered) => {
+        if (!cancelled) {
+          setDismissal({
+            organizationId,
+            dismissed: answered.includes(organizationId),
+          });
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, [organizationId]);
 
   const answer = useCallback(() => {
@@ -257,14 +246,9 @@ function ArmedInviteSpotlightProvider({
   }, [organizationId]);
 
   const show = shouldShowInviteSpotlight({
-    answeredThisRun: isArrivalForIdentity(arrival, {
-      organizationId,
-      userId: state.userId,
-    }),
     authStatus: state.status,
     dismissal,
-    flagEnabled,
-    flagsResolved,
+    guidedOnboardingOpen,
     organizationId,
     record,
     recordResolved: isResolved,
@@ -334,51 +318,78 @@ export function useInviteSpotlightHighlight(
 export function InviteSpotlightPopover({
   anchor,
   children,
+  keepAnchorMounted = false,
 }: {
   anchor: InviteSpotlightAnchor;
   children: ReactNode;
+  /**
+   * Keep the anchor wrapper mounted even while the nudge is not pointing here
+   * (ISS-10362).
+   *
+   * SWITCHING BETWEEN THE TWO BRANCHES REMOUNTS `children`. React reconciles by
+   * position, so returning `children` bare and returning them nested under
+   * `Popover > PopoverAnchor` are different positions: every hook state inside
+   * is destroyed on the change. That is invisible for a control whose state
+   * lives ABOVE this wrapper, and fatal for one that owns its own — and the
+   * change lands on the very interaction that answers the nudge, because
+   * clicking the control this pop-up points at IS an outside-click that
+   * dismisses it. The workspace-menu trigger is exactly that: `spotlight.open`
+   * goes false in the same tick its dropdown opens, the subtree remounts, and
+   * the menu closes again before it is ever on screen.
+   *
+   * Opt-in rather than the default so the two hosts whose children hold no
+   * state of their own keep their resting DOM byte-identical.
+   */
+  keepAnchorMounted?: boolean;
 }) {
   const spotlight = useInviteSpotlight();
-  if (spotlight.anchor !== anchor) {
+  const pointingHere = spotlight.anchor === anchor;
+  if (!(pointingHere || keepAnchorMounted)) {
     return children;
   }
   return (
-    <Popover onOpenChange={spotlight.onOpenChange} open={spotlight.open}>
+    <Popover
+      onOpenChange={spotlight.onOpenChange}
+      open={pointingHere && spotlight.open}
+    >
       {/* Anchored to a wrapper rather than `asChild` on the control: the sidebar
           host hands us a `InviteTeamDialog`, and the topbar's control is itself
           wrapped, so neither is guaranteed to be a single ref-forwarding DOM
-          element. The wrapper renders only while the pop-up is up, so the
-          resting DOM of both hosts is unchanged. */}
+          element. Without `keepAnchorMounted` the wrapper renders only while the
+          pop-up is up, so those two hosts' resting DOM is unchanged; with it the
+          wrapper is permanent, which is the point — see the prop. */}
       <PopoverAnchor>{children}</PopoverAnchor>
-      <PopoverContent
-        align="end"
-        aria-label={INVITE_SPOTLIGHT_TITLE}
-        className="w-80"
-        side={anchor === InviteSpotlightAnchor.Sidebar ? "right" : "bottom"}
-        sideOffset={8}
-      >
-        <div className="space-y-3">
-          <div className="space-y-1.5">
-            <p className="font-medium text-sm">{INVITE_SPOTLIGHT_TITLE}</p>
-            <p className="text-muted-foreground text-sm leading-relaxed">
-              {INVITE_SPOTLIGHT_BODY}
-            </p>
+      {pointingHere ? (
+        <PopoverContent
+          align="end"
+          aria-label={INVITE_SPOTLIGHT_TITLE}
+          className="w-80"
+          side={anchor === InviteSpotlightAnchor.Sidebar ? "right" : "bottom"}
+          sideOffset={8}
+        >
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <p className="font-medium text-sm">{INVITE_SPOTLIGHT_TITLE}</p>
+              <p className="text-muted-foreground text-sm leading-relaxed">
+                {INVITE_SPOTLIGHT_BODY}
+              </p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                onClick={() => spotlight.onOpenChange(false)}
+                size="sm"
+                type="button"
+                variant="ghost"
+              >
+                {INVITE_SPOTLIGHT_DISMISS_LABEL}
+              </Button>
+              <Button onClick={spotlight.onInvite} size="sm" type="button">
+                {INVITE_SPOTLIGHT_INVITE_LABEL}
+              </Button>
+            </div>
           </div>
-          <div className="flex justify-end gap-2">
-            <Button
-              onClick={() => spotlight.onOpenChange(false)}
-              size="sm"
-              type="button"
-              variant="ghost"
-            >
-              {INVITE_SPOTLIGHT_DISMISS_LABEL}
-            </Button>
-            <Button onClick={spotlight.onInvite} size="sm" type="button">
-              {INVITE_SPOTLIGHT_INVITE_LABEL}
-            </Button>
-          </div>
-        </div>
-      </PopoverContent>
+        </PopoverContent>
+      ) : null}
     </Popover>
   );
 }

@@ -1,0 +1,87 @@
+-- ISS-10827: when this machine last told the CLOUD that this row's delivery was
+-- dead-lettered. NULL means the verdict has not been reported.
+--
+-- The column exists to keep two observations apart that are otherwise identical
+-- on the wire. After a reconcile, a locally-abandoned row whose cloud copy does
+-- NOT carry `syncAbandoned` is either (a) a verdict this machine has not managed
+-- to report yet, or (b) a verdict it DID report that the author has since
+-- cleared from the web retry door. Without this stamp the lane cannot tell them
+-- apart, and picking either reading unconditionally is wrong: reading every
+-- absence as "cleared" re-pends a row whose report merely 503'd, and because the
+-- re-pend restores a full item budget that failure is a cycle with no bound,
+-- which `main/sync/AGENTS.md` invariant 5 forbids.
+--
+-- A TIMESTAMP rather than a boolean so a stuck report is diagnosable from the
+-- row itself, matching `last_sync_attempt_at` beside it.
+--
+-- Additive and safe under skew on the same argument as 0092. Rows written before
+-- this migration read NULL — "not reported" — so the first pass after the
+-- upgrade reports them, which is the correct direction: an unreported verdict
+-- becomes reported, and nothing is re-pended on the strength of a stamp that was
+-- never written.
+ALTER TABLE "trace_comments" ADD COLUMN "sync_abandon_reported_at" TEXT;
+
+-- ISS-10827 (whitlockk and tamsinb, PR #7750): the cloud ANSWERED this report with
+-- a rejection no later pass can change. NULL means no such answer has arrived.
+--
+-- A SECOND column rather than reusing the stamp above, because the two make
+-- different claims and only one of them is safe to found a re-pend on.
+-- `sync_abandon_reported_at` means THE CLOUD HOLDS THE MARKER, which is what
+-- makes a later absence of that marker readable as the author clearing it from
+-- the web retry door. A refusal means the cloud does NOT hold it, so stamping a
+-- refusal into that column would make the very next reconcile read
+-- marker-absent as author-cleared, re-pend the row with a full fresh item
+-- budget, and put a payload the cloud permanently rejected back on the wire with
+-- no author action — the unbounded cycle the first column exists to prevent,
+-- arriving through the refusal arm.
+--
+-- It is also the BOUND. Without it a refusal left the row unreported, an
+-- unreported row is selected again, and the lane runs on a 10-second timer, so a
+-- single unreportable dead letter POSTs forever. Any answered-and-not-retryable
+-- status sets this and ends the attempts; a lane-wide one (401/429/500/503, or
+-- no answer at all) does not, and stays paced by the environmental gate.
+ALTER TABLE "trace_comments" ADD COLUMN "sync_abandon_report_refused_at" TEXT;
+
+-- ISS-10827 (tamsinb and whitlockk, PR #7750): when this machine last observed the
+-- cloud state of the target holding this dead letter.
+--
+-- The DOWN direction of the round trip has no natural exit. A dead-lettered row
+-- stays dead-lettered until its author acts, and the sweep that schedules a pass
+-- for it filters on nothing that a passing tick changes — so once a row
+-- dead-letters, its target's unconditional list GET re-issues every 10 seconds
+-- for the life of the install whether or not anyone will ever click Retry. At the
+-- 50-target cap that is 300 GETs/min per client, the read-side twin of the
+-- endpoint hammering ISS-8615 built `cloudWriteCall` to stop.
+--
+-- It also ROTATES the sweep. Ordering by the row's age alone let the oldest 50
+-- abandoned targets hold every slot permanently, so a 51st target's report was
+-- never sent and its author's web retry was never seen. Least-recently-polled
+-- first, with the never-polled ahead of everything, gives every target a turn.
+--
+-- NULL means "never polled", which is due immediately — the correct reading for
+-- both a pre-migration row and a fresh dead letter.
+ALTER TABLE "trace_comments" ADD COLUMN "sync_abandon_polled_at" TEXT;
+
+-- ISS-10827 (whitlockk and tamsinb, PR #7750): the cloud row's OWN `updatedAt` as
+-- this machine observed it at the instant it stamped the report.
+--
+-- The DOWN direction has to tell the cloud's two clearers apart: `retry-sync`,
+-- which is its own subpath precisely so it cannot touch the body or the edit
+-- stamp, and a later web EDIT that landed and moved it. Comparing the cloud's
+-- `updatedAt` against the LOCAL generation token compares two different clocks
+-- and calls the result a causal order. The local token resolves from the DESKTOP
+-- wall clock whenever that clock is ahead of the stored value, so with the skew
+-- running the wrong way the guard reads a genuinely newer web edit as "not
+-- newer": author edits on the desktop at T with a clock delta ahead, the PATCH
+-- dead-letters, the author rewrites the comment on the WEB at T+k, and for
+-- k < delta the row is re-pended and the next PATCH overwrites the web edit —
+-- exactly the destroyed edit the guard was written to stop. A laptop that woke
+-- before NTP caught up is minutes off, and dead-lettering already burns minutes.
+--
+-- Stamped from the cloud copy this pass just listed, written in the same
+-- statement as the reported stamp, and compared cloud-to-cloud. No skew term.
+--
+-- NULL means the pair was not captured, which the read treats as "cannot tell"
+-- and leaves the row dead-lettered with its badge and its door intact, rather
+-- than falling back to the cross-clock comparison this column exists to retire.
+ALTER TABLE "trace_comments" ADD COLUMN "sync_abandon_reported_cloud_updated_at" TEXT;

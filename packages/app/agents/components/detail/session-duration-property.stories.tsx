@@ -1,7 +1,4 @@
-import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "@repo/api/src/types/session-status";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import type { Meta, StoryObj } from "@storybook/react";
 import { SessionDurationProperty } from "./session-duration-property";
 import { SessionPropertiesFrame } from "./session-properties-story-frame";
@@ -11,9 +8,9 @@ const STARTED_AT = "2026-07-30T10:00:00.000Z";
 const ENDED_AT = "2026-07-30T14:54:00.000Z";
 
 const meta = {
-  title: "App Core/Agents/Session Duration Property",
+  title: "Composites v1.0/Agents/Detail/Session Duration Property",
   component: SessionDurationProperty,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (
@@ -98,44 +95,8 @@ export const Unmeasurable: Story = {
   },
 };
 
-/**
- * A long-silent row the Sessions surfaces display as "Unknown". Its Duration is
- * empty too, so the two facts on that row agree — rather than one cell saying we
- * do not know the state while the next keeps timing the run.
- */
-export const StaleUnknown: Story = {
-  args: {
-    session: {
-      status: DISPLAYED_SESSION_STATUS.STALE,
-      startedAt: STARTED_AT,
-      endedAt: null,
-    },
-  },
-};
-
-/**
- * ISS-5575 — the state this row actually reaches in production, which no story
- * drew before.
- *
- * The sibling above is handed `stale`, a status a producer has ALREADY folded.
- * A real record arrives stored `active` with an old `lastActivityAt`, and the
- * row folds it here; until this change it kept timing that run against `now()`
- * while the Sessions list showed the em-dash for the same session.
- *
- * It is drawn because it is the state most likely to be mistaken for a
- * rendering failure. The dash carries its reason as hover copy AND in the row's
- * accessible name, so "why is this blank" is answerable without a mouse — the
- * status chip that would otherwise explain it is not on screen with the
- * prototype-parity gate off.
- */
-export const SilentActiveFoldsToStale: Story = {
-  args: {
-    session: {
-      status: SESSION_STATUS.ACTIVE,
-      startedAt: STARTED_AT,
-      // Well past the display cutoff, measured from the fixture's own start.
-      lastActivityAt: STARTED_AT,
-      endedAt: null,
-    },
-  },
-};
+// ISS-10364 (operator ruling, 2026-09-23/24) retired the Stale fold these two
+// stories existed to draw: a long-silent `active` row with no end instant now
+// keeps timing against `now()` instead of rendering the em-dash, exactly like
+// any other non-terminal row with no recorded end. Both stories are removed
+// rather than kept pointed at a Duration state production can no longer reach.

@@ -44,10 +44,9 @@ export type DashboardRow = {
 
 /**
  * Every dashboard row, in order — the UNGATED superset. Neither shell maps this
- * array directly: both resolve their row order through {@link dashboardRowsFor}
- * so a closed-by-default row is dropped from the order, and then apply their own
- * data-driven filtering on top (a desktop-only chart the cloud API omits, and
- * the agent-pipeline row's absent-data filter).
+ * array directly: both resolve their rows through `visibleDashboardRows` in
+ * `dashboard-row-sections.ts`, which drops a closed-by-default row from the
+ * order ({@link dashboardRowsFor}) and then a row whose data is absent.
  */
 export const DASHBOARD_ROWS: DashboardRow[] = [
   // Headline KPIs (Sessions, Token spend, PRs shipped, PR size, KLOC merged).
@@ -98,11 +97,10 @@ export function resolveRowTiles(row: DashboardRow): TileDescriptor[] {
 
 /**
  * Closed-by-default gates that decide whether a dashboard row EXISTS at all
- * (ISS-4779). Distinct from the data-driven `visibleRows` filtering each shell
- * already does (a desktop-only chart the cloud API omits; the agent-pipeline
- * row's own absent-data filter): those rows exist and are dropped once their
- * data resolves absent, whereas a gated-off row is never part of the dashboard
- * in the first place — no card, no skeleton, no grid slot.
+ * (ISS-4779). Distinct from the data-shape rule `visibleDashboardRows` applies
+ * on top of these for both shells (ISS-9993): a row it drops exists and lost
+ * its data, whereas a gated-off row is never part of the dashboard in the first
+ * place — no card, no skeleton, no grid slot.
  */
 export type DashboardRowGates = {
   /**
@@ -141,3 +139,26 @@ export function isDashboardRowEnabled(
 export function dashboardRowsFor(gates: DashboardRowGates): DashboardRow[] {
   return DASHBOARD_ROWS.filter((row) => isDashboardRowEnabled(row, gates));
 }
+
+/**
+ * What each row is called, for copy that has to name a row rather than draw it.
+ *
+ * One failed insights section fails every row that reads from it — an Agents
+ * failure takes five of the eight at once — so a degraded row that says only
+ * "this section" leaves the reader looking at five identical boxes with no way
+ * to tell which chart is missing. Each label is the name that row already
+ * carries on screen (`expandLabel` in `dashboard-rows.tsx`) where it has one.
+ *
+ * Exhaustive over `DashboardRowTour`, so a new row fails typecheck until it is
+ * named rather than silently falling back to a generic sentence.
+ */
+export const DASHBOARD_ROW_LABELS: Record<DashboardRowTour, string> = {
+  stats: "Headline metrics",
+  activity: "Event Activity",
+  models: "Model cost over time",
+  "agent-pipeline": "Agent Collaboration Network",
+  autonomy: "Autonomy Over Time",
+  frustration: "Frustration Trend",
+  prs: "PR throughput",
+  distribution: "Distributions",
+};

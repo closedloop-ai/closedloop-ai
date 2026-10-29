@@ -14,7 +14,7 @@ import { withProviders } from "./agent-session-detail-view.test-helpers";
 
 const UNRESOLVED_REMOTE_CWD = "/Users/dev/Code/3";
 const FILESYSTEM_ROOT_CWD = "/";
-const RESOLVED_REMOTE = "closedloop-ai/example-repo";
+const RESOLVED_REMOTE = "closedloop-ai/closedloop-ai";
 
 function renderDetail(session: AgentSessionDetail) {
   return render(

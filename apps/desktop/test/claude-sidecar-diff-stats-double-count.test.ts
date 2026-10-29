@@ -43,7 +43,7 @@
  *     invisible to the caller's `tool_use.id` dedup.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
 import { writeClaudeTranscript } from "./normalized-session-test-utils.js";
 import {

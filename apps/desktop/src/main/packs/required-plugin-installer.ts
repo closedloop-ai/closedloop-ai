@@ -13,10 +13,12 @@
  * FEA-2923 (T-16.8)
  */
 
-import type {
-  DistributionDto,
-  DistributionStatusReport,
+import {
+  type DistributionDto,
+  DistributionMode,
+  type DistributionStatusReport,
 } from "@repo/api/src/types/distribution";
+import { dropOnDbHostLifecycleError } from "../../shared/db-host-fire-and-forget.js";
 import {
   classifyStreamRunRetry,
   HARNESS_AUTO,
@@ -31,6 +33,7 @@ import {
   getAssignedDistributions,
   reportDistributionStatus,
 } from "./distributions-client.js";
+import { TerminalInstallLatch } from "./terminal-install-latch.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -76,6 +79,8 @@ export type RequiredPluginInstallerOptions = {
   ) => Promise<CoachingInstallOutcome>;
   /** Called with opt-in distributions so the renderer can surface them. */
   onOptInAvailable?: (distributions: DistributionDto[]) => void;
+  /** Drop the retained opt-in snapshot after an accept or decline action. */
+  clearOptInSnapshot?: () => void;
   /**
    * FEA-4050: durable "has the user already declined this opt-in pack?" check.
    * Reads the settings-store declined list so a pack the user dismissed stays
@@ -103,6 +108,35 @@ export type RequiredPluginInstallerOptions = {
     organizationId: string;
     computeTargetId: string;
   }) => void;
+  /**
+   * ISS-6170: called on every reconcile that skips a pack the installer has
+   * given up on, with `firstGiveUp` true only on the reconcile that latched it.
+   * Sinks own their own cadence from that flag. Wired by
+   * {@link ../packs/required-plugin-installer-options.js} to the monitored
+   * telemetry lane and the (Labs-gated) user notification. A give-up that
+   * reported nothing would be indistinguishable from an install that succeeded,
+   * so the sinks are part of the give-up, not decoration on it. Optional for
+   * wiring/tests that do not observe it.
+   */
+  onTerminalInstallFailure?: (notice: TerminalInstallFailureNotice) => void;
+};
+
+/**
+ * One pack this build has proved it can never install, reported at the moment
+ * the installer latches it. `code` is the producer's own closed error code, so
+ * a sink can branch on the condition without parsing `reason`.
+ */
+export type TerminalInstallFailureNotice = {
+  packId: string;
+  distributionId: string;
+  code: StreamRunErrorCode;
+  reason: string;
+  /**
+   * True only on the reconcile that latched this pack. A sink that must reach
+   * the user exactly once reads this; a sink that must keep trying until it is
+   * delivered ignores it.
+   */
+  firstGiveUp: boolean;
 };
 
 /**
@@ -169,6 +203,25 @@ export class RequiredPluginInstaller {
    * the whole reconcile chain drains (back to not-in-flight).
    */
   private trailingPassDone = false;
+  /**
+   * ISS-6170: pack ids this build has already proved it cannot install. Consulted
+   * before every `runInstall` so a permanent failure costs one attempt per
+   * process instead of one per reconcile — `reconcile()` fires on every
+   * cloud-online transition and on runtime-ready, which is how a single
+   * uninstallable pack produced 24 identical error lines in one log window.
+   */
+  private readonly terminalLatch = new TerminalInstallLatch();
+  /**
+   * ISS-6170 × ISS-4428: has the local `pack_catalog` seed landed in this
+   * process yet? Until it has, `ENOTFOUND` does NOT mean "absent from this
+   * build's catalog" — on a fresh database the catalog is populated by deferred
+   * startup maintenance, and `reconcile()` also fires on the cloud-online
+   * transition, which does not wait for it. Latching that pre-seed miss would
+   * defeat the very retry ISS-4428 added (`onCatalogSeeded` →
+   * {@link notifyRuntimeReady}) and leave a legitimately installable pack dead
+   * for the life of the process. So nothing latches until this flips.
+   */
+  private catalogSeeded = false;
 
   constructor(opts: RequiredPluginInstallerOptions) {
     this.opts = opts;
@@ -220,6 +273,8 @@ export class RequiredPluginInstaller {
       throw new Error("Coaching Packs is disabled.");
     }
     // `installed` and `skipped` (override precedence honored) are both success.
+    this.opts.clearOptInSnapshot?.();
+    this.publishOptInSnapshot(distributions, computeTargetId, distributionId);
     return outcome;
   }
 
@@ -253,6 +308,35 @@ export class RequiredPluginInstaller {
   }
 
   /**
+   * Refresh the retained opt-in snapshot after a generic catalog install.
+   * The catalog install IPC knows only the pack id, so the banner acknowledges
+   * its distribution id after the install succeeds. Snapshot invalidation is
+   * synchronous; the authoritative refresh is best-effort.
+   */
+  async acknowledgeOptInHandled(
+    computeTargetId: string | null,
+    distributionId: string
+  ): Promise<void> {
+    this.opts.clearOptInSnapshot?.();
+    if (!computeTargetId) {
+      return;
+    }
+    try {
+      const distributions = await getAssignedDistributions(
+        this.opts.distributionsClient,
+        computeTargetId
+      );
+      this.publishOptInSnapshot(distributions, computeTargetId, distributionId);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      gatewayLog.warn(
+        "required-plugin-installer",
+        `distribution ${distributionId}: handled snapshot refresh failed: ${message}`
+      );
+    }
+  }
+
+  /**
    * FEA-4050: renderer-initiated durable decline of an opt-in distribution. The
    * opt-in banner calls this (via the `declineDistribution` IPC bridge) when the
    * user dismisses a pack, so the decline survives an app restart instead of
@@ -277,6 +361,7 @@ export class RequiredPluginInstaller {
     computeTargetId: string,
     distributionId: string
   ): Promise<void> {
+    this.opts.clearOptInSnapshot?.();
     const record = this.opts.recordDeclinedDistribution;
     if (!record) {
       return;
@@ -304,6 +389,7 @@ export class RequiredPluginInstaller {
         this.opts.distributionsClient,
         computeTargetId
       );
+      this.publishOptInSnapshot(distributions, computeTargetId, distributionId);
       const dist = distributions.find((d) => d.id === distributionId);
       if (!dist) {
         return;
@@ -342,6 +428,13 @@ export class RequiredPluginInstaller {
    * itself to a single trailing pass, so this cannot fan out.
    */
   notifyRuntimeReady(): void {
+    // ISS-6170: this signal IS the catalog-seeded signal (app.ts wires it to the
+    // runtime's `onCatalogSeeded`), so record it BEFORE the skip check below. The
+    // seed is a fact about the local database; whether we can reconcile against
+    // the cloud right now is a separate question, and letting a shutdown or an
+    // offline moment discard it would keep the installer permanently unable to
+    // recognise a genuinely uninstallable pack.
+    this.catalogSeeded = true;
     const computeTargetId = this.opts.resolveRuntimeReadyTarget?.() ?? null;
     if (computeTargetId === null) {
       return;
@@ -352,6 +445,29 @@ export class RequiredPluginInstaller {
         "required-plugin-installer",
         `runtime-ready reconcile failed (best-effort, will retry on next cloud online): ${msg}`
       );
+    });
+  }
+
+  /**
+   * ISS-8776 — start a reconcile from a caller that has no error path.
+   *
+   * `reconcile` reaches the db-host early and OUTSIDE any try:
+   * `doReconcile` → `processAutoInstall` → `opts.getInstalledVersion(packId)`,
+   * which is wired to a `packStore.getPack` read. Launched with a bare `void`
+   * from the cloud-online transition, a db-host child that died under that read
+   * reached `handleUnhandledRejection`, which shows the crash dialog and calls
+   * `app.exit(1)` — the app lost to a store bounce that happened to coincide
+   * with a reconnect.
+   *
+   * Uses the ONE fire-and-forget contract rather than a bare `.catch`, so a
+   * db-host lifecycle failure is dropped with a log (the next cloud-online
+   * transition reconciles again) while a genuine installer bug stays exactly as
+   * loud as it is today.
+   */
+  reconcileInBackground(computeTargetId: string): void {
+    dropOnDbHostLifecycleError(this.reconcile(computeTargetId), {
+      label: "required-plugin reconcile",
+      log: (message) => gatewayLog.warn("required-plugin-installer", message),
     });
   }
 
@@ -402,19 +518,9 @@ export class RequiredPluginInstaller {
       computeTargetId
     );
 
-    const autoInstall = distributions.filter((d) => d.mode === "auto_install");
-    const optIn = distributions.filter((d) => d.mode === "opt_in");
-
-    // FEA-4050: suppress opt-in packs the user has already declined so the
-    // reconcile does not re-surface a dismissed pack on every app restart. The
-    // decline is keyed on the distribution assignment id and scoped to this
-    // compute target, so an admin re-share (a new `distributionId`) is still
-    // surfaced as a genuinely-new offer and a decline made under a different
-    // user/profile does not suppress this one.
-    const isDeclined = this.opts.isDistributionDeclined;
-    const optInToSurface = isDeclined
-      ? optIn.filter((d) => !isDeclined(d.id, computeTargetId))
-      : optIn;
+    const autoInstall = distributions.filter(
+      (distribution) => distribution.mode === DistributionMode.AutoInstall
+    );
 
     // Surface opt-in distributions to the renderer as an authoritative SNAPSHOT
     // of what the org currently offers — including the empty one.
@@ -425,7 +531,7 @@ export class RequiredPluginInstaller {
     // offer is revoked; skipping the push on empty (the exact shape produced by
     // withdrawing the last opt-in pack) would leave the revoked row on screen and
     // actionable forever.
-    this.opts.onOptInAvailable?.(optInToSurface);
+    this.publishOptInSnapshot(distributions, computeTargetId);
 
     if (distributions.length === 0) {
       return;
@@ -447,6 +553,22 @@ export class RequiredPluginInstaller {
         reports
       );
     }
+  }
+
+  /** Publish the current filtered opt-in set through the configured delivery path. */
+  private publishOptInSnapshot(
+    distributions: DistributionDto[],
+    computeTargetId: string,
+    handledDistributionId?: string
+  ): void {
+    const isDeclined = this.opts.isDistributionDeclined;
+    const optInToSurface = distributions.filter(
+      (distribution) =>
+        distribution.mode === DistributionMode.OptIn &&
+        distribution.id !== handledDistributionId &&
+        !isDeclined?.(distribution.id, computeTargetId)
+    );
+    this.opts.onOptInAvailable?.(optInToSurface);
   }
 
   /**
@@ -552,6 +674,31 @@ export class RequiredPluginInstaller {
       };
     }
 
+    // ISS-6170: this build already proved it cannot install this pack. Keep
+    // telling the cloud the device did not converge — a give-up that stopped
+    // reporting would look exactly like a success — but do not re-run the
+    // identical failing request, and do not re-log it. The one error line and
+    // the one give-up signal were raised on the reconcile that latched it.
+    const latched = this.terminalLatch.recordFor(packId);
+    if (latched !== undefined) {
+      // Re-raised, not returned silently: the monitored sink does not consume
+      // its one report until the telemetry lane ACCEPTED it, and that lane can
+      // be closed when the latch fires. `firstGiveUp: false` keeps the
+      // once-only sinks quiet.
+      this.opts.onTerminalInstallFailure?.({
+        code: latched.code,
+        distributionId: dist.id,
+        firstGiveUp: false,
+        packId,
+        reason: latched.reason,
+      });
+      return {
+        distributionId: dist.id,
+        status: "failed",
+        failureReason: latched.reason,
+      };
+    }
+
     // Invoke the install callback. The caller (app.ts) provides this callback
     // and it must source install commands ONLY from vetted local pack_catalog
     // rows via streamRun — never from raw cloud-supplied commands.
@@ -604,14 +751,34 @@ export class RequiredPluginInstaller {
       // the same noise problem, inverted. The retry axis comes from the
       // producer's own canonical classification, so this level and the convert
       // engine's retry decision cannot drift apart.
+      const code = result.error?.code;
+      // Equivalent to classifying `result.error?.code` directly — an absent code
+      // classifies transient — but written so `code` is narrowed for the latch.
       const permanent =
-        classifyStreamRunRetry(result.error?.code) ===
-        StreamRunRetryClass.Permanent;
+        code !== undefined &&
+        classifyStreamRunRetry(code) === StreamRunRetryClass.Permanent;
       if (permanent) {
         gatewayLog.error(
           "required-plugin-installer",
           `distribution ${dist.id}: install of '${packId}' FAILED — ${reason}`
         );
+        // ISS-4428: NOT before the catalog seed has landed. A pre-seed
+        // `ENOTFOUND` says the local catalog is still empty, not that this build
+        // lacks the pack, and the seed's own callback drives the retry that
+        // fixes it — latching there would turn the ordinary fresh-install
+        // ordering into a pack that can never install until a relaunch.
+        if (
+          this.catalogSeeded &&
+          this.terminalLatch.latch(packId, { code, reason })
+        ) {
+          this.opts.onTerminalInstallFailure?.({
+            code,
+            distributionId: dist.id,
+            firstGiveUp: true,
+            packId,
+            reason,
+          });
+        }
       } else {
         gatewayLog.warn(
           "required-plugin-installer",

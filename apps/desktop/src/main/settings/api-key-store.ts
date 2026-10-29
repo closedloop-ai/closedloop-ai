@@ -19,11 +19,16 @@ type SecretsSchema = {
    * wipes it so a fresh key on the same machine can re-offer the prompt.
    */
   existingUserSyncPromptDismissed?: string;
+  /** Durable sign-out tombstone that prevents environment fallback on restart. */
+  environmentApiKeySuppressed?: string;
   [key: string]: string | undefined;
 };
 
 const SYNC_PROMPT_DISMISSED_KEY = "existingUserSyncPromptDismissed";
 const SYNC_PROMPT_DISMISSED_VALUE = "1";
+const ENVIRONMENT_KEY_SUPPRESSED_KEY = "environmentApiKeySuppressed";
+const ENVIRONMENT_KEY_SUPPRESSED_VALUE = "1";
+const PROFILE_SECRET_KEY_PREFIX = "profile:";
 
 /**
  * Provenance controls whether Desktop PoP signing applies to the active API key.
@@ -161,6 +166,7 @@ export class ApiKeyStore {
     const encrypted = this.safeStorage.encryptString(apiKey);
     this.store.set("encryptedApiKey", encrypted.toString("base64"));
     this.store.set("apiKeyProvenance", provenance);
+    this.store.delete(ENVIRONMENT_KEY_SUPPRESSED_KEY);
     this.notifyApiKeyChanged();
   }
 
@@ -172,6 +178,36 @@ export class ApiKeyStore {
     // the existing-user prompt again rather than staying permanently dismissed.
     this.store.delete(SYNC_PROMPT_DISMISSED_KEY);
     this.notifyApiKeyChanged();
+  }
+
+  /** Clears the active secret and every saved or orphaned profile secret. */
+  clearAllPersistedApiKeyMaterial(): void {
+    this.store.delete("encryptedApiKey");
+    this.store.delete("apiKeyProvenance");
+    this.store.delete(SYNC_PROMPT_DISMISSED_KEY);
+    for (const key of Object.keys(this.store.store)) {
+      if (key.startsWith(PROFILE_SECRET_KEY_PREFIX)) {
+        this.store.delete(key as keyof SecretsSchema);
+      }
+    }
+    this.store.set(
+      ENVIRONMENT_KEY_SUPPRESSED_KEY,
+      ENVIRONMENT_KEY_SUPPRESSED_VALUE
+    );
+    this.notifyApiKeyChanged();
+  }
+
+  /** Whether any encrypted active/profile key or provenance metadata remains. */
+  hasPersistedApiKeyMaterial(): boolean {
+    if (
+      this.store.has("encryptedApiKey") ||
+      this.store.has("apiKeyProvenance")
+    ) {
+      return true;
+    }
+    return Object.keys(this.store.store).some((key) =>
+      key.startsWith(PROFILE_SECRET_KEY_PREFIX)
+    );
   }
 
   /**
@@ -283,6 +319,12 @@ export class ApiKeyStore {
     value: string;
     environmentVariable: "CLOSEDLOOP_API_KEY" | "SYMPHONY_API_KEY";
   } | null {
+    if (
+      this.store.get(ENVIRONMENT_KEY_SUPPRESSED_KEY) ===
+      ENVIRONMENT_KEY_SUPPRESSED_VALUE
+    ) {
+      return null;
+    }
     const closedloopKey = process.env.CLOSEDLOOP_API_KEY?.trim();
     if (closedloopKey) {
       return {

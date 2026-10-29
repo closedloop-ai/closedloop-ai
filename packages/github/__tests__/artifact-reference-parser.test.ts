@@ -186,6 +186,36 @@ describe("parseArtifactReferences", () => {
       });
     });
 
+    it("extracts an issue from the canonical /documents/ISS- URL (ISS-12855)", () => {
+      const body =
+        "See https://app.closedloop.dev/documents/ISS-17 for context";
+      const results = parseArtifactReferences("Some PR", body, appBaseUrl);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        slug: "ISS-17",
+        prefix: SlugPrefix.Issue,
+        docType: DocumentType.Feature,
+        matchType: MatchType.Url,
+      });
+    });
+
+    it("extracts a plan from the org-scoped /documents/PLN- URL (ISS-12855)", () => {
+      const body = "See https://app.closedloop.dev/acme/documents/PLN-42";
+      const results = parseArtifactReferences("PR", body, appBaseUrl);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        slug: "PLN-42",
+        docType: DocumentType.ImplementationPlan,
+        matchType: MatchType.Url,
+        source: MatchSource.Body,
+      });
+    });
+
+    it("does not extract a /documents/PRD- URL, since PRD is not a parsable type", () => {
+      const body = "See https://app.closedloop.dev/documents/PRD-1 for context";
+      expect(parseArtifactReferences("PR", body, appBaseUrl)).toEqual([]);
+    });
+
     it("extracts plan from full URL in body", () => {
       const body =
         "See https://app.closedloop.dev/implementation-plans/PLN-42 for details";

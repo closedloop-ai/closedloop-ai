@@ -26,6 +26,10 @@ vi.mock("@repo/database", () => ({
 }));
 
 import { ArtifactType, withDb } from "@repo/database";
+import {
+  createHostileNestedOrderedFindMany,
+  createHostileOrderedFindMany,
+} from "@/__tests__/utils/hostile-order-planner.test-helpers";
 import { searchService } from "./service";
 
 const mockWithDb = withDb as unknown as Mock;
@@ -33,7 +37,9 @@ const mockWithDb = withDb as unknown as Mock;
 const TEST_ORG_ID = "org-123";
 
 function installDb(db: Record<string, unknown>) {
-  mockWithDb.mockImplementation((callback: any) => callback(db));
+  mockWithDb.mockImplementation(
+    (callback: (tx: Record<string, unknown>) => unknown) => callback(db)
+  );
 }
 
 function makeArtifactRow(overrides: Record<string, unknown> = {}) {
@@ -72,6 +78,71 @@ describe("searchService.search", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  // ISS-9780: the nested team read is `take: 1` — it picks WHICH team name the
+  // result row displays. `createdAt` alone is tie-prone (teams attached in one
+  // transaction share it), so without a terminal key the displayed team could
+  // change between two identical searches.
+  it("orders the nested team pick on a unique terminal key", async () => {
+    const mockFindMany = vi.fn().mockResolvedValue([]);
+    installDb({
+      artifact: { findMany: vi.fn().mockResolvedValue([]) },
+      project: { findMany: mockFindMany },
+    });
+
+    await searchService.search(TEST_ORG_ID, "PRO-5");
+
+    const call = mockFindMany.mock.calls[0][0];
+    expect(call.select.teams.orderBy).toEqual([
+      { createdAt: "asc" },
+      { id: "asc" },
+    ]);
+    expect(call.select.teams.take).toBe(1);
+  });
+
+  // ISS-9780: the case above proves the read ASKS for a total nested order; it
+  // cannot prove the team it DISPLAYS, because its fake returns `[]`. This one
+  // hands the nested `take: 1` a set of team rows entirely tied on `createdAt`
+  // — teams attached in one transaction share it — through a fake that applies
+  // the nested ordering and permutes the tied rows between calls. Strip the
+  // terminal key and the same project renders a different team name on two
+  // identical searches.
+  it("displays the same team name twice when the project's teams are tied", async () => {
+    const TIED_AT = new Date("2026-09-01T00:00:00.000Z");
+    const projectRow = makeProjectRow({
+      teams: [
+        {
+          id: "pt-c",
+          createdAt: TIED_AT,
+          team: { id: "team-c", name: "Team C" },
+        },
+        {
+          id: "pt-a",
+          createdAt: TIED_AT,
+          team: { id: "team-a", name: "Team A" },
+        },
+        {
+          id: "pt-b",
+          createdAt: TIED_AT,
+          team: { id: "team-b", name: "Team B" },
+        },
+      ],
+    });
+    installDb({
+      artifact: { findMany: vi.fn().mockResolvedValue([]) },
+      project: {
+        findMany: createHostileNestedOrderedFindMany([projectRow], "teams"),
+      },
+    });
+
+    const first = await searchService.search(TEST_ORG_ID, "PRO-5");
+    const second = await searchService.search(TEST_ORG_ID, "PRO-5");
+
+    // The terminal key is the join row's own `id`, ascending, so the displayed
+    // team is not merely stable — it is this one.
+    expect(first.projects[0].teamName).toBe("Team A");
+    expect(second.projects[0].teamName).toBe(first.projects[0].teamName);
   });
 
   it("includes slug in project OR clause", async () => {
@@ -344,7 +415,10 @@ describe("searchService.searchByTag", () => {
       })
     );
     // DB does the recency ordering and cap in the same shot.
-    expect(call.orderBy).toEqual({ updatedAt: "desc" });
+    // ISS-9780: the recency order now carries a unique terminal key. `updatedAt`
+    // alone is tie-prone, and this read is a bounded top-N (`take: 25`), so
+    // which of a set of same-instant rows made the cut was planner-dependent.
+    expect(call.orderBy).toEqual([{ updatedAt: "desc" }, { id: "desc" }]);
     expect(call.take).toBe(25);
 
     expect(result.tagName).toBe("Roadmap");
@@ -366,5 +440,43 @@ describe("searchService.searchByTag", () => {
       documents: [],
       projects: [],
     });
+  });
+
+  // ISS-9780: the query-shape case above proves `SEARCH_ORDER` ASKS for a total
+  // order; it cannot prove which rows make the cut, because its fake returns one
+  // row and the cap is 25. This one hands the bounded top-N a population of 30
+  // rows entirely tied on `updatedAt` — a bulk import or a batch status change
+  // ties them — through a fake that applies the requested ordering and permutes
+  // tied rows between calls. Strip the terminal key and two identical reads of
+  // an unchanged corpus return DIFFERENT MEMBERS, not just a different order.
+  it("admits the same 25 members twice when the tagged corpus is tied on updatedAt", async () => {
+    const TIED_AT = new Date("2026-09-01T00:00:00.000Z");
+    const taggedRows = Array.from({ length: 30 }, (_, index) => {
+      const suffix = String(index).padStart(2, "0");
+      return makeArtifactRow({
+        id: `art-${suffix}`,
+        slug: `FEA-${suffix}`,
+        updatedAt: TIED_AT,
+      });
+    });
+
+    installDb({
+      tag: { findFirst: vi.fn().mockResolvedValue({ name: "Roadmap" }) },
+      artifact: { findMany: createHostileOrderedFindMany(taggedRows) },
+    });
+
+    const first = await searchService.searchByTag(TEST_ORG_ID, "tag-1");
+    const second = await searchService.searchByTag(TEST_ORG_ID, "tag-1");
+
+    // The terminal key is `id` DESCENDING, so the admitted set is not merely
+    // stable — it is the 25 highest ids, and `art-00`..`art-04` are cut.
+    expect(first.documents).toHaveLength(25);
+    expect(first.documents.map((document) => document.id)).toEqual(
+      second.documents.map((document) => document.id)
+    );
+    expect(first.documents.map((document) => document.id)).not.toContain(
+      "art-00"
+    );
+    expect(first.documents[0].id).toBe("art-29");
   });
 });

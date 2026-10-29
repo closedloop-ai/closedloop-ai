@@ -8,14 +8,19 @@
  * their `session_analytics` rollup IS recomputed from stored metadata
  * (FEA-2641). Revision 38 can then conservatively rebuild invocation-derived
  * rows from deterministic stored data and stamp only on success; older rebuild
- * policies leave the revision stale as the durable retry marker. Active
- * sessions are skipped — the ordinary reimport path re-derives and stamps them. A
+ * policies leave the revision stale as the durable retry marker. A LIVE capture is
+ * skipped — the ordinary reimport path re-derives and stamps it — but a
+ * non-terminal session that has been silent past the staleness bound is admitted
+ * (ISS-8601): no reimport is coming for it, so refusing it forever is what left
+ * those rows unbuildable. A
  * surviving source whose parse yields no session under current semantics
  * (e.g. the codex re-serialization burst signature) is an import artifact and
  * its local session row is deleted outright.
  */
 
 import type { AnalyticsRollupRecomputeResult } from "../../database/analytics-recompute.js";
+import { effectiveParsePolicy } from "../../parse-policy/effective-parse-policy.js";
+import type { ParsePolicy } from "../../parse-policy/parse-policy.js";
 import {
   type Harness,
   type HarnessCollector,
@@ -24,7 +29,7 @@ import {
 } from "../types.js";
 import {
   COMPONENT_INVOCATION_STORED_REBUILD_REVISION,
-  DATA_REVISION,
+  dataRevisionFor,
 } from "./data-revision.js";
 import { pruneFoldedChildRows } from "./data-revision-folded-child-prune.js";
 import {
@@ -34,19 +39,29 @@ import {
   type RebuildOutstanding,
 } from "./data-revision-rebuild-outstanding.js";
 import {
+  type DataRevisionParseSource,
+  type DataRevisionSourceParseResult,
+  DataRevisionSourceParseResultKind,
+  parseDataRevisionSource,
+} from "./data-revision-rebuild-parse.js";
+import {
   createDataRevisionRebuildProgressReporter,
   type DataRevisionRebuildProgress,
 } from "./data-revision-rebuild-progress.js";
+import { promoteSessionProjection } from "./data-revision-rebuild-projection-gate.js";
+import {
+  groupTerminalStaleByHarness,
+  type StaleRevisionSessionRow,
+  wedgedAdmittedIds,
+} from "./data-revision-rebuild-stale-selection.js";
 import { rebuildStoredComponentInvocations } from "./data-revision-rebuild-stored-invocations.js";
-import { isHistoricalParseWorkerParserOutputError } from "./historical-parse-worker-protocol.js";
+import {
+  createEmptyDataRevisionRebuildSummary,
+  type DataRevisionRebuildSummary,
+  logRebuildSummary,
+} from "./data-revision-rebuild-summary.js";
 import { isImportableCollectorSource } from "./source-admission.js";
 
-// ISS-4586 / ISS-4654: `inactive` is the canonical terminal-not-failed session
-// status. The legacy completed/abandoned entries are gone with the rest of the
-// retired vocabulary — migration 0042 runs at boot, so no local row can carry
-// one. Mirrors `TERMINAL_STATUS_SET` in db-constants.ts; kept as a local literal
-// so this collector-engine module stays free of the db-runtime import.
-const TERMINAL_STATUS_SET = new Set(["inactive", "error"]);
 // ISS-4711: the full cooperative pause taken after each session write WHILE the
 // db-host is under memory pressure OR the renderer just read (so GC/WAL reclaim
 // and the UI stays responsive). Historically this flat 50ms was paid after
@@ -64,21 +79,41 @@ export const DATA_REVISION_REBUILD_IDLE_PAUSE_MS = 0;
 export type DataRevisionRebuildDatabase = {
   listStaleRevisionSessions(
     currentRevision: number
-  ): Promise<Array<{ id: string; harness: string | null; status: string }>>;
+  ): Promise<StaleRevisionSessionRow[]>;
+  /**
+   * ISS-8601: the STORE's clock, which the in-transaction rebuild guards already
+   * read. The selection must read the same one or it can admit a row the guard
+   * then refuses as an active race — and `raceSkipped` is deliberately not
+   * retryable, so that row would never be stamped and would be re-selected on
+   * every boot.
+   *
+   * Optional only so a test double may omit it. In production it is ALWAYS
+   * present and it ALWAYS returns a promise: the db-host proxy (FEA-2038)
+   * answers every property path and forwards the call as an IPC `invoke`. The
+   * caller awaits it for exactly that reason.
+   */
+  now?: () => string | Promise<string>;
   rebuildSessionFromParse(
     session: NormalizedSession,
-    harness: Harness
+    harness: Harness,
+    /**
+     * ISS-8741: the source revision to stamp as the new known-good projection,
+     * inside the replacement's own transaction. Supplied by the promotion gate.
+     */
+    projectionRevision?: string | null,
+    /** ISS-12552: the policy the session was re-parsed under. */
+    parsePolicy?: ParsePolicy
   ): Promise<{
     rebuilt: boolean;
     activeRace: boolean;
     storageReset?: boolean;
     /**
-     * FEA-3659: true when the re-derived payload actually changed (the session's
-     * `updated_at` sync watermark was bumped), so the row must (re-)sync to the
-     * cloud. Undefined/false for a byte-identical re-derivation, which stamps only
-     * `data_revision` and is a true sync no-op.
+     * FEA-3659: true when the row must (re-)sync to the cloud: its re-derived
+     * payload changed (the `updated_at` sync watermark was bumped) or, ISS-12251,
+     * only its `created_at` moved (no bump). Undefined/false for a byte-identical
+     * re-derivation, which stamps only `data_revision` and is a true sync no-op.
      */
-    contentChanged?: boolean;
+    needsResync?: boolean;
   }>;
   /**
    * FEA-3294 revision-38 bridge. Reconstructs the complete invocation
@@ -88,14 +123,31 @@ export type DataRevisionRebuildDatabase = {
    */
   rebuildComponentInvocationsFromStoredRows?(
     sessionId: string,
-    currentRevision: number
+    currentRevision: number,
+    /** ISS-12552: the pass's policy; off clears attribution evidence too. */
+    parsePolicy?: ParsePolicy
   ): Promise<{
     rebuilt: boolean;
     activeRace: boolean;
     storageReset?: boolean;
-    contentChanged?: boolean;
+    needsResync?: boolean;
   }>;
-  deleteSessionRow(sessionId: string): Promise<void>;
+  /**
+   * ISS-8601: reports whether the row was actually DELETED. The store's
+   * implementation re-checks status inside the transaction and refuses a
+   * non-terminal row by returning early; when that outcome was `void` the
+   * callers could not tell a refusal from a deletion, so they counted and logged
+   * one that never happened and dropped the id from the pass.
+   */
+  deleteSessionRow(sessionId: string): Promise<boolean>;
+  /**
+   * ISS-8741: the durable in-flight marker, claimed in its own transaction
+   * before a replacement is built and cleared when one commits or is abandoned.
+   * Optional so a wiring (or a test double) that predates the substrate still
+   * gets the validation gate and the atomic replacement.
+   */
+  claimProjectionCandidate?(sessionId: string, revision: string): Promise<void>;
+  releaseProjectionCandidate?(sessionId: string): Promise<void>;
   /**
    * FEA-2641: optional hook — recompute `session_analytics` rollups from the
    * STORED session metadata for stale sessions whose source transcript no
@@ -110,6 +162,12 @@ export type DataRevisionRebuildDatabase = {
 export type DataRevisionRebuildOptions = {
   collectors: readonly HarnessCollector[];
   db: DataRevisionRebuildDatabase;
+  /**
+   * ISS-12552 (PRD-800 "Rollout"): the policy this pass re-derives under,
+   * and so the revision it selects against and stamps. Defaults to this
+   * process's current policy.
+   */
+  parsePolicy?: ParsePolicy;
   log?: (message: string) => void;
   /** Parser hook for keeping rebuild parsing off Electron's main process. */
   parseSource?: DataRevisionParseSource;
@@ -181,59 +239,6 @@ export type DataRevisionRebuildOptions = {
   reportProgress?: (progress: DataRevisionRebuildProgress) => void;
 };
 
-export type DataRevisionRebuildSummary = {
-  staleTotal: number;
-  rebuilt: number;
-  deleted: number;
-  skippedActive: number;
-  raceSkipped: number;
-  missingSource: number;
-  unmatchedSource: number;
-  parseErrors: number;
-  errors: number;
-  storageReset: boolean;
-  /**
-   * FEA-2641: missing-source sessions whose analytics rollup was recomputed
-   * from stored metadata (0 when the db hook is absent, when the recompute threw
-   * before committing anything, or when every chunk's primary transaction
-   * failed).
-   *
-   * ISS-5071: this is the PRIMARY `session_analytics` commit count, NOT the
-   * fully-repaired count — a session whose analytics transaction committed but
-   * whose secondary activity-metrics refresh failed is counted here AND leaves
-   * the revision stamp withheld. That is deliberate: this number exists so
-   * post-boot maintenance can decide whether rows changed out-of-band and the
-   * renderer's caches must be dropped, and rows DID change in that case.
-   */
-  missingSourceRollupsRecomputed: number;
-  /**
-   * FEA-3659: ids of the sessions that were rebuilt AND whose re-derived payload
-   * actually changed (their `updated_at` sync watermark advanced). This is the
-   * explicit changed-set the runtime enqueues into the durable sync outbox so a
-   * DATA_REVISION bump propagates exactly these rows to the cloud — never the
-   * whole corpus and never a byte-identical no-op. A subset of `rebuilt`.
-   */
-  changedSessionIds: string[];
-};
-
-/** A zero-valued summary: the accumulator every rebuild pass starts from. */
-export function createEmptyDataRevisionRebuildSummary(): DataRevisionRebuildSummary {
-  return {
-    staleTotal: 0,
-    rebuilt: 0,
-    deleted: 0,
-    skippedActive: 0,
-    raceSkipped: 0,
-    missingSource: 0,
-    unmatchedSource: 0,
-    parseErrors: 0,
-    errors: 0,
-    storageReset: false,
-    missingSourceRollupsRecomputed: 0,
-    changedSessionIds: [],
-  };
-}
-
 /**
  * ISS-5808: the accumulator is created HERE, outside the pass, so
  * `options.reportSummary` can hand it back on a throw as well as on a return —
@@ -257,56 +262,40 @@ async function runDataRevisionRebuildInto(
   const log = options.log ?? (() => {});
   const shouldContinue = options.shouldContinue ?? (() => true);
 
-  const stale = await options.db.listStaleRevisionSessions(DATA_REVISION);
+  const parsePolicy = options.parsePolicy ?? effectiveParsePolicy();
+  const stale = await options.db.listStaleRevisionSessions(
+    dataRevisionFor(parsePolicy)
+  );
   summary.staleTotal = stale.length;
   if (stale.length === 0 || !shouldContinue()) {
     return summary;
   }
 
-  const pass = createRebuildPass(options, summary, stale, log, shouldContinue);
+  // ISS-8601: AWAITED, and awaited HERE rather than read at each classify site.
+  // In production this `db` is the FEA-2038 forwarding proxy, whose every call
+  // is an IPC `invoke` returning a promise — so a bare `db.now()` would hand
+  // `new Date()` a Promise, yield an Invalid Date, and make the staleness test
+  // answer "not stale" for every row on every real boot while staying green in
+  // every test, where the store is in-process. `await` is correct on both
+  // topologies: a bare string awaits to itself.
+  const now = resolveRebuildClock(await options.db.now?.());
+
+  const pass = createRebuildPass(
+    options,
+    summary,
+    stale,
+    log,
+    shouldContinue,
+    now,
+    parsePolicy
+  );
   pass.reportProgress();
   await drainCollectorSources(pass);
   absorbUncollectedHarnesses(pass);
   await runRepairTail(pass);
 
-  logRebuildSummary(summary, log);
+  logRebuildSummary(summary, log, dataRevisionFor(parsePolicy));
   return summary;
-}
-
-function logRebuildSummary(
-  summary: DataRevisionRebuildSummary,
-  log: (message: string) => void
-): void {
-  log(
-    `data-revision rebuild complete (revision ${DATA_REVISION}): stale=${summary.staleTotal} rebuilt=${summary.rebuilt} deleted=${summary.deleted} skippedActive=${summary.skippedActive} raceSkipped=${summary.raceSkipped} missingSource=${summary.missingSource} missingSourceRollupsRecomputed=${summary.missingSourceRollupsRecomputed} unmatchedSource=${summary.unmatchedSource} parseErrors=${summary.parseErrors} errors=${summary.errors} storageReset=${summary.storageReset}`
-  );
-}
-
-/**
- * Group terminal stale sessions by harness key. Non-terminal sessions
- * (active, running, etc.) heal via ordinary reimport (which stamps the
- * revision) — rebuilding mid-capture would race the live write paths — so
- * they only bump `skippedActive`.
- */
-function groupTerminalStaleByHarness(
-  stale: Array<{ id: string; harness: string | null; status: string }>,
-  summary: DataRevisionRebuildSummary
-): Map<string, Set<string>> {
-  const pendingByHarness = new Map<string, Set<string>>();
-  for (const row of stale) {
-    if (!TERMINAL_STATUS_SET.has(row.status)) {
-      summary.skippedActive++;
-      continue;
-    }
-    const key = row.harness ?? "";
-    const existing = pendingByHarness.get(key);
-    if (existing) {
-      existing.add(row.id);
-    } else {
-      pendingByHarness.set(key, new Set([row.id]));
-    }
-  }
-  return pendingByHarness;
 }
 
 /**
@@ -410,7 +399,8 @@ async function rebuildHarness(
   pauseAfterWrite: () => Promise<void>,
   shouldContinue: () => boolean,
   outstanding: RebuildOutstanding,
-  reportProgress: () => void
+  reportProgress: () => void,
+  parsePolicy: ParsePolicy
 ): Promise<void> {
   // Narrow the discriminant: listSourcesForRebuild is batch-only,
   // sessionIdForSource is file-only. Each view is undefined for the other kind,
@@ -451,7 +441,8 @@ async function rebuildHarness(
         unmappedParserErrorPending,
         unmappedSourcePresentRetryPending,
         outstanding,
-        reportProgress
+        reportProgress,
+        parsePolicy
       );
       reportProgress();
       continue;
@@ -470,7 +461,8 @@ async function rebuildHarness(
       parseSource,
       pauseAfterWrite,
       shouldContinue,
-      outstanding
+      outstanding,
+      parsePolicy
     );
     if (summary.storageReset) {
       return;
@@ -524,12 +516,18 @@ async function rebuildMappedSource(
   parseSource: DataRevisionParseSource,
   pauseAfterWrite: () => Promise<void>,
   shouldContinue: () => boolean,
-  outstanding: RebuildOutstanding
+  outstanding: RebuildOutstanding,
+  parsePolicy: ParsePolicy
 ): Promise<void> {
   if (!shouldContinue()) {
     return;
   }
-  const parsed = await parseDataRevisionSource(collector, source, parseSource);
+  const parsed = await parseDataRevisionSource(
+    collector,
+    source,
+    parseSource,
+    log
+  );
   if (parsed.kind !== DataRevisionSourceParseResultKind.Sessions) {
     handleMappedSourceParseFailure(
       collector.key,
@@ -548,7 +546,16 @@ async function rebuildMappedSource(
     if (!shouldContinue()) {
       return;
     }
-    await applyRebuild(collector.key, match, pending, db, summary, outstanding);
+    await applyRebuild(
+      collector.key,
+      match,
+      pending,
+      db,
+      summary,
+      outstanding,
+      log,
+      parsePolicy
+    );
     if (summary.storageReset) {
       return;
     }
@@ -597,12 +604,18 @@ async function rebuildUnmappedSource(
   unmappedParserErrorPending: Set<string>,
   unmappedSourcePresentRetryPending: Set<string>,
   outstanding: RebuildOutstanding,
-  reportProgress: () => void
+  reportProgress: () => void,
+  parsePolicy: ParsePolicy
 ): Promise<void> {
   if (!shouldContinue()) {
     return;
   }
-  const parsed = await parseDataRevisionSource(collector, source, parseSource);
+  const parsed = await parseDataRevisionSource(
+    collector,
+    source,
+    parseSource,
+    log
+  );
   if (parsed.kind !== DataRevisionSourceParseResultKind.Sessions) {
     handleUnmappedSourceParseFailure(
       collector.key,
@@ -640,6 +653,19 @@ async function rebuildUnmappedSource(
   });
   summary.deleted += pruned.deletedIds.length;
   summary.errors += pruned.errors;
+  // ISS-8601: a folded child the store REFUSED to delete (non-terminal, so a
+  // wedged row this revision admitted) must leave `pending` here. A folded child
+  // is by construction absent from `sessions`, so it can never be rebuilt by the
+  // loop below; left pending it would fall through to the repair tail, and that
+  // tail's stored-invocation bridge stamps `data_revision` UNCONDITIONALLY. The
+  // row would be sealed at the current revision with its duplicate top-level row
+  // still in place, making the ISS-5395 double-count permanent — the exact
+  // sealing failure FEA-3597 fixed for the parser-output cohort. Marking it
+  // retryable keeps the stale revision as its retry marker instead.
+  for (const refusedId of pruned.refusedIds) {
+    pending.delete(refusedId);
+    markRetryable(outstanding, refusedId);
+  }
   for (const session of sessions) {
     if (pending.size === 0 || !shouldContinue()) {
       return;
@@ -651,7 +677,9 @@ async function rebuildUnmappedSource(
         pending,
         db,
         summary,
-        outstanding
+        outstanding,
+        log,
+        parsePolicy
       );
       if (summary.storageReset) {
         return;
@@ -673,28 +701,45 @@ async function applyRebuild(
   pending: Set<string>,
   db: DataRevisionRebuildDatabase,
   summary: DataRevisionRebuildSummary,
-  outstanding: RebuildOutstanding
+  outstanding: RebuildOutstanding,
+  log: (message: string) => void,
+  parsePolicy: ParsePolicy
 ): Promise<void> {
-  const result = await db.rebuildSessionFromParse(session, harness);
+  // ISS-8741: through the gate — the candidate is put to the session view's own
+  // validator while the standing projection is still in place, and only an
+  // accepted one reaches the teardown-and-reimport transaction.
+  const { result } = await promoteSessionProjection(
+    harness,
+    session,
+    db,
+    log,
+    parsePolicy
+  );
   if (result.storageReset) {
     summary.storageReset = true;
     return;
   }
   if (result.rebuilt) {
     summary.rebuilt++;
-    // FEA-3659: only rows whose re-derived payload actually changed had their
-    // updated_at bumped and therefore need to (re-)sync. A byte-identical
-    // re-derivation stamped only data_revision (a true sync no-op), so it is NOT
-    // collected — this is what keeps a DATA_REVISION bump from re-uploading the
-    // whole corpus.
-    if (result.contentChanged) {
+    // FEA-3659: only rows whose re-derived payload changed (updated_at bumped)
+    // or whose created_at alone moved (ISS-12251, no bump) need to (re-)sync. A
+    // byte-identical re-derivation stamped only data_revision (a true sync
+    // no-op), so it is NOT collected — this is what keeps a DATA_REVISION bump
+    // from re-uploading the whole corpus.
+    if (result.needsResync) {
       summary.changedSessionIds.push(session.sessionId);
     }
   } else if (result.activeRace) {
     // Deliberately NOT retryable: `staleRebuildSkip` reports an active race only
-    // for a session that went non-terminal, which "heals through ordinary import
-    // instead" — that path stamps it, so parking it here as outstanding would
-    // queue a rebuild for work another codepath already owns.
+    // for a LIVE capture, which "heals through ordinary import instead" — that
+    // path stamps it, so parking it here as outstanding would queue a rebuild for
+    // work another codepath already owns.
+    //
+    // ISS-8601 is what makes that reasoning sound. The guard used to refuse every
+    // non-terminal row, including wedged ones no import will ever reach, so this
+    // branch quietly discarded rows nothing else owned. Now the age bound sends
+    // those down the rebuild instead, and an `activeRace` genuinely means the row
+    // came back to life.
     summary.raceSkipped++;
   } else {
     summary.errors++;
@@ -703,49 +748,6 @@ async function applyRebuild(
     markRetryable(outstanding, session.sessionId);
   }
   pending.delete(session.sessionId);
-}
-
-export type DataRevisionParseSource = (
-  collector: HarnessCollector,
-  source: string
-) => Promise<NormalizedSession[]>;
-
-const DataRevisionSourceParseResultKind = {
-  ParserOutputError: "parser_output_error",
-  Retry: "retry",
-  Sessions: "sessions",
-} as const;
-
-type DataRevisionSourceParseResult =
-  | {
-      kind: typeof DataRevisionSourceParseResultKind.Sessions;
-      sessions: NormalizedSession[];
-    }
-  | {
-      kind:
-        | typeof DataRevisionSourceParseResultKind.ParserOutputError
-        | typeof DataRevisionSourceParseResultKind.Retry;
-      error: unknown;
-    };
-
-async function parseDataRevisionSource(
-  collector: HarnessCollector,
-  source: string,
-  parseSource: DataRevisionParseSource
-): Promise<DataRevisionSourceParseResult> {
-  try {
-    return {
-      kind: DataRevisionSourceParseResultKind.Sessions,
-      sessions: await parseSource(collector, source),
-    };
-  } catch (error) {
-    return {
-      kind: isHistoricalParseWorkerParserOutputError(error)
-        ? DataRevisionSourceParseResultKind.ParserOutputError
-        : DataRevisionSourceParseResultKind.Retry,
-      error,
-    };
-  }
 }
 
 function handleMappedSourceParseFailure(
@@ -800,9 +802,20 @@ async function handleEmptyMappedSource(
   if (!shouldContinue()) {
     return;
   }
-  await db.deleteSessionRow(sessionId);
-  summary.deleted++;
+  const deleted = await db.deleteSessionRow(sessionId);
   pending.delete(sessionId);
+  if (!deleted) {
+    // ISS-8601: the store refused — the row went non-terminal, or it is one of
+    // the wedged rows this revision now admits, and the delete guard is
+    // deliberately status-only so nothing this pass admits can be purged.
+    // Counting or logging a deletion that did not happen would drop the row from
+    // the pass while leaving it in the store. Its stale revision IS the retry
+    // marker, so it is outstanding rather than deleted, and a later pass
+    // re-selects it once it reaches a terminal status.
+    markRetryable(outstanding, sessionId);
+    return;
+  }
+  summary.deleted++;
   await pauseAfterWrite();
   log(
     `data-revision rebuild [${collector.key}]: deleted import artifact ${sessionId} (current parser skips its source)`
@@ -961,12 +974,16 @@ function describeStampWithholding(
  */
 type DataRevisionRebuildPass = {
   options: DataRevisionRebuildOptions;
+  /** ISS-12552: the policy, and so the revision, this pass works under. */
+  parsePolicy: ParsePolicy;
   summary: DataRevisionRebuildSummary;
   log: (message: string) => void;
   parseSource: DataRevisionParseSource;
   pauseAfterWrite: () => Promise<void>;
   shouldContinue: () => boolean;
   pendingByHarness: Map<string, Set<string>>;
+  /** ISS-8601: ids admitted despite being non-terminal; never stampable. */
+  wedgedAdmitted: Set<string>;
   /** Ids out of `pendingByHarness` that the pass has not finished with. */
   outstanding: RebuildOutstanding;
   missingSourceIds: string[];
@@ -978,19 +995,25 @@ type DataRevisionRebuildPass = {
 function createRebuildPass(
   options: DataRevisionRebuildOptions,
   summary: DataRevisionRebuildSummary,
-  stale: Array<{ id: string; harness: string | null; status: string }>,
+  stale: readonly StaleRevisionSessionRow[],
   log: (message: string) => void,
-  shouldContinue: () => boolean
+  shouldContinue: () => boolean,
+  now: Date,
+  parsePolicy: ParsePolicy
 ): DataRevisionRebuildPass {
+  const parseSource =
+    options.parseSource ?? ((collector, source) => collector.parse(source));
   const pass: DataRevisionRebuildPass = {
     options,
+    parsePolicy,
     summary,
     log,
-    parseSource:
-      options.parseSource ?? ((collector, source) => collector.parse(source)),
+    parseSource: (collector, source) =>
+      parseSource(collector, source, parsePolicy),
     pauseAfterWrite: buildAdaptivePauseAfterWrite(options),
     shouldContinue,
-    pendingByHarness: groupTerminalStaleByHarness(stale, summary),
+    pendingByHarness: groupTerminalStaleByHarness(stale, summary, now),
+    wedgedAdmitted: wedgedAdmittedIds(stale, now),
     outstanding: createRebuildOutstanding(),
     missingSourceIds: [],
     repairTailComplete: false,
@@ -1032,7 +1055,8 @@ async function drainCollectorSources(
       pass.pauseAfterWrite,
       pass.shouldContinue,
       pass.outstanding,
-      pass.reportProgress
+      pass.reportProgress,
+      pass.parsePolicy
     );
     if (pass.summary.storageReset) {
       return;
@@ -1131,6 +1155,15 @@ async function runRepairTail(pass: DataRevisionRebuildPass): Promise<void> {
   // and a later pass re-selects them. `repairTailComplete` retires the repair
   // cohorts wholesale, so without this a partial repair still published `N of N`
   // while naming its own failures in the log line above it.
+  // ISS-8601: a row admitted only because it was WEDGED must never be stamped by
+  // the repair tail. The bridge below rebuilds invocation rows and then stamps
+  // `data_revision` unconditionally, and a stamped row is never selected again —
+  // so a wedged folded child sealed here keeps its duplicate top-level row for
+  // good, which is the ISS-5395 defect made permanent. Withheld as a SET at this
+  // one boundary rather than at each route into it (a refused delete, a thrown
+  // delete, an unmatched source), because a future route would silently inherit
+  // the hazard. These keep their stale revision as the retry marker.
+  stampReadyIds = stampReadyIds.filter((id) => !pass.wedgedAdmitted.has(id));
   const stampReady = new Set(stampReadyIds);
   for (const sessionId of repairableIds) {
     if (!stampReady.has(sessionId)) {
@@ -1139,12 +1172,16 @@ async function runRepairTail(pass: DataRevisionRebuildPass): Promise<void> {
   }
 
   if (
-    isStoredComponentInvocationBridgeEnabled(pass.options) &&
+    isStoredComponentInvocationBridgeEnabled(
+      pass.options,
+      dataRevisionFor(pass.parsePolicy)
+    ) &&
     !pass.summary.storageReset &&
     pass.shouldContinue()
   ) {
     await rebuildStoredComponentInvocations(
       stampReadyIds,
+      pass.parsePolicy,
       pass.options.db,
       pass.summary,
       pass.log,
@@ -1173,14 +1210,30 @@ async function runRepairTail(pass: DataRevisionRebuildPass): Promise<void> {
  * `rebuildHarness` (that is how FEA-4093 rev-40 Hook capture lands), while these
  * transcript-less sessions still recover their non-hook invocations from stored
  * rows rather than losing them. `>=` (not `===`) keeps the bridge on as
- * DATA_REVISION advances; hooks simply never appear for a session with no
+ * the revision advances; hooks simply never appear for a session with no
  * transcript.
  */
 function isStoredComponentInvocationBridgeEnabled(
-  options: DataRevisionRebuildOptions
+  options: DataRevisionRebuildOptions,
+  currentRevision: number
 ): boolean {
   return (
-    (DATA_REVISION as number) >= COMPONENT_INVOCATION_STORED_REBUILD_REVISION &&
+    currentRevision >= COMPONENT_INVOCATION_STORED_REBUILD_REVISION &&
     options.useStoredComponentInvocationRebuild === true
   );
+}
+
+/**
+ * The instant this pass classifies rows against.
+ *
+ * `??` alone is not enough: it only rejects null/undefined, so any non-nullish
+ * unreadable reading (an empty string, a non-ISO form from a skewed db-host op)
+ * would yield an Invalid Date, make every age comparison NaN, and quietly answer
+ * "not stale" for the whole corpus — the age bound disabled in production with
+ * every test still green. A clock we cannot read falls back to wall time, which
+ * is what the in-process store uses anyway.
+ */
+function resolveRebuildClock(reading: string | undefined): Date {
+  const parsed = reading === undefined ? null : new Date(reading);
+  return parsed && Number.isFinite(parsed.getTime()) ? parsed : new Date();
 }

@@ -1,4 +1,9 @@
-import { Children, type ReactNode } from "react";
+import {
+  Children,
+  type CSSProperties,
+  type ReactNode,
+  type Ref,
+} from "react";
 import { ScrollArea } from "@closedloop-ai/design-system/components/ui/scroll-area";
 import { cn } from "@closedloop-ai/design-system/lib/utils";
 
@@ -6,6 +11,7 @@ type KanbanBoardLayoutProps = {
   children: ReactNode;
   className?: string;
   contentClassName?: string;
+  contentStyle?: CSSProperties;
   /**
    * When true, columns stack into a single scrollable column below `sm` (640px)
    * and only lay out side-by-side with horizontal scroll at `sm+`. A narrow
@@ -14,7 +20,12 @@ type KanbanBoardLayoutProps = {
    * there. Defaults to false so existing desktop boards are unchanged.
    */
   stackBelow?: boolean;
+  viewportRef?: Ref<HTMLDivElement>;
 };
+
+/** Virtualizer estimates matching the shipped `w-80` column and `gap-3`. */
+export const KANBAN_COLUMN_WIDTH_PX = 320;
+export const KANBAN_COLUMN_GAP_PX = 12;
 
 /**
  * The board owns no height of its own. It can take one from `className`, or be
@@ -31,7 +42,9 @@ export function KanbanBoardLayout({
   children,
   className,
   contentClassName,
+  contentStyle,
   stackBelow = false,
+  viewportRef,
 }: KanbanBoardLayoutProps) {
   return (
     <ScrollArea
@@ -40,6 +53,7 @@ export function KanbanBoardLayout({
       // scrollbar only makes sense once the columns lay out side-by-side.
       scrollbars={stackBelow ? "both" : "horizontal"}
       type="always"
+      viewportRef={viewportRef}
     >
       <div
         className={cn(
@@ -49,6 +63,7 @@ export function KanbanBoardLayout({
             : "min-w-max",
           contentClassName
         )}
+        style={contentStyle}
       >
         {children}
       </div>
@@ -57,12 +72,14 @@ export function KanbanBoardLayout({
 }
 
 type KanbanColumnLayoutProps = {
+  bodyRef?: Ref<HTMLDivElement>;
   header: ReactNode;
   children?: ReactNode;
   emptyState?: ReactNode;
   footer?: ReactNode;
   className?: string;
   bodyClassName?: string;
+  bodyStyle?: CSSProperties;
 };
 
 export function KanbanColumnLayout({
@@ -72,6 +89,8 @@ export function KanbanColumnLayout({
   footer,
   className,
   bodyClassName,
+  bodyRef,
+  bodyStyle,
 }: KanbanColumnLayoutProps) {
   const hasChildren = Children.count(children) > 0;
 
@@ -88,6 +107,8 @@ export function KanbanColumnLayout({
           "min-h-0 flex-1 overflow-y-auto p-1.5",
           bodyClassName
         )}
+        ref={bodyRef}
+        style={bodyStyle}
       >
         {hasChildren ? children : emptyState}
       </div>
@@ -97,6 +118,8 @@ export function KanbanColumnLayout({
 }
 
 type KanbanColumnProps = {
+  bodyRef?: Ref<HTMLDivElement>;
+  bodyStyle?: CSSProperties;
   title: string;
   count?: number;
   icon?: ReactNode;
@@ -124,6 +147,8 @@ export function KanbanColumn({
   headerClassName,
   highlighted = false,
   highlightedBodyClassName = "bg-accent/20",
+  bodyRef,
+  bodyStyle,
 }: KanbanColumnProps) {
   return (
     <KanbanColumnLayout
@@ -132,6 +157,8 @@ export function KanbanColumn({
         highlighted && highlightedBodyClassName,
         bodyClassName
       )}
+      bodyRef={bodyRef}
+      bodyStyle={bodyStyle}
       className={className}
       emptyState={emptyState}
       footer={footer}

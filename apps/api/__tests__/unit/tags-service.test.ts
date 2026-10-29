@@ -1,5 +1,16 @@
+import { ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  ArtifactActivityAction,
+  ArtifactActivityActorType,
+  SessionMetadataActivityField,
+} from "@repo/api/src/types/artifact-activity";
+import { AuditAction } from "@repo/api/src/types/audit";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mockWithDbCall, mockWithDbTx } from "../utils/db-helpers";
+import {
+  mockWithDbAll,
+  mockWithDbCall,
+  mockWithDbTx,
+} from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
@@ -23,12 +34,26 @@ vi.mock(
   () => labelReconciliation
 );
 
+const captureArtifactMetadataChange = vi.hoisted(() => vi.fn());
+const dispatchSingleArtifactMutationAudits = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/artifact-activity-capture", () => ({
+  resolveActorType: () => ArtifactActivityActorType.User,
+}));
+vi.mock("@/lib/artifact-field-edit-capture", () => ({
+  captureArtifactMetadataChange,
+}));
+
+vi.mock("@/app/audit/single-artifact-mutation-audit", () => ({
+  dispatchSingleArtifactMutationAudits,
+}));
+
 import { TAG_COLORS, TagEntityType } from "@repo/api/src/types/tag";
 import { DuplicateNameError, tagService } from "@/app/tags/service";
 
 const ORG_ID = "org-123";
 const USER_ID = "user-456";
 const TAG_ID = "tag-789";
+const ACTOR = { userId: USER_ID, authMethod: "session" } as const;
 
 function makeTag(overrides?: Record<string, unknown>) {
   return {
@@ -49,7 +74,6 @@ function makeTag(overrides?: Record<string, unknown>) {
     _count: {
       tagProjects: 0,
       tagArtifacts: 0,
-      tagLoops: 0,
     },
     ...overrides,
   };
@@ -81,7 +105,6 @@ describe("tagService", () => {
             select: {
               tagProjects: true,
               tagArtifacts: true,
-              tagLoops: true,
             },
           }),
         }),
@@ -100,7 +123,7 @@ describe("tagService", () => {
           create: vi.fn().mockResolvedValue(created),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbAll(mockDb);
 
       const result = await tagService.create(ORG_ID, USER_ID, {
         name: "Feature",
@@ -128,7 +151,7 @@ describe("tagService", () => {
           create: vi.fn().mockResolvedValue(makeTag({ color: TAG_COLORS[3] })),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbAll(mockDb);
 
       await tagService.create(ORG_ID, USER_ID, { name: "NewTag" });
 
@@ -174,7 +197,7 @@ describe("tagService", () => {
           create: vi.fn().mockResolvedValue(makeTag()),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbAll(mockDb);
 
       await tagService.create(customOrg, customUser, {
         name: "Test",
@@ -201,7 +224,7 @@ describe("tagService", () => {
           update: vi.fn().mockResolvedValue(updated),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbAll(mockDb);
 
       const result = await tagService.update(TAG_ID, ORG_ID, {
         name: "Renamed",
@@ -220,10 +243,11 @@ describe("tagService", () => {
       const updated = makeTag({ color: "purple" });
       const mockDb = {
         tag: {
+          findFirst: vi.fn().mockResolvedValue({ name: "Bug", color: "red" }),
           update: vi.fn().mockResolvedValue(updated),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbAll(mockDb);
 
       const result = await tagService.update(TAG_ID, ORG_ID, {
         color: "purple",
@@ -268,7 +292,7 @@ describe("tagService", () => {
           update: vi.fn().mockResolvedValue(makeTag()),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbAll(mockDb);
 
       await expect(
         tagService.update(TAG_ID, ORG_ID, { name: "Bug" })
@@ -292,7 +316,7 @@ describe("tagService", () => {
           delete: vi.fn().mockResolvedValue(makeTag()),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbAll(mockDb);
 
       await tagService.delete(TAG_ID, ORG_ID);
 
@@ -302,34 +326,9 @@ describe("tagService", () => {
     });
   });
 
-  describe("getArtifactCount", () => {
-    it("returns sum of counts across all 3 join tables", async () => {
-      const mockDb = {
-        tag: { findFirst: vi.fn().mockResolvedValue({ id: TAG_ID }) },
-        tagProject: { count: vi.fn().mockResolvedValue(2) },
-        tagArtifact: { count: vi.fn().mockResolvedValue(5) },
-        tagLoop: { count: vi.fn().mockResolvedValue(1) },
-      };
-      mockWithDbCall(mockDb);
-
-      const result = await tagService.getArtifactCount(TAG_ID, ORG_ID);
-
-      expect(result).toBe(8);
-      expect(mockDb.tagProject.count).toHaveBeenCalledWith({
-        where: { tagId: TAG_ID },
-      });
-      expect(mockDb.tagArtifact.count).toHaveBeenCalledWith({
-        where: { tagId: TAG_ID },
-      });
-      expect(mockDb.tagLoop.count).toHaveBeenCalledWith({
-        where: { tagId: TAG_ID },
-      });
-    });
-  });
-
   describe("applyTag", () => {
     const tagOwnershipMock = {
-      tag: { findFirst: vi.fn().mockResolvedValue({ id: TAG_ID }) },
+      tag: { findFirst: vi.fn(async () => ({ id: TAG_ID })) },
     };
 
     // applyTag wraps validation + write in withDb.tx; the callback relies on
@@ -339,7 +338,7 @@ describe("tagService", () => {
       mockWithDbTx({});
     });
 
-    it("applies tag to a project", async () => {
+    it("ISS-10681 AC-003 leaves project tag applications out of the artifact ledger", async () => {
       const entityId = "proj-1";
       const mockDb = {
         ...tagOwnershipMock,
@@ -358,7 +357,8 @@ describe("tagService", () => {
         TAG_ID,
         TagEntityType.Project,
         entityId,
-        ORG_ID
+        ORG_ID,
+        ACTOR
       );
 
       expect(mockDb.project.findFirst).toHaveBeenCalledWith({
@@ -374,9 +374,10 @@ describe("tagService", () => {
       expect(
         labelReconciliation.reconcileLinkedPullRequestLabelsForArtifact
       ).not.toHaveBeenCalled();
+      expect(dispatchSingleArtifactMutationAudits).not.toHaveBeenCalled();
     });
 
-    it("applies tag to a document artifact", async () => {
+    it("ISS-10681 AC-003 audits a newly applied document artifact tag", async () => {
       const entityId = "art-1";
       const mockDb = {
         ...tagOwnershipMock,
@@ -397,12 +398,24 @@ describe("tagService", () => {
         TAG_ID,
         TagEntityType.Artifact,
         entityId,
-        ORG_ID
+        ORG_ID,
+        ACTOR
       );
 
       expect(mockDb.tagArtifact.create).toHaveBeenCalledWith({
         data: { tagId: TAG_ID, artifactId: entityId },
         select: { id: true },
+      });
+      expect(captureArtifactMetadataChange).toHaveBeenCalledWith({
+        tx: expect.anything(),
+        organizationId: ORG_ID,
+        artifactId: entityId,
+        actorType: ArtifactActivityActorType.User,
+        actorId: USER_ID,
+        action: ArtifactActivityAction.FieldChange,
+        field: SessionMetadataActivityField.Tag,
+        before: null,
+        after: TAG_ID,
       });
       // ISS-4760: adding a tag in Closedloop fires no GitHub linkage webhook,
       // so the mutation path itself has to converge the artifact's linked PRs.
@@ -412,28 +425,16 @@ describe("tagService", () => {
         organizationId: ORG_ID,
         artifactId: entityId,
       });
-    });
-
-    it("applies tag to a loop", async () => {
-      const entityId = "loop-1";
-      const mockDb = {
-        ...tagOwnershipMock,
-        loop: {
-          findFirst: vi.fn().mockResolvedValue({ id: entityId }),
-        },
-        tagLoop: {
-          create: vi
-            .fn()
-            .mockResolvedValue({ tagId: TAG_ID, loopId: entityId }),
-        },
-      };
-      mockWithDbCall(mockDb);
-
-      await tagService.applyTag(TAG_ID, TagEntityType.Loop, entityId, ORG_ID);
-
-      expect(mockDb.tagLoop.create).toHaveBeenCalledWith({
-        data: { tagId: TAG_ID, loopId: entityId },
-        select: { id: true },
+      expect(dispatchSingleArtifactMutationAudits).toHaveBeenCalledWith({
+        organizationId: ORG_ID,
+        userId: USER_ID,
+        changes: [
+          {
+            action: AuditAction.ArtifactTagApplied,
+            objectId: entityId,
+            tagId: TAG_ID,
+          },
+        ],
       });
     });
 
@@ -445,7 +446,10 @@ describe("tagService", () => {
       const mockDb = {
         ...tagOwnershipMock,
         artifact: {
-          findFirst: vi.fn().mockResolvedValue({ id: entityId }),
+          findFirst: vi.fn().mockResolvedValue({
+            id: entityId,
+            type: ArtifactType.Session,
+          }),
         },
         tagArtifact: {
           create: vi
@@ -453,22 +457,45 @@ describe("tagService", () => {
             .mockResolvedValue({ tagId: TAG_ID, artifactId: entityId }),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbAll(mockDb);
 
       await tagService.applyTag(
         TAG_ID,
         TagEntityType.Artifact,
         entityId,
-        ORG_ID
+        ORG_ID,
+        ACTOR
       );
 
       expect(mockDb.artifact.findFirst).toHaveBeenCalledWith({
         where: { id: entityId, organizationId: ORG_ID },
-        select: { id: true },
+        select: { id: true, type: true },
+      });
+      expect(captureArtifactMetadataChange).toHaveBeenCalledWith({
+        tx: mockDb,
+        organizationId: ORG_ID,
+        artifactId: entityId,
+        actorType: ArtifactActivityActorType.User,
+        actorId: USER_ID,
+        action: ArtifactActivityAction.FieldChange,
+        field: SessionMetadataActivityField.Tag,
+        before: null,
+        after: TAG_ID,
       });
       expect(mockDb.tagArtifact.create).toHaveBeenCalledWith({
         data: { tagId: TAG_ID, artifactId: entityId },
         select: { id: true },
+      });
+      expect(dispatchSingleArtifactMutationAudits).toHaveBeenCalledWith({
+        organizationId: ORG_ID,
+        userId: USER_ID,
+        changes: [
+          {
+            action: AuditAction.ArtifactTagApplied,
+            objectId: entityId,
+            tagId: TAG_ID,
+          },
+        ],
       });
     });
 
@@ -490,8 +517,85 @@ describe("tagService", () => {
 
       // Should not throw — P2002 is swallowed as a no-op
       await expect(
-        tagService.applyTag(TAG_ID, TagEntityType.Project, entityId, ORG_ID)
-      ).resolves.toBeUndefined();
+        tagService.applyTag(
+          TAG_ID,
+          TagEntityType.Project,
+          entityId,
+          ORG_ID,
+          ACTOR
+        )
+      ).resolves.toBe(false);
+    });
+
+    it("ISS-10681 AC-003 does not audit a duplicate Session tag apply", async () => {
+      const entityId = "art-session";
+      const mockDb = {
+        ...tagOwnershipMock,
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: entityId,
+            type: ArtifactType.Session,
+          }),
+        },
+        tagArtifact: {
+          create: vi.fn().mockRejectedValue(
+            Object.assign(new Error("duplicate tag"), {
+              code: "P2002",
+              meta: { target: ["tagId", "artifactId"] },
+            })
+          ),
+        },
+      };
+      mockWithDbAll(mockDb);
+
+      await expect(
+        tagService.applyTag(
+          TAG_ID,
+          TagEntityType.Artifact,
+          entityId,
+          ORG_ID,
+          ACTOR
+        )
+      ).resolves.toBe(false);
+
+      expect(captureArtifactMetadataChange).not.toHaveBeenCalled();
+      expect(
+        labelReconciliation.reconcileLinkedPullRequestLabelsForArtifact
+      ).toHaveBeenCalledWith({ organizationId: ORG_ID, artifactId: entityId });
+      expect(dispatchSingleArtifactMutationAudits).not.toHaveBeenCalled();
+    });
+
+    it("fails a Session tag apply when its receipt fails", async () => {
+      const entityId = "art-session";
+      const failure = new Error("receipt unavailable");
+      const mockDb = {
+        ...tagOwnershipMock,
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: entityId,
+            type: ArtifactType.Session,
+          }),
+        },
+        tagArtifact: {
+          create: vi.fn().mockResolvedValue({ id: "tag-link" }),
+        },
+      };
+      mockWithDbAll(mockDb);
+      captureArtifactMetadataChange.mockRejectedValueOnce(failure);
+
+      await expect(
+        tagService.applyTag(
+          TAG_ID,
+          TagEntityType.Artifact,
+          entityId,
+          ORG_ID,
+          ACTOR
+        )
+      ).rejects.toBe(failure);
+      expect(
+        labelReconciliation.reconcileLinkedPullRequestLabelsForArtifact
+      ).not.toHaveBeenCalled();
+      expect(dispatchSingleArtifactMutationAudits).not.toHaveBeenCalled();
     });
 
     it("throws EntityNotFoundError when entity does not exist", async () => {
@@ -504,7 +608,13 @@ describe("tagService", () => {
       mockWithDbCall(mockDb);
 
       await expect(
-        tagService.applyTag(TAG_ID, TagEntityType.Project, "missing-id", ORG_ID)
+        tagService.applyTag(
+          TAG_ID,
+          TagEntityType.Project,
+          "missing-id",
+          ORG_ID,
+          ACTOR
+        )
       ).rejects.toThrow("PROJECT missing-id not found in this organization");
     });
 
@@ -529,14 +639,20 @@ describe("tagService", () => {
       mockWithDbCall(mockDb);
 
       await expect(
-        tagService.applyTag(TAG_ID, TagEntityType.Project, entityId, ORG_ID)
+        tagService.applyTag(
+          TAG_ID,
+          TagEntityType.Project,
+          entityId,
+          ORG_ID,
+          ACTOR
+        )
       ).rejects.toThrow("PROJECT proj-1 not found in this organization");
     });
   });
 
   describe("removeTag", () => {
     const tagOwnershipMock = {
-      tag: { findFirst: vi.fn().mockResolvedValue({ id: TAG_ID }) },
+      tag: { findFirst: vi.fn(async () => ({ id: TAG_ID })) },
     };
 
     it("removes tag from a project", async () => {
@@ -547,39 +663,56 @@ describe("tagService", () => {
           deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbAll(mockDb);
 
       await tagService.removeTag(
         TAG_ID,
         TagEntityType.Project,
         entityId,
-        ORG_ID
+        ORG_ID,
+        ACTOR
       );
 
       expect(mockDb.tagProject.deleteMany).toHaveBeenCalledWith({
         where: { tagId: TAG_ID, projectId: entityId },
       });
+      expect(dispatchSingleArtifactMutationAudits).not.toHaveBeenCalled();
     });
 
     it("removes tag from an artifact", async () => {
       const entityId = "art-1";
       const mockDb = {
         ...tagOwnershipMock,
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue({ type: ArtifactType.Document }),
+        },
         tagArtifact: {
           deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbAll(mockDb);
 
       await tagService.removeTag(
         TAG_ID,
         TagEntityType.Artifact,
         entityId,
-        ORG_ID
+        ORG_ID,
+        ACTOR
       );
 
       expect(mockDb.tagArtifact.deleteMany).toHaveBeenCalledWith({
         where: { tagId: TAG_ID, artifactId: entityId },
+      });
+      expect(captureArtifactMetadataChange).toHaveBeenCalledWith({
+        tx: mockDb,
+        organizationId: ORG_ID,
+        artifactId: entityId,
+        actorType: ArtifactActivityActorType.User,
+        actorId: USER_ID,
+        action: ArtifactActivityAction.FieldChange,
+        field: SessionMetadataActivityField.Tag,
+        before: TAG_ID,
+        after: null,
       });
       // ISS-4760: a removal reconciles too — additively. It re-applies the
       // artifact's REMAINING tags rather than stripping the label from GitHub,
@@ -590,23 +723,81 @@ describe("tagService", () => {
         organizationId: ORG_ID,
         artifactId: entityId,
       });
+      expect(dispatchSingleArtifactMutationAudits).toHaveBeenCalledWith({
+        organizationId: ORG_ID,
+        userId: USER_ID,
+        changes: [
+          {
+            action: AuditAction.ArtifactTagRemoved,
+            objectId: entityId,
+            tagId: TAG_ID,
+          },
+        ],
+      });
     });
 
-    it("removes tag from a loop", async () => {
-      const entityId = "loop-1";
+    it("records an actual Session tag removal on the delete transaction", async () => {
+      const entityId = "art-session";
       const mockDb = {
         ...tagOwnershipMock,
-        tagLoop: {
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue({ type: ArtifactType.Session }),
+        },
+        tagArtifact: {
           deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbAll(mockDb);
 
-      await tagService.removeTag(TAG_ID, TagEntityType.Loop, entityId, ORG_ID);
+      await tagService.removeTag(
+        TAG_ID,
+        TagEntityType.Artifact,
+        entityId,
+        ORG_ID,
+        ACTOR
+      );
 
-      expect(mockDb.tagLoop.deleteMany).toHaveBeenCalledWith({
-        where: { tagId: TAG_ID, loopId: entityId },
+      expect(mockDb.artifact.findFirst).toHaveBeenCalledWith({
+        where: { id: entityId, organizationId: ORG_ID },
+        select: { type: true },
       });
+      expect(captureArtifactMetadataChange).toHaveBeenCalledWith({
+        tx: mockDb,
+        organizationId: ORG_ID,
+        artifactId: entityId,
+        actorType: ArtifactActivityActorType.User,
+        actorId: USER_ID,
+        action: ArtifactActivityAction.FieldChange,
+        field: SessionMetadataActivityField.Tag,
+        before: TAG_ID,
+        after: null,
+      });
+    });
+
+    it("does not record a Session tag removal when nothing was deleted", async () => {
+      const entityId = "art-session";
+      const mockDb = {
+        ...tagOwnershipMock,
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue({ type: ArtifactType.Session }),
+        },
+        tagArtifact: {
+          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+        },
+      };
+      mockWithDbAll(mockDb);
+
+      await tagService.removeTag(
+        TAG_ID,
+        TagEntityType.Artifact,
+        entityId,
+        ORG_ID,
+        ACTOR
+      );
+
+      expect(mockDb.tagArtifact.deleteMany).toHaveBeenCalledTimes(1);
+      expect(captureArtifactMetadataChange).not.toHaveBeenCalled();
+      expect(dispatchSingleArtifactMutationAudits).not.toHaveBeenCalled();
     });
 
     it("no-op when tag is not applied (deleteMany returns count 0)", async () => {
@@ -616,16 +807,17 @@ describe("tagService", () => {
           deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
         },
       };
-      mockWithDbCall(mockDb);
+      mockWithDbAll(mockDb);
 
       await expect(
         tagService.removeTag(
           TAG_ID,
           TagEntityType.Project,
           "not-applied",
-          ORG_ID
+          ORG_ID,
+          ACTOR
         )
-      ).resolves.toBeUndefined();
+      ).resolves.toBe(false);
     });
   });
 });

@@ -2,36 +2,28 @@ import {
   Alert,
   AlertDescription,
 } from "@closedloop-ai/design-system/components/ui/alert";
-import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import { Section } from "@closedloop-ai/design-system/components/ui/layout/section";
-import {
-  RadioGroup,
-  RadioGroupItem,
-} from "@closedloop-ai/design-system/components/ui/radio-group";
 import { Skeleton } from "@closedloop-ai/design-system/components/ui/skeleton";
-import { DataSyncLevelCard } from "@repo/app/shared/components/data-sync-level-card";
+import {
+  type DataSyncLevel,
+  isMoreExposedDataSyncLevel,
+  toDataSyncLevel,
+} from "@repo/api/src/types/data-sync-level";
+import { DataSyncLevelPicker } from "@repo/app/shared/components/data-sync-level-picker";
+import { DataSyncPolicySummary } from "@repo/app/shared/components/data-sync-policy-summary";
 import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { findDataSyncLevelCopy } from "@repo/app/shared/lib/data-sync-copy";
+import {
+  offeredDataSyncLevelsWithoutRedaction,
+  offeredDataSyncLevelsWithRedaction,
+} from "@repo/app/shared/lib/data-sync-level-options";
 import { CheckIcon, ShieldAlertIcon } from "lucide-react";
-import { useEffect, useId, useState } from "react";
-import { DataSyncLevel } from "../../../shared/contracts";
-import { DATA_SYNC_LEVELS } from "../../../shared/data-sync-level";
-import { DESKTOP_SHOW_REDACTED_SYNC_LEVEL_FEATURE_FLAG_KEY } from "../../../shared/feature-flags";
-
-function CurrentLevelSummary({ level }: { level: DataSyncLevel }) {
-  const copy = findDataSyncLevelCopy(level);
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-[var(--muted-foreground)] text-xs">
-        Current level
-      </span>
-      <Badge variant={level === DataSyncLevel.Off ? "muted" : "accent"}>
-        {copy.badgeLabel}
-      </Badge>
-    </div>
-  );
-}
+import { useEffect, useState } from "react";
+import { DESKTOP_SHOW_REDACTED_SYNC_LEVEL_FEATURE_FLAG_KEY } from "../../../shared/feature-flags-labs-detail";
+import { hasAnsweredSyncConsent } from "../../../shared/sync-consent";
+import { cleanIpcError } from "../../clean-ipc-error";
+import { parseSyncConsentRecord } from "../../shared/sync-consent-record-boundary";
 
 /**
  * FEA-3907 — the graduated "data sync level" control (Settings → Data & Sync).
@@ -42,10 +34,10 @@ function CurrentLevelSummary({ level }: { level: DataSyncLevel }) {
  * Built to the `desktop-data-sync-level` prototype the design pass agreed on.
  */
 export function DataSyncTab() {
-  const radioName = useId();
   const [currentLevel, setCurrentLevel] = useState<DataSyncLevel | null>(null);
   const [selected, setSelected] = useState<DataSyncLevel | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   // The directional confirmation shown after a successful Apply ("Raised to
@@ -54,37 +46,64 @@ export function DataSyncTab() {
   const [confirmation, setConfirmation] = useState<string | null>(null);
 
   useEffect(() => {
-    window.desktopApi
-      .getDataSyncLevel()
-      .then((result) => {
-        setCurrentLevel(result.level);
-        setSelected(result.level);
+    let cancelled = false;
+    Promise.resolve()
+      .then(() =>
+        Promise.all([
+          globalThis.window.desktopApi.getDataSyncLevel(),
+          globalThis.window.desktopApi.getSyncConsentRecord(),
+        ])
+      )
+      .then(([result, rawRecord]) => {
+        if (cancelled) {
+          return;
+        }
+        const record = parseSyncConsentRecord(rawRecord);
+        const effectiveLevel = toDataSyncLevel(result?.level);
+        if (!record || effectiveLevel === undefined) {
+          setLoadFailed(true);
+          return;
+        }
+        const level = hasAnsweredSyncConsent(record) ? effectiveLevel : null;
+        setCurrentLevel(level);
+        setSelected(level);
       })
       .catch(() => {
         // A privacy control must not assert a level it has not read; surface an
         // error rather than defaulting the switches to a guessed state.
-        setLoadFailed(true);
+        if (!cancelled) {
+          setLoadFailed(true);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
       });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // ISS-4779 closed-by-default: the "Redacted sessions" option is gated behind a
   // Labs flag (off by default) because its redaction lane is not plumbed yet.
   // The `redacted` VALUE stays valid everywhere else (copy, boolean mapping,
-  // migration); only the picker's rendered option set is gated. A level a user
-  // is already on stays visible so their current selection is never orphaned.
+  // migration); only the picker's rendered option set is gated.
+  //
+  // The subset rule itself moved to `@repo/app/shared/lib/data-sync-level-options`
+  // (PLN-1915 Step 4) — the two functions called just below — so the Settings v2
+  // Connected Devices panel, which offers the same choice on the same machine,
+  // cannot come to a different answer.
   const showRedacted = useFeatureFlagEnabledOptional(
     DESKTOP_SHOW_REDACTED_SYNC_LEVEL_FEATURE_FLAG_KEY
   );
-  const visibleLevels = DATA_SYNC_LEVELS.filter(
-    (level) =>
-      showRedacted || level !== DataSyncLevel.Redacted || level === currentLevel
-  );
+  const visibleLevels = showRedacted
+    ? offeredDataSyncLevelsWithRedaction()
+    : offeredDataSyncLevelsWithoutRedaction(currentLevel);
 
-  const loading = currentLevel === null && !loadFailed;
-  const dirty =
-    selected !== null && currentLevel !== null && selected !== currentLevel;
+  const dirty = selected !== null && selected !== currentLevel;
 
-  let saveStateLabel = "Saved.";
+  let saveStateLabel = currentLevel === null ? "" : "Saved.";
   if (dirty) {
     saveStateLabel = "Unsaved change.";
   }
@@ -102,9 +121,7 @@ export function DataSyncTab() {
       setSelected(result.level);
       setConfirmation(describeLevelChange(previousLevel, result.level));
     } catch (err) {
-      setSaveError(
-        err instanceof Error ? err.message : "Failed to update data sync level"
-      );
+      setSaveError(cleanIpcError(err, "Failed to update data sync level"));
     } finally {
       setSaving(false);
     }
@@ -123,7 +140,6 @@ export function DataSyncTab() {
           levels: visibleLevels,
           currentLevel,
           selected,
-          radioName,
           saveStateLabel,
           saveError,
           confirmation,
@@ -156,7 +172,6 @@ function renderDataSyncBody(props: {
   levels: readonly DataSyncLevel[];
   currentLevel: DataSyncLevel | null;
   selected: DataSyncLevel | null;
-  radioName: string;
   saveStateLabel: string;
   saveError: string | null;
   confirmation: string | null;
@@ -195,30 +210,14 @@ function renderDataSyncBody(props: {
   }
   return (
     <>
-      {props.currentLevel ? (
-        <CurrentLevelSummary level={props.currentLevel} />
-      ) : null}
-      <RadioGroup
-        aria-label="Data & Sync level"
-        onValueChange={(value) => props.onSelect(value as DataSyncLevel)}
-        value={props.selected ?? ""}
-      >
-        {orderLevelsForDisplay(props.levels).map((level) => (
-          <DataSyncLevelCard
-            control={
-              <RadioGroupItem
-                className="mt-0.5"
-                id={`${props.radioName}-${level}`}
-                value={level}
-              />
-            }
-            htmlFor={`${props.radioName}-${level}`}
-            key={level}
-            level={level}
-            selected={props.selected === level}
-          />
-        ))}
-      </RadioGroup>
+      <DataSyncPolicySummary level={props.currentLevel} />
+      <DataSyncLevelPicker
+        disabled={props.saving}
+        label="Data & Sync level"
+        levels={props.levels}
+        onSelect={props.onSelect}
+        selected={props.selected}
+      />
       {props.saveError ? (
         <Alert variant="error">
           <ShieldAlertIcon />
@@ -236,6 +235,7 @@ function renderDataSyncBody(props: {
           {props.saveStateLabel}
         </span>
         <Button
+          data-analytics-sync-choice={props.selected ?? ""}
           disabled={!props.dirty || props.saving}
           onClick={props.onApply}
           size="sm"
@@ -263,22 +263,6 @@ function describeLevelChange(
   if (previous === null || previous === next) {
     return `Data sync level set to ${title}; ${tail}`;
   }
-  const raised =
-    DATA_SYNC_LEVELS.indexOf(next) > DATA_SYNC_LEVELS.indexOf(previous);
+  const raised = isMoreExposedDataSyncLevel(next, previous);
   return `${raised ? "Raised" : "Lowered"} to ${title}; ${tail}`;
-}
-
-/**
- * The order the options are RENDERED in — ISS-5318 puts the recommended
- * (most-permissive) level first, so the list runs most-to-least exposure.
- *
- * Deliberately a render-layer reversal of a copy, not a change to
- * `DATA_SYNC_LEVELS`: that array is the canonical exposure RANKING, read by
- * `dataSyncLevelToBooleans` and by the raised/lowered confirmation. Reversing
- * the source would silently invert the direction the confirmation reports.
- */
-function orderLevelsForDisplay(
-  levels: readonly DataSyncLevel[]
-): readonly DataSyncLevel[] {
-  return [...levels].toReversed();
 }

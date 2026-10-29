@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { parseClaudeTranscript } from "./parse-claude";
 import { ASSISTANT_LINE, USER_LINE } from "./parse-claude.test-fixtures";
-import { parseClaudeTranscript } from "./parse-claude-core";
 
 // FEA-3553: Claude implementation plans were silently dropped. These pin both
 // extraction sources plus the negative case.

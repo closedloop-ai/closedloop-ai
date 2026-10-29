@@ -1,6 +1,7 @@
 import type {
   BranchAnalytics,
   BranchKpi,
+  BranchListResponse,
   BranchPageDetail,
   BranchRow,
   BranchUsageSummary,
@@ -10,10 +11,15 @@ import {
   type BranchPrCommentsResponse,
 } from "@repo/api/src/types/branch";
 import { unavailableBranchTraceResult } from "@repo/api/src/types/branch-trace";
-import { type QueryClient, useQueryClient } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import {
+  keepPreviousData,
+  type QueryClient,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../../shared/api/api-error";
 import { AppCoreStoryProviders } from "../../../shared/storybook/decorators";
 import type {
   BranchesDataSource,
@@ -21,13 +27,16 @@ import type {
 } from "../../data-source/branches-data-source";
 import { BranchesDataSourceProvider } from "../../data-source/provider";
 import {
+  BRANCH_DETAIL_REFRESH_FOLLOW_UP_DELAY_MS,
+  BRANCH_DETAIL_REFRESH_FOLLOW_UP_LIMIT,
+} from "../use-branch-detail-refresh-follow-up";
+import {
   branchesKeys,
   useBranchAnalytics,
   useBranchCohortAnalytics,
   useBranchComments,
   useBranchDetail,
   useBranchesPageData,
-  useBranchList,
   useBranchTrace,
   useBranchUsage,
 } from "../use-branches";
@@ -122,6 +131,7 @@ type SpyingSource = BranchesDataSource & {
   traceSpy: ReturnType<typeof vi.fn>;
   usageSpy: ReturnType<typeof vi.fn>;
   analyticsSpy: ReturnType<typeof vi.fn>;
+  listStatusOrderingSpy: ReturnType<typeof vi.fn>;
   cohortAnalyticsSpy: ReturnType<typeof vi.fn>;
   pageDataSpy: ReturnType<typeof vi.fn>;
 };
@@ -143,6 +153,7 @@ function spyingSource(scope = "local"): SpyingSource {
   const analyticsSpy = vi.fn((_filters: BranchQueryFilters) =>
     Promise.resolve(ANALYTICS_FIXTURE)
   );
+  const listStatusOrderingSpy = vi.fn(() => Promise.resolve({}));
   const cohortAnalyticsSpy = vi.fn(() => Promise.resolve(null));
   const pageDataSpy = vi.fn((_filters: BranchQueryFilters) =>
     Promise.resolve({
@@ -158,6 +169,7 @@ function spyingSource(scope = "local"): SpyingSource {
     trace: traceSpy,
     usage: usageSpy,
     analytics: analyticsSpy,
+    listStatusOrdering: listStatusOrderingSpy,
     cohortAnalytics: cohortAnalyticsSpy,
     pageData: pageDataSpy,
     listSpy,
@@ -166,6 +178,7 @@ function spyingSource(scope = "local"): SpyingSource {
     traceSpy,
     usageSpy,
     analyticsSpy,
+    listStatusOrderingSpy,
     cohortAnalyticsSpy,
     pageDataSpy,
   };
@@ -308,7 +321,7 @@ describe("branchesKeys", () => {
 
   it("separates selected pull requests by exact repository-qualified identity", () => {
     const selection = {
-      repositoryFullName: "closedloop-ai/example-repo",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       pullRequestNumber: 4473,
     };
     expect(branchesKeys.detail("http", "b1", undefined, selection)).toEqual([
@@ -344,7 +357,6 @@ describe("branchesKeys", () => {
 });
 
 function ReadProbe({ source }: { source: BranchesDataSource }) {
-  const list = useBranchList({ owner: "alice" });
   const pageData = useBranchesPageData({ owner: "alice" });
   const usage = useBranchUsage({ owner: "alice" });
   const analytics = useBranchAnalytics({ owner: "alice" });
@@ -353,9 +365,6 @@ function ReadProbe({ source }: { source: BranchesDataSource }) {
     <div>
       <span data-testid="pageData">
         {pageData.isSuccess ? `pageData:${source.scope}` : "pageData:loading"}
-      </span>
-      <span data-testid="list">
-        {list.isSuccess ? "list:ok" : "list:loading"}
       </span>
       <span data-testid="usage">
         {usage.isSuccess ? "usage:ok" : "usage:loading"}
@@ -371,6 +380,339 @@ function ReadProbe({ source }: { source: BranchesDataSource }) {
 }
 
 describe("branch read hooks", () => {
+  // ISS-9725: `error` is returned from TWO independent sites — the combined
+  // path and the split path — and web's real HTTP source takes the SPLIT one.
+  // The Branches failed-read monitor classifies a 401/403 apart from a
+  // transport failure by reading this field, so wiring it to the analytics
+  // query (or dropping it) would silently report every web failure as
+  // `fetch_failed`. Both paths are pinned here because neither host's own
+  // suite reaches this module with a rejecting source.
+  it("surfaces the list rejection as `error` on the split path", async () => {
+    const source = spyingSource("http");
+    source.supportsSplitPageData = true;
+    source.listSpy.mockImplementation(() =>
+      Promise.reject(new ApiError("branches forbidden", 403))
+    );
+
+    function SplitErrorProbe() {
+      // `retry: false` is pinned rather than inherited so this case settles on
+      // the first rejection whatever the ambient client does — the harness
+      // client above pins `retry: false` as a default anyway, so nothing here
+      // observes the policy. ISS-9789 fixed the clobber that used to make the
+      // distinction matter (`commonQueryOptions` no longer spreads an
+      // `undefined` `retry` over `shouldRetryQuery`); the policy itself is
+      // pinned over the PRODUCTION client in `use-branches-split-retry.test.tsx`.
+      const { error } = useBranchesPageData(
+        { owner: "alice", limit: 25, offset: 0 },
+        { enabled: true, retry: false }
+      );
+      return (
+        <span data-testid="split-error-status">
+          {error instanceof ApiError ? String(error.status) : "none"}
+        </span>
+      );
+    }
+
+    render(
+      <AppCoreStoryProviders>
+        <BranchesDataSourceProvider dataSource={source}>
+          <SplitErrorProbe />
+        </BranchesDataSourceProvider>
+      </AppCoreStoryProviders>
+    );
+
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("split-error-status")).toHaveTextContent(
+          "403"
+        ),
+      { timeout: 5000 }
+    );
+    // The analytics half is held closed while the list is failing, so a wiring
+    // that read `analyticsQuery.error` would render "none" here.
+    expect(source.analyticsSpy).not.toHaveBeenCalled();
+  });
+
+  // The paired positive: the same source RESOLVING leaves `error` null, so the
+  // "403" above proves the rejection was carried, not that the probe renders a
+  // status unconditionally.
+  it("leaves `error` null when the split list resolves", async () => {
+    const source = spyingSource("http");
+    source.supportsSplitPageData = true;
+    source.listSpy.mockResolvedValue({
+      items: [makeBranchRow("resolved-branch")],
+      total: 1,
+      viewerScope: "self",
+    });
+
+    function ResolvedErrorProbe() {
+      const { data, error } = useBranchesPageData(
+        { owner: "alice", limit: 25, offset: 0 },
+        { enabled: true }
+      );
+      return (
+        <div>
+          <span data-testid="resolved-rows">
+            {data?.list.items[0]?.id ?? "none"}
+          </span>
+          <span data-testid="resolved-error">
+            {error === null ? "null" : "present"}
+          </span>
+        </div>
+      );
+    }
+
+    render(
+      <AppCoreStoryProviders>
+        <BranchesDataSourceProvider dataSource={source}>
+          <ResolvedErrorProbe />
+        </BranchesDataSourceProvider>
+      </AppCoreStoryProviders>
+    );
+
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("resolved-rows")).toHaveTextContent(
+          "resolved-branch"
+        ),
+      { timeout: 5000 }
+    );
+    expect(screen.getByTestId("resolved-error")).toHaveTextContent("null");
+  });
+
+  it("surfaces the list rejection as `error` on the combined path", async () => {
+    const source = spyingSource("local");
+    source.pageDataSpy.mockImplementation(() =>
+      Promise.reject(new ApiError("branches unavailable", 503))
+    );
+
+    function CombinedErrorProbe() {
+      const { error } = useBranchesPageData({ owner: "alice" });
+      return (
+        <span data-testid="combined-error-status">
+          {error instanceof ApiError ? String(error.status) : "none"}
+        </span>
+      );
+    }
+
+    render(
+      <AppCoreStoryProviders>
+        <BranchesDataSourceProvider dataSource={source}>
+          <CombinedErrorProbe />
+        </BranchesDataSourceProvider>
+      </AppCoreStoryProviders>
+    );
+
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("combined-error-status")).toHaveTextContent(
+          "503"
+        ),
+      { timeout: 5000 }
+    );
+  });
+
+  it("renders the current list while split analytics is still pending", async () => {
+    let resolveAnalytics: ((value: BranchAnalytics) => void) | undefined;
+    const analyticsPending = new Promise<BranchAnalytics>((resolve) => {
+      resolveAnalytics = resolve;
+    });
+    const source = spyingSource("http");
+    source.supportsSplitPageData = true;
+    source.listSpy.mockResolvedValue({
+      items: [makeBranchRow("current-branch")],
+      total: 1,
+      viewerScope: "self",
+    });
+    source.analyticsSpy.mockReturnValue(analyticsPending);
+
+    function SplitProbe() {
+      const result = useBranchesPageData(
+        {
+          owner: "alice",
+          limit: 25,
+          offset: 0,
+        },
+        { enabled: true }
+      );
+      return (
+        <div>
+          <span data-testid="split-row">
+            {result.data?.list.items[0]?.id ?? "none"}
+          </span>
+          <span data-testid="split-analytics">
+            {result.analyticsPending ? "analytics:pending" : "analytics:done"}
+          </span>
+        </div>
+      );
+    }
+
+    render(
+      <AppCoreStoryProviders>
+        <BranchesDataSourceProvider dataSource={source}>
+          <SplitProbe />
+        </BranchesDataSourceProvider>
+      </AppCoreStoryProviders>
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("split-row")).toHaveTextContent(
+        "current-branch"
+      )
+    );
+    expect(screen.getByTestId("split-analytics")).toHaveTextContent(
+      "analytics:pending"
+    );
+    expect(source.pageDataSpy).not.toHaveBeenCalled();
+    expect(source.analyticsSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "alice" })
+    );
+    expect(source.analyticsSpy.mock.calls[0][0]).not.toMatchObject({
+      limit: 25,
+      offset: 0,
+      forceRefresh: expect.anything(),
+    });
+
+    resolveAnalytics?.(ANALYTICS_FIXTURE);
+  });
+
+  it("waits for current-key list data before split analytics on filter changes", async () => {
+    let resolveBobList: ((value: BranchListResponse) => void) | undefined;
+    const source = spyingSource("http");
+    source.supportsSplitPageData = true;
+    source.listSpy.mockImplementation((filters: BranchQueryFilters) => {
+      if (filters.owner === "bob") {
+        return new Promise<BranchListResponse>((resolve) => {
+          resolveBobList = resolve;
+        });
+      }
+      return Promise.resolve({
+        items: [makeBranchRow("alice-branch")],
+        total: 1,
+        viewerScope: "self" as const,
+      });
+    });
+    source.analyticsSpy.mockResolvedValue(ANALYTICS_FIXTURE);
+
+    function SplitProbe({ owner }: { owner: string }) {
+      const result = useBranchesPageData(
+        { owner },
+        { placeholderData: keepPreviousData }
+      );
+      return (
+        <span data-testid="split-row">
+          {result.data?.list.items[0]?.id ?? "none"}
+        </span>
+      );
+    }
+
+    const { rerender } = render(
+      <AppCoreStoryProviders>
+        <BranchesDataSourceProvider dataSource={source}>
+          <SplitProbe owner="alice" />
+        </BranchesDataSourceProvider>
+      </AppCoreStoryProviders>
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("split-row")).toHaveTextContent("alice-branch")
+    );
+    await waitFor(() =>
+      expect(source.analyticsSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ owner: "alice" })
+      )
+    );
+    source.analyticsSpy.mockClear();
+
+    rerender(
+      <AppCoreStoryProviders>
+        <BranchesDataSourceProvider dataSource={source}>
+          <SplitProbe owner="bob" />
+        </BranchesDataSourceProvider>
+      </AppCoreStoryProviders>
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("split-row")).toHaveTextContent("alice-branch")
+    );
+    await waitFor(() =>
+      expect(source.listSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ owner: "bob" })
+      )
+    );
+    expect(source.analyticsSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "bob" })
+    );
+
+    resolveBobList?.({
+      items: [makeBranchRow("bob-branch")],
+      total: 1,
+      viewerScope: "self",
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("split-row")).toHaveTextContent("bob-branch")
+    );
+    expect(source.analyticsSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "bob" })
+    );
+  });
+
+  it("drops stale split analytics when a refetch fails after prior data", async () => {
+    const source = spyingSource("http");
+    source.supportsSplitPageData = true;
+    source.listSpy.mockResolvedValue({
+      items: [makeBranchRow("branch-1")],
+      total: 1,
+      viewerScope: "self",
+    });
+    source.analyticsSpy.mockResolvedValueOnce(ANALYTICS_FIXTURE);
+    let refetchAnalytics: (() => Promise<unknown>) | undefined;
+
+    function SplitProbe() {
+      const result = useBranchesPageData({ owner: "alice" }, { retry: false });
+      refetchAnalytics = result.refetchAnalytics;
+      return (
+        <div>
+          <span data-testid="split-analytics-state">
+            {result.data?.analytics ? "analytics:present" : "analytics:missing"}
+          </span>
+          <span data-testid="split-analytics-error">
+            {result.analyticsError ? "analytics:error" : "analytics:ok"}
+          </span>
+        </div>
+      );
+    }
+
+    render(
+      <AppCoreStoryProviders>
+        <BranchesDataSourceProvider dataSource={source}>
+          <SplitProbe />
+        </BranchesDataSourceProvider>
+      </AppCoreStoryProviders>
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("split-analytics-state")).toHaveTextContent(
+        "analytics:present"
+      )
+    );
+
+    source.analyticsSpy.mockRejectedValueOnce(new Error("analytics failed"));
+    await act(async () => {
+      await refetchAnalytics?.();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("split-analytics-state")).toHaveTextContent(
+        "analytics:missing"
+      );
+      expect(screen.getByTestId("split-analytics-error")).toHaveTextContent(
+        "analytics:error"
+      );
+    });
+  });
+
   it("delegate pageData/usage/analytics to the injected source with the given filters", async () => {
     const source = spyingSource("local");
     render(
@@ -385,7 +727,6 @@ describe("branch read hooks", () => {
       expect(screen.getByTestId("pageData")).toHaveTextContent(
         "pageData:local"
       );
-      expect(screen.getByTestId("list")).toHaveTextContent("list:ok");
       expect(screen.getByTestId("usage")).toHaveTextContent("usage:ok");
       expect(screen.getByTestId("analytics")).toHaveTextContent("analytics:ok");
       expect(screen.getByTestId("cohortAnalytics")).toHaveTextContent(
@@ -393,7 +734,6 @@ describe("branch read hooks", () => {
       );
     });
 
-    expect(source.listSpy).toHaveBeenCalledWith({ owner: "alice" });
     expect(source.pageDataSpy).toHaveBeenCalledWith({ owner: "alice" });
     expect(source.usageSpy).toHaveBeenCalledWith({ owner: "alice" });
     expect(source.analyticsSpy).toHaveBeenCalledWith({ owner: "alice" });
@@ -461,6 +801,56 @@ describe("branch read hooks", () => {
       )
     );
     expect(source.detailSpy).toHaveBeenCalledWith("repo%2Fowner::main");
+  });
+
+  describe("ISS-12278 stale-PR refresh follow-up", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("caps follow-up refetches while every read reports a PR refresh", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const source = spyingSource("http");
+      source.detailSpy.mockImplementation((id: string) =>
+        Promise.resolve({
+          ...makeDetail(id),
+          pullRequestRefreshPending: true as const,
+        })
+      );
+
+      function RefreshProbe() {
+        useBranchDetail("branch-1");
+        return null;
+      }
+
+      render(
+        <AppCoreStoryProviders>
+          <BranchesDataSourceProvider dataSource={source}>
+            <RefreshProbe />
+          </BranchesDataSourceProvider>
+        </AppCoreStoryProviders>
+      );
+
+      await waitFor(() => expect(source.detailSpy).toHaveBeenCalledTimes(1));
+      for (
+        let followUp = 1;
+        followUp <= BRANCH_DETAIL_REFRESH_FOLLOW_UP_LIMIT;
+        followUp++
+      ) {
+        await vi.advanceTimersByTimeAsync(
+          BRANCH_DETAIL_REFRESH_FOLLOW_UP_DELAY_MS
+        );
+        await waitFor(() =>
+          expect(source.detailSpy).toHaveBeenCalledTimes(followUp + 1)
+        );
+      }
+      await vi.advanceTimersByTimeAsync(
+        BRANCH_DETAIL_REFRESH_FOLLOW_UP_DELAY_MS * 2
+      );
+      expect(source.detailSpy).toHaveBeenCalledTimes(
+        BRANCH_DETAIL_REFRESH_FOLLOW_UP_LIMIT + 1
+      );
+    });
   });
 
   it("disables the trace query for an empty id and delegates for a present id", async () => {
@@ -554,9 +944,11 @@ describe("branch read hooks", () => {
   describe("interval refetch (PLN-1535 M3.3)", () => {
     async function captureQueryOptions(
       probe: ReactNode,
-      queryKey: readonly unknown[]
+      queryKey: readonly unknown[],
+      configureSource?: (source: SpyingSource) => void
     ) {
       const source = spyingSource("http");
+      configureSource?.(source);
       let client: QueryClient | undefined;
       function ClientProbe() {
         client = useQueryClient();
@@ -577,6 +969,11 @@ describe("branch read hooks", () => {
     }
 
     function PageDataProbe() {
+      useBranchesPageData({ owner: "alice" });
+      return null;
+    }
+
+    function SplitPageDataProbe() {
       useBranchesPageData({ owner: "alice" });
       return null;
     }
@@ -606,13 +1003,26 @@ describe("branch read hooks", () => {
       expect(options?.refetchIntervalInBackground).not.toBe(true);
     });
 
-    it("polls an open branch detail on the 60s visible-tab cadence", async () => {
+    it("polls split analytics on the same visible-tab cadence as rows", async () => {
+      const options = await captureQueryOptions(
+        <SplitPageDataProbe />,
+        branchesKeys.analytics("http", { owner: "alice" }),
+        (source) => {
+          source.supportsSplitPageData = true;
+        }
+      );
+
+      expect(options?.refetchInterval).toBe(120_000);
+      expect(options?.refetchIntervalInBackground).not.toBe(true);
+    });
+
+    it("polls an open branch detail on the approved five-minute visible-tab cadence", async () => {
       const options = await captureQueryOptions(
         <DetailProbe />,
         branchesKeys.detail("http", "branch-1")
       );
 
-      expect(options?.refetchInterval).toBe(60_000);
+      expect(options?.refetchInterval).toBe(300_000);
       expect(options?.refetchIntervalInBackground).not.toBe(true);
     });
 

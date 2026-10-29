@@ -1,14 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  asTranscriptForbiddenCode,
   isMaterializedTranscriptHarness,
-  isRecoverableTranscriptSkipReason,
   TranscriptAvailability,
-  TranscriptSkipReason,
-  toKnownTranscriptSkipReason,
+  TranscriptForbiddenCode,
   transcriptAccessResponseSchema,
   transcriptAvailabilitySummarySchema,
+  transcriptCompleteRequestSchema,
   transcriptSkipRequestSchema,
 } from "./desktop-transcripts";
+import {
+  isRecoverableTranscriptSkipReason,
+  TranscriptSkipReason,
+  toKnownTranscriptSkipReason,
+} from "./transcript-skip-reason-constants.ts";
 
 /**
  * ISS-4621 review: version-skew tolerance on the transcript READ contracts.
@@ -158,12 +163,17 @@ describe("ISS-4820: skip reason classification + reason/harness pairing", () => 
     fileKey: "main",
   };
 
-  it("classifies exactly one reason as recoverable; every other is hard", () => {
-    expect(
-      isRecoverableTranscriptSkipReason(
-        TranscriptSkipReason.MaterializedSourceUnavailable
-      )
-    ).toBe(true);
+  it("classifies the two regenerable/resumable reasons as recoverable; every other is hard", () => {
+    // ISS-9884 added the second recoverable member. The two are recoverable for
+    // different reasons — one's SOURCE can come back, the other's TRANSPORT can
+    // — and this predicate deliberately does not distinguish them; the verdict
+    // they map to does (`TERMINAL_SKIP_DISPOSITIONS`).
+    for (const reason of [
+      TranscriptSkipReason.MaterializedSourceUnavailable,
+      TranscriptSkipReason.EnvironmentUnavailable,
+    ]) {
+      expect(isRecoverableTranscriptSkipReason(reason)).toBe(true);
+    }
     for (const reason of [
       TranscriptSkipReason.TooLarge,
       TranscriptSkipReason.SourceGone,
@@ -182,7 +192,7 @@ describe("ISS-4820: skip reason classification + reason/harness pairing", () => 
     expect(isMaterializedTranscriptHarness("some_future_harness")).toBe(false);
   });
 
-  it("REJECTS a recoverable reason paired with a raw (non-materialized) harness", () => {
+  it("REJECTS materialized_source_unavailable paired with a raw (non-materialized) harness", () => {
     // Without this the reason-only cloud branch reports `Syncing` forever for a
     // source that can never regenerate.
     for (const sourceHarness of ["claude", "codex", "some_future_harness"]) {
@@ -192,6 +202,28 @@ describe("ISS-4820: skip reason classification + reason/harness pairing", () => 
         reason: TranscriptSkipReason.MaterializedSourceUnavailable,
       });
       expect(parsed.success).toBe(false);
+    }
+  });
+
+  it("ACCEPTS environment_unavailable on a RAW harness — the pairing rule is one reason wide, not all recoverable ones", () => {
+    // ISS-9884. An environmental give-up says nothing about the shape of the
+    // source, so raw Claude/Codex rows are the whole population it exists for.
+    // This is the case that goes red if anyone generalizes the `.refine` from
+    // the `materialized_source_unavailable` literal to
+    // `isRecoverableTranscriptSkipReason` — a tidy-up that reads correct and
+    // would silently reject the new reason for every non-materialized harness.
+    for (const sourceHarness of [
+      "claude",
+      "codex",
+      "opencode",
+      "some_future_harness",
+    ]) {
+      const parsed = transcriptSkipRequestSchema.safeParse({
+        ...IDENTITY,
+        sourceHarness,
+        reason: TranscriptSkipReason.EnvironmentUnavailable,
+      });
+      expect(parsed.success).toBe(true);
     }
   });
 
@@ -225,4 +257,60 @@ describe("ISS-4820: skip reason classification + reason/harness pairing", () => 
       expect(parsed.error.issues[0]?.path).toEqual(["reason"]);
     }
   });
+});
+
+describe("transcriptCompleteRequestSchema", () => {
+  const base = {
+    computeTargetId: "11111111-1111-7111-8111-111111111111",
+    externalSessionId: "session-1",
+    fileKey: "main",
+    planEndOffset: 0,
+    sha256: "a".repeat(64),
+    crc64nvme: "checksum",
+  };
+
+  it("accepts a fullPut completion with no uploadId", () => {
+    expect(
+      transcriptCompleteRequestSchema.safeParse({
+        ...base,
+        mode: "fullPut",
+      }).success
+    ).toBe(true);
+  });
+
+  it("accepts a multipart completion that carries an uploadId", () => {
+    expect(
+      transcriptCompleteRequestSchema.safeParse({
+        ...base,
+        mode: "multipart",
+        uploadId: "upload-1",
+      }).success
+    ).toBe(true);
+  });
+
+  it("rejects a multipart completion missing its uploadId, against the `uploadId` field", () => {
+    const parsed = transcriptCompleteRequestSchema.safeParse({
+      ...base,
+      mode: "multipart",
+    });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues[0]?.path).toEqual(["uploadId"]);
+    }
+  });
+});
+
+describe("asTranscriptForbiddenCode", () => {
+  it("resolves a known forbidden code to its typed member", () => {
+    expect(asTranscriptForbiddenCode(TranscriptForbiddenCode.NotOwned)).toBe(
+      TranscriptForbiddenCode.NotOwned
+    );
+  });
+
+  it.each([null, undefined, "", "future_forbidden_code"])(
+    "folds %j to undefined, the same bare-403 path as absence",
+    (value) => {
+      expect(asTranscriptForbiddenCode(value)).toBeUndefined();
+    }
+  );
 });

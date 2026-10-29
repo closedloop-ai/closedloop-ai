@@ -1,22 +1,27 @@
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { RECOMMENDED_DATA_SYNC_LEVEL } from "@repo/api/src/types/data-sync-level";
+import { afterEach, test } from "vitest";
+import {
+  LABS_SETTING_KEY_LEDGER,
+  RETIRED_LABS_SETTING_KEYS,
+} from "../src/main/settings/labs-setting-key-ledger.js";
 import {
   DEFAULT_DESKTOP_SETTINGS,
   syncTierAllowsSessionMetadata,
   syncTierAllowsTranscripts,
 } from "../src/shared/contracts.js";
-import { DESKTOP_COMPUTE_PROGRESS_COUNT_FEATURE_FLAG_KEY } from "../src/shared/desktop-compute-progress-count-flag.js";
+import { dataSyncLevelToBooleans } from "../src/shared/data-sync-level.js";
 import {
-  DESKTOP_AGENT_COLLABORATION_NETWORK_FEATURE_FLAG_KEY,
-  DESKTOP_LOCAL_SESSION_AUTHORED_PR_GATE_FEATURE_FLAG_KEY,
-  DESKTOP_SESSION_ACTIVITY_PHASES_FEATURE_FLAG_KEY,
-  DESKTOP_SHOW_REDACTED_SYNC_LEVEL_FEATURE_FLAG_KEY,
-  DESKTOP_STARTUP_READINESS_EXPERIENCE_FEATURE_FLAG_KEY,
-  DESKTOP_VALUE_NUMERATOR_V2_FEATURE_FLAG_KEY,
   FEATURE_FLAGS,
   type FlagKey,
   getFlagDefinition,
 } from "../src/shared/feature-flags.js";
+import {
+  DESKTOP_AGENT_COLLABORATION_NETWORK_FEATURE_FLAG_KEY,
+  DESKTOP_LOCAL_SESSION_AUTHORED_PR_GATE_FEATURE_FLAG_KEY,
+  DESKTOP_SHOW_REDACTED_SYNC_LEVEL_FEATURE_FLAG_KEY,
+} from "../src/shared/feature-flags-labs-detail.js";
+import { DESKTOP_BOOT_IMPORT_DEGRADED_TERMINAL_FEATURE_FLAG_KEY } from "../src/shared/feature-flags-labs-surfaces.js";
 import {
   cleanupFeatureFlagStores,
   makeFeatureFlagStore,
@@ -284,19 +289,18 @@ test("constructor deletes a legacy persisted unified-auth-onboarding value", () 
 
 // --- FEA-3843 / PRD-555: docsHelp Labs flag ---
 
-test("registry defines docsHelp as an off-by-default, visible Labs toggle", () => {
+test("registry defines docsHelp as an off-by-default Labs destination gate", () => {
   const def = FEATURE_FLAGS.find((f) => f.key === "docsHelp");
   assert.ok(def, "docsHelp must be registered");
   assert.equal(def.default, false, "must default to OFF (dark launch)");
   assert.equal(def.category, "Labs", "must be a Labs-category toggle");
-  // Not hidden from Labs → the SettingsPanel LabsTab renders it as a user-facing
-  // opt-in toggle so the in-app Docs & Help experience can be dogfooded before
-  // graduating. M1 ships only the bundle + index + IPC; the flag gates the
-  // renderer surfaces that land in M2–M4.
+  // Not hidden from Labs: docsHelp remains an exposed Labs destination gate,
+  // not an internal registry-only setting. M1 ships only the bundle + index +
+  // IPC; the flag gates the renderer surfaces that land in M2-M4.
   assert.notEqual(
     def.hiddenFromLabs,
     true,
-    "must be visible in the Labs settings panel"
+    "must remain an exposed Labs destination gate"
   );
 });
 
@@ -307,54 +311,62 @@ test("docsHelp getFlag defaults OFF and can be toggled on", () => {
   assert.equal(store.getFlag("docsHelp" as FlagKey), true);
 });
 
-// --- FEA-4174 / PRD-545: valueNumeratorV2 Labs flag ---
+// --- Retired Labs toggles: the registry entry AND the persisted residue ---
 
-test("registry defines valueNumeratorV2 as an off-by-default, hidden Labs flag", () => {
-  const def = FEATURE_FLAGS.find(
-    (f) => f.key === DESKTOP_VALUE_NUMERATOR_V2_FEATURE_FLAG_KEY
-  );
-  assert.ok(def, "valueNumeratorV2 must be registered");
-  assert.equal(def.default, false, "must default to OFF (dark launch)");
-  assert.equal(def.category, "Labs", "must be a Labs-category toggle");
-  assert.equal(def.label, "Value Numerator 2.0");
-  // Hidden from Labs until a renderer consumer wires the flag: this slice lands
-  // only the server-side Pensero client, so the LabsTab must NOT render a switch
-  // that only persists a boolean nothing reads. The toggle is un-hidden by the
-  // slice that wires the first gated consumer.
+test("valueNumeratorV2 is retired disabled and swept from persisted settings", () => {
   assert.equal(
-    def.hiddenFromLabs,
-    true,
-    "must stay hidden from the Labs settings panel until a consumer lands"
+    FEATURE_FLAGS.find((flag) => flag.key === "valueNumeratorV2"),
+    undefined,
+    "valueNumeratorV2 must not be registered as a live Desktop toggle"
+  );
+  // Retired DISABLED: it never acquired a runtime consumer, so an install that
+  // opted in carries a `true` the sweep has to delete rather than bleed through
+  // `getAll()` for a key `DesktopSettings` no longer types.
+  const store = makeFeatureFlagStore({ valueNumeratorV2: true });
+  assert.equal(
+    "valueNumeratorV2" in
+      (store.getAll() as unknown as Record<string, unknown>),
+    false
   );
 });
 
-test("valueNumeratorV2 getFlag defaults OFF and can be toggled on", () => {
-  const store = makeFeatureFlagStore();
-  assert.equal(
-    store.getFlag(DESKTOP_VALUE_NUMERATOR_V2_FEATURE_FLAG_KEY as FlagKey),
-    false
+test("PostHog-unconditional desktop peers are retired enabled and swept", () => {
+  // Retired ENABLED: PostHog carried these at unconditional 100%, so a stale
+  // persisted `false` would read as an opt-OUT of a feature with no off state.
+  const retiredEnabledKeys = [
+    "sessions-change-pr-filters",
+    "sessions-grid-fold-legibility",
+    "session-timeline-column-hit-target",
+  ];
+  const store = makeFeatureFlagStore(
+    Object.fromEntries(retiredEnabledKeys.map((key) => [key, false]))
   );
-  store.setFlag(DESKTOP_VALUE_NUMERATOR_V2_FEATURE_FLAG_KEY as FlagKey, true);
-  assert.equal(
-    store.getFlag(DESKTOP_VALUE_NUMERATOR_V2_FEATURE_FLAG_KEY as FlagKey),
-    true
-  );
+  const all = store.getAll() as unknown as Record<string, unknown>;
+
+  for (const key of retiredEnabledKeys) {
+    assert.equal(
+      FEATURE_FLAGS.find((flag) => flag.key === key),
+      undefined,
+      `${key} must not be registered as a live Desktop toggle`
+    );
+    assert.equal(
+      key in all,
+      false,
+      `${key} must be removed from persisted Desktop settings`
+    );
+  }
 });
 
 // --- ISS-4792 (ISS-4779 closed-by-default): db-ahead-banner + timeline-axis ---
 
-test("registry defines db-ahead-banner as an off-by-default, visible Labs toggle (ISS-4792)", () => {
+test("registry defines db-ahead-banner as an off-by-default Labs gate (ISS-4792)", () => {
   const def = FEATURE_FLAGS.find((f) => f.key === "db-ahead-banner");
   assert.ok(def, "db-ahead-banner must be registered");
   assert.equal(def.default, false, "must default to OFF (dark launch)");
   assert.equal(def.category, "Labs", "must be a Labs-category toggle");
-  // Desktop-only surface, so the generic Labs toggle is the sole opt-in — it
-  // must NOT be hidden from the Labs panel.
-  assert.notEqual(
-    def.hiddenFromLabs,
-    true,
-    "must be visible in the Labs settings panel"
-  );
+  // Desktop-only surface, so this remains an exposed Labs gate rather than
+  // an internal registry-only setting.
+  assert.notEqual(def.hiddenFromLabs, true, "must remain an exposed Labs gate");
 });
 
 test("db-ahead-banner getFlag defaults OFF and can be toggled on", () => {
@@ -364,40 +376,7 @@ test("db-ahead-banner getFlag defaults OFF and can be toggled on", () => {
   assert.equal(store.getFlag("db-ahead-banner" as FlagKey), true);
 });
 
-// --- ISS-4715: ordered startup-readiness experience ---
-
-test("registry defines startup readiness as an off-by-default, restart-scoped Labs toggle", () => {
-  const def = FEATURE_FLAGS.find(
-    (flag) => flag.key === DESKTOP_STARTUP_READINESS_EXPERIENCE_FEATURE_FLAG_KEY
-  );
-  assert.ok(def, "startup readiness must be registered");
-  assert.equal(def.default, false, "must default to OFF (dark launch)");
-  assert.equal(def.category, "Labs");
-  assert.equal(def.requiresRestart, true);
-  assert.equal(def.envOverride, "SYMPHONY_STARTUP_READINESS_EXPERIENCE");
-  assert.notEqual(def.hiddenFromLabs, true);
-});
-
-test("startup readiness getFlag defaults OFF and can be toggled on", () => {
-  const store = makeFeatureFlagStore();
-  assert.equal(
-    store.getFlag(
-      DESKTOP_STARTUP_READINESS_EXPERIENCE_FEATURE_FLAG_KEY as FlagKey
-    ),
-    false
-  );
-  store.setFlag(
-    DESKTOP_STARTUP_READINESS_EXPERIENCE_FEATURE_FLAG_KEY as FlagKey,
-    true
-  );
-  assert.equal(
-    store.getFlag(
-      DESKTOP_STARTUP_READINESS_EXPERIENCE_FEATURE_FLAG_KEY as FlagKey
-    ),
-    true
-  );
-});
-test("registry defines localSessionAuthoredPrGate as an off-by-default, visible Labs toggle (ISS-4922)", () => {
+test("registry defines localSessionAuthoredPrGate as an off-by-default, exposed Labs gate (ISS-4922)", () => {
   const def = FEATURE_FLAGS.find(
     (f) => f.key === DESKTOP_LOCAL_SESSION_AUTHORED_PR_GATE_FEATURE_FLAG_KEY
   );
@@ -408,13 +387,10 @@ test("registry defines localSessionAuthoredPrGate as an off-by-default, visible 
     "must default to OFF — suppressing an already-rendered Local PR pill is user-perceivable"
   );
   assert.equal(def.category, "Labs", "must be a Labs-category toggle");
-  // Desktop-only surface (the cloud lane enforces the rule unconditionally), so
-  // the generic Labs toggle is the sole opt-in and must stay visible.
-  assert.notEqual(
-    def.hiddenFromLabs,
-    true,
-    "must be visible in the Labs settings panel"
-  );
+  // Desktop-only surface (the cloud lane enforces the rule unconditionally),
+  // so this remains an exposed Labs gate rather than an internal registry-only
+  // setting.
+  assert.notEqual(def.hiddenFromLabs, true, "must remain an exposed Labs gate");
 });
 
 test("localSessionAuthoredPrGate getFlag defaults OFF and can be toggled on", () => {
@@ -539,14 +515,23 @@ test("getAllFlags returns entries for every registered flag", () => {
   const store = makeFeatureFlagStore();
   const flags = store.getAllFlags();
   assert.equal(flags.length, FEATURE_FLAGS.length);
+  // ISS-10554: the first-launch seed persists the flags the recommended data
+  // sync level CHANGES, so those read their seeded value here rather than their
+  // registry default. Every other flag still reports its default.
+  const seeded: Record<string, unknown> = dataSyncLevelToBooleans(
+    RECOMMENDED_DATA_SYNC_LEVEL
+  );
   for (const def of FEATURE_FLAGS) {
     const entry = flags.find((f) => f.key === def.key);
     assert.ok(entry, `missing flag: ${def.key}`);
-    assert.equal(entry.value, def.default, `default mismatch for ${def.key}`);
+    const seededValue = seeded[def.key];
+    const expectedValue =
+      typeof seededValue === "boolean" ? seededValue : def.default;
+    assert.equal(entry.value, expectedValue, `default mismatch for ${def.key}`);
     assert.equal(
       entry.source,
-      "default",
-      `source should be default for ${def.key}`
+      expectedValue === def.default ? "default" : "user",
+      `source mismatch for ${def.key}`
     );
   }
 });
@@ -569,10 +554,6 @@ test("legacy getters return same values as getFlag", () => {
   assert.equal(
     store.getCloudCommandsPaused(),
     store.getFlag("cloudCommandsPaused")
-  );
-  assert.equal(
-    store.getCommandSigningEnforcementEnabled(),
-    store.getFlag("commandSigningEnforcementEnabled")
   );
 });
 
@@ -618,29 +599,6 @@ test("legacy setters persist through getFlag", () => {
   const store = makeFeatureFlagStore();
   store.setPlanExtractionEnabled(true);
   assert.equal(store.getFlag("planExtractionEnabled"), true);
-});
-
-test("registry defines commandSigningEnforcementEnabled as an off-by-default Security opt-in hidden from Labs (FEA-4130)", () => {
-  const def = FEATURE_FLAGS.find(
-    (f) => f.key === "commandSigningEnforcementEnabled"
-  );
-  assert.ok(def, "commandSigningEnforcementEnabled must be registered");
-  assert.equal(
-    def.default,
-    false,
-    "must default OFF — Trusted Browser Enforcement is opt-in"
-  );
-  // FEA-4130: rendered on the Security tab beside the other security controls
-  // by its "Security" category.
-  assert.equal(def.category, "Security");
-  assert.equal(def.label, "Trusted Browser Enforcement");
-  // FEA-4130: no longer rendered by the generic Labs list — the Security tab
-  // owns a dedicated card for it, so it is hidden from Labs to avoid a
-  // double-render whose two switches would desync.
-  assert.ok(
-    def.hiddenFromLabs,
-    "must be hidden from the Labs panel — the Security tab owns its toggle"
-  );
 });
 
 // --- PRD-532 §7: syncObservabilityTier setting ---
@@ -707,12 +665,12 @@ test("FEA-3741: each per-tool collector flag is a Data-Collection, ON-by-default
       `${key} must be a Data Collection toggle`
     );
     // Rendered by the dedicated CLI Tools "Data Collection" card, not the
-    // generic Labs list — so it must be hidden from Labs to avoid a duplicate,
+    // generic flag list — so it must be hidden from Labs to avoid a duplicate,
     // desyncing control.
     assert.equal(
       def.hiddenFromLabs,
       true,
-      `${key} must be hidden from the Labs panel`
+      `${key} must be hidden from generic flag surfaces`
     );
     assert.equal(
       def.requiresRestart,
@@ -752,72 +710,64 @@ test("FEA-3741: getCollectorEnabledState reflects the persisted per-tool flags",
   });
 });
 
-// --- ISS-6241 (ISS-4779 closed-by-default): Import splash compute count ---
+// --- ISS-7819: Import splash compute count, retired to ALWAYS-ON ---
 
-test("registry defines compute-progress-count as an off-by-default, visible Labs toggle (ISS-6241)", () => {
-  const def = FEATURE_FLAGS.find(
-    (flag) => flag.key === DESKTOP_COMPUTE_PROGRESS_COUNT_FEATURE_FLAG_KEY
-  );
-  assert.ok(def, "compute-progress-count must be registered");
-  assert.equal(def.default, false, "must default to OFF (dark launch)");
-  assert.equal(def.category, "Labs", "must be a Labs-category toggle");
-  // Desktop-only surface, so this toggle is the only way to reach the count —
-  // hidden would make the gate unopenable rather than merely closed.
-  assert.notEqual(
-    def.hiddenFromLabs,
-    true,
-    "must be visible in the Labs settings panel"
-  );
-  // The defaults record is the OTHER half of the gate: a key registered but
-  // missing there would read as `undefined` through getFlag, not `false`.
+// The retired key. A literal, because ISS-7819 deleted the leaf constant module
+// this used to import: a retired key has no owner to import it from, and the
+// ledger it is reconciled against spells it the same way.
+const RETIRED_COMPUTE_PROGRESS_COUNT_KEY = "compute-progress-count";
+
+test("ISS-7819: compute-progress-count is RETIRED, not merely defaulted ON", () => {
+  // ISS-6241's pair of tests lived here and pinned the closed-by-default gate:
+  // registered, `default: false`, visible in Labs, and `false` in the persisted
+  // defaults. ISS-7819 removed the gate rather than flipping it, because the
+  // Compute rail stopped claiming a determinate position and this count became
+  // the phase's only quantitative signal — nothing is left for a toggle to
+  // withhold. `default: true` is the other way to spell that and is precisely
+  // what `feature-flags-registry-plumbing.test.ts` forbids, so the key has to be
+  // GONE from both halves of the gate rather than inverted in them.
   assert.equal(
-    DEFAULT_DESKTOP_SETTINGS[DESKTOP_COMPUTE_PROGRESS_COUNT_FEATURE_FLAG_KEY],
-    false
+    FEATURE_FLAGS.find(
+      (flag) => flag.key === RETIRED_COMPUTE_PROGRESS_COUNT_KEY
+    ),
+    undefined,
+    "a retired flag must leave the registry, or Labs still renders its toggle"
+  );
+  assert.equal(
+    Object.hasOwn(DEFAULT_DESKTOP_SETTINGS, RETIRED_COMPUTE_PROGRESS_COUNT_KEY),
+    false,
+    "a retired flag must leave DEFAULT_DESKTOP_SETTINGS"
+  );
+  // The half that compiles fine when it is missed, which is why it is asserted
+  // here beside the two that do not: without it an upgrading profile keeps
+  // bleeding its stale persisted value through getAll() forever.
+  assert.ok(
+    RETIRED_LABS_SETTING_KEYS.includes(RETIRED_COMPUTE_PROGRESS_COUNT_KEY),
+    "a retired flag must reach the removal sweep"
+  );
+  // And it stays in the historical ledger: leaving it there is what lets
+  // `labs-setting-key-ledger.test.ts` notice a key that left the registry
+  // without arriving in the sweep.
+  assert.ok(
+    LABS_SETTING_KEY_LEDGER.includes(RETIRED_COMPUTE_PROGRESS_COUNT_KEY),
+    "a retired flag stays in the historical ledger"
   );
 });
 
-test("ISS-6241: compute-progress-count round-trips through the settings store", () => {
-  const store = makeFeatureFlagStore();
-  assert.equal(
-    store.getFlag(DESKTOP_COMPUTE_PROGRESS_COUNT_FEATURE_FLAG_KEY),
-    false
-  );
-  store.setFlag(DESKTOP_COMPUTE_PROGRESS_COUNT_FEATURE_FLAG_KEY, true);
-  assert.equal(
-    store.getFlag(DESKTOP_COMPUTE_PROGRESS_COUNT_FEATURE_FLAG_KEY),
-    true
-  );
-});
+test("ISS-7819: an upgrading profile's stale compute-progress-count value is swept", () => {
+  // Retired ENABLED: the persisted value an opted-in user carries is `true` and
+  // an opted-out user's is `false`, and BOTH have to go. The `false` is the
+  // dangerous one — it would read as an opt-OUT of a feature that no longer has
+  // an off state.
+  const store = makeFeatureFlagStore({
+    [RETIRED_COMPUTE_PROGRESS_COUNT_KEY]: false,
+  });
 
-// --- ISS-5841 (ISS-4779 closed-by-default): Session detail activity phases ---
-
-test("registry defines session-activity-phases as an off-by-default, visible Labs toggle (ISS-5841)", () => {
-  const def = FEATURE_FLAGS.find(
-    (flag) => flag.key === DESKTOP_SESSION_ACTIVITY_PHASES_FEATURE_FLAG_KEY
-  );
-  assert.ok(def, "session-activity-phases must be registered");
-  assert.equal(def.default, false, "must default to OFF (dark launch)");
-  assert.equal(def.category, "Labs", "must be a Labs-category toggle");
-  // The packaged renderer has no PostHog wiring, so this Labs toggle is the
-  // only way to reach the phases surfaces on desktop — it must not be hidden
-  // from the panel, or the gate would be unopenable rather than merely closed.
-  assert.notEqual(
-    def.hiddenFromLabs,
-    true,
-    "must be visible in the Labs settings panel"
-  );
-});
-
-test("ISS-5841: session-activity-phases getFlag defaults OFF and can be toggled on", () => {
-  const store = makeFeatureFlagStore();
   assert.equal(
-    store.getFlag(DESKTOP_SESSION_ACTIVITY_PHASES_FEATURE_FLAG_KEY),
-    false
-  );
-  store.setFlag(DESKTOP_SESSION_ACTIVITY_PHASES_FEATURE_FLAG_KEY, true);
-  assert.equal(
-    store.getFlag(DESKTOP_SESSION_ACTIVITY_PHASES_FEATURE_FLAG_KEY),
-    true
+    RETIRED_COMPUTE_PROGRESS_COUNT_KEY in
+      (store.getAll() as unknown as Record<string, unknown>),
+    false,
+    "the retired key must not survive into getAll()"
   );
 });
 
@@ -825,9 +775,9 @@ test("ISS-4779: show-Redacted-sync-level is a registered Labs flag that dark-lau
   // `data-sync-redacted-labs-gate.spec.ts` seeds this key as a literal
   // (importing the registry from a Playwright spec aborts the Electron run), so
   // this pins the exact string and default the spec depends on against a rename.
-  // It also guards the merge hazard that dropped this entry once: the key stayed
-  // declared while its FEATURE_FLAGS registration was lost, leaving the gate
-  // resolving to the build-type default instead of the persisted Labs value.
+  // It also guards the merge hazard that dropped this entry once: the key
+  // stayed declared while its FEATURE_FLAGS registration was lost, so the
+  // persisted Labs value stopped being resolvable at all.
   const definition = getFlagDefinition(
     DESKTOP_SHOW_REDACTED_SYNC_LEVEL_FEATURE_FLAG_KEY
   );
@@ -837,10 +787,51 @@ test("ISS-4779: show-Redacted-sync-level is a registered Labs flag that dark-lau
   );
   assert.equal(definition.default, false);
   assert.equal(definition.category, "Labs");
-  // Reachable in the registry-driven Labs panel so a user can opt in.
+  // Exposed as a Labs gate rather than hidden as an internal registry-only setting.
   assert.notEqual(definition.hiddenFromLabs, true);
   assert.equal(
     DEFAULT_DESKTOP_SETTINGS[DESKTOP_SHOW_REDACTED_SYNC_LEVEL_FEATURE_FLAG_KEY],
     false
+  );
+});
+
+test("ISS-6207: boot-import-degraded-terminal is a registered Labs flag that dark-launches OFF", () => {
+  // The ISS-4779 gate over the renderer surfacing the boot import's second
+  // degraded terminal. Desktop-only (no `apps/app` boot import), so this
+  // registry entry is what carries the closed default and the persisted value;
+  // losing it would leave that value unresolvable, which is the drift the
+  // closed-by-default policy exists to prevent.
+  const definition = getFlagDefinition(
+    DESKTOP_BOOT_IMPORT_DEGRADED_TERMINAL_FEATURE_FLAG_KEY
+  );
+  assert.equal(
+    DESKTOP_BOOT_IMPORT_DEGRADED_TERMINAL_FEATURE_FLAG_KEY,
+    "boot-import-degraded-terminal"
+  );
+  assert.equal(definition.default, false);
+  assert.equal(definition.category, "Labs");
+  // Exposed as a Labs gate rather than hidden as an internal registry-only setting.
+  assert.notEqual(definition.hiddenFromLabs, true);
+  // Without the `DesktopSettings` field, `getAll()` (which spreads
+  // DEFAULT_DESKTOP_SETTINGS over the raw store) omits the key on a fresh
+  // profile and the gate reads `undefined` rather than the closed default.
+  assert.equal(
+    DEFAULT_DESKTOP_SETTINGS[
+      DESKTOP_BOOT_IMPORT_DEGRADED_TERMINAL_FEATURE_FLAG_KEY
+    ],
+    false
+  );
+});
+
+test("ISS-6207: the boot-import-degraded-terminal flag round-trips through the settings store", () => {
+  const store = makeFeatureFlagStore();
+  assert.equal(
+    store.getFlag(DESKTOP_BOOT_IMPORT_DEGRADED_TERMINAL_FEATURE_FLAG_KEY),
+    false
+  );
+  store.setFlag(DESKTOP_BOOT_IMPORT_DEGRADED_TERMINAL_FEATURE_FLAG_KEY, true);
+  assert.equal(
+    store.getFlag(DESKTOP_BOOT_IMPORT_DEGRADED_TERMINAL_FEATURE_FLAG_KEY),
+    true
   );
 });

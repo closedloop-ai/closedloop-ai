@@ -211,10 +211,10 @@ export const REFERENCE_DETAIL: MultiSessionDetail = {
   id: "br_1284",
   entityLabel: "Branch",
   branchName: "agent/synthetic-seed-generator",
-  repoFullName: "closedloop-ai/example-repo",
+  repoFullName: "closedloop-ai/closedloop-ai",
   prNumber: 1284,
   prTitle: "Synthetic seed generator for fixtures",
-  prUrl: "https://github.com/closedloop-ai/example-repo/pull/1284",
+  prUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/1284",
   statusLabel: "In review",
   // Rolled up across the sessions that have actually run so far (implementation
   // complete + code review in flight); the queued follow-up contributes nothing

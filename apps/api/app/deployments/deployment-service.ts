@@ -9,6 +9,7 @@ import {
   withDb,
 } from "@repo/database";
 import { deploymentWhere } from "@/lib/artifact-adapters";
+import type { DeploymentState } from "./deployment-state";
 
 /**
  * Deployment artifact service. Owns CRUD on DEPLOYMENT artifacts and their
@@ -30,7 +31,14 @@ export type RecordDeploymentInput = {
   environment?: string | null;
   ref?: string | null;
   sha?: string | null;
-  state: string;
+  /**
+   * ISS-9434: the value written verbatim onto `Artifact.status`, so it is
+   * narrowed to the provider vocabulary rather than left `string`. The column is
+   * freeform and nothing downstream folds it, so a `string` here was an open
+   * path for arbitrary text into a status column — closed today only by the one
+   * caller's incidental `state !== "success"` early return.
+   */
+  state: DeploymentState;
   externalUrl: string;
   githubStatusUrl?: string | null;
   githubDeploymentUrl?: string | null;

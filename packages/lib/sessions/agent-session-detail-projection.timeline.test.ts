@@ -1,7 +1,10 @@
 import type { SyncedAgentSessionEvent } from "@repo/api/src/types/agent-session";
 import { describe, expect, it } from "vitest";
 import { event } from "./agent-session-detail-projection.test-helpers.ts";
-import { projectAgentSessionTimelineEvents } from "./agent-session-detail-projection.ts";
+import {
+  projectAgentSessionTimelineEvents,
+  projectAgentSessionTurnItemsFromEvents,
+} from "./agent-session-detail-projection.ts";
 
 describe("projectAgentSessionTimelineEvents", () => {
   it("merges metadata messages with events and assigns sequential tl indices by time", () => {
@@ -167,7 +170,29 @@ describe("projectAgentSessionTimelineEvents", () => {
     expect(row?.detail).toBe("src/index.ts · +3/-1");
   });
 
-  it("flags Stop/SubagentStop hooks as boundary rows from the raw event type", () => {
+  // ISS-11084: `data` crosses a persisted/wire boundary, so a nested shape is
+  // reachable at runtime even though no writer emits one. The fold reads
+  // `data.diffDelta` and nothing else — a delta that only sits under
+  // `tool_input` contributes no `+add/-del` segment.
+  it("ignores a diff delta that sits only under tool_input", () => {
+    const events: SyncedAgentSessionEvent[] = [
+      event({
+        externalEventId: "e1",
+        eventType: "file_edit",
+        createdAt: "2026-06-17T00:00:00.000Z",
+        data: {
+          file_path: "src/index.ts",
+          tool_input: { diffDelta: { add: 3, del: 1 } },
+        },
+      }),
+    ];
+
+    const [row] = projectAgentSessionTimelineEvents(events);
+
+    expect(row?.detail).toBe("src/index.ts");
+  });
+
+  it("flags Stop/SubagentStop hooks as boundary rows and TurnDuration as a turn-duration row from the raw event type", () => {
     const rows = projectAgentSessionTimelineEvents([
       event({
         externalEventId: "stop",
@@ -180,13 +205,111 @@ describe("projectAgentSessionTimelineEvents", () => {
         createdAt: "2026-06-18T12:00:01.000Z",
       }),
       event({
+        externalEventId: "turn-duration",
+        eventType: "TurnDuration",
+        createdAt: "2026-06-18T12:00:02.000Z",
+      }),
+      event({
         externalEventId: "session-end",
         eventType: "SessionEnd",
-        createdAt: "2026-06-18T12:00:02.000Z",
+        createdAt: "2026-06-18T12:00:03.000Z",
       }),
     ]);
 
-    expect(rows.map((row) => row.isBoundary)).toEqual([true, true, undefined]);
+    expect(rows.map((row) => row.isBoundary)).toEqual([
+      true,
+      true,
+      undefined,
+      undefined,
+    ]);
+    expect(rows.map((row) => row.isTurnDuration)).toEqual([
+      undefined,
+      undefined,
+      true,
+      undefined,
+    ]);
+  });
+
+  it("keeps a TurnDuration marker ending a tool run without rendering it (ISS-12467)", () => {
+    const items = projectAgentSessionTurnItemsFromEvents({
+      sessionId: "sess-1",
+      harness: "claude-code",
+      primaryModel: "claude-opus",
+      humanActor: { name: "Ada", color: "var(--human)" },
+      agents: [],
+      tokenUsageByModel: [],
+      events: [
+        event({
+          externalEventId: "tool-a",
+          eventType: "PreToolUse",
+          toolName: "Read",
+          createdAt: "2026-06-18T12:00:01.000Z",
+        }),
+        event({
+          externalEventId: "turn-duration",
+          eventType: "TurnDuration",
+          summary: "2000",
+          createdAt: "2026-06-18T12:00:02.000Z",
+        }),
+        event({
+          externalEventId: "tool-b",
+          eventType: "PreToolUse",
+          toolName: "Bash",
+          createdAt: "2026-06-18T12:00:03.000Z",
+        }),
+      ],
+    });
+
+    expect(
+      items.map((item) =>
+        item.type === "tools" ? item.items.map((tool) => tool.label) : item.type
+      )
+    ).toEqual([["Read"], ["Bash"]]);
+  });
+
+  it("does not render a TurnDuration marker as a raw event row between turns (ISS-12467)", () => {
+    const items = projectAgentSessionTurnItemsFromEvents({
+      sessionId: "sess-1",
+      harness: "claude-code",
+      primaryModel: "claude-opus",
+      humanActor: { name: "Ada", color: "var(--human)" },
+      agents: [],
+      tokenUsageByModel: [],
+      metadata: {
+        messages: [
+          {
+            role: "human",
+            timestamp: "2026-06-18T12:00:00.000Z",
+            text: "First question",
+          },
+          {
+            role: "assistant",
+            timestamp: "2026-06-18T12:00:50.000Z",
+            text: "First answer",
+          },
+          {
+            role: "human",
+            timestamp: "2026-06-18T12:01:00.000Z",
+            text: "Second question",
+          },
+        ],
+      },
+      events: [
+        event({
+          externalEventId: "turn-duration",
+          eventType: "TurnDuration",
+          createdAt: "2026-06-18T12:00:52.900Z",
+        }),
+      ],
+    });
+
+    expect(
+      items.map((item) => [item.type, "text" in item ? item.text : null])
+    ).toEqual([
+      ["prompt", "First question"],
+      ["say", "First answer"],
+      ["prompt", "Second question"],
+    ]);
   });
 
   it("deduplicates equivalent snake_case and camelCase path details", () => {

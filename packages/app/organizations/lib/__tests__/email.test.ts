@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectEmails, EMAIL_REGEX } from "../email";
+import { collectEmails } from "../email";
 
 describe("collectEmails", () => {
   it("trims, lowercases, and dedupes valid addresses", () => {
@@ -40,11 +40,5 @@ describe("collectEmails", () => {
     const { invalid } = collectEmails(["nope", "NOPE", " nope "]);
 
     expect(invalid).toEqual(["nope"]);
-  });
-
-  it("EMAIL_REGEX matches a basic address and rejects obvious typos", () => {
-    expect(EMAIL_REGEX.test("teammate@company.com")).toBe(true);
-    expect(EMAIL_REGEX.test("teammate@company")).toBe(false);
-    expect(EMAIL_REGEX.test("teammate company.com")).toBe(false);
   });
 });

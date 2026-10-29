@@ -23,8 +23,8 @@
  * here and fails this test.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { Harness } from "@repo/lib/harness/types";
+import { test } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { AgentSessionSyncService } from "../src/main/agent-sync/agent-session-sync-service.js";
 import { settleSelfContinuedDrain } from "./agent-session-sync-service-fixtures.js";

@@ -2,7 +2,7 @@
  * Storybook's Tailwind entry. Imported ONLY by apps/storybook/.storybook/preview.tsx.
  *
  * Exists for one line: the `@source` below. Storybook indexes desktop-renderer
- * stories (one of the four globs in apps/storybook/.storybook/main.ts is rooted
+ * stories (one of the five globs in apps/storybook/.storybook/main.ts is rooted
  * at apps/desktop/src/renderer/components), but Tailwind v4 only emits utilities
  * it finds in a scanned tree — so without this, a class used ONLY in the
  * renderer has no rule in the preview and a desktop story renders with its type
@@ -32,4 +32,75 @@
  * this is the Storybook half.
  */
 @import "./globals.css";
+/*
+ * Liveblocks' own stylesheet, for the Inbox and Comments stories.
+ *
+ * `packages/collaboration/client/inbox.tsx` imports it beside its sibling
+ * `./inbox.css`, which is enough in apps/app. It is NOT enough here: Storybook
+ * builds through `@storybook/nextjs`, whose webpack config emits a workspace
+ * package's own relative stylesheet but drops a global stylesheet reached
+ * through a node_modules specifier — from the component AND from preview.tsx,
+ * silently, with no build error either way. The preview therefore carried
+ * `inbox.css`, the entire `--lb-*` bridge, with nothing underneath it to
+ * bridge to: `.lb-inbox-notification` computed to `display: inline; padding: 0`
+ * and every Inbox story rendered as unstyled markup — no avatar, no card, no
+ * More button.
+ *
+ * It has to be an `@import` in THIS file rather than a JS import anywhere:
+ * Tailwind's PostCSS pass resolves and inlines it, so webpack only ever sees
+ * one workspace stylesheet and its node_modules rule never applies. It cannot
+ * move under apps/storybook either — see the note above about
+ * postcss-load-config and that package's dead v3 config.
+ *
+ * Storybook-only on purpose. apps/app, apps/web, apps/prototypes and
+ * packages/rich-text import `globals.css` next door and must not pay 70KB of
+ * Liveblocks CSS; the two surfaces that render these components already load it
+ * through the component itself.
+ *
+ * The jsdom story sweep cannot catch a regression here — it asserts text and
+ * roles, not geometry, exactly as the `@source` note below describes.
+ */
+@import "@liveblocks/react-ui/styles.css";
 @source "../../../apps/desktop/src/renderer/**/*.{ts,tsx}";
+
+/*
+ * The stories themselves. Same failure mode as the renderer glob above: a class
+ * written ONLY in a story file — `!duration-0`, `sm:grid-cols-[12rem_1fr]`, the
+ * `motion-safe:`/`motion-reduce:` pairs the Motion page runs its previews
+ * behind — has no rule in the preview without this, so the reset glides
+ * backward instead of snapping and the rows stay one column at `sm`.
+ *
+ * Storybook-only for the same reason: apps/app, apps/web, apps/prototypes and
+ * packages/rich-text import `globals.css` next door and must not pay for CSS
+ * that only a story uses.
+ */
+@source "../../../apps/storybook/stories/**/*.{ts,tsx}";
+
+/*
+ * Forces the five named animation utilities to be emitted in the Storybook
+ * build even when no component references one.
+ *
+ * `Foundations/Motion` documents all five and runs each as a live preview, but
+ * Tailwind v4 only emits what it finds in scanned source, and the page applies
+ * them through a computed class name that no scanner can see. Two of the five
+ * are used by no component at all, so their utility did not exist in the
+ * preview without this: the page would print "not set" and preview nothing,
+ * for tokens that are sitting in globals.css.
+ *
+ * Storybook-only on purpose. The product build should keep shaking out an
+ * animation nothing uses; it is only the page that documents the whole set
+ * that needs them all present.
+ *
+ * Both halves of the brace pair are load-bearing. The previews run each token
+ * behind `motion-safe:` so they honour `prefers-reduced-motion` like every
+ * production consumer does, and that variant is applied to the same computed
+ * name — so the bare utility alone would emit a rule nothing on the page ever
+ * matches. The readout beside each preview still reads the bare utility.
+ *
+ * One line, not wrapped: this builder's postcss-loader (`@storybook/nextjs`'s
+ * webpack5 path, distinct from a Vite-based Tailwind integration) fails
+ * "@source paths must be quoted" on a multi-line `@source inline(...)` value,
+ * even though the string itself is quoted. Confirmed by removing the directive
+ * entirely and rebuilding clean, then re-adding single-line.
+ */
+@source inline("{,motion-safe:}animate-{accordion-down,accordion-up,progress-indeterminate,status-pulse,status-pulse-ring}");

@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { KpiFormat } from "../../types/insights.ts";
 import {
-  applyTransform,
   computeDeliveryKpiResult,
   computeDeliveryKpis,
   type DeliveryKpi,
@@ -12,13 +11,8 @@ import { makePr, makeRows, makeSession } from "./fixtures.test-helpers.ts";
 import { NormalizedPrState } from "./normalized-rows.ts";
 import { prPopulations, sessionPopulations } from "./populations.ts";
 import type { DeliveryKpiDefinition } from "./registry.ts";
-import {
-  DELIVERY_KPI_REGISTRY,
-  DeliveryKpiKey,
-  KpiTransform,
-} from "./registry.ts";
+import { DELIVERY_KPI_REGISTRY, DeliveryKpiKey } from "./registry.ts";
 
-const UNHANDLED_TRANSFORM_RE = /Unhandled KPI transform/;
 const DERIVED_REF_RE = /references derived KPI/;
 
 /**
@@ -95,26 +89,30 @@ describe("computeDeliveryKpis — PR size (median, enriched-only)", () => {
   });
 });
 
-describe("computeDeliveryKpis — KLOC (sum gross / 1000, round 1)", () => {
-  it("sums gross lines over merged PRs and divides by 1000, rounded to 1 dp", () => {
-    // (500+250) + (300+0) = 1050 → 1.05 → round1 → 1.1
+describe("computeDeliveryKpis — merged volume (sum gross lines)", () => {
+  // ISS-8184 ruling 4: this base sums raw lines rather than thousands-at-1dp,
+  // so every expectation here is the raw line sum. The compensating `scale` on
+  // `MergedLocPerDollar` went with the old divide-by-1000; that ratio's value is
+  // unchanged and is pinned by its own counterfactual below.
+  it("sums gross lines over merged PRs, unscaled", () => {
+    // (500+250) + (300+0) = 1050, where this used to read 1.1
     const rows = makeRows({
       prs: [
         makePr({ additions: 500, deletions: 250 }),
         makePr({ additions: 300, deletions: 0 }),
       ],
     });
-    expect(getKpi(computeDeliveryKpis(rows), DeliveryKpiKey.Kloc).value).toBe(
-      1.1
+    expect(getKpi(computeDeliveryKpis(rows), DeliveryKpiKey.Loc).value).toBe(
+      1050
     );
   });
 
-  it("counts un-enriched merged PRs too (KLOC is not enriched-gated)", () => {
+  it("counts un-enriched merged PRs too (the sum is not enriched-gated)", () => {
     const rows = makeRows({
       prs: [makePr({ additions: 1000, deletions: 0, enriched: false })],
     });
-    expect(getKpi(computeDeliveryKpis(rows), DeliveryKpiKey.Kloc).value).toBe(
-      1
+    expect(getKpi(computeDeliveryKpis(rows), DeliveryKpiKey.Loc).value).toBe(
+      1000
     );
   });
 });
@@ -149,31 +147,56 @@ describe("computeDeliveryKpis — cost and derived cost/tokens", () => {
     ).toBeNull();
   });
 
-  it("tokens per KLOC = total tokens ÷ kloc", () => {
-    // 1 merged PR, 1000 gross lines → KLOC 1.0; tokens 5000 → 5000 / 1 = 5000
+  it("tokens per LOC = total tokens ÷ merged lines", () => {
+    // ISS-8184 rulings 4+5: the base carries raw lines, so 1000 lines and 5000
+    // tokens read 5 tokens per line where this pinned 5000 per thousand. The 1000x
+    // drop is the ruling.
     const rows = makeRows({
       prs: [makePr({ additions: 1000, deletions: 0 })],
       sessions: [makeSession({ tokens: 5000 })],
     });
     expect(
-      getKpi(computeDeliveryKpis(rows), DeliveryKpiKey.TokensPerKloc).value
-    ).toBe(5000);
+      getKpi(computeDeliveryKpis(rows), DeliveryKpiKey.TokensPerLoc).value
+    ).toBe(5);
   });
 
-  it("tokens per KLOC divides by the RAW (pre-round) KLOC, not the display 0.0", () => {
-    // 40 gross lines → KLOC raw 0.04, which the display round(1) collapses to 0.0.
-    // The derived ratio must divide by the RAW 0.04 (→ a real number), NOT the
-    // rounded 0.0 (which would zero the denominator and null the KPI despite
-    // real data). tokens 8000 / 0.04 = 200_000.
+  it("a ratio divides the RAW base, not the display-rounded one", () => {
+    // The engine contract this file has always pinned, retargeted by ISS-8184
+    // ruling 4. It used to ride the thousands base, whose `round: 1` collapsed
+    // 0.04 to 0.0 —
+    // but a raw line count is an integer, so `round: 0` no longer rounds
+    // anything and that base can no longer demonstrate it. `Cost` still can:
+    // `round: 2` displays a sub-cent total as 0.00, and a ratio dividing THAT
+    // would blow up instead of returning a real number.
     const rows = makeRows({
       prs: [makePr({ additions: 40, deletions: 0 })],
-      sessions: [makeSession({ tokens: 8000 })],
+      sessions: [makeSession({ costUsd: 0.004, tokens: 8000 })],
     });
     const kpis = computeDeliveryKpis(rows);
-    // Displayed KLOC is still the rounded 0 (display behavior unchanged)...
-    expect(getKpi(kpis, DeliveryKpiKey.Kloc).value).toBe(0);
-    // ...but tokens-per-KLOC is a real value, computed off the raw denominator.
-    expect(getKpi(kpis, DeliveryKpiKey.TokensPerKloc).value).toBe(200_000);
+
+    expect(getKpi(kpis, DeliveryKpiKey.Cost).value).toBe(0);
+    // 40 lines ÷ $0.004 = 10,000 — computed off the raw cost, not the shown 0.
+    expect(getKpi(kpis, DeliveryKpiKey.MergedLocPerDollar).value).toBe(10_000);
+    // And the raw-line base displays its integer unrounded.
+    expect(getKpi(kpis, DeliveryKpiKey.Loc).value).toBe(40);
+    expect(getKpi(kpis, DeliveryKpiKey.TokensPerLoc).value).toBe(200);
+  });
+
+  it("ISS-8184 ruling 4: dropping the transform AND the scale leaves LOC/$ unmoved", () => {
+    // The counterfactual the ruling requires. Before: base = lines/1000, then
+    // `scale: LINES_PER_KLOC_SCALE` multiplied the thousands back. After:
+    // neither. The two cancelled, so this value is byte-for-byte what ISS-4667
+    // shipped — 3,000 gross lines over $2.00 is 1,500 LOC/$ either way. A test
+    // that only checked the new LABELS would not catch a broken cancellation.
+    const rows = makeRows({
+      prs: [makePr({ additions: 2000, deletions: 1000 })],
+      sessions: [makeSession({ costUsd: 2 })],
+    });
+    const kpis = computeDeliveryKpis(rows);
+
+    expect(getKpi(kpis, DeliveryKpiKey.MergedLocPerDollar).value).toBe(1500);
+    // The base it divides is now raw lines, which is the half that changed.
+    expect(getKpi(kpis, DeliveryKpiKey.Loc).value).toBe(3000);
   });
 });
 
@@ -238,10 +261,10 @@ describe("computeDeliveryKpis — counts", () => {
 
 describe("computeDeliveryKpis — result shape & metadata", () => {
   it("attaches label, help, and format to every public KPI", () => {
-    const kloc = getKpi(computeDeliveryKpis(makeRows()), DeliveryKpiKey.Kloc);
-    expect(kloc.label).toBe("KLOC merged");
-    expect(typeof kloc.help).toBe("string");
-    expect(kloc.format).toBe("number");
+    const loc = getKpi(computeDeliveryKpis(makeRows()), DeliveryKpiKey.Loc);
+    expect(loc.label).toBe("Merged LOC");
+    expect(typeof loc.help).toBe("string");
+    expect(loc.format).toBe("number");
   });
 
   it("excludes internal building-block KPIs from the result", () => {
@@ -250,10 +273,10 @@ describe("computeDeliveryKpis — result shape & metadata", () => {
     expect(kpis[DeliveryKpiKey.SessionTokensTotal]).toBeUndefined();
   });
 
-  it("empty sum-based KPIs (cost, kloc) are unavailable/null, not 0", () => {
+  it("empty sum-based KPIs (cost, loc) are unavailable/null, not 0", () => {
     const kpis = computeDeliveryKpis(makeRows());
     expect(getKpi(kpis, DeliveryKpiKey.Cost).value).toBeNull();
-    expect(getKpi(kpis, DeliveryKpiKey.Kloc).value).toBeNull();
+    expect(getKpi(kpis, DeliveryKpiKey.Loc).value).toBeNull();
   });
 });
 
@@ -290,7 +313,7 @@ describe("computeDeliveryKpiResult — population memoization (FEA-2978)", () =>
   });
 
   it("filters each population exactly once per pass, no matter how many KPIs reference it", () => {
-    // mergedPrs feeds 4 KPIs (MergedCount, PrSize, TimeToMerge, Kloc) AND the
+    // mergedPrs feeds 4 KPIs (MergedCount, PrSize, TimeToMerge, Loc) AND the
     // decidedPrs arm; closedPrs feeds the other decidedPrs arm; sessions feeds 3
     // KPIs (SessionsCount, Cost, SessionTokensTotal). Before memoization these
     // re-scanned their source rows once per referencing KPI; now each underlying
@@ -335,23 +358,6 @@ describe("computeDeliveryKpiResult — population memoization (FEA-2978)", () =>
     expect(
       computeDeliveryKpiResult(rows).values.get(DeliveryKpiKey.DecidedCount)
     ).toBe(3);
-  });
-});
-
-describe("applyTransform — exhaustive over KpiTransform", () => {
-  it("returns the value unchanged for an undefined transform", () => {
-    expect(applyTransform(1234, undefined)).toBe(1234);
-  });
-
-  it("divides by 1000 for PerThousand", () => {
-    expect(applyTransform(1500, KpiTransform.PerThousand)).toBe(1.5);
-  });
-
-  it("throws on an unknown transform (exhaustive default guard)", () => {
-    // Force an out-of-contract value past the type system to prove the runtime
-    // guard fires instead of silently passing the value through.
-    const bogus = "someFutureTransform" as unknown as KpiTransform;
-    expect(() => applyTransform(10, bogus)).toThrow(UNHANDLED_TRANSFORM_RE);
   });
 });
 

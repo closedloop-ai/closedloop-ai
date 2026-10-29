@@ -10,13 +10,13 @@
  * WITHOUT installing or spawning anything. There is deliberately NO execution
  * engine here — that is FEA-4079's slice.
  *
- * Harness identity is the crewd `HarnessName` const (claude | codex | opencode)
- * — the ONE canonical enum every harness-aware surface drives from. We import it
+ * Harness identity is the `HarnessName` const (claude | codex | opencode, in
+ * `./harness-name.ts`) — the ONE canonical enum every harness-aware surface drives from. We import it
  * verbatim rather than redeclaring the literals so the capability matrix stays
  * exhaustive over the real harness set: a newly added harness fails `tsc` here
  * (the `Record<HarnessName, …>` keys) until its conversion rules are authored.
  *
- * Component identity is the crewd-independent `AgentComponentKind` (skill /
+ * Component identity is the `AgentComponentKind` (skill /
  * command / subagent / mcp / hook / …). Two harness fields are kept distinct on
  * the dry-run item: `currentHarness` (the format the component is in now, which
  * keys the matrix) and an optional `sourceHarness` **provenance** (the harness
@@ -31,9 +31,9 @@
  * BOTH `apps/app` and `apps/api` (and the desktop renderer) consume it.
  */
 
-import { HarnessName, harnessNameSchema } from "@repo/crewd/model";
 import { z } from "zod";
 import { AgentComponentKind } from "./agent-component.ts";
+import { HarnessName, harnessNameSchema } from "./harness-name.ts";
 
 /**
  * How well an agentic component of a given kind converts from one harness's
@@ -152,7 +152,7 @@ export type HarnessConversionCapabilityMap = Record<
 /**
  * The harness roster the conversion rules below were authored and reviewed
  * against — a compile-time anchor, NOT a second source of harness identity. The
- * `Record<HarnessName, true>` keys mean adding a harness to the canonical crewd
+ * `Record<HarnessName, true>` keys mean adding a harness to the canonical
  * `HarnessName` const fails `tsc` HERE until a human adds its entry, which is
  * the forcing function: `buildMatrix` materializes every `HarnessName` pair from
  * blanket `crossHarness`/`identity` defaults, so without this anchor a new
@@ -168,7 +168,7 @@ const REVIEWED_HARNESSES: Record<HarnessName, true> = {
 };
 
 /**
- * Every {@link HarnessName}, derived from the canonical crewd const rather than
+ * Every {@link HarnessName}, derived from the canonical const rather than
  * re-listed here — so a harness added to `HarnessName` is materialized into
  * every matrix automatically and cannot silently lag behind the union (the
  * drift a hand-maintained copy would allow). Keyed off {@link REVIEWED_HARNESSES}

@@ -5,31 +5,33 @@
   "scripts": {
     "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
     "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
-    "test": "NODE_ENV=test vitest run --passWithNoTests",
-    "test:coverage": "NODE_ENV=test vitest run --passWithNoTests --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=**/*.{ts,tsx}'"
+    "test": "NODE_ENV=test vitest run",
+    "test:coverage": "NODE_ENV=test vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=**/*.{ts,tsx}'"
   },
   "dependencies": {
     "@next/third-parties": "16.0.7",
-    "@repo/auth": "workspace:*",
     "@posthog/next": "^0.1.0",
+    "@repo/api": "workspace:*",
+    "@repo/auth": "workspace:*",
     "@t3-oss/env-nextjs": "^0.13.11",
     "@vercel/analytics": "^2.0.1",
     "next": "catalog:",
     "posthog-js": "^1.372.6",
     "posthog-node": "^5.32.1",
-    "react": "19.2.8",
-    "react-dom": "19.2.8",
+    "react": "19.2.9",
+    "react-dom": "19.2.9",
     "server-only": "^0.0.1",
-    "zod": "^4.3.6"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
+    "@repo/vitest-config": "workspace:*",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^25.9.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "19.2.3",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.1.1",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.9"
+    "vitest": "^5.0.2"
   }
 }

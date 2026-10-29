@@ -16,17 +16,18 @@
  *    writes stays exactly as loud as it was before the guard existed.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { describe, test } from "vitest";
+import { DbHostExitError } from "../src/shared/db-host-exit-error.js";
 import {
   dropOnDbHostLifecycleError,
   settleFireAndForgetDbHostError,
-} from "../src/main/database/db-host/db-host-fire-and-forget.js";
-import { DbHostExitError } from "../src/shared/db-host-exit-error.js";
+} from "../src/shared/db-host-fire-and-forget.js";
 import {
   DbHostShutdownError,
   DbHostShutdownReason,
 } from "../src/shared/db-host-shutdown-error.js";
+import { DbStoreOpDeadlineError } from "../src/shared/db-store-op-deadline-error.js";
 
 /** The dropped-write log line names the write, not just the error. */
 const DROPPED_WRITE_LABEL = /collection-mode violation/;
@@ -98,6 +99,52 @@ describe("fire-and-forget db-host writes", () => {
 
     assert.doesNotThrow(() =>
       settleFireAndForgetDbHostError(new Error("db-host exited (code: 5)"), {
+        label: "collection-mode violation",
+        log: (message) => logs.push(message),
+      })
+    );
+    assert.equal(logs.length, 1);
+  });
+
+  test("a store-op deadline failure is dropped — a write with no caller cannot retry", () => {
+    // ISS-8773 opened a THIRD failure shape here. Before it, a store op that
+    // blew its deadline killed the host, so this guard met it as one of the
+    // lifecycle shapes above and dropped it. Failing the op alone gives it its
+    // own class, and anything this guard cannot place is RETHROWN into
+    // `handleUnhandledRejection` — the crash dialog and `exit(1)` of ISS-6164,
+    // re-armed once per best-effort write. The retry affordance that error
+    // offers an awaited caller is worth nothing to a write that has none.
+    const logs: string[] = [];
+
+    assert.doesNotThrow(() =>
+      settleFireAndForgetDbHostError(
+        new DbStoreOpDeadlineError(
+          "importer.importSession",
+          3_600_000,
+          3_600_001
+        ),
+        {
+          label: "collection-mode violation",
+          log: (message) => logs.push(message),
+        }
+      )
+    );
+    assert.equal(logs.length, 1);
+  });
+
+  test("a REBUILT store-op deadline failure is dropped too, across the child boundary", () => {
+    // The one that a class-only check would miss: `serializeDbHostError` flattens
+    // the class on the way out of the db-host child and `rebuildError` mints a
+    // bare Error carrying only the name, which is the shape a fire-and-forget
+    // write actually receives.
+    const logs: string[] = [];
+    const rebuilt = new Error(
+      'store op "importer.importSession" did not answer within its 3600000ms deadline (3600001ms since it was posted); it may still be running and may still apply'
+    );
+    rebuilt.name = "DbStoreOpDeadlineError";
+
+    assert.doesNotThrow(() =>
+      settleFireAndForgetDbHostError(rebuilt, {
         label: "collection-mode violation",
         log: (message) => logs.push(message),
       })

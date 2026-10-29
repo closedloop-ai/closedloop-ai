@@ -162,6 +162,9 @@ function dedupeBranchKeys(
  * at the same ceiling cannot make the desktop under-report RELATIVE TO WEB. The
  * cap is only a guard against a pathological corpus turning a detail open into an
  * unbounded read.
+ *
+ * ISS-9863: the read asks for one row PAST this bound so hitting it is
+ * observed, not inferred — see {@link readSessionDocumentArtifactRefs}.
  */
 export const SESSION_DOCUMENT_LINK_SCAN_LIMIT = MAX_SYNCED_ARTIFACT_REFS;
 
@@ -190,11 +193,20 @@ export const SESSION_DOCUMENT_LINK_SCAN_LIMIT = MAX_SYNCED_ARTIFACT_REFS;
  * Ordered `createdAt asc` to match the batch loader's own
  * `ORDER BY sal.created_at ASC`, so first-wins role precedence resolves
  * identically whichever path produced the refs.
+ *
+ * ISS-9863 (PRD-666, cap family TC-11): the scan is a probe, not a prefix
+ * presented as the population. It asks for `SESSION_DOCUMENT_LINK_SCAN_LIMIT + 1`
+ * rows; a full probe means the store holds MORE links than the ceiling, so
+ * `truncated` is raised and the served `refs` are cut back to the ceiling. The
+ * projection then serves that list but WITHHOLDS `linkedArtifactsTotal`, the
+ * same honest degradation it already takes when no unbounded read exists — a
+ * 501-link session must not render a "+N" folded from 500. A `COUNT` total is
+ * still rejected for the reason above: it cannot apply the fold's dedup.
  */
 export function readSessionDocumentArtifactRefs(
   prisma: DbHostPrisma,
   sessionId: string
-): Promise<SyncedArtifactRef[]> {
+): Promise<SessionDocumentArtifactRefsRead> {
   return prisma.client.sessionArtifactLink
     .findMany({
       where: {
@@ -210,9 +222,18 @@ export function readSessionDocumentArtifactRefs(
         artifact: { select: { slug: true } },
       },
       orderBy: [{ createdAt: "asc" }],
-      take: SESSION_DOCUMENT_LINK_SCAN_LIMIT,
+      take: SESSION_DOCUMENT_LINK_SCAN_LIMIT + 1,
     })
-    .then((rows) => rows.flatMap((row) => toDocumentArtifactRef(row)));
+    .then((rows) => {
+      const truncated = rows.length > SESSION_DOCUMENT_LINK_SCAN_LIMIT;
+      // Only the probe row is dropped: the read asked for exactly one past the
+      // ceiling, so a full read is the ceiling's worth plus that one row.
+      const served = truncated ? rows.slice(0, -1) : rows;
+      return {
+        refs: served.flatMap((row) => toDocumentArtifactRef(row)),
+        truncated,
+      };
+    });
 }
 
 /**
@@ -252,7 +273,7 @@ export function createSessionDetailLinkReaders(prisma: DbHostPrisma): {
   loadSessionBranchLinkKeys: (sessionId: string) => Promise<BranchKeyRow[]>;
   loadSessionDocumentArtifactRefs: (
     sessionId: string
-  ) => Promise<SyncedArtifactRef[]>;
+  ) => Promise<SessionDocumentArtifactRefsRead>;
 } {
   return {
     loadSessionBranchLinkKeys: (sessionId: string) =>
@@ -261,3 +282,15 @@ export function createSessionDetailLinkReaders(prisma: DbHostPrisma): {
       readSessionDocumentArtifactRefs(prisma, sessionId),
   };
 }
+
+/**
+ * One session's document refs as {@link readSessionDocumentArtifactRefs} serves
+ * them: at most `SESSION_DOCUMENT_LINK_SCAN_LIMIT` refs, plus whether the store
+ * held more than that. `truncated` is what lets the projection refuse to state a
+ * total; `refs` alone could not, because a 500-ref read is also what a session
+ * with exactly 500 links produces.
+ */
+export type SessionDocumentArtifactRefsRead = {
+  refs: SyncedArtifactRef[];
+  truncated: boolean;
+};

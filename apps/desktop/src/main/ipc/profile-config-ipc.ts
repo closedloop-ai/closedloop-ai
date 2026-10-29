@@ -310,6 +310,12 @@ function activateCreatedProfile(
   deps.restartCloudSocket();
 }
 
+function assertSignOutCleanupInactive(deps: ProfileConfigIpcDeps): void {
+  if (deps.settingsStore.getSignOutCleanupState().isPending()) {
+    throw new Error("profile changes are unavailable during sign-out cleanup");
+  }
+}
+
 export function registerProfileConfigIpcHandlers(
   ipcMainLike: IpcMainLike,
   deps: ProfileConfigIpcDeps
@@ -326,6 +332,7 @@ export function registerProfileConfigIpcHandlers(
     ProfileConfigIpcChannel.SaveConfig,
     (event, rawPayload) => {
       assertTrustedSender(deps, event);
+      assertSignOutCleanupInactive(deps);
       const payload = getPayloadRecord(rawPayload);
       const snapshot = deps.getGatewaySnapshot();
       const explicitApiKey = normalizeOptionalClosedloopApiKey(payload.apiKey);
@@ -418,6 +425,7 @@ export function registerProfileConfigIpcHandlers(
     ProfileConfigIpcChannel.ApplyConfig,
     (event, rawPayload) => {
       assertTrustedSender(deps, event);
+      assertSignOutCleanupInactive(deps);
       const payload = getPayloadRecord(rawPayload);
       const id = typeof payload.id === "string" ? payload.id : "";
       if (!id) {

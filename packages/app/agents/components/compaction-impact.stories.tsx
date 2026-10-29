@@ -7,9 +7,9 @@ const CompactionImpactCanvas = () => (
 );
 
 const meta = {
-  title: "App Core/Agents/Compaction Impact",
+  title: "Composites v1.0/Agents/General/Compaction Impact",
   component: CompactionImpactCanvas,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "padded",
   },

@@ -1,16 +1,32 @@
 import { validateHost } from "@repo/database/scripts/cleanup-preview-schemas-lib";
+import { cloneFailureCodeOf } from "@repo/database/scripts/clone-schema";
 import {
-  createSchemaUrlMinter,
-  readIamAuthConfig,
-} from "@repo/database/scripts/iam-database-url";
-import {
+  type RolledBackRetryFailure,
+  rolledBackRetryFailureOf,
   sanitizeOperatorCliOutput,
   sanitizeOperatorMessageFragment,
 } from "@repo/database/scripts/migrate-deploy-recovery";
-import { flushMigrateTelemetry } from "@repo/database/scripts/migrate-telemetry";
+import { isPrismaAdvisoryLockError } from "@repo/database/scripts/migrate-retry";
+import {
+  cutMigrateRunsAtDeadline,
+  flushMigrateTelemetry,
+} from "@repo/database/scripts/migrate-telemetry";
+import {
+  SerializeLockContendedError,
+  withMigrationSerializeLock,
+} from "@repo/database/scripts/migration-lock";
 import { runMigrationPipeline } from "@repo/database/scripts/migration-pipeline";
+import type {
+  VibeEnvironmentMarker,
+  VibeEnvironmentMode,
+} from "@repo/database/scripts/vibe-environment";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
+import { isTimeoutError, withTimeout } from "@/lib/with-timeout";
+import {
+  IAM_NOT_CONFIGURED_MESSAGE,
+  mintSchemaUrls,
+} from "../service/iam-schema-url";
 import { EnsureFailureReason } from "./constants";
 import {
   applyMigrateRuntimeLayout,
@@ -42,43 +58,12 @@ export type EnsureSchemaResult =
       schema: string | null;
       invalidIndexes: string[] | null;
       schemaEngineBinary: string | null;
+      /** ISS-12056: the schema's vibe environment marker, `null` for any other schema. */
+      vibeEnvironment: VibeEnvironmentMarker | null;
+      /** ISS-12056: a vibe environment request dropped the schema and built it anew. */
+      rebuilt: boolean;
     }
   | { ok: false; reason: EnsureFailureReason; message: string };
-
-type SchemaUrls = {
-  databaseUrl: string;
-  refreshDatabaseUrl?: () => Promise<string>;
-};
-
-/**
- * Mints the connection URL for `schema` by signing an RDS IAM token.
- *
- * IAM ONLY, deliberately — the build migrate's `DATABASE_URL` fallback does NOT
- * come along. `DATABASE_URL` is also what `@repo/database` uses for this app's
- * own runtime pool, so honoring it here would run `migrate deploy` over the
- * application's connection: the wrong role (the exact 42501 partial-DDL wedge
- * ISS-5952's ownership preflight exists for), and — because `addSchemaToUrl`
- * leaves an existing `?schema=` alone — potentially the wrong SCHEMA, while the
- * response still names the branch's preview schema. A build script running once
- * per controlled deploy can carry that precedence; an on-demand endpoint cannot.
- *
- * The returned minter is also the ISS-5285 `refreshDatabaseUrl` seam, which
- * re-signs after the (unbounded) clone.
- */
-async function mintSchemaUrls(
-  schema: string | null
-): Promise<SchemaUrls | null> {
-  const iamAuthConfig = readIamAuthConfig(process.env);
-  if (!iamAuthConfig) {
-    return null;
-  }
-
-  const mintSchemaUrl = createSchemaUrlMinter(iamAuthConfig);
-  return {
-    databaseUrl: await mintSchemaUrl(schema),
-    refreshDatabaseUrl: () => mintSchemaUrl(schema),
-  };
-}
 
 /**
  * Brings ONE schema to migration head through the EXISTING
@@ -110,7 +95,33 @@ async function mintSchemaUrls(
  */
 export async function ensureSchemaAtHead(
   branch: string,
-  schema: string | null
+  schema: string | null,
+  /**
+   * ISS-6403 Finding 1: bound the pipeline at `budgetMs` and report the expiry
+   * in this function's own result, instead of letting the platform kill the
+   * invocation and answer with a `FUNCTION_INVOCATION_TIMEOUT` the caller
+   * cannot interpret.
+   *
+   * A PARAMETER, not a module constant, because the two callers run under
+   * different ceilings: the HTTP route declares 300s, while
+   * `ensurePreviewSchemaBootstrap` runs inside whatever ordinary request first
+   * touched a cold preview. Applying the route's number to that path would arm
+   * a timer that outlives its own request and then reject on the warm instance
+   * — clearing the bootstrap memo while the abandoned migrate is still running,
+   * so the next request starts a SECOND concurrent migrate on the same schema
+   * (review). Omitted — the bootstrap gate today — behaves exactly as before.
+   *
+   * ISS-11781: `gateBudgetMs` caps the wait for the FEA-3065 serialize gate and
+   * makes a wait that runs out fail CLOSED, so a busy gate answers `Contended`
+   * with nothing run instead of a waiter the deadline abandons. Any other gate
+   * error still fails open. Omitted — the gate is untouched.
+   */
+  opts: {
+    budgetMs?: number;
+    gateBudgetMs?: number;
+    /** ISS-12056: build the schema as an empty vibe environment of this mode. */
+    vibeEnvironment?: VibeEnvironmentMode;
+  } = {}
 ): Promise<EnsureSchemaResult> {
   // THE host invariant, and it lives HERE rather than on the HTTP route so
   // every caller inherits it (ISS-6403, review: davetho). The route was the
@@ -178,8 +189,7 @@ export async function ensureSchemaAtHead(
     return {
       ok: false,
       reason: EnsureFailureReason.Failed,
-      message:
-        "RDS IAM credentials are not configured: AWS_ROLE_ARN, AWS_REGION, PGHOST, PGUSER and PGDATABASE are all required",
+      message: IAM_NOT_CONFIGURED_MESSAGE,
     };
   }
 
@@ -190,29 +200,50 @@ export async function ensureSchemaAtHead(
   });
 
   try {
-    const { invalidIndexes } = await runMigrationPipeline(
-      urls.databaseUrl,
-      schema,
-      branch,
-      {
-        // ISS-6403 Finding 5: the CHILD's working directory, for THIS run only.
-        // Prisma 7 discovers `prisma.config.mjs` from cwd and a function's cwd
-        // is not where it lives; neither `process.chdir` nor an env var can say
-        // that without saying it to every other caller on the instance too.
-        // ISS-6781: the ESM store resolver rides the same per-invocation seam.
-        // ISS-6810: so does the migrations directory the pipeline's own readers
-        // open — the pre-stamp, at-head probe, plain-index build and preflight
-        // resolve it off cwd by default, and this process's cwd is `apps/api`.
-        prismaCli: {
-          cwd: layoutResult.layout.configDir,
-          preload: layoutResult.layout.esmResolverEntry,
-          migrationsDir: layoutResult.layout.migrationsDir,
-        },
-        ...(urls.refreshDatabaseUrl
-          ? { refreshDatabaseUrl: urls.refreshDatabaseUrl }
-          : {}),
-      }
-    );
+    // ISS-6403 Finding 1, and the hazard that answering rather than dying
+    // creates (review). Before this change a run past the ceiling ended in a
+    // platform kill that tore the sandbox down WITH its `prisma migrate deploy`
+    // child. Now the handler returns and the instance stays warm, so the
+    // abandoned child runs on — and the natural operator response to a red
+    // staging job is to re-run it, which can land on this same instance and
+    // spawn a SECOND migrate against the same schema.
+    //
+    // So an in-flight run is joined, not duplicated: the same shape as
+    // `ensurePreviewSchemaBootstrap`'s `bootstrapAttempt` memo, for the same
+    // reason. The entry is cleared when the PIPELINE settles, never when a
+    // caller's deadline fires — clearing it on the deadline is precisely what
+    // would let the next request start a second migrate under the first.
+    const { invalidIndexes, vibeEnvironment, rebuilt } =
+      await runPipelineWithinBudget(
+        joinInFlightPipeline(schema, opts.vibeEnvironment, () =>
+          runMigrationPipeline(
+            urls.databaseUrl,
+            schema,
+            branch,
+            {
+              // ISS-6403 Finding 5: the CHILD's working directory, for THIS run only.
+              // Prisma 7 discovers `prisma.config.mjs` from cwd and a function's cwd
+              // is not where it lives; neither `process.chdir` nor an env var can say
+              // that without saying it to every other caller on the instance too.
+              // ISS-6781: the ESM store resolver rides the same per-invocation seam.
+              // ISS-6810: so does the migrations directory the pipeline's own readers
+              // open — the pre-stamp, at-head probe, plain-index build and preflight
+              // resolve it off cwd by default, and this process's cwd is `apps/api`.
+              prismaCli: {
+                cwd: layoutResult.layout.configDir,
+                preload: layoutResult.layout.esmResolverEntry,
+                migrationsDir: layoutResult.layout.migrationsDir,
+              },
+              ...(urls.refreshDatabaseUrl
+                ? { refreshDatabaseUrl: urls.refreshDatabaseUrl }
+                : {}),
+              ...failClosedGate(opts.gateBudgetMs),
+            },
+            vibeEnvironmentRequest(opts.vibeEnvironment)
+          )
+        ),
+        opts.budgetMs
+      );
 
     return {
       ok: true,
@@ -221,8 +252,46 @@ export async function ensureSchemaAtHead(
       invalidIndexes:
         invalidIndexes?.map((invalidIndex) => invalidIndex.name) ?? null,
       schemaEngineBinary: layoutResult.layout.schemaEngineBinary,
+      vibeEnvironment,
+      rebuilt,
     };
   } catch (error) {
+    // ISS-6403 Finding 1: a deadline expiry is NOT a migrate failure. The run is
+    // still going — holding the serialize lock, possibly mid-DDL — so it is
+    // reported with its own reason (and, at the route, its own status) rather
+    // than as a `Failed` a caller might reasonably retry into a second migrate.
+    if (isTimeoutError(error, ENSURE_PIPELINE_LABEL)) {
+      // ISS-6837: the pipeline pushes its telemetry event from a `finally` this
+      // run never reaches, so the flush below would drain an empty buffer — the
+      // slowest runs, the ones this stream exists to show, emitting nothing.
+      // Cut it here, BEFORE that flush, with whatever phase detail it had.
+      const cutRuns = cutMigrateRunsAtDeadline(schema);
+      log.error("[preview-schema-ensure] Deadline expired mid-migrate", {
+        branch,
+        schema,
+        cutRuns,
+      });
+      return {
+        ok: false,
+        reason: EnsureFailureReason.TimedOut,
+        // Through the sanitizer like every other message that leaves here. This
+        // one is composed entirely in-repo and carries no CLI output, so it has
+        // nothing to redact — but the invariant below is "nothing added to this
+        // response skips it", and an exception is how that stops being true.
+        message: sanitizeOperatorMessageFragment(
+          `${parseError(error)}. The migration is STILL RUNNING and holds the serialize lock${
+            opts.gateBudgetMs === undefined
+              ? " — do not retry until it is known to have finished."
+              : ". This request's gate fails closed, so a retry waits for that lock or is refused with nothing applied."
+          }`
+        ),
+      };
+    }
+
+    if (isLockContention(error)) {
+      return contendedResult(branch, schema, error);
+    }
+
     // ISS-6403: a failed `prisma migrate resolve` embeds the CLI's raw stderr in
     // the message it throws, and this spawn's env carries an IAM-signed
     // DATABASE_URL — so the un-redacted text can carry credential material. The
@@ -253,21 +322,7 @@ export async function ensureSchemaAtHead(
     // redact, deliberately: the Prisma error code, the failing migration name,
     // and the database/role names Prisma quotes (`vercel_iam` is in source, and
     // this response already names the schema) — those are the diagnosis.
-    const message = sanitizeOperatorMessageFragment(parseError(error));
-    const cliOutput = sanitizeOperatorCliOutput(error);
-    log.error("[preview-schema-ensure] Migration pipeline failed", {
-      branch,
-      schema,
-      error: message,
-      ...(cliOutput ? { cliOutput } : {}),
-    });
-    return {
-      ok: false,
-      reason: EnsureFailureReason.Failed,
-      message: `Failed to ensure schema "${schema ?? PUBLIC_SCHEMA_LABEL}": ${message}${
-        cliOutput ? `\n${cliOutput}` : ""
-      }`,
-    };
+    return failedResult(branch, schema, error);
   } finally {
     // ISS-4392: the pipeline BUFFERS its migrate event in a module-level array
     // that only this flush drains to Datadog's intake — `migrate.ts` calls it in
@@ -278,4 +333,205 @@ export async function ensureSchemaAtHead(
     // deadline-bounded by contract: it never throws and never hangs the caller.
     await flushMigrateTelemetry();
   }
+}
+
+/** What `runMigrationPipeline` resolves to, as the in-flight map stores it. */
+type PipelineResult = Awaited<ReturnType<typeof runMigrationPipeline>>;
+
+/** Label `withTimeout` stamps on the deadline error, and `isTimeoutError` reads back. */
+const ENSURE_PIPELINE_LABEL = "preview schema ensure";
+
+/**
+ * Bounds the pipeline at `budgetMs`, or leaves it exactly as it was when the
+ * caller supplies none (ISS-6403 Finding 1).
+ *
+ * Racing does NOT cancel the work — the spawned CLI and any in-flight query run
+ * on until the instance is torn down, as they do today. What it buys is that
+ * `ensureSchemaAtHead` reaches its own `catch` first, so a run that outlives the
+ * function reports a typed failure instead of an opaque platform timeout.
+ */
+function runPipelineWithinBudget<T>(
+  work: Promise<T>,
+  budgetMs: number | undefined
+): Promise<T> {
+  if (budgetMs === undefined) {
+    return work;
+  }
+  return withTimeout(work, budgetMs, ENSURE_PIPELINE_LABEL);
+}
+
+/**
+ * Pipelines currently running on THIS instance, keyed by target schema.
+ *
+ * ISS-6403 Finding 1 (review). Bounded by construction: an entry is added only
+ * around a live run and removed the moment that run settles, so the map holds
+ * at most the migrations actually in flight on one warm instance.
+ *
+ * A genuinely WEDGED child therefore keeps its slot until the instance
+ * recycles, and every later request for that schema joins it and reaches its
+ * own deadline. That is the honest answer — a migrate really is stuck — and it
+ * is strictly better than each request stacking another one on top of it.
+ */
+const inFlightPipelines = new Map<string, Promise<PipelineResult>>();
+
+/** The pipeline's own representation of `public`, as a map key. */
+const PUBLIC_SCHEMA_KEY = "public";
+
+/**
+ * Runs `start`, or joins the run already in flight for the same schema on this
+ * instance.
+ *
+ * The cleanup is attached to the PIPELINE's promise, not to whatever a caller
+ * ends up awaiting, so a caller giving up on its own deadline never releases
+ * the slot while the migrate it abandoned is still holding the serialize lock.
+ *
+ * ISS-12056: a vibe environment request never joins a plain ensure (which
+ * would not rebuild the schema), nor the reverse; the preview build lock
+ * serializes the two across instances instead.
+ */
+function joinInFlightPipeline(
+  schema: string | null,
+  vibeEnvironment: VibeEnvironmentMode | undefined,
+  start: () => Promise<PipelineResult>
+): Promise<PipelineResult> {
+  const key = `${schema ?? PUBLIC_SCHEMA_KEY}${vibeEnvironment === undefined ? "" : `:vibe:${vibeEnvironment}`}`;
+  const existing = inFlightPipelines.get(key);
+  if (existing) {
+    log.info("[preview-schema-ensure] Joining an in-flight migrate", {
+      schema,
+    });
+    return existing;
+  }
+
+  const attempt = start();
+  inFlightPipelines.set(key, attempt);
+  // Detached so this handler never counts as handling a caller's rejection, and
+  // guarded so a newer attempt installed after this one settles is not evicted.
+  attempt
+    .catch(() => {
+      // Settling is all this cares about; the caller owns the error.
+    })
+    .finally(() => {
+      if (inFlightPipelines.get(key) === attempt) {
+        inFlightPipelines.delete(key);
+      }
+    });
+  return attempt;
+}
+
+/**
+ * Test-only: drop every in-flight entry so one case's unsettled pipeline cannot
+ * be joined by the next. Mirrors `resetMigrateTelemetryForTests`, and exists
+ * for the same reason — this state is deliberately process-global in
+ * production, which is exactly what makes it leak between cases.
+ */
+export function resetInFlightPipelinesForTests(): void {
+  inFlightPipelines.clear();
+}
+
+/**
+ * ISS-11781: the pipeline's own gate seam, bound to `gateBudgetMs` and failing
+ * closed when that wait runs out. Telemetry still sees the outcome through the
+ * forwarded opts.
+ */
+function failClosedGate(gateBudgetMs: number | undefined) {
+  if (gateBudgetMs === undefined) {
+    return {};
+  }
+  return {
+    withMigrationSerializeLock: (
+      gate: Parameters<typeof withMigrationSerializeLock>[0],
+      fn: () => Promise<boolean>
+    ) =>
+      withMigrationSerializeLock(
+        { ...gate, onContended: "skip-on-timeout", budgetMs: gateBudgetMs },
+        fn
+      ),
+  };
+}
+
+/**
+ * Another migrate held a lock this run needed, so it applied nothing: the
+ * serialize gate's wait ran out (its `statement_timeout` cancel), or Prisma
+ * timed out on its own advisory lock (P1002) after its retries. Never a
+ * migration verdict. The gate refuses only on that timeout: one that failed for
+ * any other reason — a refused connection, a bad credential — fails open and
+ * the migrate runs (review: marisolashgrove). A P1002 from the deploy that
+ * retried a migration resolved as rolled back is not contention: the deploy
+ * before it failed mid-migration, so "nothing was applied" is not known
+ * (review: whitlockk).
+ */
+function isLockContention(error: unknown): boolean {
+  if (error instanceof SerializeLockContendedError) {
+    return true;
+  }
+  return (
+    isPrismaAdvisoryLockError(error) && rolledBackRetryFailureOf(error) === null
+  );
+}
+
+function contendedResult(
+  branch: string,
+  schema: string | null,
+  error: unknown
+): EnsureSchemaResult {
+  // Same sanitizers as the `Failed` path: a P1002 carries the CLI's output.
+  const message = sanitizeOperatorMessageFragment(parseError(error));
+  const cliOutput = sanitizeOperatorCliOutput(error);
+  log.warn("[preview-schema-ensure] Migration lock not free within budget", {
+    branch,
+    schema,
+    error: message,
+  });
+  return {
+    ok: false,
+    reason: EnsureFailureReason.Contended,
+    message: `Could not migrate schema "${schema ?? PUBLIC_SCHEMA_LABEL}": the migration lock was not free within this request's budget, so nothing was applied and a retry is safe. ${message}${
+      cliOutput ? `\n${cliOutput}` : ""
+    }`,
+  };
+}
+
+function failedResult(
+  branch: string,
+  schema: string | null,
+  error: unknown
+): EnsureSchemaResult {
+  const message = sanitizeOperatorMessageFragment(parseError(error));
+  const cliOutput = sanitizeOperatorCliOutput(error);
+  const rolledBack = rolledBackRetryFailureOf(error);
+  const cloneErrorCode = cloneFailureCodeOf(error);
+  log.error("[preview-schema-ensure] Migration pipeline failed", {
+    branch,
+    schema,
+    error: message,
+    ...(cliOutput ? { cliOutput } : {}),
+    ...(cloneErrorCode ? { cloneErrorCode } : {}),
+    ...(rolledBack ? { rolledBackMigration: rolledBack.migrationName } : {}),
+  });
+  return {
+    ok: false,
+    reason: EnsureFailureReason.Failed,
+    message: `Failed to ensure schema "${schema ?? PUBLIC_SCHEMA_LABEL}": ${message}${
+      cliOutput ? `\n${cliOutput}` : ""
+    }${rolledBack ? describeRolledBackRecovery(rolledBack) : ""}`,
+  };
+}
+
+/** The failure that started a rolled-back recovery, which the retry's own error drops. */
+function describeRolledBackRecovery(
+  rolledBack: RolledBackRetryFailure
+): string {
+  const originalCliOutput = sanitizeOperatorCliOutput(rolledBack.originalError);
+  const original = sanitizeOperatorMessageFragment(
+    `This was the retry after migration "${rolledBack.migrationName}" failed and was resolved as rolled back, so that migration may have committed part of its DDL. Original failure: ${parseError(rolledBack.originalError)}`
+  );
+  return `\n${original}${originalCliOutput ? `\n${originalCliOutput}` : ""}`;
+}
+
+/** Omitted for every caller but the vibe environment route, as before. */
+function vibeEnvironmentRequest(mode: VibeEnvironmentMode | undefined): {
+  vibeEnvironment?: VibeEnvironmentMode;
+} {
+  return mode === undefined ? {} : { vibeEnvironment: mode };
 }

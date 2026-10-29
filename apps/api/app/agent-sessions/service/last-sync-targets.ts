@@ -43,9 +43,32 @@ export const LAST_SYNC_TARGET_PAGE_SIZE = 20;
  * zero-row batch — which is exactly the ISS-4828 defect, and moves that target
  * UP, never off the page.
  *
+ * UNIQUE TERMINAL KEY (ISS-10165). The four ranking keys are all non-unique, so
+ * a page over rows tied on every one of them has no defined answer: the planner
+ * may return the tied run in any order it likes. THE SHIPPED SYMPTOM HERE IS
+ * PAGE MEMBERSHIP, not a lost row: this query takes ONE page and its only
+ * consumer (`usage-summary.ts`) passes no `skip` or cursor, so there is no walk
+ * at this site for a row to fall out of. What a partial ordering costs is that
+ * WHICH of the tied targets make the top 20 is planner-defined — a card titled
+ * "Freshness" can show a different 20 on two consecutive refreshes of unchanged
+ * data. `id` terminates the ordering so it is TOTAL and the page reproducible;
+ * it is the last term, so it changes the ranking only where the four keys above
+ * it are already equal. Exactly-once across a page boundary is that same
+ * totality stated for any paged read of this ordering, and is what the sibling
+ * `last-sync-targets-exactly-once` suites pin.
+ *
  * SELECT. Both watermarks are read so the card can label each by what it
  * measures — `lastAgentSessionSyncAttemptAt` for "did this target sync", and
  * `lastAgentSessionSyncAt` for "when did its data last land".
+ *
+ * NULLS LAST on both watermarks (ISS-10851), matching FEA-4330 everywhere else
+ * here and `sessionLastSyncTargets.sql`'s explicit `DESC NULLS LAST`: a target
+ * that has never synced sorts to the end rather than above real maxima. The
+ * bare `"desc"` shorthand below used to leave this to Postgres's own default
+ * for a DESC key, which is NULLS FIRST — the opposite of the documented
+ * intent, and of what the SQL statement already did. On a fleet where most
+ * targets have no accepted-sync watermark yet, that silently ranked the
+ * never-synced majority ahead of the target that actually just synced.
  */
 export function buildLastSyncTargetsQuery(input: SessionUsageInput) {
   return {
@@ -62,10 +85,11 @@ export function buildLastSyncTargetsQuery(input: SessionUsageInput) {
       },
     },
     orderBy: [
-      { lastAgentSessionSyncAttemptAt: "desc" },
-      { lastAgentSessionSyncAt: "desc" },
+      { lastAgentSessionSyncAttemptAt: { sort: "desc", nulls: "last" } },
+      { lastAgentSessionSyncAt: { sort: "desc", nulls: "last" } },
       { isOnline: "desc" },
       { lastSeenAt: "desc" },
+      { id: "asc" },
     ],
     take: LAST_SYNC_TARGET_PAGE_SIZE,
     // `satisfies`, NOT `as const`: Prisma's generated arg types have mutable

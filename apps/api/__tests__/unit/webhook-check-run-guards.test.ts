@@ -23,8 +23,7 @@ const { mockGetInstallationOctokit, mockOctokit } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => {
-  const mockWithDb: any = vi.fn();
-  mockWithDb.tx = vi.fn();
+  const mockWithDb = Object.assign(vi.fn(), { tx: vi.fn() });
   return {
     ArtifactType: {
       DOCUMENT: "DOCUMENT",
@@ -65,7 +64,7 @@ vi.mock("@repo/github/installation-auth", () => ({
 }));
 
 vi.mock("@repo/observability/log", () => ({
-  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 import { mapRollupStateToChecksStatus } from "@repo/api/src/github-checks-status";
@@ -78,22 +77,25 @@ import {
   queryStatusCheckRollupWithProviderResult,
 } from "@repo/github";
 import { log } from "@repo/observability/log";
-import { getMockWithDb } from "@/__tests__/utils/db-helpers";
-import { handleCheckRun } from "@/app/webhooks/github/handlers/check-run-handler";
-import { CheckRunRetryState } from "@/lib/branch-status-check-retry";
 import {
+  checkRunTerminalLogs,
   createCheckRunDbDoubles,
   createCheckRunEvent,
   makeBranchDetailRow,
-} from "../utils/check-run-helpers";
+} from "@/__tests__/support/webhooks/github/check-run-handler.test-helpers";
+import { getMockWithDb } from "@/__tests__/utils/db-helpers";
+import { handleCheckRun } from "@/app/webhooks/github/handlers/check-run-handler";
+import { CheckRunRetryState } from "@/lib/branch-status-check-retry";
 import { providerSuccess } from "../utils/status-check-helpers";
+
+type CheckRunDbDoubles = ReturnType<typeof createCheckRunDbDoubles>;
 
 const mockWithDb = getMockWithDb();
 const mockQueryStatusCheckRollupWithProviderResult =
   queryStatusCheckRollupWithProviderResult as unknown as Mock;
 
-let mockDb: any;
-let mockTx: any;
+let mockDb: CheckRunDbDoubles["mockDb"];
+let mockTx: CheckRunDbDoubles["mockTx"];
 
 describe("mapRollupStateToChecksStatus", () => {
   it("maps SUCCESS to PASSING", () => {
@@ -121,8 +123,12 @@ describe("handleCheckRun guards", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     ({ mockDb, mockTx } = createCheckRunDbDoubles());
-    mockWithDb.mockImplementation((fn: any) => fn(mockDb));
-    mockWithDb.tx.mockImplementation((fn: any) => fn(mockTx));
+    mockWithDb.mockImplementation((fn: (db: typeof mockDb) => unknown) =>
+      fn(mockDb)
+    );
+    mockWithDb.tx.mockImplementation((fn: (tx: typeof mockTx) => unknown) =>
+      fn(mockTx)
+    );
   });
 
   afterEach(() => {
@@ -144,15 +150,17 @@ describe("handleCheckRun guards", () => {
       const data = await response.json();
       expect(data.ok).toBe(true);
       expect(log.info).toHaveBeenCalledTimes(1);
-      expect(log.info).toHaveBeenCalledWith(
-        "[handleCheckRun] Completed check_run webhook handling",
-        expect.objectContaining({
-          action: "created",
-          eventType: "check_run",
-          outcome: "ignored_action",
-          provider: "github",
-        })
-      );
+      expect(checkRunTerminalLogs(log)).toEqual([
+        {
+          level: "info",
+          fields: expect.objectContaining({
+            action: "created",
+            eventType: "check_run",
+            outcome: "ignored_action",
+            provider: "github",
+          }),
+        },
+      ]);
     });
 
     it("returns early without calling withDb when action is 'rerequested'", async () => {
@@ -167,15 +175,17 @@ describe("handleCheckRun guards", () => {
 
       const data = await response.json();
       expect(data.ok).toBe(true);
-      expect(log.info).toHaveBeenCalledWith(
-        "[handleCheckRun] Completed check_run webhook handling",
-        expect.objectContaining({
-          action: "rerequested",
-          eventType: "check_run",
-          outcome: "ignored_action",
-          provider: "github",
-        })
-      );
+      expect(checkRunTerminalLogs(log)).toEqual([
+        {
+          level: "info",
+          fields: expect.objectContaining({
+            action: "rerequested",
+            eventType: "check_run",
+            outcome: "ignored_action",
+            provider: "github",
+          }),
+        },
+      ]);
     });
   });
 
@@ -234,13 +244,15 @@ describe("handleCheckRun guards", () => {
 
       const data = await response.json();
       expect(data.ok).toBe(true);
-      expect(log.info).toHaveBeenCalledWith(
-        "[handleCheckRun] Completed check_run webhook handling",
-        expect.objectContaining({
-          outcome: "repo_not_registered",
-          provider: "github",
-        })
-      );
+      expect(checkRunTerminalLogs(log)).toEqual([
+        {
+          level: "info",
+          fields: expect.objectContaining({
+            outcome: "repo_not_registered",
+            provider: "github",
+          }),
+        },
+      ]);
     });
   });
 
@@ -273,13 +285,15 @@ describe("handleCheckRun guards", () => {
 
       const data = await response.json();
       expect(data.ok).toBe(true);
-      expect(log.info).toHaveBeenCalledWith(
-        "[handleCheckRun] Completed check_run webhook handling",
-        expect.objectContaining({
-          outcome: "no_branch_artifact",
-          provider: "github",
-        })
-      );
+      expect(checkRunTerminalLogs(log)).toEqual([
+        {
+          level: "info",
+          fields: expect.objectContaining({
+            outcome: "no_branch_artifact",
+            provider: "github",
+          }),
+        },
+      ]);
     });
   });
 
@@ -317,15 +331,20 @@ describe("handleCheckRun guards", () => {
         checksStatus: "UNKNOWN",
         deletedAt: null,
       });
-      mockTx.branchDetail.updateMany.mockImplementation((args: any) => {
-        if (
-          args?.data?.checkRunRetryState === CheckRunRetryState.Pending &&
-          args?.where?.checkRunRetryResourceId !== undefined
-        ) {
-          return Promise.resolve({ count: 0 });
+      mockTx.branchDetail.updateMany.mockImplementation(
+        (args?: {
+          data?: { checkRunRetryState?: unknown };
+          where?: { checkRunRetryResourceId?: unknown };
+        }) => {
+          if (
+            args?.data?.checkRunRetryState === CheckRunRetryState.Pending &&
+            args?.where?.checkRunRetryResourceId !== undefined
+          ) {
+            return Promise.resolve({ count: 0 });
+          }
+          return Promise.resolve({ count: 1 });
         }
-        return Promise.resolve({ count: 1 });
-      });
+      );
 
       const response = await handleCheckRun(event);
 
@@ -356,6 +375,17 @@ describe("handleCheckRun guards", () => {
 
       const data = await response.json();
       expect(data.ok).toBe(true);
+      // The provider answered, but the rollup inside failed: a failure path,
+      // so it stays at info although the outcome still reads processed.
+      expect(checkRunTerminalLogs(log)).toEqual([
+        {
+          level: "info",
+          fields: expect.objectContaining({
+            outcome: "processed",
+            providerStatus: GitHubProviderResultStatus.Success,
+          }),
+        },
+      ]);
     });
 
     it("schedules rate-limited check_run retries with provider retry metadata", async () => {
@@ -414,14 +444,16 @@ describe("handleCheckRun guards", () => {
         })
       );
       expect(response.status).toBe(200);
-      expect(log.info).toHaveBeenCalledWith(
-        "[handleCheckRun] Completed check_run webhook handling",
-        expect.objectContaining({
-          outcome: "processed",
-          providerStatus: GitHubProviderResultStatus.ProviderRateLimit,
-          retryAfterSeconds: 37,
-        })
-      );
+      expect(checkRunTerminalLogs(log)).toEqual([
+        {
+          level: "info",
+          fields: expect.objectContaining({
+            outcome: "processed",
+            providerStatus: GitHubProviderResultStatus.ProviderRateLimit,
+            retryAfterSeconds: 37,
+          }),
+        },
+      ]);
     });
 
     it("schedules a retry when the installation client mint is rate limited", async () => {

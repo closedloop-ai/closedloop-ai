@@ -36,13 +36,11 @@ export type ExtraUsage = {
  * copy against this type so the two unions cannot silently drift when a new
  * producer is added — see the `SessionLimitSourceTwin` assertion there.
  *  - `usage_api` — the owned `/api/oauth/usage` endpoint (AUTHORITATIVE);
- *  - `statusline` — continuous per-window percentages (RICH);
- *  - `rate_limit_event` — status/reset only (COARSE).
+ *  - `statusline` — continuous per-window percentages (RICH).
  */
 export const SESSION_LIMIT_SOURCES = {
   UsageApi: "usage_api",
   Statusline: "statusline",
-  RateLimitEvent: "rate_limit_event",
 } as const;
 
 /** Which producer captured the snapshot; drives the detail drawer's provenance. */

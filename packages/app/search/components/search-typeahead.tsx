@@ -11,6 +11,8 @@ import { useSearchIntellisense } from "../hooks/use-search-intellisense";
 import { searchHitOrgRelativeRoute } from "../lib/search-display";
 import { SearchFtsDropdown } from "./search-fts-dropdown";
 import { SearchIntellisenseOverlay } from "./search-intellisense-overlay";
+import { SEARCH_POPUP_TEST_ID } from "./search-popup-test-id";
+import { useSearchPopupAnchor } from "./use-search-popup-anchor";
 
 /** How many prefix-mode suggestions to surface in the dropdown. */
 const TYPEAHEAD_LIMIT = 6;
@@ -220,6 +222,9 @@ export function SearchTypeahead({
   };
 
   const isOpen = intellisenseOpen || ftsOpen;
+  // ISS-8777: the popup is placed against the anchor's VIEWPORT rect rather than
+  // laid out inside this wrapper, so a scrolling ancestor cannot clip it.
+  const { anchorRef, popupStyle } = useSearchPopupAnchor(isOpen);
   const activeDescendant =
     isOpen && boundedActiveIndex >= 0
       ? optionId(boundedActiveIndex)
@@ -231,6 +236,9 @@ export function SearchTypeahead({
     <div
       className="relative"
       onBlur={(event) => {
+        // Still a DOM ancestor of the popup: ISS-8777 changed the popup's
+        // containing block, not its place in the tree, so this containment
+        // check keeps covering focus that moves into a suggestion row.
         // Close the dropdown when focus leaves the whole typeahead (input +
         // dropdown) to anywhere else on the page. `isFocused` is only ever set
         // true (on input change), so without this it stays stuck open after a
@@ -240,6 +248,7 @@ export function SearchTypeahead({
           closeDropdown();
         }
       }}
+      ref={anchorRef}
     >
       <SidebarSearchForm
         comboboxProps={{
@@ -274,11 +283,17 @@ export function SearchTypeahead({
         // biome-ignore lint/a11y/noStaticElementInteractions: focus-within tracking only toggles the popup; the input and result rows carry the interactivity.
         // biome-ignore lint/a11y/noNoninteractiveElementInteractions: focus-within tracking only toggles the popup; the input and result rows carry the interactivity.
         <div
+          // A column flex box so the capped `maxHeight` the anchor hands down
+          // actually bounds the chrome inside it — the list then scrolls within
+          // the space the viewport has rather than running past its edge.
+          className="z-50 flex flex-col"
+          data-testid={SEARCH_POPUP_TEST_ID}
           onBlur={(event) => {
             if (!event.currentTarget.contains(event.relatedTarget)) {
               closeDropdown();
             }
           }}
+          style={popupStyle}
         >
           {intellisenseOpen ? (
             <SearchIntellisenseOverlay

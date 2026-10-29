@@ -28,6 +28,7 @@
  * Electron, mirroring the worker's own injectable design.
  */
 
+import { dropOnDbHostLifecycleError } from "../../shared/db-host-fire-and-forget.js";
 import type { VendorBilledEntry } from "./admin-billing.js";
 import type { AdminKeyStatus, AdminKeyVendor } from "./admin-key-store.js";
 import { AnthropicAdminClient } from "./anthropic-admin-client.js";
@@ -253,10 +254,10 @@ export class CostReconciliationService {
     }
     this.initialHandle = this.setTimeoutFn(() => {
       this.initialHandle = null;
-      void this.runScheduled();
+      this.launchScheduledPass();
     }, INITIAL_RECONCILIATION_DELAY_MS);
     this.intervalHandle = this.setIntervalFn(() => {
-      void this.runScheduled();
+      this.launchScheduledPass();
     }, RECONCILIATION_INTERVAL_MS);
   }
 
@@ -270,6 +271,29 @@ export class CostReconciliationService {
       this.clearTimeoutFn(this.initialHandle);
       this.initialHandle = null;
     }
+  }
+
+  /**
+   * ISS-8776 — start a scheduled pass from a timer that has no error path.
+   *
+   * `runScheduled` reaches the db-host on its very first step
+   * (`runInternal` → `deps.loadUsageRows()` → `agentDatabase.loadMeteredUsageRows`),
+   * and neither it nor `runReconciliationNow` catches. Launched with a bare
+   * `void` from a `setInterval`, a db-host child that died under that read
+   * therefore reached `handleUnhandledRejection`, which shows the crash dialog
+   * and calls `app.exit(1)` — a nightly cost pass taking the whole app down
+   * because an unrelated store bounce happened to land on its tick.
+   *
+   * Guarded with the ONE fire-and-forget contract rather than a bare `.catch`:
+   * a db-host lifecycle failure is dropped with a log (nothing is waiting, and
+   * the next tick re-reads), while every other rejection is rethrown and stays
+   * exactly as loud as it is today.
+   */
+  private launchScheduledPass(): void {
+    dropOnDbHostLifecycleError(this.runScheduled(), {
+      label: "cost reconciliation pass",
+      log: this.log,
+    });
   }
 
   /** A scheduled tick: skip quietly when no keys are configured. */

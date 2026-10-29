@@ -1,0 +1,14 @@
+-- ISS-11032: when this machine last put a CREATE for this row on the wire. NULL
+-- means it never has.
+--
+-- Written BEFORE the POST leaves, because a delete of a row with no cloud id
+-- cannot otherwise tell a comment that never left this machine from one whose
+-- create is in flight, or landed with its response lost. The first is removed
+-- outright. The second keeps a tombstone, and the lane asks the server for it
+-- through the create's own idempotency key (FEA-3598 `clientId`) before
+-- retracting it and purging the tombstone.
+--
+-- Additive and safe under skew: an older build never reads it, and a row
+-- written before this migration reads NULL, which is exactly what that build's
+-- delete already assumed.
+ALTER TABLE "trace_comments" ADD COLUMN "sync_create_sent_at" TEXT;

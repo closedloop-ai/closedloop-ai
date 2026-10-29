@@ -56,22 +56,41 @@ import {
 } from "@repo/api/src/types/compute-target";
 import { emitCommandLifecycleEvent } from "@repo/observability/telemetry/emitter";
 import { FilterToken } from "@repo/observability/telemetry/filter-tokens";
-import { TelemetryCategory } from "@repo/observability/telemetry/schema";
+import { TelemetryCategory } from "@repo/observability/telemetry/telemetry-category";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
+
+const DESKTOP_COMMAND_STATUS_IS_TERMINAL: Record<
+  DesktopCommandStatus,
+  boolean
+> = {
+  [DesktopCommandStatus.Queued]: false,
+  [DesktopCommandStatus.Accepted]: false,
+  [DesktopCommandStatus.Running]: false,
+  [DesktopCommandStatus.Done]: true,
+  [DesktopCommandStatus.Failed]: true,
+  [DesktopCommandStatus.Cancelled]: true,
+  [DesktopCommandStatus.Expired]: true,
+};
+
+const EXPECTED_TERMINAL_COMMAND_STATUSES = Object.values(
+  DesktopCommandStatus
+).filter((status) => DESKTOP_COMMAND_STATUS_IS_TERMINAL[status]);
 
 beforeEach(() => {
   vi.clearAllMocks();
   // Default withDb implementation: call the callback with a DB exposing
   // the spies tests override per-case via `.mockResolvedValueOnce`.
-  mockWithDb.mockImplementation((fn: (db: unknown) => unknown) =>
-    fn({
-      desktopCommand: {
-        count: desktopCommandCountSpy,
-        create: desktopCommandCreateSpy,
-        updateMany: desktopCommandUpdateManySpy,
-      },
-    })
-  );
+  const db = {
+    desktopCommand: {
+      count: desktopCommandCountSpy,
+      create: desktopCommandCreateSpy,
+      updateMany: desktopCommandUpdateManySpy,
+    },
+  };
+  mockWithDb.mockImplementation((fn: (db: unknown) => unknown) => fn(db));
+  // createCommand inserts on a transaction so a receipt can share it
+  // (ISS-12552).
+  mockWithDbTx.mockImplementation((fn: (db: unknown) => unknown) => fn(db));
 });
 
 function installCreateCommandMock(): void {
@@ -257,6 +276,13 @@ describe("desktopCommandStore.markCommandExpired", () => {
 
     await desktopCommandStore.markCommandExpired("cmd-123", "timed out");
 
+    expect(desktopCommandUpdateManySpy).toHaveBeenCalledOnce();
+    const { where } = desktopCommandUpdateManySpy.mock.calls[0][0];
+    expect(where.id).toBe("cmd-123");
+    expect(where.status).toEqual({
+      notIn: EXPECTED_TERMINAL_COMMAND_STATUSES,
+    });
+
     const droppedCall = mockEmitQueueMetric.mock.calls.find(
       (call) => call[0]?.metric === "dropped_expired_work_items"
     );
@@ -369,6 +395,7 @@ describe("desktopCommandStore.ingestCommandEvent", () => {
       },
       error: null,
       createdAt: new Date("2024-01-01T00:00:00Z"),
+      queuedAt: new Date("2024-01-01T00:00:00Z"),
       startedAt: new Date("2024-01-01T00:00:01Z"),
       finishedAt: null,
       lastSequenceAcked,

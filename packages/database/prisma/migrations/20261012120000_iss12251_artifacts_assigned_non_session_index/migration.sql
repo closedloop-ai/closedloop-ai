@@ -1,0 +1,25 @@
+-- ISS-12251: serves the My Tasks anchor scan (`resolveTreeAnchors`,
+-- `assignedNonBranchAnchorsSql`):
+--   WHERE organization_id = $org AND assignee_id = $assignee
+--     AND type <> 'BRANCH' AND type <> 'SESSION'
+--   ORDER BY created_at DESC, id DESC LIMIT 501
+-- Partial, because every synced session now carries its Owner as assignee_id
+-- and My Tasks never anchors on one: without the predicate the scan over
+-- artifacts_org_assignee_created_id_idx heap-fetches and discards each of a
+-- user's sessions. That index stays; the unfiltered My Tasks list reads it.
+--
+-- EXPLAIN (scratch DB, 340k artifacts; one user with 41,470 assigned sessions,
+-- 15 documents, 15 branches), as PREPAREd with the app's bind parameters:
+--   SESSION bound as `$n::"ArtifactType"`: generic plan = Index Scan on
+--   artifacts_org_assignee_created_id_idx, 41,485 rows removed by Filter,
+--   3,511 buffers; custom plan = Bitmap scan on artifacts_org_assignee_updated_idx,
+--   same 41,485 removed. Neither mode proves the predicate: the text-to-enum
+--   cast is not folded to a constant.
+--   SESSION inlined as `'SESSION'::"ArtifactType"` (what the anchor SQL now
+--   sends): generic plan = Index Scan on this index, 15 removed (the branches),
+--   32 buffers; custom plan = Bitmap Index Scan on this index, 38 buffers.
+--
+-- CONCURRENTLY, so this file is ONE bare statement: do not add BEGIN/COMMIT or a
+-- `DO` block. NO `IF NOT EXISTS`, per scripts/lint/destructive-migrations/
+-- index-ddl.ts: a retry over an INVALID remnant must fail closed (42P07).
+CREATE INDEX CONCURRENTLY "artifacts_org_assignee_created_id_non_session_idx" ON "artifacts"("organization_id", "assignee_id", "created_at" DESC, "id" DESC) WHERE (type <> 'SESSION'::"ArtifactType");

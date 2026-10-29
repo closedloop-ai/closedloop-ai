@@ -50,6 +50,7 @@ import { emitTelemetryMetric } from "@repo/observability/telemetry/metrics";
 import type { Server, Socket } from "socket.io";
 import { z } from "zod";
 import { createConcurrencyLimiter } from "./concurrency-limiter";
+import { attachSocketErrorLogging } from "./error-listeners.js";
 import { createRateLimiter } from "./rate-limiter";
 
 /** Per-connection cap on concurrent live sessions (one legit client needs ~1). */
@@ -361,8 +362,26 @@ type KeylessCapacityMetric = {
   count: 1;
 };
 
+/**
+ * Emit a capacity metric without letting the emitter take the caller down.
+ *
+ * `emitTelemetryMetric` serializes and logs, so it CAN throw, and both call
+ * sites are on the UNAUTHENTICATED namespace -- one inside the connection
+ * fence, ahead of the `socket.disconnect()` that enforces the cap. An
+ * unguarded throw there skips that disconnect and leaks sockets during exactly
+ * the connection storm the fence exists for. Same guard as the authenticated
+ * twin, `safeEmitConnectionStateCount` in index.ts (ISS-7201, ISS-7976).
+ */
 function emitCapacityMetric(metric: KeylessCapacityMetric): void {
-  emitTelemetryMetric(metric);
+  try {
+    emitTelemetryMetric(metric);
+  } catch (error) {
+    log.warn("keyless telemetry: capacity metric emit failed", {
+      metric: metric.metric,
+      reason: metric.reason,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /** Minimal handshake shape needed to derive the rate-limit client IP. */
@@ -486,6 +505,8 @@ export function registerKeylessTelemetryNamespace(
     // own per-IP bucket; otherwise it is the immediate TCP peer (FEA-1994).
     const ip = deriveClientIp(socket.handshake, trustedProxyHops);
     const ownedSessions = new Set<string>();
+
+    attachSocketErrorLogging(socket);
 
     socket.on(KEYLESS_TELEMETRY_HANDSHAKE_EVENT, (payload, callback) => {
       if (ipLimiter.isRateLimited(ip)) {

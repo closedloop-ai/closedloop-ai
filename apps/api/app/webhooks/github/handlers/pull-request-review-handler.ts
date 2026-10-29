@@ -1,8 +1,10 @@
 import type {
   PullRequestReviewDismissedEvent,
+  PullRequestReviewEditedEvent,
   PullRequestReviewSubmittedEvent,
 } from "@octokit/webhooks-types";
 import { LinkType } from "@repo/api/src/types/artifact";
+import { CommentSyncProvider } from "@repo/api/src/types/comment-thread-dto";
 import { ReviewDecision } from "@repo/api/src/types/document";
 import {
   GitHubDirtyScopeKind,
@@ -10,6 +12,7 @@ import {
 } from "@repo/api/src/types/github-dirty-scope";
 import {
   ArtifactType,
+  GitHubCommentThreadKind,
   GitHubInstallationStatus,
   type TransactionClient,
   withDb,
@@ -17,6 +20,14 @@ import {
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 
+import { emitBranchDetailChanged } from "@/app/branches/branch-detail-signal";
+import { commentsService } from "@/app/comments/service";
+import {
+  type GitHubCommentDeleteEvent,
+  GitHubExternalEventKind,
+  type GitHubReviewSummaryUpsertEvent,
+} from "@/app/comments/service/github/apply-external-events";
+import { withGitHubCommentWriteRetry } from "@/app/comments/service/github/github-comment-write-retry";
 import { persistLatestGitHubPRReview } from "@/app/integrations/github/pr-review-projection";
 import type { GitHubWebhookObservationContext } from "@/lib/github/github-webhook-observation";
 import {
@@ -32,18 +43,23 @@ import {
   type GitHubDirtyScopePublicationInput,
   publishGitHubDirtyScopes,
 } from "./dirty-scope-publisher";
+import {
+  branchCurrentPullRequestDetailId,
+  isBranchCurrentPullRequest,
+} from "./pr-comment-context";
 
 /**
  * Union type for pull request review events we handle.
  */
 export type HandledPullRequestReviewEvent =
   | PullRequestReviewSubmittedEvent
+  | PullRequestReviewEditedEvent
   | PullRequestReviewDismissedEvent;
 
 /**
  * Actions this handler processes. All other actions are ignored with an early return.
  */
-const HANDLED_ACTIONS = new Set(["submitted", "dismissed"]);
+const HANDLED_ACTIONS = new Set(["submitted", "edited", "dismissed"]);
 
 /**
  * Map GitHub review state to our ReviewDecision enum.
@@ -184,8 +200,11 @@ async function handleDismissedReview(
  * Handle GitHub pull_request_review webhook events.
  *
  * Supported actions:
- * - submitted: Upserts per-reviewer GitHubPRReview record, recomputes aggregate reviewDecision
- * - dismissed: Sets specific reviewer's record to DISMISSED, recomputes aggregate
+ * - submitted: Upserts per-reviewer GitHubPRReview record, recomputes aggregate
+ *   reviewDecision, and stores the review's summary body as its own thread
+ * - edited: Updates the stored summary thread (PLN-2122 decision 6)
+ * - dismissed: Sets specific reviewer's record to DISMISSED, recomputes
+ *   aggregate; the summary thread and its body are left as they are
  *
  * Per-reviewer tracking: Each reviewer's latest review is stored in GitHubPRReview
  * (keyed by pullRequestId + authorLogin). The aggregate reviewDecision on GitHubPullRequest
@@ -223,8 +242,10 @@ export async function handlePullRequestReview(
     repositoryId: repository.id,
   });
 
-  // All reads and writes in a single transaction to avoid TOCTOU gaps
-  const publication = await withDb.tx(async (tx) => {
+  // The review decision's reads and writes share one transaction to avoid
+  // TOCTOU gaps; the summary thread is written after it commits, so a summary
+  // write that fails cannot roll the decision back.
+  const persisted = await withDb.tx(async (tx) => {
     // Installation-aware lookup (FEA-2022 / PLN-1034): the same githubRepoId can
     // exist under multiple installations/tenants, so scope by full name + the
     // active installation that delivered this webhook. Without this, a review
@@ -287,6 +308,7 @@ export async function handlePullRequestReview(
         },
         branchArtifact: {
           select: {
+            branch: { select: { currentPullRequestDetailId: true } },
             targetLinks: {
               where: {
                 linkType: LinkType.Produces,
@@ -341,16 +363,33 @@ export async function handlePullRequestReview(
         pullRequestDetailId: prDetail.id,
       },
     });
-    return buildPullRequestReviewDirtyScopePublication({
-      review,
-      pullRequest: pull_request,
+    await emitBranchDetailChanged(
+      tx,
       organizationId,
-      repositoryId: repo.id,
-      repositoryFullName: repo.fullName ?? repository.full_name,
-    });
+      prDetail.branchArtifactId
+    );
+    return {
+      publication: buildPullRequestReviewDirtyScopePublication({
+        review,
+        pullRequest: pull_request,
+        organizationId,
+        repositoryId: repo.id,
+        repositoryFullName: repo.fullName ?? repository.full_name,
+      }),
+      summaryScope: {
+        organizationId,
+        branchArtifactId: prDetail.branchArtifactId,
+        pullRequestDetailId: prDetail.id,
+        isCurrentPullRequest: isBranchCurrentPullRequest(
+          branchCurrentPullRequestDetailId(prDetail.branchArtifact.branch),
+          prDetail.id
+        ),
+      },
+    };
   });
-  if (publication) {
-    await publishGitHubDirtyScopes(publication);
+  if (persisted) {
+    await publishGitHubDirtyScopes(persisted.publication);
+    await applyReviewSummary(action, review, persisted.summaryScope);
   }
 
   log.debug(
@@ -367,6 +406,49 @@ export async function handlePullRequestReview(
     message: "Event processed successfully",
     ok: true,
   });
+}
+
+/**
+ * PLN-2122 decision 6: a review's summary body is its own thread, written
+ * through `applyExternal` and ordered by `submitted_at`, which `edited` keeps.
+ * A blank body is not stored, so an edit that clears the body deletes the
+ * stored summary, as the reconcile's cleanup would, and an edit that restores
+ * a body brings it back. A dismissal leaves the thread as it is (campaign
+ * ruling). Only the branch's current pull request is written
+ * ({@link isBranchCurrentPullRequest}, the comment webhooks' rule). Runs in a
+ * transaction of its own, after the review decision's has committed.
+ */
+async function applyReviewSummary(
+  action: HandledPullRequestReviewEvent["action"],
+  review: HandledPullRequestReviewEvent["review"],
+  scope: {
+    organizationId: string;
+    branchArtifactId: string;
+    pullRequestDetailId: string;
+    isCurrentPullRequest: boolean;
+  }
+): Promise<void> {
+  if (
+    action === "dismissed" ||
+    !scope.isCurrentPullRequest ||
+    !review.submitted_at
+  ) {
+    return;
+  }
+  const event = reviewSummaryEvent(action, review, review.submitted_at);
+  if (!event) {
+    return;
+  }
+  await withGitHubCommentWriteRetry(() =>
+    commentsService.applyExternal({
+      provider: CommentSyncProvider.Github,
+      organizationId: scope.organizationId,
+      branchArtifactId: scope.branchArtifactId,
+      pullRequestDetailId: scope.pullRequestDetailId,
+      fetchProvenance: githubAppWebhookFetchProvenance(),
+      events: [event],
+    })
+  );
 }
 
 function buildPullRequestReviewDirtyScopePublication({
@@ -397,5 +479,39 @@ function buildPullRequestReviewDirtyScopePublication({
       },
     ],
     triggers: [GitHubDirtyTrigger.Review],
+  };
+}
+
+function reviewSummaryEvent(
+  action: "submitted" | "edited",
+  review: HandledPullRequestReviewEvent["review"],
+  submittedAt: string
+): GitHubReviewSummaryUpsertEvent | GitHubCommentDeleteEvent | null {
+  if (review.body?.trim()) {
+    return {
+      kind: GitHubExternalEventKind.ReviewSummaryUpsert,
+      ...(action === "submitted"
+        ? { asSubmitted: true }
+        : { reviveDeletedBefore: new Date() }),
+      reviewId: review.id,
+      htmlUrl: review.html_url,
+      comment: {
+        githubCommentId: review.id,
+        htmlUrl: review.html_url,
+        bodyMarkdown: review.body,
+        author: review.user,
+        createdAt: new Date(submittedAt),
+        providerUpdatedAt: new Date(submittedAt),
+      },
+    };
+  }
+  if (action !== "edited") {
+    return null;
+  }
+  return {
+    kind: GitHubExternalEventKind.CommentDelete,
+    threadKind: GitHubCommentThreadKind.REVIEW_SUMMARY,
+    githubCommentId: review.id,
+    providerUpdatedAt: new Date(submittedAt),
   };
 }

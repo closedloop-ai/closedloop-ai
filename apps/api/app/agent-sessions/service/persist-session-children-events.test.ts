@@ -2,6 +2,7 @@ import {
   AGENT_SESSION_SYNC_SCHEMA_VERSION,
   AgentSessionSyncMode,
 } from "@repo/api/src/types/agent-session";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildDefaultAgentSessionEventMocks,
@@ -9,6 +10,8 @@ import {
   buildSlugCounterMock,
   buildSyncedSession,
   installDb,
+  PERSISTED_SESSION_ARTIFACT_ID,
+  persistedSessionDetail,
   SESSION_STARTED_AT,
   SESSION_UPDATED_AT,
 } from "@/__tests__/support/agent-sessions/service.test-harness";
@@ -90,11 +93,16 @@ describe("agentSessionsService child event persistence", () => {
     } as unknown as Parameters<typeof persistSessionChildren>[0];
     const result = await persistSessionChildren(
       tx,
-      "persisted-session-1",
+      PERSISTED_SESSION_ARTIFACT_ID,
       "org-1",
       buildSyncedSession({ events: [] }),
       [],
-      { shouldReplace: false, shouldUpdateTokenEventCosts: false }
+      {
+        // Non-terminal: the rollup guard is not what these event cases exercise.
+        guardedStatus: SESSION_STATUS.ACTIVE,
+        shouldReplace: false,
+        shouldUpdateTokenEventCosts: false,
+      }
     );
 
     // Exactly two DB round-trips total — the counts SELECT and the UPDATE — with
@@ -212,7 +220,7 @@ describe("agentSessionsService child event persistence", () => {
     expect(insertSql.match(/gen_random_uuid\(\)/g)).toHaveLength(1);
     expect(executeRawUnsafe).toHaveBeenCalledWith(
       expect.stringContaining(`INSERT INTO "agent_session_events"`),
-      "persisted-session-1",
+      PERSISTED_SESSION_ARTIFACT_ID,
       "dup-1",
       "agent-1",
       "runtime_error",
@@ -237,10 +245,14 @@ describe("agentSessionsService child event persistence", () => {
       sessionStartedAt: null,
       sessionUpdatedAt: null,
       sessionEndedAt: null,
+      // ISS-8604: the same id the upsert below resolves to, so the slice reads
+      // this as the ordinary UPDATE arm. Omitting it means "the row I found is
+      // not the row I wrote", which is the swept-row race, not this merge.
+      artifactId: PERSISTED_SESSION_ARTIFACT_ID,
     });
     const sessionUpsert = vi
       .fn()
-      .mockResolvedValue({ artifactId: "persisted-session-1" });
+      .mockResolvedValue(persistedSessionDetail(PERSISTED_SESSION_ARTIFACT_ID));
 
     installDb({
       computeTarget: {
@@ -292,5 +304,131 @@ describe("agentSessionsService child event persistence", () => {
         (a: { externalAgentId: string }) => a.externalAgentId
       )
     ).toEqual(["agent-1", "agent-2"]);
+  });
+
+  /**
+   * Shared shape for the three counts-recompute cases below: a
+   * `persistSessionChildren` tx double whose `$queryRawUnsafe` is dispatched by
+   * SQL text (same discrimination the ISS-4439 case above relies on), plus every
+   * other delegate the function can reach, all silent no-ops.
+   */
+  function countsRecomputeTx(
+    queryRawUnsafe: ReturnType<typeof vi.fn>,
+    eventDeleteMany: ReturnType<typeof vi.fn> = vi.fn()
+  ): Parameters<typeof persistSessionChildren>[0] {
+    return {
+      $queryRawUnsafe: queryRawUnsafe,
+      $executeRawUnsafe: vi.fn(),
+      artifact: { findFirst: vi.fn() },
+      agentSessionEvent: { deleteMany: eventDeleteMany },
+      agentSessionTokenUsage: { deleteMany: vi.fn(), createMany: vi.fn() },
+      agentSessionTokenEvent: { createMany: vi.fn() },
+      agentSessionActivitySegment: {
+        findFirst: vi.fn(),
+        deleteMany: vi.fn(),
+        createMany: vi.fn(),
+      },
+      agentSessionUsageRollup: { upsert: vi.fn() },
+      sessionDetail: { update: vi.fn() },
+    } as unknown as Parameters<typeof persistSessionChildren>[0];
+  }
+
+  it("shouldReplace:true deletes existing event rows scoped to the owning org before re-inserting", async () => {
+    const deleteMany = vi.fn().mockResolvedValue({ count: 3 });
+    const queryRawUnsafe = vi.fn().mockImplementation((sql: string) => {
+      if (String(sql).includes(`UPDATE "session_detail"`)) {
+        return Promise.resolve([{ lastActivityAt: null }]);
+      }
+      return Promise.resolve([
+        { toolUseCount: 0n, errorCount: 0n, maxEventCreatedAt: null },
+      ]);
+    });
+    const tx = countsRecomputeTx(queryRawUnsafe, deleteMany);
+
+    await persistSessionChildren(
+      tx,
+      PERSISTED_SESSION_ARTIFACT_ID,
+      "org-1",
+      buildSyncedSession({ events: [] }),
+      [],
+      {
+        guardedStatus: SESSION_STATUS.ACTIVE,
+        shouldReplace: true,
+        shouldUpdateTokenEventCosts: false,
+      }
+    );
+
+    expect(deleteMany).toHaveBeenCalledTimes(1);
+    expect(deleteMany).toHaveBeenCalledWith({
+      where: {
+        agentSessionId: PERSISTED_SESSION_ARTIFACT_ID,
+        session: { artifact: { organizationId: "org-1" } },
+      },
+    });
+  });
+
+  it("recomputes zero counts when the counts SELECT returns no row at all", async () => {
+    // Defensive fallback: the EXISTS-scoped SELECT can legitimately return an
+    // empty result set (no matching artifact/org), distinct from returning a
+    // row whose counts are genuinely zero.
+    const queryRawUnsafe = vi.fn().mockImplementation((sql: string) => {
+      if (String(sql).includes(`UPDATE "session_detail"`)) {
+        return Promise.resolve([{ lastActivityAt: null }]);
+      }
+      return Promise.resolve([]);
+    });
+    const tx = countsRecomputeTx(queryRawUnsafe);
+
+    const result = await persistSessionChildren(
+      tx,
+      PERSISTED_SESSION_ARTIFACT_ID,
+      "org-1",
+      buildSyncedSession({ events: [] }),
+      [],
+      {
+        guardedStatus: SESSION_STATUS.ACTIVE,
+        shouldReplace: false,
+        shouldUpdateTokenEventCosts: false,
+      }
+    );
+
+    expect(queryRawUnsafe).toHaveBeenCalledTimes(2);
+    // $1=artifactId, $2=totalToolUse, $3=totalErrors, $4=startedAtParam,
+    // $5=maxEventCreatedAt, $6=organizationId; index 0 of the call is the SQL
+    // string itself.
+    const updateParams = queryRawUnsafe.mock.calls[1] ?? [];
+    expect(updateParams[2]).toBe(0);
+    expect(updateParams[3]).toBe(0);
+    expect(result.maxEventCreatedAt).toBeNull();
+  });
+
+  it("writes a null startedAt bind when the session's startedAt does not parse into a valid Date", async () => {
+    const queryRawUnsafe = vi.fn().mockImplementation((sql: string) => {
+      if (String(sql).includes(`UPDATE "session_detail"`)) {
+        return Promise.resolve([{ lastActivityAt: null }]);
+      }
+      return Promise.resolve([
+        { toolUseCount: 0n, errorCount: 0n, maxEventCreatedAt: null },
+      ]);
+    });
+    const tx = countsRecomputeTx(queryRawUnsafe);
+
+    await persistSessionChildren(
+      tx,
+      PERSISTED_SESSION_ARTIFACT_ID,
+      "org-1",
+      buildSyncedSession({ events: [], startedAt: "not-a-date" }),
+      [],
+      {
+        guardedStatus: SESSION_STATUS.ACTIVE,
+        shouldReplace: false,
+        shouldUpdateTokenEventCosts: false,
+      }
+    );
+
+    const updateParams = queryRawUnsafe.mock.calls[1] ?? [];
+    // $4 = startedAtParam. An unparseable startedAt must bind NULL rather than
+    // an Invalid Date, which GREATEST would otherwise compare against.
+    expect(updateParams[4]).toBeNull();
   });
 });

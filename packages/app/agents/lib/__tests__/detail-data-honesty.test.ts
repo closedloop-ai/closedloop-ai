@@ -13,7 +13,7 @@
  * detail sends as `[]`, so they can never carry a value on either surface.
  *
  * ISS-5521: `mergedPrs` is counted server-side over the first
- * `COHORT_SCAN_CAP` cohort sessions in Set-insertion order, while the card's own
+ * 2,000 cohort sessions in Set-insertion order, while the card's own
  * tooltip claimed it covered "every session" / "the full session cohort". On
  * `tool::bash` that was 2,000 of 7,247 sessions — 28% of the stated population,
  * presented as all of it.
@@ -29,7 +29,6 @@
  */
 import type { AgentComponentDetail } from "@repo/api/src/types/agent-component";
 import { AgentComponentKind } from "@repo/api/src/types/agent-component";
-import { COHORT_SCAN_CAP } from "@repo/api/src/types/analytics";
 import { makeDetail } from "@repo/app/agents/components/workspace/agent-component-fixtures";
 import { describe, expect, it } from "vitest";
 import { type ComponentMetric, componentMetrics } from "../detail-data";
@@ -140,9 +139,10 @@ describe("componentMetrics — Merged PRs population (ISS-5521)", () => {
     // session" over a 28% sample is the metric disagreeing with its own label.
     expect(merged?.info?.what).not.toContain("every session");
     expect(merged?.info?.how).not.toContain("full session cohort");
-    expect(merged?.info?.how).toContain(
-      COHORT_SCAN_CAP.toLocaleString("en-US")
-    );
+    // ISS-9853: the caveat names the bounded READ, not a cap size — the same
+    // sentence now has to hold for a server that walked its whole id set and
+    // was handed a sample of the cohort.
+    expect(merged?.info?.how).toContain("a single bounded read");
   });
 
   it("leaves an uncapped cohort's count and copy untouched", () => {
@@ -207,15 +207,13 @@ describe("componentMetrics — Merged PRs population (ISS-5521)", () => {
 
     expect(merged?.value).toBe("996+");
     expect(merged?.info?.what).not.toContain("every session");
-    expect(merged?.info?.how).toContain(
-      COHORT_SCAN_CAP.toLocaleString("en-US")
-    );
+    expect(merged?.info?.how).toContain("a single bounded read");
   });
 });
 
 describe("componentMetrics — undeclared Merged PRs coverage (ISS-5521 skew)", () => {
   /**
-   * The wire shape of an older cloud server: it applied `COHORT_SCAN_CAP` just
+   * The wire shape of an older cloud server: it applied the same cap just
    * like the current one, but predates the disclosure field and therefore OMITS
    * it. `makeDetail` spreads `EMPTY_COHORT_DELIVERY_METRICS`, which declares
    * `mergedPrsTruncated: false`, so the omission has to be re-created explicitly

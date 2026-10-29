@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   versionUpdate: vi.fn(),
   versionCreateMany: vi.fn(),
   versionUpdateMany: vi.fn(),
+  versionExecuteRaw: vi.fn(),
   registerDefinitionVersion: vi.fn(),
   relinkActiveForComputeTarget: vi.fn(),
   componentFindMany: vi.fn(),
@@ -33,7 +34,8 @@ const mocks = vi.hoisted(() => ({
   removeManyAfterCommit: vi.fn(),
 }));
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async (importOriginal) => ({
+  Prisma: (await importOriginal<typeof import("@repo/database")>()).Prisma,
   withDb: mocks.withDb,
   SourceAccessState: { accessible: "accessible", inaccessible: "inaccessible" },
 }));
@@ -112,7 +114,6 @@ function buildInput(components: Record<string, unknown>[]) {
       components,
     } as never,
     userId: USER_ID,
-    isOrgPolicyEnabled: async () => true,
   };
 }
 
@@ -136,6 +137,7 @@ function installOwnedTarget() {
   mocks.versionUpdate.mockResolvedValue({});
   mocks.versionCreateMany.mockResolvedValue({ count: 0 });
   mocks.versionUpdateMany.mockResolvedValue({ count: 0 });
+  mocks.versionExecuteRaw.mockResolvedValue(0);
   mocks.registerDefinitionVersion.mockResolvedValue("definition-version-1");
   mocks.relinkActiveForComputeTarget.mockResolvedValue(0);
   mocks.componentFindMany.mockResolvedValue([]);
@@ -151,6 +153,7 @@ function installOwnedTarget() {
         createMany: mocks.versionCreateMany,
         updateMany: mocks.versionUpdateMany,
       },
+      $executeRaw: mocks.versionExecuteRaw,
     })
   );
 }
@@ -229,6 +232,74 @@ describe("desktopComponentsSyncService.sync — ISS-4662 retained variants", () 
     // skipDuplicates makes the batch insert an ON CONFLICT DO NOTHING, so a
     // revision the cloud already has is never rewritten.
     expect(mocks.versionCreateMany.mock.calls[0][0].skipDuplicates).toBe(true);
+  });
+
+  // ISS-4965 (Perrin, 2026-10-05): a redacted revision's raw-content usage
+  // digest is stored with it; a revision with nothing redacted stores none.
+  // The update arm also carries the redacted body, so an existing primary row
+  // stored raw is scrubbed by this sync.
+  it("persists each redacted revision's usage digest, NULL for a clean one, and the redacted body over an existing primary row", async () => {
+    await desktopComponentsSyncService.sync(
+      buildInput([
+        buildComponent({
+          content: "PRIMARY [REDACTED:ghp]",
+          usageScopeHash: "a".repeat(64),
+          variants: [
+            {
+              contentHash: "hash-secret",
+              content: "OLD [REDACTED:ghp]",
+              usageScopeHash: "b".repeat(64),
+            },
+            { contentHash: "hash-clean", content: "CLEAN BODY" },
+          ],
+        }),
+      ])
+    );
+
+    expect(mocks.versionUpsert.mock.calls[0][0].create.usageScopeHash).toBe(
+      "a".repeat(64)
+    );
+    // A row stored before the column existed gets it in the same sync that
+    // re-links it to the redacted body's DefinitionVersion.
+    expect(mocks.versionUpsert.mock.calls[0][0].update).toEqual({
+      usageScopeHash: "a".repeat(64),
+      content: "PRIMARY [REDACTED:ghp]",
+    });
+    expect(variantRows().map((row) => row.usageScopeHash)).toEqual([
+      "b".repeat(64),
+      null,
+    ]);
+  });
+
+  // ISS-4965 (whitlockk review, #8391): `skipDuplicates` leaves an existing
+  // variant row as it was, so a row stored with the digest dropped needs it
+  // written by the next sync that carries it.
+  it("writes a sent variant usage digest onto an existing row, and nothing for a clean variant", async () => {
+    await desktopComponentsSyncService.sync(
+      buildInput([
+        buildComponent({
+          variants: [
+            {
+              contentHash: "hash-secret",
+              content: "OLD [REDACTED:ghp]",
+              usageScopeHash: "b".repeat(64),
+            },
+            { contentHash: "hash-clean", content: "CLEAN BODY" },
+          ],
+        }),
+      ])
+    );
+
+    const secretRow = variantRows()[0];
+    expect(mocks.versionExecuteRaw).toHaveBeenCalledTimes(1);
+    expect(mocks.versionExecuteRaw.mock.calls[0][0].values).toEqual([
+      secretRow.organizationId,
+      secretRow.componentKind,
+      secretRow.componentKey,
+      secretRow.source,
+      "hash-secret",
+      "b".repeat(64),
+    ]);
   });
 
   it("does not register a DefinitionVersion for a variant (its provenance belongs to the primary's file)", async () => {
@@ -454,6 +525,21 @@ describe("desktopComponentsSyncService.sync — ISS-4662 retained variants", () 
     expect(mocks.versionUpsert.mock.calls[0][0].create.firstSeenAt).toEqual(
       new Date("2026-01-10T00:00:00.000Z")
     );
+  });
+
+  // ISS-6318. The caller discards this upsert's row, and `AgentComponentVersion`
+  // carries `content` — the component's whole body — so an absent `select` ships
+  // every revision's source back over the wire to be dropped. The expected shape
+  // is a literal here rather than a read of `buildVersionUpsert`, so deleting
+  // the production `select` reddens this instead of agreeing with it.
+  //
+  // `no-discarded-wide-prisma-write` cannot police this site: the argument is
+  // hoisted to a local before the call, so the rule falls out at its
+  // "argument is an object literal" check. This assertion is the only guard.
+  it("narrows the discarded version upsert to the row's primary key", async () => {
+    await desktopComponentsSyncService.sync(buildInput([buildComponent()]));
+
+    expect(mocks.versionUpsert.mock.calls[0][0].select).toEqual({ id: true });
   });
 });
 

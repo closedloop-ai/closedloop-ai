@@ -17,6 +17,11 @@ type Envelope<T> = {
 
 type UseViewStatePersistenceOptions<T> = {
   ttlMs?: number;
+  /**
+   * Runs on the envelope's `data` AFTER {@link isValidEnvelope} and the TTL check.
+   * Distinct from {@link useLocalStorageState}'s two-argument `validate`, which this
+   * hook wraps: that one runs on raw `JSON.parse` output and receives the fallback.
+   */
   validate?: (data: T) => T;
 };
 

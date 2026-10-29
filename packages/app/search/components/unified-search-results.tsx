@@ -1,34 +1,33 @@
 "use client";
 
-import type { SearchHit } from "@repo/api/src/types/search";
-import type { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
-import { PHASE_1_SEARCH_ENTITY_TYPES } from "@repo/api/src/types/search-entity-kind";
+import {
+  isOfferedSearchType,
+  OFFERED_SEARCH_ENTITY_TYPES,
+  type OfferedSearchEntityType,
+  type SearchEntityType,
+} from "@repo/api/src/types/search-entity-kind";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Chip } from "@repo/design-system/components/ui/chip";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { FilterChip } from "@repo/design-system/components/ui/filter-chip";
-import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { Link } from "@repo/navigation/link";
 import { useOrgPath } from "@repo/navigation/use-org-path";
-import {
-  AlertCircleIcon,
-  AlertTriangleIcon,
-  Loader2Icon,
-  SearchXIcon,
-} from "lucide-react";
+import { AlertCircleIcon, AlertTriangleIcon, SearchXIcon } from "lucide-react";
 import { formatDate } from "../../shared/lib/date-utils";
-import type { SnippetSegment } from "../lib/search-display";
 import {
+  type OfferedSearchHit,
   parseSnippetSegments,
   SEARCH_ENTITY_TYPE_ICONS,
   SEARCH_ENTITY_TYPE_LABELS,
+  type SnippetSegment,
   searchHitOrgRelativeRoute,
 } from "../lib/search-display";
+import { SearchResultsSkeleton } from "./search-results-skeleton";
 import { SnippetHighlight } from "./snippet-highlight";
 
 type UnifiedSearchResultsProps = {
   /** Ranked heterogeneous hits from the FTS response. */
-  results: SearchHit[];
+  results: OfferedSearchHit[];
   /** True while the query is in flight (first load). */
   isLoading: boolean;
   /** True when the query settled in an error state. */
@@ -76,7 +75,7 @@ type UnifiedSearchResultsProps = {
 
 /**
  * FEA-3873/FEA-3930 cross-entity result list. Renders the ranked heterogeneous
- * {@link SearchHit}s in one list: a type facet chip, a highlighted `ts_headline`
+ * {@link OfferedSearchHit}s in one list: a type facet chip, a highlighted `ts_headline`
  * snippet, and a deep link per hit. Above the list sits the artifact-type facet
  * control, a toggle-chip row mapping to the query `types[]` param, plus a
  * removable-chip row for the active facets and an inline banner for a malformed
@@ -95,8 +94,9 @@ export function UnifiedSearchResults({
   hideTypeFacets = false,
   onRetry,
 }: UnifiedSearchResultsProps) {
+  const offeredActiveTypes = activeTypes.filter(isOfferedSearchType);
   const showActiveFacetChips =
-    !(hideTypeFacets || hideActiveFacetChips) && activeTypes.length > 0;
+    !(hideTypeFacets || hideActiveFacetChips) && offeredActiveTypes.length > 0;
   return (
     <div className="flex flex-col gap-4">
       {hideTypeFacets ? null : (
@@ -106,7 +106,10 @@ export function UnifiedSearchResults({
         />
       )}
       {showActiveFacetChips ? (
-        <ActiveFacetChips activeTypes={activeTypes} onRemove={onToggleType} />
+        <ActiveFacetChips
+          activeTypes={offeredActiveTypes}
+          onRemove={onToggleType}
+        />
       ) : null}
       {/* A malformed filter means the query never ran, so there is no result set
           to describe and the banner is the whole story (ISS-4665). Rendering the
@@ -141,7 +144,7 @@ function ActiveFacetChips({
   activeTypes,
   onRemove,
 }: Readonly<{
-  activeTypes: SearchEntityType[];
+  activeTypes: OfferedSearchEntityType[];
   onRemove: (type: SearchEntityType) => void;
 }>) {
   return (
@@ -182,7 +185,7 @@ function UnifiedResultsBody({
   onSelectResult,
   onRetry,
 }: Readonly<{
-  results: SearchHit[];
+  results: OfferedSearchHit[];
   isLoading: boolean;
   isError: boolean;
   onSelectResult?: () => void;
@@ -193,7 +196,7 @@ function UnifiedResultsBody({
   }
 
   if (isLoading) {
-    return <ResultsSkeleton />;
+    return <SearchResultsSkeleton loadingLabel="Loading search results" />;
   }
 
   if (results.length === 0) {
@@ -216,32 +219,6 @@ function UnifiedResultsBody({
         />
       ))}
     </ul>
-  );
-}
-
-/**
- * Loading: skeleton rows matching the result-row rhythm (icon + title + snippet
- * line + meta) so the layout does not jump when results land (FEA-4134). A
- * spinner is announced to assistive tech; the visual rows are decorative.
- */
-function ResultsSkeleton() {
-  const rows = [0, 1, 2, 3, 4];
-  return (
-    <>
-      <Loader2Icon aria-label="Loading search results" className="sr-only" />
-      <ul aria-hidden="true" className="flex flex-col divide-y divide-border">
-        {rows.map((row) => (
-          <li className="flex gap-3 px-2 py-3" key={row}>
-            <Skeleton className="mt-0.5 size-4 shrink-0 rounded-sm" />
-            <div className="flex flex-1 flex-col gap-2">
-              <Skeleton className="h-4 w-2/5" />
-              <Skeleton className="h-3.5 w-3/4" />
-              <Skeleton className="h-3 w-32" />
-            </div>
-          </li>
-        ))}
-      </ul>
-    </>
   );
 }
 
@@ -281,7 +258,7 @@ function SearchTypeFacets({
   return (
     <fieldset className="flex flex-wrap items-center gap-2 border-0 p-0">
       <legend className="sr-only">Filter results by type</legend>
-      {PHASE_1_SEARCH_ENTITY_TYPES.map((type) => {
+      {OFFERED_SEARCH_ENTITY_TYPES.map((type) => {
         const isActive = allTypesActive || activeTypes.includes(type);
         return (
           <Chip
@@ -311,15 +288,15 @@ function SearchTypeFacets({
 function SearchHitRow({
   hit,
   onSelect,
-}: Readonly<{ hit: SearchHit; onSelect?: () => void }>) {
+}: Readonly<{ hit: OfferedSearchHit; onSelect?: () => void }>) {
   const buildOrgPath = useOrgPath();
   const segments = parseSnippetSegments(hit.snippet);
   const body = <SearchHitBody hit={hit} segments={segments} />;
 
   // Build the real web route from the hit's route fields (Phase-2): documents by
-  // type + slug, projects team-scoped, loops by id. A hit missing the data to
-  // build a safe route yields null and renders as a plain (non-link) row so a
-  // click never lands on a 404.
+  // type + slug, projects team-scoped, sessions and branches by id. A hit
+  // missing the data to build a safe route yields null and renders as a plain
+  // (non-link) row so a click never lands on a 404.
   const route = searchHitOrgRelativeRoute(hit);
   if (route === null) {
     return (
@@ -357,7 +334,7 @@ function SearchHitRow({
 function SearchHitBody({
   hit,
   segments,
-}: Readonly<{ hit: SearchHit; segments: SnippetSegment[] }>) {
+}: Readonly<{ hit: OfferedSearchHit; segments: SnippetSegment[] }>) {
   const Icon = SEARCH_ENTITY_TYPE_ICONS[hit.entityType];
   return (
     <>

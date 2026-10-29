@@ -35,12 +35,23 @@ export async function generateMetadata({ params }: DocsPageProps) {
   const page = source.getPage(slug);
 
   if (!page) {
-    return createPageMetadata("Documentation", "Closedloop.ai documentation");
+    // The page component 404s on this same predicate. Nothing returned here
+    // reaches a crawler — Next drops the `generateMetadata` result once
+    // `notFound()` is called — so `null` is belt-and-braces: it states the
+    // intent at the branch rather than relying on that behavior.
+    return createPageMetadata(
+      "Documentation",
+      "Closedloop.ai documentation",
+      null
+    );
   }
 
+  // Built from the slug, not `page.url`: non-default sources retain their
+  // locale prefix, while metadata consolidates every locale onto `/docs`.
   return createPageMetadata(
     page.data.title,
-    page.data.description ?? "Closedloop.ai documentation"
+    page.data.description ?? "Closedloop.ai documentation",
+    slug?.length ? `/docs/${slug.join("/")}` : "/docs"
   );
 }
 

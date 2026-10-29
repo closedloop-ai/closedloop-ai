@@ -8,7 +8,8 @@ import { useState } from "react";
  * build the `groups` from their own filter state; the menu is data-agnostic.
  */
 const meta = {
-  title: "Design System/Data Display/Table Filter Menu",
+  title: "Composites v1.0/Data Display/Tables/Table Filter Menu",
+  tags: ["deprecated"],
   component: TableFilterMenu,
   parameters: {
     layout: "centered",
@@ -19,7 +20,14 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
+/**
+ * Satisfies the story's `args` type. The story renders through its own
+ * stateful harness, so nothing reads this at runtime.
+ */
+const DUMMY_FILTER_MENU_ARGS = { groups: [] };
+
 export const Default: Story = {
+  args: DUMMY_FILTER_MENU_ARGS,
   render: () => {
     const [dateRange, setDateRange] = useState("90d");
     const [harness, setHarness] = useState("all");
@@ -31,7 +39,6 @@ export const Default: Story = {
           {
             id: "dateRange",
             label: "Date range",
-            icon: <CalendarIcon className="size-4" />,
             value: dateRange,
             onValueChange: setDateRange,
             options: [
@@ -44,7 +51,6 @@ export const Default: Story = {
           {
             id: "harness",
             label: "Harness",
-            icon: <BotIcon className="size-4" />,
             value: harness,
             onValueChange: setHarness,
             options: [
@@ -56,7 +62,6 @@ export const Default: Story = {
           {
             id: "status",
             label: "Status",
-            icon: <CircleDotIcon className="size-4" />,
             value: status,
             onValueChange: setStatus,
             options: [

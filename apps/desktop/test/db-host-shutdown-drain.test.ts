@@ -20,14 +20,23 @@
  *  3. A db-host `exit` during the intentional shutdown window (beginClosing() /
  *     close()) is NOT relabeled "unexpected" and does NOT schedule a restart.
  *  4. The drain timer is cleared on the clean-settle path (no dangling timer).
+ *  5. ISS-9839 / ISS-9914 — the ONE exception to the `closing` refusal: the
+ *     terminal flushes `db-host-shutdown-admission.ts` names are admitted
+ *     while `closing` and drained like any in-flight write; they are refused
+ *     once the client is `closed` or its child is gone. Every other op is
+ *     still refused.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
+import { resolveIngestStoreProvider } from "../src/main/dashboard/ingest-store-provider.js";
+import { createDbHostAgentDatabase } from "../src/main/database/db-host/db-host-agent-database.js";
 import { DbHostClient } from "../src/main/database/db-host/db-host-client.js";
 import {
   DbHostRequestKind,
   DbHostResponseKind,
 } from "../src/main/database/db-host/db-host-protocol.js";
+import { DB_HOST_STORE_OP_PREFIX } from "../src/main/database/db-host/db-host-store-op-registry.js";
+import { INGEST_BATCH_RESUME_CURSOR_WRITE_OP } from "../src/main/database/ingest-batch-resume-cursor-store.js";
 import type {
   DbHostChildExitListener,
   DbHostChildListenerArgs,
@@ -36,8 +45,14 @@ import type {
 
 /** Match the "db-host is closing (op: …)" rejection a queued invoke throws. */
 const CLOSING_REJECTION = /closing/;
+/** Match the "db-host is closed (op: …)" rejection a post-close invoke throws. */
+const CLOSED_REJECTION = /db-host is closed/;
+/** Match the plain rejection an invoke gets once the child is gone. */
+const NOT_RUNNING_REJECTION = /db-host is not running/;
+/** The cursor's terminal flush, exactly as the lifecycle's `rawStoreOp` sends it. */
+const CURSOR_FLUSH_OP = `${DB_HOST_STORE_OP_PREFIX}${INGEST_BATCH_RESUME_CURSOR_WRITE_OP}`;
 
-type PostedRequest = { kind: string; id?: number };
+type PostedRequest = { kind: string; id?: number; op?: string };
 
 /**
  * A fake forked db-host child capturing the client's exit + message listeners
@@ -531,3 +546,185 @@ test("beginClosing() before an exit suppresses the unexpected-relabel and restar
     "beginClosing() suppresses the unexpected relabel"
   );
 });
+
+test("ISS-9839: `closing` admits a terminal flush and still refuses an ordinary op — `closed` refuses both", async () => {
+  const timer = makeFakeTimer();
+  const { client, fake } = await startReadyClient(timer);
+
+  // The app opens the intentional-shutdown window FIRST and only then tears down
+  // the capture services (desktop-application-shutdown.ts). Everything the
+  // teardown then issues arrives here.
+  client.beginClosing();
+
+  // The ordinary op is issued FIRST: a gate that admitted it would have posted
+  // it ahead of the terminal flush, so "never posted" is read off the post
+  // order rather than off a wait for something that did not happen.
+  const ordinary = client.invoke("prisma.write", []);
+  // Handle the refusal at creation: it rejects a microtask later, and any
+  // macrotask hop before the assertion would surface it as unhandled.
+  const ordinaryRefused = assert.rejects(ordinary, CLOSING_REJECTION);
+  const terminal = client.invoke(CURSOR_FLUSH_OP, []);
+  fake.resolveInvoke(await waitForInvokeOp(fake.posted, CURSOR_FLUSH_OP), null);
+  assert.equal(
+    await terminal,
+    null,
+    "the terminal flush committed in the child"
+  );
+  assert.deepEqual(
+    invokeOps(fake.posted),
+    [CURSOR_FLUSH_OP],
+    "the ordinary op never reached the child"
+  );
+  await ordinaryRefused;
+
+  // close() drains, acknowledges and kills. Past that point the drain has been
+  // accounted for and the child is gone, so a terminal flush refuses too.
+  const closing = client.close();
+  await waitForPosted(fake.posted, DbHostRequestKind.Close);
+  fake.completeClose();
+  await closing;
+  await assert.rejects(
+    client.invoke(CURSOR_FLUSH_OP, []),
+    CLOSED_REJECTION,
+    "a terminal flush is not a licence to write into a CLOSED client"
+  );
+});
+
+test("ISS-9914: a terminal flush issued inside the window is drained before Close — never killed mid-write", async () => {
+  const timer = makeFakeTimer();
+  const { client, fake } = await startReadyClient(timer);
+  client.beginClosing();
+  const terminal = client.invoke(CURSOR_FLUSH_OP, []);
+  const terminalId = await waitForInvokeOp(fake.posted, CURSOR_FLUSH_OP);
+
+  const closing = client.close();
+  await Promise.resolve();
+  assert.equal(
+    fake.isKilled(),
+    false,
+    "child not killed while the terminal flush is in flight"
+  );
+  assert.ok(
+    !fake.posted.some((m) => m.kind === DbHostRequestKind.Close),
+    "Close is not sent until the terminal flush settles"
+  );
+
+  fake.resolveInvoke(terminalId, null);
+  assert.equal(await terminal, null, "the terminal flush landed");
+  await waitForPosted(fake.posted, DbHostRequestKind.Close);
+  fake.completeClose();
+  await closing;
+  assert.equal(
+    fake.isKilled(),
+    true,
+    "child killed only after the flush landed"
+  );
+});
+
+test("ISS-9914: a terminal flush cannot outlive the host — a child already gone refuses it and nothing re-forks", async () => {
+  let spawnCount = 0;
+  const fake = makeFakeChild();
+  const timer = makeFakeTimer();
+  const client = new DbHostClient({
+    onEmit: () => {},
+    onLog: () => {},
+    fork: () => {
+      spawnCount++;
+      return fake.child;
+    },
+    setTimeoutFn: timer.setTimeoutFn,
+    clearTimeoutFn: timer.clearTimeoutFn,
+  });
+  const started = client.start({ dataDir: "/tmp/db" });
+  fake.ready();
+  await started;
+
+  client.beginClosing();
+  // The child goes away inside the window — its own exit, or the OS.
+  fake.exit(0);
+
+  await assert.rejects(
+    client.invoke(CURSOR_FLUSH_OP, []),
+    NOT_RUNNING_REJECTION
+  );
+  assert.deepEqual(
+    invokeOps(fake.posted),
+    [],
+    "nothing was posted into the dead child"
+  );
+  assert.equal(spawnCount, 1, "admitting the flush did not re-fork the host");
+});
+
+test("ISS-9914: the teardown's ingest-store flush crosses a closing client through the real proxy — an ordinary proxied op does not", async () => {
+  const timer = makeFakeTimer();
+  const { client, fake } = await startReadyClient(timer);
+  const agentDatabase = createDbHostAgentDatabase(client);
+  const logs: string[] = [];
+  const hydrating = resolveIngestStoreProvider({
+    database: agentDatabase,
+    log: (message) => {
+      logs.push(message);
+    },
+  });
+  fake.resolveInvoke(
+    await waitForInvokeOp(fake.posted, "collectorIngestStores.loadAll"),
+    []
+  );
+  const quarantine = (await hydrating).parseQuarantine("claude");
+
+  client.beginClosing();
+
+  // Issued first for the same post-order reason as the ISS-9839 case above.
+  const ordinary = agentDatabase.sessions.count();
+  const ordinaryRefused = assert.rejects(ordinary, CLOSING_REJECTION);
+  const saved = quarantine.save({
+    version: 1,
+    entries: { "/poison.jsonl": { attempts: 3 } },
+  });
+  fake.resolveInvoke(
+    await waitForInvokeOp(fake.posted, "collectorIngestStores.save"),
+    null
+  );
+  assert.equal(await saved, true, "the quarantine flush was accepted");
+  assert.deepEqual(
+    logs,
+    [],
+    "no `write failed` line on the monitored collector channel"
+  );
+  assert.equal(
+    invokeOps(fake.posted).includes("sessions.count"),
+    false,
+    "the ordinary op never reached the child"
+  );
+  await ordinaryRefused;
+});
+
+/** Ops of every Invoke posted to the child, in post order. */
+function invokeOps(posted: PostedRequest[]): (string | undefined)[] {
+  return posted
+    .filter((m) => m.kind === DbHostRequestKind.Invoke)
+    .map((m) => m.op);
+}
+
+/**
+ * Drain microtasks (bounded) until an Invoke for `op` is posted, and return its
+ * id. THROWS when the bound is exhausted, like {@link waitForPosted}.
+ */
+async function waitForInvokeOp(
+  posted: PostedRequest[],
+  op: string,
+  maxTurns = 50
+): Promise<number> {
+  for (let turn = 0; turn < maxTurns; turn++) {
+    const id = posted.find(
+      (m) => m.kind === DbHostRequestKind.Invoke && m.op === op
+    )?.id;
+    if (id !== undefined) {
+      return id;
+    }
+    await Promise.resolve();
+  }
+  throw new Error(
+    `no Invoke for "${op}" was posted within the microtask bound`
+  );
+}

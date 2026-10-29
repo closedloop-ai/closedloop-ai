@@ -3,10 +3,11 @@ import { withLogging } from "@repo/observability/next-config";
 import { createMDX } from "fumadocs-mdx/next";
 import type { NextConfig } from "next";
 import { env } from "@/env";
+import { withTrustedLabels } from "../../scripts/analytics/trusted-label-next-config.mjs";
 
 const withMDX = createMDX();
 
-let nextConfig: NextConfig = withMDX(withLogging(config));
+let nextConfig: NextConfig = withTrustedLabels(withMDX(withLogging(config)));
 
 // Serve the self-contained attendee-prep one-pager at a clean URL.
 // The file lives in public/ as a static asset; this maps the extensionless

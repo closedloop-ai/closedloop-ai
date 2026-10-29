@@ -26,15 +26,15 @@ vi.mock("@repo/app/insights/components/insights-data-source-provider", () => ({
   WebInsightsDataSourceProvider: ({
     children,
     githubAuthorizeHref,
-    githubInstallHref,
+    teamScopes,
   }: {
     children: ReactNode;
     githubAuthorizeHref?: string;
-    githubInstallHref?: string;
+    teamScopes?: boolean;
   }) => (
     <div
       data-github-authorize-href={githubAuthorizeHref}
-      data-github-install-href={githubInstallHref}
+      data-team-scopes={String(teamScopes)}
       data-testid="web-insights-data-source"
     >
       {children}
@@ -62,16 +62,29 @@ describe("org insights page route", () => {
     expect(screen.getByText("Insights QA target")).toBeInTheDocument();
     expect(screen.getByTestId("web-insights-data-source")).toHaveAttribute(
       "data-github-authorize-href",
-      "/api/integrations/github?returnTo=%2Facme%2Finsights"
+      "/connect/github/link?returnTo=%2Facme%2Finsights"
     );
-    expect(screen.getByTestId("web-insights-data-source")).toHaveAttribute(
-      "data-github-install-href",
-      "/api/integrations/github?install=true&returnTo=%2Facme%2Finsights"
+    // ISS-5958 D3 follow-on: the route hands the provider a personal-authorize
+    // href and nothing else — no CTA opens the org App-installation flow.
+    expect(screen.getByTestId("web-insights-data-source")).not.toHaveAttribute(
+      "data-github-install-href"
     );
     expect(screen.getByText("Storage namespace: acme")).toBeInTheDocument();
     expect(
       screen.getByText("Insights QA target").closest("[data-feature-flag]")
     ).toHaveAttribute("data-feature-flag", INSIGHTS_FEATURE_FLAG_KEY);
+  });
+
+  // ISS-7514: this route is the one that renders the scope selector, so it is
+  // the one that asks the provider to read the org's Teams. Its sibling
+  // assertion lives on the dashboard route, which must NOT ask.
+  it("asks the provider for team scopes, because it renders the scope selector", () => {
+    render(<InsightsRoutePage />);
+
+    expect(screen.getByTestId("web-insights-data-source")).toHaveAttribute(
+      "data-team-scopes",
+      "true"
+    );
   });
 
   // ISS-5037: Insights is a Labs destination, so the Labs CONTAINER gate wraps

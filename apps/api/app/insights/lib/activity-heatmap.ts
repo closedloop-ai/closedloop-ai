@@ -1,5 +1,7 @@
 import type { ActivityHeatmap } from "@repo/api/src/types/insights";
 import { Prisma, withDb } from "@repo/database";
+import { AGENT_TURN_TIMESTAMPS_METADATA_KEY } from "@repo/lib/agent-sessions/agent-turn-timestamps";
+import { HUMAN_TURN_TIMESTAMPS_METADATA_KEY } from "@repo/lib/agent-sessions/human-turn-timestamps";
 import {
   HEADLESS_ENTRYPOINT_PREFIXES,
   HEADLESS_ENTRYPOINT_TOKENS,
@@ -10,8 +12,7 @@ import { eachDayKey, runDailyBucketedQuery } from "./daily-buckets";
 
 /**
  * The cloud `activityHeatmap` derivation, extracted from `service.ts` (ISS-5408)
- * — that file is a grandfathered over-ceiling module under the repo's 1,000-line
- * rule and this change would otherwise have grown it.
+ * — this change would otherwise have grown that file.
  *
  * ## What an Agent turn is, and why it is no longer a `$.messages` row
  *
@@ -78,37 +79,71 @@ import { eachDayKey, runDailyBucketedQuery } from "./daily-buckets";
  * so the common case is unmoved relative to the desktop under either rule —
  * verified at 35/35, 49/49, 23/23 on the same store.
  *
- * ## Human turns are unchanged
+ * ## Human turns (ISS-7896)
  *
- * Human turns still come from `$.messages` (`role='human'` AND the session is
- * NOT headless), mirroring the desktop's `collectHumanUnits`. The two halves
- * read INDEPENDENT sources and are guarded independently, exactly as
- * `deriveSessionTurnBuckets` does: a session with round-trips but absent/
- * malformed `$.messages` must still get its Agent cells, and vice versa.
+ * The Human half had the SAME defect the Agent half did, one source over: it
+ * read `$.messages`, which both sync lanes cap at `MAX_METADATA_MESSAGES` (100),
+ * so a session's human tail was never counted. Measured over the 27 frozen
+ * golden dossiers this side reported 42 human turns against the desktop oracle's
+ * 109 (2026-06-15: 2 against 9).
+ *
+ * ISS-5408's own remedy was unavailable here — no cloud table carries a
+ * per-human-turn timestamp (`agent_session_token_events` is assistant
+ * round-trips with no role column, `AgentSessionUsageRollup.humanTurns` is a
+ * scalar) — so the desktop now DERIVES `metadata.humanTurnTimestamps` from its
+ * full local `messages` array, using `collectHumanTurnUnits`, the same predicate
+ * that feeds its own `session_turn_bucket` human rows.
+ *
+ * So the Human half is two disjoint per-session arms:
+ * {@link humanTurnTimestampsSql} when the session carries a usable key, and
+ * {@link humanTurnsSql} — the unchanged `$.messages` path — otherwise.
+ * {@link hasTurnTimestampsSql} is the single expression that splits them.
+ *
+ * The Human and Agent halves still read INDEPENDENT sources and are guarded
+ * independently, exactly as `deriveSessionTurnBuckets` does: a session with
+ * round-trips but absent/malformed `$.messages` must still get its Agent cells,
+ * and vice versa.
  *
  * Note the headless classifier's role NARROWS on the round-trip path, matching
  * the desktop. It used to both suppress the Human row AND promote that turn to
  * an Agent row; the promotion is moot there, because those Agent cells no longer
  * come from `$.messages` at all. The suppression half is still load-bearing.
  *
- * The promotion is NOT gone repo-wide: it survives, deliberately, on the legacy
- * fallback below, which still reads `$.messages` and would otherwise strand a
- * headless session's prompts in neither half. See
+ * The promotion is NOT gone repo-wide: it survives, deliberately, on both
+ * token-event-less agent arms below — folded into the derived key by the
+ * desktop producer, and spelled in SQL on the raw fallback — and would
+ * otherwise strand a headless session's prompts in neither half. See
  * {@link agentLegacyMessageRowsSql}.
  *
- * ## Sessions that synced no round-trip series
+ * ## Sessions that synced no round-trip series (ISS-9864)
  *
  * Not every session has token events: the Codex OTel writer persists to
  * `token_usage` but not `token_events` (see the desktop `token-parity` note),
  * and pre-FEA-2730 rows predate the lane. Counting those as zero Agent turns
  * would render a genuinely busy period as idle — the exact failure this ticket
- * exists to prevent — so such sessions fall back to their legacy `$.messages`
- * count: assistant rows PLUS, when the session is headless, its injected `human`
- * prompts, which is the prior expression term for term. The fallback is per
- * SESSION, applies only where the better basis is absent, and is strictly the
- * PRIOR behavior, so it can never regress a session that renders correctly
- * today. Dropping the headless term is what would regress it — see
- * {@link agentLegacyMessageRowsSql}.
+ * exists to prevent — so such sessions are counted from `$.messages`: assistant
+ * rows PLUS, when the session is headless, its injected `human` prompts.
+ *
+ * That population is itself two disjoint per-session arms, the same split the
+ * Human half has. `$.messages` reaches this side capped at
+ * `MAX_METADATA_MESSAGES` (100), so a legacy read of it could never count turn
+ * 101 — and the desktop, which stores the array whole, sliced its own read to
+ * the same window so the two surfaces would at least agree (ISS-8259). ISS-7896
+ * ruling A had reserved this arm's raw reading; the ISS-9864 ruling (Tamsin,
+ * 2026-09-14) amended it for exactly this change. So the desktop now DERIVES
+ * `metadata.agentTurnTimestamps` from its FULL local `messages` array, through
+ * `collectLegacyAgentTurnUnits` — the same predicate that feeds its own
+ * `session_turn_bucket` agent rows on this population — and this side reads it:
+ * {@link agentTurnTimestampsSql} when the session carries a usable key, and
+ * {@link agentLegacyMessageRowsSql} — the unchanged raw `$.messages` path,
+ * still capped at 100 — otherwise. {@link hasTurnTimestampsSql} is the
+ * single expression that splits them, and both are gated on the same
+ * `NOT EXISTS (token events)` so neither can overlap {@link agentRoundTripsSql}.
+ *
+ * The fallback is per SESSION, applies only where the better basis is absent,
+ * and is strictly the PRIOR behavior, so it can never regress a session that
+ * renders correctly today. Dropping the headless term is what would regress
+ * it — see {@link agentLegacyMessageRowsSql}.
  */
 
 /**
@@ -162,6 +197,10 @@ function localTsSql(
  * Human turns from `$.messages`, unchanged from FEA-3684 apart from dropping the
  * headless→Agent promotion (see the module doc).
  *
+ * ISS-7896 scoped this to sessions WITHOUT a usable `humanTurnTimestamps` — old
+ * desktop builds, non-desktop callers, and any session whose producer declined to
+ * carry the key. It remains the fallback basis and its own logic is untouched.
+ *
  * Malformed metadata, a non-array `messages`, a non-object element, a
  * non-`human` role, or a `timestamp` that isn't a string Postgres accepts as a
  * FULL-STRING `timestamp` are all skipped rather than aborting the scan. The row
@@ -172,12 +211,7 @@ function localTsSql(
  * cast in the SELECT. A single malformed synced row therefore drops out of the
  * buckets instead of 500-ing the whole `/insights/utilization` endpoint.
  */
-function humanTurnsSql(
-  scopeSql: Prisma.Sql,
-  trendStart: Date,
-  end: Date,
-  timeZone: string | undefined
-): Prisma.Sql {
+function humanTurnsSql(timeZone: string | undefined): Prisma.Sql {
   const localTs = localTsSql(
     Prisma.sql`(m ->> 'timestamp')::timestamp`,
     timeZone
@@ -188,8 +222,7 @@ function humanTurnsSql(
       EXTRACT(HOUR FROM ${localTs})::int AS hour,
       1 AS human,
       0 AS agent
-    FROM session_detail s
-    JOIN artifacts a ON a.id = s.artifact_id
+    FROM scoped_sessions s
     CROSS JOIN LATERAL jsonb_array_elements(
       CASE
         WHEN jsonb_typeof(s.metadata -> 'messages') = 'array'
@@ -197,8 +230,7 @@ function humanTurnsSql(
         ELSE '[]'::jsonb
       END
     ) AS m
-    WHERE s.session_started_at >= ${trendStart}
-      AND s.session_started_at <= ${end}
+    WHERE NOT (${hasTurnTimestampsSql(HUMAN_TURN_TIMESTAMPS_METADATA_KEY)})
       AND jsonb_typeof(m) = 'object'
       AND (m ->> 'role') = 'human'
       AND jsonb_typeof(m -> 'timestamp') = 'string'
@@ -210,7 +242,6 @@ function humanTurnsSql(
       -- and silently drop a genuine human turn. An absent signal means not
       -- headless (matching isHeadlessSession), so pin it to false.
       AND NOT COALESCE((${headlessSessionSql()}), false)
-      AND (${scopeSql})
   `;
 }
 
@@ -229,25 +260,21 @@ function humanTurnsSql(
  * D4), so org isolation comes from the `session → artifact` relation exactly as
  * every other cloud reader of it does.
  */
-function agentRoundTripsSql(
-  scopeSql: Prisma.Sql,
-  trendStart: Date,
-  end: Date,
-  timeZone: string | undefined
-): Prisma.Sql {
+function agentRoundTripsSql(timeZone: string | undefined): Prisma.Sql {
   const localTs = localTsSql(Prisma.sql`te.event_created_at`, timeZone);
   return Prisma.sql`
     SELECT
       to_char(${localTs}, 'YYYY-MM-DD') AS day,
       EXTRACT(HOUR FROM ${localTs})::int AS hour,
       0 AS human,
-      1 AS agent
-    FROM agent_session_token_events te
-    JOIN session_detail s ON s.artifact_id = te.agent_session_id
-    JOIN artifacts a ON a.id = s.artifact_id
-    WHERE s.session_started_at >= ${trendStart}
-      AND s.session_started_at <= ${end}
-      AND (${scopeSql})
+      te.n AS agent
+    FROM scoped_sessions s
+    CROSS JOIN LATERAL (
+      SELECT event_created_at, COUNT(*)::int AS n
+      FROM agent_session_token_events
+      WHERE agent_session_id = s.artifact_id
+      GROUP BY event_created_at
+    ) te
   `;
 }
 
@@ -283,12 +310,28 @@ function agentRoundTripsSql(
  * one bucket: `human` + not headless ⇒ Human, `human` + headless ⇒ Agent,
  * `assistant` ⇒ Agent.
  */
-function agentLegacyMessageRowsSql(
-  scopeSql: Prisma.Sql,
-  trendStart: Date,
-  end: Date,
-  timeZone: string | undefined
-): Prisma.Sql {
+function agentLegacyMessageRowsSql(timeZone: string | undefined): Prisma.Sql {
+  // ISS-9864 scoped this arm to sessions WITHOUT a usable `agentTurnTimestamps`
+  // — an old desktop build, a non-desktop caller, or a producer that declined
+  // to carry the key. It is the fallback basis and its row logic is untouched;
+  // the desktop's TypeScript twin of this predicate now lives in
+  // `@repo/lib/agent-sessions/agent-turn-timestamps` (`collectLegacyAgentTurnUnits`)
+  // and is what the key on the other arm is derived from.
+  //
+  // ISS-8659: the fork-replay filter below is applied to BOTH surfaces in one
+  // change, deliberately. ISS-8659 ruled that a fork must not be credited with
+  // its parent's work, and the desktop twin is gated in the same commit. Gating
+  // one side alone is what would break the ruling's actual purpose: both
+  // surfaces reporting one number.
+  //
+  // The filter compares jsonb to jsonb rather than casting `m ->> 'isForkReplayed'`
+  // to boolean. Nothing validates the element shape of this synced blob -- the
+  // `messages` array has no Zod schema at cloud ingest -- so a `2`, a `{}` or a
+  // string would make the cast RAISE and 500 the whole endpoint on one row, the
+  // same failure the timestamp guard below already exists to prevent. `IS
+  // DISTINCT FROM 'true'::jsonb` also matches the strict `=== true` the desktop
+  // predicate uses, so an absent key and a junk value both mean "not replayed"
+  // on either surface.
   const localTs = localTsSql(
     Prisma.sql`(m ->> 'timestamp')::timestamp`,
     timeZone
@@ -299,8 +342,7 @@ function agentLegacyMessageRowsSql(
       EXTRACT(HOUR FROM ${localTs})::int AS hour,
       0 AS human,
       1 AS agent
-    FROM session_detail s
-    JOIN artifacts a ON a.id = s.artifact_id
+    FROM scoped_sessions s
     CROSS JOIN LATERAL jsonb_array_elements(
       CASE
         WHEN jsonb_typeof(s.metadata -> 'messages') = 'array'
@@ -308,14 +350,14 @@ function agentLegacyMessageRowsSql(
         ELSE '[]'::jsonb
       END
     ) AS m
-    WHERE s.session_started_at >= ${trendStart}
-      AND s.session_started_at <= ${end}
-      AND NOT EXISTS (
+    WHERE NOT EXISTS (
         SELECT 1
         FROM agent_session_token_events te
         WHERE te.agent_session_id = s.artifact_id
       )
+      AND NOT (${hasTurnTimestampsSql(AGENT_TURN_TIMESTAMPS_METADATA_KEY)})
       AND jsonb_typeof(m) = 'object'
+      AND (m -> 'isForkReplayed') IS DISTINCT FROM 'true'::jsonb
       AND (
         (m ->> 'role') = 'assistant'
         OR (
@@ -325,7 +367,6 @@ function agentLegacyMessageRowsSql(
       )
       AND jsonb_typeof(m -> 'timestamp') = 'string'
       AND pg_input_is_valid((m ->> 'timestamp'), 'timestamp')
-      AND (${scopeSql})
   `;
 }
 
@@ -338,11 +379,35 @@ function agentLegacyMessageRowsSql(
  * the zone (see {@link runDailyBucketedQuery}), and enumerates the day axis in
  * the SAME zone the rows were keyed in.
  *
- * Residual bound, unchanged by ISS-5408 and stated so it is not mistaken for
- * exactness: the HUMAN half still reads `$.messages`, which the cloud persists
- * capped at `MAX_METADATA_MESSAGES` (100) per session, so a very high-turn
- * session's human tail is not counted. The Agent half is no longer subject to
- * that cap because it no longer reads `$.messages`.
+ * Residual bound, stated so it is not mistaken for exactness. ISS-5408 freed the
+ * Agent half from `MAX_METADATA_MESSAGES` (100) by reading round-trips; ISS-7896
+ * freed the Human half the same way, via the desktop-derived
+ * `metadata.humanTurnTimestamps`; ISS-9864 freed the token-event-less Agent
+ * fallback the same way again, via `metadata.agentTurnTimestamps`. What is
+ * still capped, for EITHER key:
+ *
+ *  - A session whose producer did NOT carry the key — an old desktop build, a
+ *    non-desktop caller, or a session whose timestamps fell outside the key's
+ *    grammar or past its 1000-entry bound — falls back to `$.messages` and is
+ *    still bounded at 100. That is the prior number, never worse. For the agent
+ *    key the bound bites harder than for the human one: an agent unit is one
+ *    `$.messages` row per content BLOCK, and a token-event-less session past
+ *    1000 of them reports 100 here while the desktop, which no longer slices,
+ *    reports its full local count — the ISS-8259 divergence with its sign
+ *    flipped, for that population only. Raising the bound is a separate ruling.
+ *  - A session synced by a NEW desktop to an OLD cloud stored the key under the
+ *    generic 100-item array cap. Once this side ships, that stored array is
+ *    counted as-is; the session reports 100 until the desktop's revision-7
+ *    replay re-syncs it. There is no cloud-side backfill.
+ *  - A degraded resync (`boundSessionMetadataToBytes` shedding the appended key,
+ *    `degraded-metadata-merge` reinstating the stored copy) can leave a
+ *    previously capped copy in place for the same reason.
+ *  - A `HEADLESS_*` list drift where THIS side classifies a session headless and
+ *    the desktop producer does not: the human key then carries the injected
+ *    prompts and `humanTurnTimestampsSql`'s headless guard suppresses them,
+ *    while the agent key (derived non-headless) excludes them — they land in
+ *    neither half. The reverse skew is fine. The raw fallback promotes them to
+ *    Agent, as before.
  */
 export async function fetchActivityHeatmap(
   scopeSql: Prisma.Sql,
@@ -353,9 +418,11 @@ export async function fetchActivityHeatmap(
   const runQuery = (timeZone: string | undefined) => {
     const sources = Prisma.join(
       [
-        humanTurnsSql(scopeSql, trendStart, end, timeZone),
-        agentRoundTripsSql(scopeSql, trendStart, end, timeZone),
-        agentLegacyMessageRowsSql(scopeSql, trendStart, end, timeZone),
+        humanTurnTimestampsSql(timeZone),
+        humanTurnsSql(timeZone),
+        agentRoundTripsSql(timeZone),
+        agentTurnTimestampsSql(timeZone),
+        agentLegacyMessageRowsSql(timeZone),
       ],
       " UNION ALL "
     );
@@ -364,6 +431,23 @@ export async function fetchActivityHeatmap(
         { day: string; hour: number; human: number; agent: number }[]
       >(
         Prisma.sql`
+          WITH scoped_sessions AS MATERIALIZED (
+            SELECT s.artifact_id,
+              jsonb_build_object(
+                'messages', s.metadata -> 'messages',
+                ${HUMAN_TURN_TIMESTAMPS_METADATA_KEY}::text,
+                  s.metadata -> ${HUMAN_TURN_TIMESTAMPS_METADATA_KEY}::text,
+                ${AGENT_TURN_TIMESTAMPS_METADATA_KEY}::text,
+                  s.metadata -> ${AGENT_TURN_TIMESTAMPS_METADATA_KEY}::text,
+                'entrypoint', s.metadata -> 'entrypoint',
+                'permissionMode', s.metadata -> 'permissionMode'
+              ) AS metadata
+            FROM session_detail s
+            JOIN artifacts a ON a.id = s.artifact_id
+            WHERE s.session_started_at >= ${trendStart}
+              AND s.session_started_at <= ${end}
+              AND (${scopeSql})
+          )
           SELECT
             day,
             hour,
@@ -399,4 +483,145 @@ export async function fetchActivityHeatmap(
     days: eachDayKey(trendStart, end, bucketedZone),
     cells,
   };
+}
+
+/**
+ * Does this session carry a derived turn-timestamp ARRAY under `key` —
+ * `metadata.humanTurnTimestamps` (ISS-7896) or `metadata.agentTurnTimestamps`
+ * (ISS-9864)?
+ *
+ * ONE expression per key, used positively by the key arm
+ * ({@link humanTurnTimestampsSql}, {@link agentTurnTimestampsSql}) and negated
+ * by its `$.messages` fallback ({@link humanTurnsSql},
+ * {@link agentLegacyMessageRowsSql}), so each pair of arms is disjoint by
+ * construction rather than by two predicates someone must keep in step.
+ *
+ * A present array is AUTHORITATIVE, INCLUDING an empty one; only an ABSENT or
+ * non-array value falls back. The producer derives each key from the very unit
+ * list the desktop chart buckets (`collectHumanTurnUnits`,
+ * `collectLegacyAgentTurnUnits`), so `[]` means the desktop renders that
+ * session with no cells of that kind, and taking authority here is what makes
+ * the two surfaces agree BY CONSTRUCTION — which is the whole point of both
+ * tickets.
+ *
+ * The case that separates the two readings is a version skew where the producer
+ * classifies a session headless and this side does not. Taking authority reports
+ * 0, matching the desktop oracle. A non-empty test would instead fall back and
+ * count that session's INJECTED prompts as human turns — reporting MORE human
+ * activity than the oracle on a "when were people working" surface, which is the
+ * misclassification `headlessSessionSql` exists to prevent. A session whose
+ * timestamps fell outside the key's GRAMMAR is not this case: the producer omits
+ * the key entirely there, so it lands on the fallback arm.
+ *
+ * `jsonb_typeof` yields NULL for absent metadata, so `COALESCE` pins that to
+ * false and the negated form stays TRUE there (a NULL predicate would silently
+ * drop the session from BOTH arms).
+ */
+function hasTurnTimestampsSql(key: string): Prisma.Sql {
+  return Prisma.sql`
+    COALESCE(jsonb_typeof(${turnTimestampsJsonSql(key)}) = 'array', false)
+  `;
+}
+
+function turnTimestampsJsonSql(key: string): Prisma.Sql {
+  return Prisma.sql`s.metadata -> ${key}::text`;
+}
+
+/** The key's array for `jsonb_array_elements`; empty where absent or not an array. */
+function turnTimestampsArraySql(key: string): Prisma.Sql {
+  return Prisma.sql`
+    CASE
+      WHEN jsonb_typeof(${turnTimestampsJsonSql(key)}) = 'array'
+      THEN ${turnTimestampsJsonSql(key)}
+      ELSE '[]'::jsonb
+    END
+  `;
+}
+
+/**
+ * Human turns from `metadata.humanTurnTimestamps` — the ISS-7896 basis.
+ *
+ * The desktop producer derives this key from the session's FULL local `messages`
+ * array before compaction, so it is the only human basis on this side that is
+ * not bounded by `MAX_METADATA_MESSAGES` (100). It is whole-or-absent by
+ * contract: the producer omits the key entirely rather than ship a partial list,
+ * so counting it here can never report fewer turns than {@link humanTurnsSql}
+ * would have.
+ *
+ * Element filtering mirrors that arm exactly — `jsonb_typeof(t) = 'string'` and
+ * `pg_input_is_valid` — so a malformed entry drops out of the buckets instead of
+ * 500-ing `/insights/utilization`. `t #>> '{}'` extracts a scalar string's text.
+ *
+ * The headless guard is repeated here even though the producer already excludes
+ * headless sessions: the two classifications are built from the same
+ * `HEADLESS_*` SSOT but they run on different machines and different versions,
+ * so this side does not depend on that agreement.
+ */
+function humanTurnTimestampsSql(timeZone: string | undefined): Prisma.Sql {
+  const localTs = localTsSql(Prisma.sql`(t #>> '{}')::timestamp`, timeZone);
+  return Prisma.sql`
+    SELECT
+      to_char(${localTs}, 'YYYY-MM-DD') AS day,
+      EXTRACT(HOUR FROM ${localTs})::int AS hour,
+      1 AS human,
+      0 AS agent
+    FROM scoped_sessions s
+    CROSS JOIN LATERAL jsonb_array_elements(
+      ${turnTimestampsArraySql(HUMAN_TURN_TIMESTAMPS_METADATA_KEY)}
+    ) AS t
+    WHERE (${hasTurnTimestampsSql(HUMAN_TURN_TIMESTAMPS_METADATA_KEY)})
+      AND jsonb_typeof(t) = 'string'
+      AND pg_input_is_valid((t #>> '{}'), 'timestamp')
+      AND NOT COALESCE((${headlessSessionSql()}), false)
+  `;
+}
+
+/**
+ * Agent turns from `metadata.agentTurnTimestamps` — the ISS-9864 basis for a
+ * session that synced no round-trip series.
+ *
+ * The desktop producer derives this key from the session's FULL local
+ * `messages` array before compaction, so it is the only token-event-less agent
+ * basis on this side that is not bounded by `MAX_METADATA_MESSAGES` (100). It
+ * is whole-or-absent by contract: the producer omits the key entirely rather
+ * than ship a partial list, so counting it here can never report fewer turns
+ * than {@link agentLegacyMessageRowsSql} would have.
+ *
+ * Gated on the SAME `NOT EXISTS (token events)` as the legacy arm, so a session
+ * that synced round-trips is counted by {@link agentRoundTripsSql} alone even
+ * if a key is present on its blob (the producer omits it there, but this side
+ * does not depend on that). The three agent arms are pairwise disjoint.
+ *
+ * NO headless guard, unlike {@link humanTurnTimestampsSql}. The human key arm
+ * re-checks headless because the two classifications can skew and the human
+ * half must SUPPRESS a headless session's injected prompts; the agent key
+ * INCLUDES those prompts by construction (the FEA-2641 promotion is folded into
+ * the unit list on the desktop), and an entry is a bare timestamp with no role
+ * to re-check. A present array is the desktop's answer, and it is taken whole.
+ *
+ * Element filtering mirrors the human key arm — `jsonb_typeof(t) = 'string'`
+ * and `pg_input_is_valid` — so a malformed entry drops out of the buckets
+ * instead of 500-ing `/insights/utilization`.
+ */
+function agentTurnTimestampsSql(timeZone: string | undefined): Prisma.Sql {
+  const localTs = localTsSql(Prisma.sql`(t #>> '{}')::timestamp`, timeZone);
+  return Prisma.sql`
+    SELECT
+      to_char(${localTs}, 'YYYY-MM-DD') AS day,
+      EXTRACT(HOUR FROM ${localTs})::int AS hour,
+      0 AS human,
+      1 AS agent
+    FROM scoped_sessions s
+    CROSS JOIN LATERAL jsonb_array_elements(
+      ${turnTimestampsArraySql(AGENT_TURN_TIMESTAMPS_METADATA_KEY)}
+    ) AS t
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM agent_session_token_events te
+        WHERE te.agent_session_id = s.artifact_id
+      )
+      AND (${hasTurnTimestampsSql(AGENT_TURN_TIMESTAMPS_METADATA_KEY)})
+      AND jsonb_typeof(t) = 'string'
+      AND pg_input_is_valid((t #>> '{}'), 'timestamp')
+  `;
 }

@@ -2,8 +2,8 @@
  * @file parse-claude-subagents.ts
  * @description Claude subagent IDENTITY — the pure functions that decide what a
  * subagent record is called and which subagent a raw line belongs to. Split out
- * of `parse-claude.ts` under ISS-4592 to pay that grandfathered file back down
- * (repo AGENTS.md: an over-size file must never grow).
+ * of `parse-claude.ts` under ISS-4592 to pay that file back down
+ * (repo AGENTS.md → "File Size and Organization").
  *
  * Everything here is pure and accumulator-free, which is exactly why it can
  * live outside the parser: `ensureSidechainSubagent` stays in `parse-claude.ts`

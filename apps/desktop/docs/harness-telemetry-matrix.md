@@ -41,12 +41,8 @@ of these paths, which converge on the same tables (`sessions`, `agents`,
 Claude Code is the only harness that emits hooks; every other harness — Codex
 included — is captured entirely through log parsing.
 
-> **Two different harness enums.** Session-telemetry collectors use the `Harness`
-> union (`collectors/types.ts`: claude · codex · cursor · copilot · opencode).
-> Loop *observability adapters* use the separate `LoopHarness` enum
-> (`packages/loops-api`: claude · codex · cursor · opencode — **Copilot is not a
-> member**). Copilot therefore has session-log capture but no loop-observability
-> adapter entry.
+> Session-telemetry collectors use the `Harness` union (`collectors/types.ts`:
+> claude · codex · cursor · copilot · opencode).
 
 ## Metric coverage matrix
 

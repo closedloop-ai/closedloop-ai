@@ -232,37 +232,40 @@ describe("recoverMigrateDeployFailure", () => {
     ["single PGPASSWORD assignment", SENSITIVE_SINGLE_PG_PASSWORD_ASSIGNMENT],
     ["single PGHOST assignment", SENSITIVE_SINGLE_PGHOST_ASSIGNMENT],
     ["Postgres env connection text", SENSITIVE_ENV_CONNECTION_TEXT],
-  ])("redacts %s when it is parsed as the P0001 invariant", async (_description, sensitiveInvariantText) => {
-    const deps = createDeps();
-    const safeInvariantPrefix =
-      "PLN-587 Migration B cannot continue before checking tenant state:";
-    const invariantMessage = `${safeInvariantPrefix} ${sensitiveInvariantText}`;
-    const error = await captureThrownError(
-      recoverMigrateDeployFailure(
-        {
-          databaseUrl: DATABASE_URL,
-          schema: PREVIEW_SCHEMA,
-          branch: BRANCH,
-          error: createDeployError({
-            stderr: createP0001OutputWithInvariant(invariantMessage),
-          }),
-        },
-        deps
-      )
-    );
+  ])(
+    "redacts %s when it is parsed as the P0001 invariant",
+    async (_description, sensitiveInvariantText) => {
+      const deps = createDeps();
+      const safeInvariantPrefix =
+        "PLN-587 Migration B cannot continue before checking tenant state:";
+      const invariantMessage = `${safeInvariantPrefix} ${sensitiveInvariantText}`;
+      const error = await captureThrownError(
+        recoverMigrateDeployFailure(
+          {
+            databaseUrl: DATABASE_URL,
+            schema: PREVIEW_SCHEMA,
+            branch: BRANCH,
+            error: createDeployError({
+              stderr: createP0001OutputWithInvariant(invariantMessage),
+            }),
+          },
+          deps
+        )
+      );
 
-    expect(error.message).toContain(
-      PrismaMigrateDeployErrorCode.UserDefinedInvariant
-    );
-    expect(error.message).toContain(MIGRATION_NAME);
-    expect(error.message).toContain(safeInvariantPrefix);
-    expect(error.message).toContain(SENSITIVE_INVARIANT_REDACTION_MARKER);
-    expect(error.message).not.toContain(sensitiveInvariantText);
-    expect(deps.resetSchema).not.toHaveBeenCalled();
-    expect(deps.upsertSchemaRegistry).not.toHaveBeenCalled();
-    expect(deps.runMigrateDeploy).not.toHaveBeenCalled();
-    expect(deps.resolveFailedMigration).not.toHaveBeenCalled();
-  });
+      expect(error.message).toContain(
+        PrismaMigrateDeployErrorCode.UserDefinedInvariant
+      );
+      expect(error.message).toContain(MIGRATION_NAME);
+      expect(error.message).toContain(safeInvariantPrefix);
+      expect(error.message).toContain(SENSITIVE_INVARIANT_REDACTION_MARKER);
+      expect(error.message).not.toContain(sensitiveInvariantText);
+      expect(deps.resetSchema).not.toHaveBeenCalled();
+      expect(deps.upsertSchemaRegistry).not.toHaveBeenCalled();
+      expect(deps.runMigrateDeploy).not.toHaveBeenCalled();
+      expect(deps.resolveFailedMigration).not.toHaveBeenCalled();
+    }
+  );
 
   it("redacts credential material parsed from a P0001 message field", async () => {
     const deps = createDeps();

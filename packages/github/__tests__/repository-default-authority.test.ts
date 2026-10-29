@@ -148,6 +148,60 @@ describe("Pull Request REST repository-default authority", () => {
     }
   });
 
+  it.each([
+    ["a string", "222"],
+    ["zero", 0],
+    ["a fractional number", 1.5],
+  ])(
+    "classifies a head repository id that is %s as Malformed",
+    async (_label, headRepositoryId) => {
+      mockPullsGet.mockResolvedValueOnce({
+        data: makePullRequest({ headRepositoryId }),
+      });
+
+      const result = await getSinglePullRequestWithProviderResult(
+        octokit,
+        "base-owner",
+        "widget",
+        42,
+        AUTHORITY_OBSERVATION
+      );
+
+      expect(result).toEqual({
+        status: GitHubProviderResultStatus.Success,
+        value: expect.objectContaining({
+          headRepositoryUnavailable: expect.objectContaining({
+            reason: RepositoryDefaultReason.Malformed,
+          }),
+        }),
+      });
+      if (result.status === GitHubProviderResultStatus.Success) {
+        expect(result.value).not.toHaveProperty("headRepository");
+      }
+    }
+  );
+
+  it("omits credentialOwnerId from provenance when the observation has none", async () => {
+    mockPullsGet.mockResolvedValueOnce({ data: makePullRequest() });
+    const { credentialOwnerId: _omitted, ...observationWithoutOwner } =
+      AUTHORITY_OBSERVATION;
+
+    const result = await getSinglePullRequestWithProviderResult(
+      octokit,
+      "base-owner",
+      "widget",
+      42,
+      observationWithoutOwner
+    );
+
+    expect(result.status).toBe(GitHubProviderResultStatus.Success);
+    if (result.status === GitHubProviderResultStatus.Success) {
+      const provenance = result.value.headRepository?.provenance;
+      expect(provenance).toMatchObject({ observationKey: "rest-attempt-1" });
+      expect(provenance).not.toHaveProperty("credentialOwnerId");
+    }
+  });
+
   it("keeps a missing default typed unavailable and never infers main or the base branch", async () => {
     mockPullsGet.mockResolvedValueOnce({
       data: makePullRequest({ headDefaultBranch: null }),
@@ -370,6 +424,7 @@ describe("bundled GraphQL repository-default authority", () => {
 
 type PullRequestFixtureOptions = {
   headRepository?: object | null;
+  headRepositoryId?: unknown;
   headFullName?: string;
   headDefaultBranch?: string | null;
 };
@@ -378,7 +433,7 @@ function makePullRequest(options: PullRequestFixtureOptions = {}) {
   const headRepository =
     options.headRepository === undefined
       ? {
-          id: 222,
+          id: options.headRepositoryId ?? 222,
           full_name: options.headFullName ?? "fork-owner/widget",
           default_branch:
             options.headDefaultBranch === undefined

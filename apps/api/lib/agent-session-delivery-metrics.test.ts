@@ -1,14 +1,19 @@
 import { GitHubPRState } from "@repo/api/src/types/github";
+import {
+  ArtifactRefMethod,
+  SessionArtifactLinkKind,
+  SessionPrRelationType,
+} from "@repo/api/src/types/session-artifact-link";
 import type { Prisma } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the session→PR-link DB seam so the adapter runs against synthetic
-// records without a database. `hasMatchingSessionPrLinks` returns true (there
-// are links to read) and `findMergedPrsLinkedToSessions` yields the merged-PR
-// rows the test supplies — the ISS-6028 shape: one row per PR, carrying the
-// branch artifacts it is current for. `mergedPrIdentity` is the REAL shared
-// helper (via importActual) so dedup stays exercised; the merged-PR predicate
-// itself now lives in that seam's query and is pinned in session-pr-links.test.
+// records without a database. The population probe returns true (there are links
+// to read) and `findMergedPrsLinkedToSessions` yields the merged-PR rows the test
+// supplies — the ISS-6028 shape: one row per PR, carrying the branch artifacts it
+// is current for. `mergedPrIdentity` is the REAL shared helper (via
+// importActual) so dedup stays exercised; the merged-PR predicate itself now
+// lives in that seam's query and is pinned in session-pr-links.test.
 const readRows: MergedPrRow[] = [];
 let hasLinks = true;
 
@@ -21,7 +26,42 @@ vi.mock("./session-pr-links", async () => {
     ...actual,
     hasMatchingSessionPrLinks: vi.fn(() => Promise.resolve(hasLinks)),
     findMergedPrsLinkedToSessions: vi.fn(
-      (_organizationId: string, _where: unknown) => Promise.resolve(readRows)
+      (
+        _organizationId: string,
+        _where: unknown,
+        _select: unknown,
+        mergedWithin: { start: number; end: number } | null = null
+      ) => {
+        // ISS-9924: the read's inclusive `mergedAt` bound, applied as the query
+        // applies it. `_count` is a relation count the bound does not narrow,
+        // so each row keeps the count it states.
+        const rows = readRows.filter(
+          (row) =>
+            mergedWithin === null ||
+            (row.mergedAt !== null &&
+              row.mergedAt.getTime() >= mergedWithin.start &&
+              row.mergedAt.getTime() <= mergedWithin.end)
+        );
+        const counts = new Map(
+          rows.map((row) => [
+            row.branchArtifact.id,
+            row.branchArtifact._count.pullRequestDetails,
+          ])
+        );
+        const links = rows.flatMap((row) =>
+          row.branchArtifact.targetLinks.map((link) => ({
+            targetId: row.branchArtifact.id,
+            metadata: link.metadata,
+          }))
+        );
+        return Promise.resolve({
+          details: rows,
+          admissionByBranchId: actual.buildSessionPrAdmissionIndex(
+            links,
+            counts
+          ),
+        });
+      }
     ),
   };
 });
@@ -45,7 +85,7 @@ async function runDeliveryMetrics(
   mergeWindow: Parameters<typeof computeDeliveryMetricsFromPrs>[2]
 ) {
   return computeDeliveryMetricsFromPrs(
-    await collectMergedPrsForScope(ORGANIZATION_ID, where),
+    (await collectMergedPrsForScope(ORGANIZATION_ID, where)).prs,
     costUsd,
     mergeWindow
   );
@@ -69,9 +109,15 @@ type MergedPrRow = {
   additions: number | null;
   deletions: number | null;
   isCurrent: boolean;
+  lastVerifiedAt: Date | null;
+  repositoryId: string | null;
   repositoryFullName: string | null;
   repository: { fullName: string } | null;
-  currentForBranches: { artifactId: string }[];
+  branchArtifact: {
+    id: string;
+    _count: { pullRequestDetails: number };
+    targetLinks: { metadata: Record<string, unknown> }[];
+  };
 };
 
 type LinkedPr = {
@@ -92,20 +138,39 @@ type LinkedPr = {
  * Multiple `targetIds` stand for one PR reached through several linked branches.
  */
 function mergedPr(pr: LinkedPr, ...alsoCurrentFor: string[]): MergedPrRow {
+  const scalarMetadata =
+    pr.repositoryFullName && pr.number != null
+      ? {
+          linkKind: SessionArtifactLinkKind.SessionPr,
+          repositoryFullName: pr.repositoryFullName,
+          prNumber: pr.number,
+          relationTypes: [SessionPrRelationType.Created],
+        }
+      : { linkKind: SessionArtifactLinkKind.SessionPr };
   return {
     number: pr.number,
     prState: pr.prState ?? GitHubPRState.Merged,
     mergedAt: pr.mergedAt,
-    additions: pr.additions ?? 100,
-    deletions: pr.deletions ?? 50,
+    // `=== undefined`, not `??`: an EXPLICIT null is the un-enriched row the
+    // ISS-9980 measured-zero cases need, and `??` would replace it with the
+    // default the way it replaces an omitted field.
+    additions: pr.additions === undefined ? 100 : pr.additions,
+    deletions: pr.deletions === undefined ? 50 : pr.deletions,
     isCurrent: pr.isCurrent ?? true,
+    lastVerifiedAt: new Date("2026-07-15T11:00:00.000Z"),
+    repositoryId: pr.repositoryFullName ? "repo-1" : null,
     repositoryFullName: pr.repositoryFullName,
     repository: pr.repositoryFullName
       ? { fullName: pr.repositoryFullName }
       : null,
-    currentForBranches: [pr.targetId, ...alsoCurrentFor].map((artifactId) => ({
-      artifactId,
-    })),
+    branchArtifact: {
+      id: pr.targetId,
+      _count: { pullRequestDetails: 1 },
+      targetLinks: [
+        { metadata: scalarMetadata },
+        ...alsoCurrentFor.map(() => ({ metadata: scalarMetadata })),
+      ],
+    },
   };
 }
 
@@ -193,6 +258,33 @@ describe("delivery metrics — merge-window bounding (FEA-4295)", () => {
     const metrics = await runDeliveryMetrics(where, 10, window);
 
     expect(metrics.mergedPrCount).toBe(1);
+  });
+
+  it("excludes an incidental current PR outside the declared reused-branch set", async () => {
+    const declaredMetadata = {
+      linkKind: SessionArtifactLinkKind.SessionBranch,
+      linkKinds: [SessionArtifactLinkKind.SessionPrSet],
+      prRefs: [1, 2].map((prNumber) => ({
+        repositoryFullName: "org/repo",
+        prNumber,
+        relationTypes: [SessionPrRelationType.Created],
+      })),
+    };
+    for (const number of [1, 2, 3]) {
+      const record = mergedPr({
+        targetId: "branch-reused",
+        number,
+        repositoryFullName: "org/repo",
+        mergedAt: IN_WINDOW_MERGE,
+      });
+      record.branchArtifact._count.pullRequestDetails = 3;
+      record.branchArtifact.targetLinks = [{ metadata: declaredMetadata }];
+      readRows.push(record);
+    }
+
+    const metrics = await runDeliveryMetrics(where, 10, window);
+
+    expect(metrics.mergedPrCount).toBe(2);
   });
 
   it("EXCLUDES a row carrying a null mergedAt (unknown merge instant)", async () => {
@@ -409,6 +501,88 @@ describe("delivery metrics — merge-window bounding (FEA-4295)", () => {
   });
 });
 
+// davetho on #7072: the SQL candidate preserved a measured zero and the LIVE
+// producer — the one the Sessions summary card actually reads — still collapsed
+// it with `|| null`. These cases drive THIS producer, which is where the card's
+// number comes from.
+describe("delivery metrics — the measured-zero rule on the LIVE path (ISS-9980)", () => {
+  const where = {} as Prisma.SessionDetailWhereInput;
+  const window = { start: WINDOW_START, end: WINDOW_END };
+
+  it("divides an enriched zero-line merged cohort into a real 0 rather than NOT AVAILABLE", async () => {
+    readRows.push(
+      mergedPr({
+        targetId: "branch-a",
+        number: 1,
+        repositoryFullName: "org/repo",
+        mergedAt: IN_WINDOW_MERGE,
+        additions: 0,
+        deletions: 0,
+      })
+    );
+
+    const metrics = await runDeliveryMetrics(where, 5, window);
+
+    // The PR merged and its line diff was READ — it landed nothing. That is a
+    // fact about the cohort ("you shipped a PR of no lines and spent $5"), so it
+    // divides into a real `0`; `|| null` used to hide it behind the same
+    // placeholder that means "we could not measure".
+    expect(metrics.mergedPrCount).toBe(1);
+    expect(metrics.mergedLocPerDollar).toBe(0);
+  });
+
+  it("reports NOT AVAILABLE when the zero is only an UN-ENRICHED merged PR folding in as 0", async () => {
+    readRows.push(
+      mergedPr({
+        targetId: "branch-a",
+        number: 1,
+        repositoryFullName: "org/repo",
+        mergedAt: IN_WINDOW_MERGE,
+        additions: null,
+        deletions: null,
+      })
+    );
+
+    const metrics = await runDeliveryMetrics(where, 5, window);
+
+    // The registered `Loc` numerator carries no `onlyEnriched` (FEA-2952), so
+    // this PR's null line diff sums to the SAME `0` as the measured case above.
+    // It is NOT KNOWABLE — the PR merged and nobody has read its size — so the
+    // card must say NOT AVAILABLE rather than publish a measurement nobody took.
+    expect(metrics.mergedPrCount).toBe(1);
+    expect(metrics.mergedLocPerDollar).toBeNull();
+  });
+
+  it("keeps the accepted understatement when a POSITIVE sum is only partly enriched", async () => {
+    readRows.push(
+      mergedPr({
+        targetId: "branch-a",
+        number: 1,
+        repositoryFullName: "org/repo",
+        mergedAt: IN_WINDOW_MERGE,
+        additions: 400,
+        deletions: 100,
+      }),
+      mergedPr({
+        targetId: "branch-b",
+        number: 2,
+        repositoryFullName: "org/repo",
+        mergedAt: IN_WINDOW_MERGE,
+        additions: null,
+        deletions: null,
+      })
+    );
+
+    const metrics = await runDeliveryMetrics(where, 5, window);
+
+    // FEA-2952 accepted that a lagging enrichment UNDERSTATES a positive sum;
+    // that is unchanged here. Only the zero case gained a guard, so pin the
+    // understated 500 / $5 = 100 rather than a null the guard must not produce.
+    expect(metrics.mergedPrCount).toBe(2);
+    expect(metrics.mergedLocPerDollar).toBeCloseTo(100, 5);
+  });
+});
+
 describe("delivery metrics — scan scoping (ISS-4549 / ISS-6028)", () => {
   const window = { start: WINDOW_START, end: WINDOW_END };
 
@@ -502,5 +676,167 @@ describe("resolveDeliveryMergeWindow (FEA-4295)", () => {
       start: 0,
       end: Date.parse("2026-07-31T23:59:59Z"),
     });
+  });
+});
+
+describe("delivery metrics — branch-linked evidence (ISS-7905)", () => {
+  const where = {} as Prisma.SessionDetailWhereInput;
+  const window = { start: WINDOW_START, end: WINDOW_END };
+
+  /**
+   * A merged PR whose branch carries ONLY a session→BRANCH link — the
+   * installation-free / desktop lane at rest, where the PR row was materialized
+   * from the session's `pull_request` artifact refs and
+   * `persistSessionPullRequestDetails` deliberately wrote no session→PR link.
+   */
+  function branchLinkedPr(pr: LinkedPr, method?: string): MergedPrRow {
+    const row = mergedPr(pr);
+    return {
+      ...row,
+      branchArtifact: {
+        ...row.branchArtifact,
+        targetLinks: [
+          {
+            metadata: {
+              linkKind: SessionArtifactLinkKind.SessionBranch,
+              linkKinds: [SessionArtifactLinkKind.SessionBranch],
+              ...(method ? { method } : {}),
+            },
+          },
+        ],
+      },
+    };
+  }
+
+  it("counts branch-linked merged PRs and only the qualifying ones", async () => {
+    readRows.push(
+      // Counts: non-prose branch link, merged inside the window.
+      branchLinkedPr({
+        targetId: "branch-installation-free",
+        number: 1,
+        repositoryFullName: null,
+        mergedAt: IN_WINDOW_MERGE,
+      }),
+      // Does NOT count: same evidence tier, merged after the window.
+      branchLinkedPr({
+        targetId: "branch-late",
+        number: 2,
+        repositoryFullName: null,
+        mergedAt: AFTER_WINDOW_MERGE,
+      }),
+      // Does NOT count: in-window, but the branch link is prose-derived, which
+      // ISS-5823 bars from every metric population.
+      branchLinkedPr(
+        {
+          targetId: "branch-prose",
+          number: 3,
+          repositoryFullName: null,
+          mergedAt: IN_WINDOW_MERGE,
+        },
+        ArtifactRefMethod.BranchMentionInProse
+      )
+    );
+
+    const metrics = await runDeliveryMetrics(where, 10, window);
+
+    // Whole-result equality against independently written literals, over a
+    // corpus that holds a PR that must count AND two that must not: a fixture
+    // that counted everything would report 3 here, and the pre-ISS-7905
+    // behaviour reported the all-null EMPTY_METRICS.
+    expect(metrics).toEqual({
+      mergedPrCount: 1,
+      // 100 additions + 50 deletions on the one admitted PR.
+      medianPrSize: 150,
+      // 150 gross lines ÷ $10.
+      mergedLocPerDollar: 15,
+    });
+  });
+
+  it("still reports no data when the only branch evidence is prose", async () => {
+    // The negative sibling of the case above, asserted as its own state rather
+    // than inferred from the count: with nothing admitted the card keeps the
+    // honest all-null absence, never a fabricated zero.
+    readRows.push(
+      branchLinkedPr(
+        {
+          targetId: "branch-prose",
+          number: 3,
+          repositoryFullName: "org/repo",
+          mergedAt: IN_WINDOW_MERGE,
+        },
+        ArtifactRefMethod.PrMentionInProse
+      )
+    );
+
+    expect(await runDeliveryMetrics(where, 10, window)).toEqual({
+      mergedPrCount: null,
+      medianPrSize: null,
+      mergedLocPerDollar: null,
+    });
+  });
+});
+
+describe("delivery metrics — merge-window read bound (ISS-9924)", () => {
+  const where = { userId: "user-1" } as Prisma.SessionDetailWhereInput;
+
+  it("forwards the merge window to the PR-side read", async () => {
+    const window = { start: WINDOW_START, end: WINDOW_END };
+    vi.mocked(findMergedPrsLinkedToSessions).mockClear();
+
+    await collectMergedPrsForScope(ORGANIZATION_ID, where, window);
+
+    expect(vi.mocked(findMergedPrsLinkedToSessions).mock.calls[0]?.[3]).toEqual(
+      window
+    );
+  });
+
+  it("reads every merged PR when the caller names no window", async () => {
+    vi.mocked(findMergedPrsLinkedToSessions).mockClear();
+
+    await collectMergedPrsForScope(ORGANIZATION_ID, where);
+
+    expect(
+      vi.mocked(findMergedPrsLinkedToSessions).mock.calls[0]?.[3]
+    ).toBeNull();
+  });
+
+  it("gives the current window the same count whether or not the read also spans the prior one", async () => {
+    // #7024 review: two repo-less merged PRs on ONE branch share the
+    // `branch:<id>` dedup bucket, so if both were admitted, read order — and so
+    // whether the prior window widened the read — would pick the bucket's merge
+    // instant. Neither is admitted: every arm that admits a repo-less row needs
+    // the branch to own exactly one PR, and the bound does not narrow that count.
+    const current = { start: WINDOW_START, end: WINDOW_END };
+    const spanWithPrior = {
+      start: Date.parse("2026-06-01T00:00:00Z"),
+      end: WINDOW_END,
+    };
+    for (const mergedAt of [BEFORE_WINDOW_MERGE, IN_WINDOW_MERGE]) {
+      const row = mergedPr({
+        targetId: "branch-shared",
+        number: 7,
+        repositoryFullName: null,
+        mergedAt,
+      });
+      row.branchArtifact._count.pullRequestDetails = 2;
+      readRows.push(row);
+    }
+
+    const currentOnly = computeDeliveryMetricsFromPrs(
+      (await collectMergedPrsForScope(ORGANIZATION_ID, where, current)).prs,
+      null,
+      current
+    );
+    const spanned = computeDeliveryMetricsFromPrs(
+      (await collectMergedPrsForScope(ORGANIZATION_ID, where, spanWithPrior))
+        .prs,
+      null,
+      current
+    );
+
+    expect([currentOnly.mergedPrCount, spanned.mergedPrCount]).toEqual([
+      null,
+      null,
+    ]);
   });
 });

@@ -75,7 +75,7 @@ const COLUMN_SPECS: readonly BranchColumnSpec[] = [
   },
   {
     id: "sessions",
-    label: "Linked Sessions",
+    label: "Linked sessions",
     width: "132px",
     icon: <LayersIcon className="size-4" />,
   },

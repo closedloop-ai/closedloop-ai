@@ -10,8 +10,8 @@
 import assert from "node:assert/strict";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { describe, it } from "vitest";
 import {
   censusTestFiles,
   EXCLUDED_TEST_FILES,
@@ -19,7 +19,6 @@ import {
   importsVitest,
   installsLoaderHook,
   isVitestEligible,
-  SHIMMED_NODE_TEST_SPECIFIERS,
   VITEST_INCOMPATIBLE_FILES,
   vitestReachingHelperSpecifiers,
 } from "../scripts/node-test-census.mjs";
@@ -35,6 +34,9 @@ const desktopDir = dirname(
 
 const SHARD_COUNTS = [1, 2, 3, 4, 8] as const;
 
+/** ISS-6258 ratchet: lowered whenever a file leaves the legacy lane, never raised. */
+const LEGACY_LANE_FILE_COUNT = 2;
+
 function collectableTestFiles(): string[] {
   return readdirSync(join(desktopDir, "test"), { withFileTypes: true })
     .filter(
@@ -48,7 +50,7 @@ function collectableTestFiles(): string[] {
 }
 
 describe("censusTestFiles", () => {
-  it("excludes exactly the one file another script is known to run", () => {
+  it("excludes exactly the files another script is known to run", () => {
     // The partition assertion below subtracts EXCLUDED_TEST_FILES from BOTH
     // sides, so growing that set would drop a file from every lane AND from the
     // expectation — a file run by nobody, on a required check, with the test
@@ -57,8 +59,8 @@ describe("censusTestFiles", () => {
     // which script picks it up instead.
     assert.deepEqual(
       [...EXCLUDED_TEST_FILES].sort(),
-      ["prisma-baseline-equivalence.test.ts"],
-      "a newly excluded file must name the script that runs it — `test:prisma-baseline` runs this one"
+      ["no-token-surface-dist.test.ts"],
+      "a newly excluded file must name the script that runs it — `test:dist-token-surface` runs `no-token-surface-dist.test.ts`"
     );
   });
 
@@ -92,17 +94,41 @@ describe("censusTestFiles", () => {
   });
 
   it("still has files on the legacy lane, so its exemptions are not yet stale", () => {
-    // This is one half of a contract whose other half lives in a DIFFERENT
-    // required check: scripts/lint/node-test-lane-coverage.test.ts keeps five
-    // EXEMPT_JOBS entries alive on the strength of this lane existing, and its
-    // own discovery is a text scan for `"--test"` in run-node-tests.mjs — which
-    // would keep finding the string even after the lane stopped selecting any
-    // file. This assertion is what makes that state loud instead.
+    // This used to be one half of a contract whose other half lived in a
+    // DIFFERENT required check: scripts/lint/node-test-lane-coverage.test.ts kept
+    // five EXEMPT_JOBS entries alive on the strength of this lane existing. That
+    // suite, and the EXEMPT_JOBS register with it, were deleted by ISS-10525, so
+    // this assertion is now the only thing that makes a dead legacy lane loud.
     const { nodeTest, vitest } = censusTestFiles();
     assert.ok(vitest.length > 0, "the Vitest lane must own files");
     assert.ok(
       nodeTest.length > 0,
-      "the legacy node:test lane selects nothing — delete the second spawn in run-node-tests.mjs and the five desktop entries in scripts/lint/node-test-lane-coverage.test.ts's EXEMPT_JOBS rather than leaving a dead spawn holding live exemptions"
+      "the legacy node:test lane selects nothing — delete the second spawn in run-node-tests.mjs rather than leaving a dead spawn behind (the EXEMPT_JOBS register that used to pair with it went with scripts/lint/node-test-lane-coverage.test.ts in ISS-10525)"
+    );
+  });
+
+  it("holds the legacy lane at its committed size, which only ever goes down", () => {
+    // ISS-6258. Nothing else notices growth: a new file on node:test's `mock`
+    // is routed to the legacy lane and both lanes stay green.
+    const { nodeTest } = censusTestFiles();
+    assert.ok(
+      nodeTest.length <= LEGACY_LANE_FILE_COUNT,
+      `the legacy node:test lane grew to ${nodeTest.length} files (ratchet: ${LEGACY_LANE_FILE_COUNT}). Write the new suite against vitest (vi, test/support/node-test-fake-timers.ts) instead of node:test; do not raise the ratchet. Legacy lane: ${nodeTest.join(", ")}`
+    );
+    assert.equal(
+      nodeTest.length,
+      LEGACY_LANE_FILE_COUNT,
+      `the legacy node:test lane shrank to ${nodeTest.length} files — lower LEGACY_LANE_FILE_COUNT to ${nodeTest.length} in this change so the room cannot be refilled`
+    );
+    // A count survives a swap: unpin one file and add a `mock` file in the
+    // same change and both asserts above still pass.
+    const pinned = new Set(
+      [...VITEST_INCOMPATIBLE_FILES.keys()].map((name) => `test/${name}`)
+    );
+    assert.deepEqual(
+      nodeTest.filter((file) => !pinned.has(file)),
+      [],
+      "only VITEST_INCOMPATIBLE_FILES entries may run on the legacy node:test lane; write the listed suite against vi / test/support/node-test-fake-timers.ts instead"
     );
   });
 
@@ -159,19 +185,7 @@ describe("censusTestFiles", () => {
 });
 
 describe("isVitestEligible", () => {
-  it("takes a file whose node:test imports are all shimmed", () => {
-    assert.equal(
-      isVitestEligible(
-        'import { after, before, describe, test } from "node:test";\ntest("x", () => {});',
-        "sample.test.ts"
-      ),
-      true
-    );
-  });
-
-  it("takes a file that never imports node:test at all", () => {
-    // The golden-* suites already import from `vitest` directly, and would
-    // otherwise fall to a legacy lane that cannot run them.
+  it("takes a file that imports vitest and never node:test", () => {
     assert.equal(
       isVitestEligible(
         'import { expect, test } from "vitest";\ntest("x", () => { expect(1).toBe(1); });',
@@ -181,121 +195,22 @@ describe("isVitestEligible", () => {
     );
   });
 
-  it("leaves a `mock` importer on the legacy lane", () => {
-    // No `mock.fn()` call in the fixture: that would trip the unshimmed-PROPERTY
-    // rule instead, and this case would keep passing even if `mock` were added
-    // to SHIMMED_NODE_TEST_SPECIFIERS. The import alone must be enough.
-    assert.equal(
-      isVitestEligible(
-        'import { mock, test } from "node:test";\ntest("x", () => { /* noop */ });',
-        "sample.test.ts"
-      ),
-      false,
-      "node:test's mock call records have a different shape from vi.fn()'s. ISS-4934 converted every such file in this tree; the rule stays so a NEW `mock` importer is routed rather than crashing on a shim that has no `mock` to give it"
-    );
-  });
-
-  it("leaves `only`/`todo` property users on the legacy lane", () => {
-    // Both mean different things on the two runners: node:test without
-    // `--test-only` runs every sibling, and node:test RUNS a todo body.
-    for (const property of ["only", "todo"]) {
+  it("leaves every spelling of a node:test import on the legacy lane", () => {
+    // ISS-11262 retired the alias shim, so the Vitest lane resolves `node:test`
+    // to the real module: its `test` would register with a runner Vitest never
+    // starts, and the file would go green by running nothing.
+    for (const source of [
+      'import { test } from "node:test";\ntest("x", () => {});',
+      'import test from "node:test";\ntest("x", () => {});',
+      'import * as nodeTest from "node:test";',
+      'import {\n  describe,\n  it,\n} from "node:test";',
+    ]) {
       assert.equal(
-        isVitestEligible(
-          `import { test } from "node:test";\ntest.${property}("x", () => {});`,
-          "sample.test.ts"
-        ),
+        isVitestEligible(source, "sample.test.ts"),
         false,
-        `test.${property} must not reach the shim`
+        `must not reach the Vitest lane: ${source}`
       );
     }
-  });
-
-  it("takes a default importer, and still rejects a namespace one", () => {
-    // ISS-4934. node:test's default export IS `test`, and the shim exports it.
-    // A default binding is no weaker a signal than a named one, because the
-    // unshimmed-PROPERTY rule reads accesses off whichever local name the
-    // import produced — asserted by the `test.mock` case below, which is the
-    // only thing standing between this and 83 files reaching a shim that has
-    // no `mock` to give them.
-    assert.equal(
-      isVitestEligible(
-        'import test from "node:test";\ntest("x", () => {});',
-        "sample.test.ts"
-      ),
-      true
-    );
-    assert.equal(
-      isVitestEligible(
-        'import test from "node:test";\ntest("x", () => { test.mock.fn(); });',
-        "sample.test.ts"
-      ),
-      false,
-      "a default importer that reaches for .mock must still go to the legacy lane"
-    );
-    // The two spellings a PROPERTY-ACCESS rule cannot name. Neither is in this
-    // tree, but accepting `<default>` is what makes that rule load-bearing, so
-    // the ways around it have to be closed in the same change.
-    assert.equal(
-      isVitestEligible(
-        'import test from "node:test";\nconst { mock } = test;\nmock.fn();',
-        "sample.test.ts"
-      ),
-      false,
-      "destructuring `mock` off the default binding must not reach a shim that has no `mock`"
-    );
-    assert.equal(
-      isVitestEligible(
-        'import test from "node:test";\ntest["mock"].fn();',
-        "sample.test.ts"
-      ),
-      false,
-      "an element access off a node:test binding is opaque to the property rule"
-    );
-    // A namespace object's members ARE the module's export set, so the property
-    // rule cannot distinguish `nodeTest.mock` from `nodeTest.describe`.
-    assert.equal(
-      isVitestEligible('import * as nodeTest from "node:test";', "s.test.ts"),
-      false
-    );
-  });
-
-  it("leaves a TestContext user on the legacy lane", () => {
-    assert.equal(
-      isVitestEligible(
-        'import { test } from "node:test";\ntest("x", async (t) => { t.after(() => {}); });',
-        "sample.test.ts"
-      ),
-      false,
-      "Vitest's test context does not implement t.after/t.diagnostic/t.mock"
-    );
-  });
-
-  it("leaves a file reaching for an unshimmed property on the legacy lane", () => {
-    assert.equal(
-      isVitestEligible(
-        'import { test } from "node:test";\ntest.somethingNew("x", () => {});',
-        "sample.test.ts"
-      ),
-      false
-    );
-    // `test.after` IS shimmed, and 13 files in this tree use it.
-    assert.equal(
-      isVitestEligible(
-        'import { test } from "node:test";\ntest.after(() => {});',
-        "sample.test.ts"
-      ),
-      true
-    );
-  });
-
-  it("survives a multi-line import, which a text scan would misread", () => {
-    assert.equal(
-      isVitestEligible(
-        'import {\n  mock,\n  test,\n} from "node:test";',
-        "sample.test.ts"
-      ),
-      false
-    );
   });
 });
 
@@ -329,7 +244,7 @@ describe("installsLoaderHook", () => {
   it("routes a test that imports a loader-hook helper to the legacy lane", () => {
     const specifiers = new Set(["./helpers/electron-module-mock.js"]);
     const source =
-      'import { test } from "node:test";\nimport { registerElectronModuleMock } from "./helpers/electron-module-mock.js";';
+      'import { test } from "vitest";\nimport { registerElectronModuleMock } from "./helpers/electron-module-mock.js";';
     assert.equal(isVitestEligible(source, "sample.test.ts", specifiers), false);
     // Same file, no such helper in the set: eligible. Without this the case
     // above would pass even if the specifier check were dropped entirely.
@@ -364,49 +279,6 @@ describe("VITEST_INCOMPATIBLE_FILES", () => {
         `\`${name}\` must be routed to the node:test lane`
       );
     }
-  });
-});
-
-describe("the census and the shim cannot drift apart", () => {
-  it("shims exactly the specifiers the census promises are shimmed", async () => {
-    // Loaded dynamically because a namespace import is banned repo-wide, and
-    // what is under test here is the module's EXPORT SET, not any one export.
-    const shim = await import("./support/node-test-vitest-shim.js");
-    const exported = new Set(
-      Object.keys(shim).filter((name) => name !== "default")
-    );
-    assert.deepEqual(
-      [...exported].sort(),
-      [...SHIMMED_NODE_TEST_SPECIFIERS].sort(),
-      "a specifier the census calls shimmed but the shim does not export is an import-time crash on a required gate; one the shim exports but the census omits sends working files to the legacy lane forever"
-    );
-  });
-
-  it("exports the default 83 files now depend on", () => {
-    // DEFAULT_IMPORT_SPECIFIER is deliberately not a member of
-    // SHIMMED_NODE_TEST_SPECIFIERS (that set is the shim's NAMED exports), and
-    // the drift assertion above filters `default` out — so between them, nothing
-    // covered the one export the census's ISS-4934 rule actually rests on.
-    // Deleting `export default test` would leave every test here green while 83
-    // real suites failed at import with "does not provide an export named
-    // 'default'".
-    assert.equal(
-      isVitestEligible(
-        'import test from "node:test";\ntest("x", () => {});',
-        "sample.test.ts"
-      ),
-      true,
-      "the census routes default importers to the Vitest lane, so the shim must have a default to route them to"
-    );
-  });
-
-  it("hands the default importer the same registrar as the named one", async () => {
-    const shim = await import("./support/node-test-vitest-shim.js");
-    assert.equal(
-      shim.default,
-      shim.test,
-      "node:test's default export IS `test`; a default that differs would give the 83 default-importing suites a different registrar from the rest of the tree"
-    );
   });
 });
 
@@ -512,7 +384,7 @@ describe("the helper closure reaches a fixed point, not one hop", () => {
     writeHelper(
       dir,
       "two-hop.test.ts",
-      'import { test } from "node:test";\nimport "./helper-a.js";\ntest("x", () => {});\n'
+      'import { test } from "vitest";\nimport "./helper-a.js";\ntest("x", () => {});\n'
     );
 
     const census = censusTestFiles(dir);

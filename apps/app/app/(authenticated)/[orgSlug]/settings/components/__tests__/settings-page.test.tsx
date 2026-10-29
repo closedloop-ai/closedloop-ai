@@ -1,3 +1,5 @@
+import { GITHUB_ERROR_CODES } from "@repo/api/src/types/github-status";
+import { OrgAdminRole } from "@repo/api/src/types/org-admin-role";
 import { githubKeys } from "@repo/app/github/hooks/use-github-integration";
 import {
   embeddedOrganizationProfileAppearance,
@@ -7,18 +9,19 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  ANTHROPIC_API_KEY_CARD_ANCHOR,
-  SettingsTab,
-} from "../../settings-tabs";
+import { WebFeatureFlagProvider } from "@/__tests__/helpers/web-feature-flag-provider";
+import { SettingsTab } from "../../settings-tabs";
 import { SettingsPage } from "../settings-page";
+
+const COMPLIANCE_TAB_NAME = "Compliance";
 
 const mockSearchParams = vi.fn();
 const mockToastSuccess = vi.fn();
 const mockToastError = vi.fn();
 const mockUserProfile = vi.fn();
 const mockOrganizationProfile = vi.fn();
-const mockSessionSyncPolicyCard = vi.fn();
+
+const CARD_ANCHOR = "github-integration";
 
 vi.mock("next/navigation", () => ({
   usePathname: () => "/settings",
@@ -29,7 +32,7 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => mockSearchParams(),
 }));
 
-vi.mock("@repo/analytics/components/feature-flagged", () => ({
+vi.mock("@repo/app/shared/feature-flags/feature-flagged", () => ({
   FeatureFlagged: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 
@@ -50,14 +53,14 @@ type ShowProps = {
 vi.mock("@repo/auth/client", () => ({
   OrganizationProfile: (props: Record<string, unknown>) => {
     mockOrganizationProfile(props);
-    return null;
+    return <EmbeddedAccountUiDouble headings={ORGANIZATION_EMBED_HEADINGS} />;
   },
   OrganizationSwitcher: () => null,
   Show: ({ children, fallback, when }: ShowProps) =>
     when(mockHasRole) ? children : fallback,
   UserProfile: (props: Record<string, unknown>) => {
     mockUserProfile(props);
-    return null;
+    return <EmbeddedAccountUiDouble headings={PROFILE_EMBED_HEADINGS} />;
   },
   // Nothing here is about the flag window; the page just needs a signed-in user
   // to compare PostHog's distinct id against.
@@ -91,38 +94,29 @@ vi.mock("@repo/app/users/hooks/use-users", () => ({
   useUpdateUser: () => ({ mutate: vi.fn() }),
 }));
 
-// Stands in for the real card as an anchor target. The production card owns
-// this id itself (`anthropic-api-key-card-anchor.test.tsx` asserts that); here
-// it only needs to exist so the page's fragment scroll has something to find.
-vi.mock("../anthropic-api-key-card", () => ({
-  AnthropicApiKeyCard: () => (
-    <div id={ANTHROPIC_API_KEY_CARD_ANCHOR} tabIndex={-1} />
-  ),
-}));
-
 vi.mock("../api-keys-settings-panel", () => ({
   ApiKeysSettingsPanel: () => null,
 }));
 
-vi.mock("../cloud-compute-mode-card", () => ({
-  CloudComputeModeCard: () => null,
-}));
-
+// Stands in for an anchored card on the Integrations tab: the page's fragment
+// scroll is generic, so any card id is a valid target.
 vi.mock("../github-integration-card", () => ({
-  GitHubIntegrationCard: () => null,
+  GitHubIntegrationCard: () => <div id={CARD_ANCHOR} tabIndex={-1} />,
 }));
 
-vi.mock("../google-integration-card", () => ({
-  GoogleIntegrationCard: () => null,
+vi.mock("@repo/app/settings/v2/panels/plugins/google-drive-card", () => ({
+  GoogleDriveCard: () => null,
 }));
 
-vi.mock("../linear-integration-card", () => ({
-  LinearIntegrationCard: () => null,
-}));
-
-vi.mock("../local-compute-targets-card", () => ({
-  LocalComputeTargetsCard: () => null,
-}));
+// This suite mocks `FeatureFlagged` to always render children, so a gated card
+// still mounts for real here. The Pensero card calls auth-backed query hooks
+// and needs an <AuthAdapterProvider>, which this suite does not mount.
+vi.mock(
+  "@repo/app/settings/v2/panels/api-keys/pensero-credential-card",
+  () => ({
+    PenseroCredentialCard: () => null,
+  })
+);
 
 vi.mock("../organization-slug-settings", () => ({
   OrganizationSlugSettings: () => null,
@@ -139,13 +133,6 @@ vi.mock("../transcript-search-card", () => ({
 // Observable mock: record the props (notably `isAdmin`) and render a probe so a
 // test can assert the Organization tab actually mounts the card with the current
 // admin state — removing the mount or flipping `isAdmin` then fails a test.
-vi.mock("../session-sync-policy-card", () => ({
-  SessionSyncPolicyCard: (props: { isAdmin: boolean }) => {
-    mockSessionSyncPolicyCard(props);
-    return <div data-testid="session-sync-policy-card" />;
-  },
-}));
-
 // Simulate an org admin/owner unless a test overrides it.
 function grantAdminRole() {
   mockHasRole.mockImplementation(
@@ -158,6 +145,16 @@ function grantAdminRole() {
 // Simulate a plain member: no admin/owner role.
 function denyAdminRole() {
   mockHasRole.mockReturnValue(false);
+}
+
+// Simulate an org owner who is NOT also an admin. `grantAdminRole` answers yes
+// to both privileged roles at once, so it stays green for a gate that only ever
+// asks Clerk about `org:admin` — this one does not.
+function grantOwnerRoleOnly() {
+  mockHasRole.mockImplementation(
+    (params: { role: string } | { permission: string }) =>
+      "role" in params && params.role === OrgAdminRole.Owner
+  );
 }
 
 describe("SettingsPage GitHub callback recovery", () => {
@@ -177,7 +174,8 @@ describe("SettingsPage GitHub callback recovery", () => {
     render(
       <QueryClientProvider client={queryClient}>
         <SettingsPage initialTab="integrations" isAdmin={false} />
-      </QueryClientProvider>
+      </QueryClientProvider>,
+      { wrapper: WebFeatureFlagProvider }
     );
 
     await waitFor(() =>
@@ -205,7 +203,8 @@ describe("SettingsPage GitHub callback recovery", () => {
     render(
       <QueryClientProvider client={queryClient}>
         <SettingsPage initialTab="integrations" isAdmin={false} />
-      </QueryClientProvider>
+      </QueryClientProvider>,
+      { wrapper: WebFeatureFlagProvider }
     );
 
     await waitFor(() => {
@@ -217,6 +216,97 @@ describe("SettingsPage GitHub callback recovery", () => {
 
     replaceStateSpy.mockRestore();
   });
+
+  it.each([
+    [GITHUB_ERROR_CODES.NOT_AUTHENTICATED, "Please sign in to connect GitHub."],
+    [
+      GITHUB_ERROR_CODES.NOT_CONFIGURED,
+      "GitHub integration is not configured.",
+    ],
+    [
+      GITHUB_ERROR_CODES.MISSING_PARAMS,
+      "Invalid authorization request. Please try again.",
+    ],
+    [
+      GITHUB_ERROR_CODES.INVALID_STATE,
+      "Security validation failed. Please try again.",
+    ],
+    [
+      GITHUB_ERROR_CODES.CONNECTION_FAILED,
+      "Failed to connect to GitHub. Please try again.",
+    ],
+    [
+      GITHUB_ERROR_CODES.OAUTH_FAILED,
+      "Authorization failed. Please try again.",
+    ],
+    ["unknown_code", "An error occurred."],
+  ])(
+    "toasts the exact message for GitHub error code %s",
+    async (code, message) => {
+      mockSearchParams.mockReturnValue(
+        new URLSearchParams({ github: "error", code })
+      );
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <SettingsPage initialTab="integrations" isAdmin={false} />
+        </QueryClientProvider>,
+        { wrapper: WebFeatureFlagProvider }
+      );
+
+      await waitFor(() => expect(mockToastError).toHaveBeenCalledWith(message));
+    }
+  );
+
+  it.each([
+    ["an empty code", "github=error&code="],
+    ["no code param at all", "github=error"],
+  ])(
+    "still toasts the generic error message with %s",
+    async (_label, query) => {
+      mockSearchParams.mockReturnValue(new URLSearchParams(query));
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <SettingsPage initialTab="integrations" isAdmin={false} />
+        </QueryClientProvider>,
+        { wrapper: WebFeatureFlagProvider }
+      );
+
+      await waitFor(() =>
+        expect(mockToastError).toHaveBeenCalledWith("An error occurred.")
+      );
+    }
+  );
+
+  it.each(["__proto__", "constructor"])(
+    "uses the generic error message for prototype key %s",
+    async (code) => {
+      mockSearchParams.mockReturnValue(
+        new URLSearchParams({ github: "error", code })
+      );
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <SettingsPage initialTab="integrations" isAdmin={false} />
+        </QueryClientProvider>,
+        { wrapper: WebFeatureFlagProvider }
+      );
+
+      await waitFor(() =>
+        expect(mockToastError).toHaveBeenCalledWith("An error occurred.")
+      );
+    }
+  );
 });
 
 describe("SettingsPage tab list", () => {
@@ -233,7 +323,8 @@ describe("SettingsPage tab list", () => {
     render(
       <QueryClientProvider client={queryClient}>
         <SettingsPage initialTab="profile" isAdmin={isAdmin} />
-      </QueryClientProvider>
+      </QueryClientProvider>,
+      { wrapper: WebFeatureFlagProvider }
     );
   }
 
@@ -252,14 +343,16 @@ describe("SettingsPage tab list", () => {
   it("renders the Compliance tab for admins (FEA-4029)", () => {
     renderSettings(true);
 
-    expect(screen.getByRole("tab", { name: "Compliance" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: COMPLIANCE_TAB_NAME })
+    ).toBeInTheDocument();
   });
 
   it("hides the Compliance tab from non-admins (FEA-4029)", () => {
     renderSettings(false);
 
     expect(
-      screen.queryByRole("tab", { name: "Compliance" })
+      screen.queryByRole("tab", { name: COMPLIANCE_TAB_NAME })
     ).not.toBeInTheDocument();
   });
 
@@ -272,7 +365,8 @@ describe("SettingsPage tab list", () => {
         }
       >
         <SettingsPage initialTab={SettingsTab.Compliance} isAdmin={true} />
-      </QueryClientProvider>
+      </QueryClientProvider>,
+      { wrapper: WebFeatureFlagProvider }
     );
 
     expect(screen.getByText("compliance-panel")).toBeInTheDocument();
@@ -289,44 +383,29 @@ describe("SettingsPage tab list", () => {
         }
       >
         <SettingsPage initialTab={SettingsTab.Compliance} isAdmin={true} />
-      </QueryClientProvider>
+      </QueryClientProvider>,
+      { wrapper: WebFeatureFlagProvider }
     );
 
     expect(screen.queryByText("compliance-panel")).not.toBeInTheDocument();
     expect(screen.getByText("Admins only")).toBeInTheDocument();
   });
 
-  it("mounts the session-sync policy card on the Organization tab with the admin state (ISS-4563)", () => {
+  it("shows the Compliance panel body to an org owner who is not an admin", () => {
+    grantOwnerRoleOnly();
     render(
       <QueryClientProvider
         client={
           new QueryClient({ defaultOptions: { queries: { retry: false } } })
         }
       >
-        <SettingsPage initialTab={SettingsTab.Organization} isAdmin={true} />
-      </QueryClientProvider>
+        <SettingsPage initialTab={SettingsTab.Compliance} isAdmin={true} />
+      </QueryClientProvider>,
+      { wrapper: WebFeatureFlagProvider }
     );
 
-    expect(screen.getByTestId("session-sync-policy-card")).toBeInTheDocument();
-    expect(mockSessionSyncPolicyCard).toHaveBeenCalledWith(
-      expect.objectContaining({ isAdmin: true })
-    );
-  });
-
-  it("passes the non-admin state through to the session-sync policy card (ISS-4563)", () => {
-    render(
-      <QueryClientProvider
-        client={
-          new QueryClient({ defaultOptions: { queries: { retry: false } } })
-        }
-      >
-        <SettingsPage initialTab={SettingsTab.Organization} isAdmin={false} />
-      </QueryClientProvider>
-    );
-
-    expect(mockSessionSyncPolicyCard).toHaveBeenCalledWith(
-      expect.objectContaining({ isAdmin: false })
-    );
+    expect(screen.getByText("compliance-panel")).toBeInTheDocument();
+    expect(screen.queryByText("Admins only")).not.toBeInTheDocument();
   });
 
   it("labels the compute/integrations tab honestly (FEA-3976)", () => {
@@ -349,7 +428,8 @@ describe("SettingsPage tab list", () => {
         }
       >
         <SettingsPage initialTab={SettingsTab.Integrations} isAdmin={false} />
-      </QueryClientProvider>
+      </QueryClientProvider>,
+      { wrapper: WebFeatureFlagProvider }
     );
 
     expect(screen.queryByText("More Integrations")).not.toBeInTheDocument();
@@ -371,7 +451,8 @@ describe("SettingsPage embedded Clerk theming (FEA-3965)", () => {
     render(
       <QueryClientProvider client={queryClient}>
         <SettingsPage initialTab="profile" isAdmin={false} />
-      </QueryClientProvider>
+      </QueryClientProvider>,
+      { wrapper: WebFeatureFlagProvider }
     );
 
     expect(mockUserProfile).toHaveBeenCalledWith(
@@ -387,7 +468,8 @@ describe("SettingsPage embedded Clerk theming (FEA-3965)", () => {
     render(
       <QueryClientProvider client={queryClient}>
         <SettingsPage initialTab="organization" isAdmin={false} />
-      </QueryClientProvider>
+      </QueryClientProvider>,
+      { wrapper: WebFeatureFlagProvider }
     );
 
     expect(mockOrganizationProfile).toHaveBeenCalledWith(
@@ -437,26 +519,27 @@ describe("SettingsPage card deep-link fragment", () => {
     render(
       <QueryClientProvider client={queryClient}>
         <SettingsPage initialTab={SettingsTab.Integrations} isAdmin />
-      </QueryClientProvider>
+      </QueryClientProvider>,
+      { wrapper: WebFeatureFlagProvider }
     );
   }
 
   it("scrolls the fragment's card into view and focuses it after mount", () => {
     // A cold load cannot rely on the browser's own fragment scroll: it looks
     // for the element before React has rendered the tab and gives up silently.
-    globalThis.location.hash = `#${ANTHROPIC_API_KEY_CARD_ANCHOR}`;
+    globalThis.location.hash = `#${CARD_ANCHOR}`;
 
     renderSettings();
 
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
-    expect(document.activeElement?.id).toBe(ANTHROPIC_API_KEY_CARD_ANCHOR);
+    expect(document.activeElement?.id).toBe(CARD_ANCHOR);
   });
 
   it("leaves scroll position alone when the URL carries no fragment", () => {
     renderSettings();
 
     expect(scrollIntoView).not.toHaveBeenCalled();
-    expect(document.activeElement?.id).not.toBe(ANTHROPIC_API_KEY_CARD_ANCHOR);
+    expect(document.activeElement?.id).not.toBe(CARD_ANCHOR);
   });
 
   it("does not throw when the fragment names no card on the page", () => {
@@ -470,3 +553,109 @@ describe("SettingsPage card deep-link fragment", () => {
     expect(screen.getByText("Settings")).toBeInTheDocument();
   });
 });
+
+describe("SettingsPage heading outline (ISS-5151)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSearchParams.mockReturnValue(new URLSearchParams());
+    grantAdminRole();
+  });
+
+  it.each([
+    {
+      tab: SettingsTab.Profile,
+      demoted: PROFILE_EMBED_HEADINGS,
+    },
+    {
+      tab: SettingsTab.Organization,
+      demoted: ORGANIZATION_EMBED_HEADINGS,
+    },
+  ])(
+    "leaves the $tab tab with one level-1 heading and demotes the embed's",
+    async ({ tab, demoted }) => {
+      renderTab(tab);
+
+      // The positive half of the count: the ONE surviving `h1` is the page's,
+      // by name. A bare length assertion also passes on a page with no
+      // headings at all.
+      await waitFor(() =>
+        expect(
+          screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)
+        ).toEqual(["Settings"])
+      );
+      // Demoted, not deleted — the embed's own headings stay reachable by
+      // heading navigation, one level under the page's.
+      expect(
+        screen
+          .getAllByRole("heading", { level: 2 })
+          .map((h) => h.textContent)
+          .filter((text) => demoted.includes(text ?? ""))
+      ).toEqual(demoted);
+    }
+  );
+
+  it.each([
+    { tab: SettingsTab.CustomFields, label: "Custom Fields" },
+    { tab: SettingsTab.Compliance, label: COMPLIANCE_TAB_NAME },
+    { tab: SettingsTab.Integrations, label: "Compute & Integrations" },
+    { tab: SettingsTab.ApiKeys, label: "API Keys" },
+  ])(
+    "leaves the $tab tab — which embeds nothing — with its single page heading",
+    async ({ tab, label }) => {
+      // ISS-5151 measured the non-Clerk tabs already correct at one `h1`. They
+      // are pinned so the wrapper cannot regress the tabs it does not touch.
+      renderTab(tab);
+
+      // Without this the case is vacuous when a tab does not open: Settings
+      // bounces an unavailable tab back to Profile, and the outline assertion
+      // below would then be checking Profile a second time under another name.
+      // (Tags is absent from this list for exactly that reason — it is flag
+      // gated, and this suite's flag context resolves it off.)
+      expect(screen.getByRole("tab", { name: label })).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+      await waitFor(() =>
+        expect(
+          screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)
+        ).toEqual(["Settings"])
+      );
+    }
+  );
+});
+
+/** The page headings Clerk's embedded `UserProfile` renders as its own `h1`s. */
+const PROFILE_EMBED_HEADINGS = ["Account", "Profile details"];
+
+/** The same, for the embedded `OrganizationProfile`. */
+const ORGANIZATION_EMBED_HEADINGS = ["Organization", "General"];
+
+/**
+ * Stands in for Clerk's embedded account UI, which renders its navbar title and
+ * its page title as `h1`s of its own — the shape ISS-5151 counted in production
+ * and the installed `@clerk/ui` bundle emits. Deliberately not derived from the
+ * component under test.
+ */
+function EmbeddedAccountUiDouble({
+  headings,
+}: Readonly<{ headings: readonly string[] }>) {
+  return (
+    <div>
+      {headings.map((heading) => (
+        <h1 key={heading}>{heading}</h1>
+      ))}
+    </div>
+  );
+}
+
+function renderTab(tab: string) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <SettingsPage initialTab={tab} isAdmin />
+    </QueryClientProvider>,
+    { wrapper: WebFeatureFlagProvider }
+  );
+}

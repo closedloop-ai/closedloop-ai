@@ -3,11 +3,11 @@ import { BranchParticipationKind } from "@repo/api/src/types/branch";
 import { ArtifactType, type PrismaClient } from "@repo/database";
 import { log } from "@repo/observability/log";
 import {
-  branchParticipationForLink,
   SESSION_USAGE_BRANCH_ID_CHUNK_SIZE,
   sessionBranchParticipationWhere,
   sessionBranchUsageLinkKindWhere,
-} from "./branch-read-service/session-usage-window";
+} from "./branch-read-service/session-usage-link-read";
+import { branchParticipationForLink } from "./branch-read-service/session-usage-window";
 
 /**
  * The FEA-2032 even-split DIVISOR read: how many distinct branches each session
@@ -33,8 +33,10 @@ type SessionBranchDivisorClient = Pick<PrismaClient, "artifactLink">;
  * regardless of the branch in view. Mirrors the desktop producer's GLOBAL
  * `branch_count` subquery (apps/desktop/src/main/database/branch-reads.ts
  * `readBranchTokenAggregateRowsForBranch`), so the per-branch even-split cost
- * matches on both surfaces. Sessions absent from the result default to a divisor
- * of 1 at the call site (never over-divide on missing data).
+ * matches on both surfaces — since ISS-8148 (PRD-683 D7) both sides restrict
+ * the divisor population to publication-gated branches. Sessions absent from
+ * the result retain a missing divisor and degrade canonical metrics through
+ * typed completeness.
  *
  * Callers must bound `sessionIds` — this scans one chunk per
  * SESSION_USAGE_BRANCH_ID_CHUNK_SIZE ids, so an unbounded corpus-wide id list
@@ -45,8 +47,15 @@ type SessionBranchDivisorClient = Pick<PrismaClient, "artifactLink">;
 export async function getSessionBranchCounts(
   db: SessionBranchDivisorClient,
   organizationId: string,
-  sessionIds: string[]
+  sessionIds: string[],
+  eligibleBranchIds?: readonly string[]
 ): Promise<Map<string, number>> {
+  if (eligibleBranchIds?.length === 0) {
+    return new Map();
+  }
+  const eligibleBranchIdSet = eligibleBranchIds
+    ? new Set(eligibleBranchIds)
+    : null;
   const branchesBySession = new Map<string, Set<string>>();
   for (
     let start = 0;
@@ -75,28 +84,13 @@ export async function getSessionBranchCounts(
           type: ArtifactType.SESSION,
           session: { isNot: null },
         },
-        // FEA-4331 + FEA-4311 — the divisor must count exactly the branches that
-        // are CORPUS MEMBERS (visible on the Branches list), so the 1/N even-split
-        // denominator matches the set of branches the cost is actually split
-        // across. FEA-4331 originally gated targets on push evidence (an owned
-        // current PR OR set-once `firstPushedAt`) to keep a merely-observed second
-        // branch out of the denominator. FEA-4311 widened corpus membership to any
-        // SESSION-LINKED branch (`branchCandidateMembershipClause` /
-        // `branchLinkedSessionExistsSql`) — a session-observed branch now surfaces
-        // on the list BEFORE any push/PR — so the push-evidence gate here would
-        // UNDER-count the divisor: a priced session linking to N session-only
-        // branches would divide by 1 (the fallback) and attribute the FULL session
-        // cost to each visible branch instead of the intended 1/N split. Match the
-        // widened membership: this link row is already constrained to a
-        // session→branch usage link with active-write participation (the
-        // `linkKind` + participation `AND`s above and the Reviewed skip below),
-        // which IS the membership relation; the target only needs to be a
-        // non-deleted BRANCH, exactly the `branchWhere` corpus scope. Push
-        // evidence enriches a branch but no longer gates it, here or on the list.
+        // Canonical metric callers also pass the global pre-publication
+        // authority set, preserving unpublished Branches while excluding
+        // default/authority-unknown targets from N.
         target: {
           organizationId,
           type: ArtifactType.BRANCH,
-          branch: { deletedAt: null },
+          branch: { isNot: null },
         },
       },
       select: {
@@ -107,6 +101,9 @@ export async function getSessionBranchCounts(
       },
     });
     for (const link of links) {
+      if (eligibleBranchIdSet && !eligibleBranchIdSet.has(link.targetId)) {
+        continue;
+      }
       if (
         branchParticipationForLink(link) === BranchParticipationKind.Reviewed
       ) {

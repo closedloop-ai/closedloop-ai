@@ -8,6 +8,8 @@
  * it (and so neither file carries the whole surface past the size ceiling).
  */
 import { TranscriptUploadStatus } from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
+import type { SyncLaneBatchEmit } from "../../src/main/agent-sync/sync-lane-cloud-health.js";
 import type {
   TranscriptFailureInput,
   TranscriptSettle,
@@ -52,6 +54,7 @@ export function fingerprint(
     missingSourceCount: 0,
     nextAttemptAt: null,
     lastError: null,
+    laneStalledSince: null,
     ...overrides,
   };
 }
@@ -73,6 +76,8 @@ export type FakeStore = TranscriptSyncStore & {
   /** ISS-4815: the compute target each cloud acknowledgement was scoped to. */
   cloudUploadedTargets: (string | null)[];
   requeueCalls: number;
+  requeueLeaseMs: number[];
+  requeueClaimableFrom: string[];
   strandedRequeueCalls: number;
   /** ISS-4621: rows the fake reports as re-armed from stranded `idle` blobs. */
   strandedRequeueResult: number;
@@ -123,6 +128,8 @@ export function fakeStore(
     cloudUploadedSettles: [] as string[],
     cloudUploadedTargets: [] as (string | null)[],
     requeueCalls: 0,
+    requeueLeaseMs: [] as number[],
+    requeueClaimableFrom: [] as string[],
     strandedRequeueCalls: 0,
     strandedRequeueResult: 0,
     strandedRequeueTargets: [] as (string | null)[],
@@ -151,7 +158,7 @@ export function fakeStore(
       onObserve?.(input);
       return Promise.resolve(fingerprint(input));
     },
-    markUploading: () => Promise.resolve(),
+    markUploading: () => Promise.resolve(true),
     markIdle: () => {
       store.idleCalls += 1;
       return Promise.resolve();
@@ -172,8 +179,14 @@ export function fakeStore(
       store.failures.push(input);
       return Promise.resolve();
     },
-    requeueStale: () => {
+    requeueExpiredUploadLeases: (input: {
+      now: string;
+      leaseMs: number;
+      claimableFrom: string;
+    }) => {
       store.requeueCalls += 1;
+      store.requeueLeaseMs.push(input.leaseMs);
+      store.requeueClaimableFrom.push(input.claimableFrom);
       return Promise.resolve(0);
     },
     requeueStrandedMissingBlobs: (input: {
@@ -214,6 +227,11 @@ export function fakeStore(
     // ISS-4849: in-process recovery for a rejected batch flush. Records the
     // identities the drain asked to re-arm so a test can assert the batch was
     // re-queued rather than stranded `uploading` until the next boot.
+    // ISS-9884: the lane-recovery slice every drain now consults — no give-up on
+    // record, and nothing paused to revive, which is a healthy lane.
+    loadLaneGiveUp: () => Promise.resolve(null),
+    recordLaneGiveUp: () => Promise.resolve(),
+    reviveEnvironmentUnavailableDeadLetters: () => Promise.resolve(0),
     requeueUnsettledBatch: (
       identities: readonly { externalSessionId: string; fileKey: string }[]
     ) => {
@@ -283,6 +301,16 @@ export type ServiceOverrides = {
   isPendingPath?: (path: string) => boolean;
   log?: (message: string) => void;
   concurrency?: number;
+  /** ISS-6338: per-lane cloud batch health seam, unwired by default. */
+  emitSyncBatch?: SyncLaneBatchEmit;
+  /**
+   * ISS-8689: a movable clock. The lane's staged lane-stall backoff is a
+   * function of how long a stall run has been open, so a suite that drives a
+   * multi-hour window has to advance time; the pinned {@link NOW} every other
+   * suite relies on makes every stall age zero and would report the first rung
+   * forever. Defaults to the pinned instant, so no existing suite moves.
+   */
+  now?: () => string;
   materialize?: () => void | Promise<void>;
   redriveOnStart?: () => Promise<number>;
   /**
@@ -370,12 +398,19 @@ export type FakeExecutor = TranscriptSyncExecutor & {
  * cloud recorded the terminal skip → the drain-queue may dead-letter). Set
  * `skipStatus: uploaded` to exercise the ISS-4695 case where the cloud already
  * holds a verified archive and the row must NOT go dead.
+ *
+ * ISS-9884: the reason it answers with is a FIXED `too_large`, deliberately
+ * never the requested one, mirroring `recordingClient` in the executor
+ * fixtures. A double that answers with whatever it was asked cannot tell a
+ * caller reading `permanentFailureReason` from one echoing its own request
+ * back, so the drain queue's persisted-reason guard could not go red.
  */
 export function fakeExecutor(
   overrides: {
     syncFile?: TranscriptSyncExecutor["syncFile"];
     skipAck?: boolean;
     skipStatus?: TranscriptUploadStatus;
+    skipReason?: TranscriptSkipReason;
   } = {}
 ): FakeExecutor {
   const executor = {
@@ -402,6 +437,10 @@ export function fakeExecutor(
       return Promise.resolve({
         acked: true as const,
         status: overrides.skipStatus ?? TranscriptUploadStatus.Skipped,
+        // ISS-9884: the reason the (fake) server recorded, which by default is
+        // NOT the one requested — the server's precedence rule really does keep
+        // a hard reason already on the row against a recoverable one.
+        reason: overrides.skipReason ?? TranscriptSkipReason.TooLarge,
       });
     },
   };
@@ -427,10 +466,11 @@ export function makeService(overrides: ServiceOverrides = {}) {
     isPendingTrustedTranscriptPath: overrides.isPendingPath,
     statFile:
       overrides.statFile ?? (() => Promise.resolve({ size: 10, mtimeMs: 1 })),
-    now: () => NOW,
+    now: overrides.now ?? (() => NOW),
     log: overrides.log,
     scheduler: overrides.scheduler,
     concurrency: overrides.concurrency ?? 2,
+    emitSyncBatch: overrides.emitSyncBatch,
   });
   return { service, store };
 }

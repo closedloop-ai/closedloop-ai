@@ -14,17 +14,15 @@
 
 import { vi } from "vitest";
 import {
-  identitySpine,
   isOrphanUsageRead,
   matchesOrphanWhere,
   matchesUsageSearchOr,
   resolveOrphanUsageGroupBy,
   sortByRecency,
-  spinePassOf,
   takeRows,
   type UsageSearchOr,
   type WhereClause,
-} from "./usage-lane-doubles";
+} from "@/__tests__/support/agent-components/usage-lane-doubles";
 
 export const ORG_A = "org-aaaa-1111";
 export const TARGET_1 = "target-1111";
@@ -33,19 +31,21 @@ export const TARGET_3 = "target-3333";
 
 export type InventoryFixture = {
   id: string;
+  /**
+   * ISS-6891: the owning org. Every read is org-scoped, so the double filters on
+   * it — a fixture that seeds a foreign row proves the scope EXCLUDES it rather
+   * than proving only that the predicate was written.
+   */
+  organizationId: string;
   componentKind: string;
   componentKey: string | null;
   name: string | null;
   computeTargetId: string;
   packId: string | null;
   contentHash: string | null;
-  // ISS-4797: the column the org inventory read orders (and, above the identity
-  // cap, truncates) on. Fixtures that do not care about recency inherit one
-  // shared default so their relative order stays stable. NULLABLE in
-  // `schema.prisma`, and a fixture may say so explicitly: Postgres sorts NULLs
-  // FIRST under `DESC`, so a never-stamped identity is exactly the one that
-  // would win the cap over genuinely recent components if the spine did not
-  // demote it.
+  // The column the org inventory read orders on. Fixtures that do not care about
+  // recency inherit one shared default so their relative order stays stable.
+  // NULLABLE in `schema.prisma`, and a fixture may say so explicitly.
   lastSeenAt: Date | null;
 };
 
@@ -155,6 +155,7 @@ let sessionIdCounter = 0;
 /** Build a minimal inventory fixture row. */
 export function makeInventoryRow(overrides: {
   id: string;
+  organizationId?: string;
   componentKind: string;
   componentKey?: string;
   name?: string;
@@ -165,6 +166,7 @@ export function makeInventoryRow(overrides: {
 }): InventoryFixture {
   return {
     id: overrides.id,
+    organizationId: overrides.organizationId ?? ORG_A,
     componentKind: overrides.componentKind,
     componentKey: overrides.componentKey ?? null,
     name: overrides.name ?? null,
@@ -280,9 +282,9 @@ export function listQuery(overrides: Record<string, unknown> = {}) {
 export function buildPopulationDb(fixtures: PopulationFixtures): PopulationDb {
   const inventory = fixtures.inventory ?? [];
   const orphanUsage = fixtures.orphanUsage ?? [];
-  // ISS-4797: the org inventory read orders `lastSeenAt desc, id asc` and (above
-  // the identity cap) truncates on it. Model both here, or a truncation-shaped
-  // fixture would pass vacuously against a double that returns everything.
+  // The org inventory read orders `lastSeenAt desc, id asc`. Model the order
+  // here so a suite asserting a stable row sequence is asserting the query's
+  // order rather than the fixture's insertion order.
   const findMany = vi
     .fn()
     .mockImplementation((args?: { where?: WhereClause; take?: number }) =>
@@ -296,23 +298,11 @@ export function buildPopulationDb(fixtures: PopulationFixtures): PopulationDb {
         ).map(toSelectedInventoryRow)
       )
     );
-  // ISS-4797: the identity spine — the distinct `(componentKind, componentKey)`
-  // pairs the facets admit, ordered by `max(lastSeenAt)` and capped.
-  const inventoryGroupBy = vi
-    .fn()
-    .mockImplementation((args?: { where?: WhereClause; take?: number }) =>
-      Promise.resolve(
-        identitySpine(
-          filterInventoryForFindMany(inventory, args?.where).map((row) => ({
-            componentKind: row.componentKind,
-            componentKey: row.componentKey,
-            recency: row.lastSeenAt,
-          })),
-          args?.take,
-          spinePassOf(args?.where, "lastSeenAt")
-        )
-      )
-    );
+  // ISS-6891: the inventory identity spine is gone — the population read no
+  // longer caps, so it has nothing to resolve ahead of its row read. The delegate
+  // stays wired (answering empty) so a suite can assert this read is NOT issued
+  // rather than crash on a missing method if one ever is.
+  const inventoryGroupBy = vi.fn().mockResolvedValue([]);
   // `agentComponentSessionUsage.groupBy` serves THREE reads: the FK-linked usage
   // rollup, and (ISS-4799) the orphan lane's identity spine plus its aggregated
   // groups. Discriminate on the usage-only lane's own predicate
@@ -367,6 +357,16 @@ export function buildPopulationDb(fixtures: PopulationFixtures): PopulationDb {
       );
     }
   );
+  // ISS-8932: the child-usage read now selects the row's primary key, because its
+  // identity prefilter is sliced across statements and the slices are de-duplicated
+  // on it (two `contains` arms can admit the same row). A fixture row carries no
+  // id of its own, so one is stamped here — STABLE across calls, or the dedupe
+  // would fold distinct rows together and this double would report a rollup no
+  // database could produce.
+  const childUsageWithIds = (fixtures.childUsage ?? []).map((row, index) => ({
+    ...row,
+    id: `child-usage-${index}`,
+  }));
   // `agentComponentSessionUsage.findMany` serves the plugin child-usage read and
   // the DETAIL orphan read (`fetchDetailOrphanUsage`), which stays a row read
   // scoped to one identity. The list's orphan lane moved to `groupBy` (ISS-4799).
@@ -400,7 +400,18 @@ export function buildPopulationDb(fixtures: PopulationFixtures): PopulationDb {
       // relation from its own inventory — in
       // `detail-list-usage-reconciliation.test.ts`, through the production list
       // AND detail paths.
-      return Promise.resolve(fixtures.childUsage ?? []);
+      //
+      // ISS-6891: the read's ORDER and `take` ARE modelled. This double used to
+      // hand back every seeded row regardless, so the row cap the lane carried
+      // was invisible here — an above-cap fixture passed with or without it, and
+      // the truncation it caused could not be written down as a test. A double
+      // that ignores a bound cannot show the bound being wrong.
+      return Promise.resolve(
+        takeRows(
+          sortByRecency(childUsageWithIds, (row) => row.lastInvokedAt),
+          args?.take
+        )
+      );
     });
 
   return {
@@ -446,14 +457,10 @@ function filterInventoryForFindMany(
   if (!where) {
     return inventory;
   }
-  // ISS-4797: an identity-capped read nests its extra predicate under `AND`
-  // rather than spreading it (the `?search=` facet already owns the base
-  // clause's `OR` key), so the facet filters below sit one level down. Recurse
-  // before reading them, or a narrowed read would be filtered as if unfaceted.
-  //
-  // The nullable-recency arm a spine pass adds is deliberately NOT applied here:
-  // it constrains the AGGREGATED `max(...)` of an identity, which `identitySpine`
-  // resolves, not the individual rows this function filters.
+  // A read may nest its extra predicate under `AND` rather than spreading it
+  // (the `?search=` facet already owns the base clause's `OR` key), so the facet
+  // filters below can sit one level down. Recurse before reading them, or a
+  // nested-predicate read would be filtered as if unfaceted.
   const and = where.AND;
   const scoped = Array.isArray(and)
     ? and.reduce<InventoryFixture[]>(
@@ -465,7 +472,13 @@ function filterInventoryForFindMany(
   const packIdFilter = where.packId as { in?: string[] } | undefined;
   const kindFilter = where.componentKind as { in?: string[] } | undefined;
   const keyFilter = where.componentKey as { not?: null } | undefined;
+  const organizationId = where.organizationId as string | undefined;
   return scoped.filter((row) => {
+    // ISS-6891: org scope first. A read that dropped `organizationId` from its
+    // predicate is a cross-tenant leak, and the double has to be able to show it.
+    if (organizationId !== undefined && row.organizationId !== organizationId) {
+      return false;
+    }
     if (
       packIdFilter?.in &&
       !(row.packId && packIdFilter.in.includes(row.packId))
@@ -512,7 +525,6 @@ function withUsageIdentity(
 function toSelectedInventoryRow(row: InventoryFixture) {
   return {
     ...row,
-    organizationId: ORG_A,
     externalComponentId: `${row.componentKind}::${row.componentKey ?? ""}`,
     harness: null,
     sourceUrl: null,

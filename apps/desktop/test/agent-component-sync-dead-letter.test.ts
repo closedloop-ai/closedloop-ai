@@ -6,9 +6,15 @@
  * boundary failure budget, dead-lettering a batch to the back of the line, the
  * drained re-attempt selection, the doubling backoff, and the bounded
  * quarantine.
+ *
+ * The ISS-8593 DURABILITY half — the persisted `attempts`/`tombstoned`/deadline
+ * record, resumed backoff across a restart, and tombstone-safe cap eviction —
+ * lives in the sibling `agent-component-dead-letter-durability.test.ts`.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
+import type { ComponentDeadLetterRecord } from "../src/main/agent-sync/agent-component-dead-letter-persistence.js";
+import { classifyComponentSyncHttpStatus } from "../src/main/agent-sync/agent-component-sync-classification.js";
 import {
   advanceComponentCursor,
   buildComponentBoundaryKey,
@@ -21,7 +27,6 @@ import {
   ComponentSyncDeadLetterTracker,
   ComponentSyncSendOutcome,
   type ComponentSyncSendResult,
-  classifyComponentSyncHttpStatus,
   componentDeadLetterRetryDelayMs,
   recoverComponentDeadLetters,
 } from "../src/main/agent-sync/agent-component-sync-dead-letter.js";
@@ -220,12 +225,20 @@ test("dead-letter durability: deadLetteredIds() snapshots the set and seedDeadLe
     tracker.noteReattemptResult(["a"], false, clock);
   }
   // "a" is quarantined; the snapshot still includes it (persisted, not dropped).
-  const snapshot = tracker.deadLetteredIds().sort();
-  assert.deepEqual(snapshot, ["a", "b"], "snapshot includes quarantined ids");
+  const snapshot = tracker.deadLetterState();
+  assert.deepEqual(
+    snapshot.map((record) => record.id).sort(),
+    ["a", "b"],
+    "snapshot includes quarantined ids"
+  );
 
-  // Simulate a cold restart: a fresh tracker re-seeded from the durable snapshot.
+  // Simulate a cold restart. Re-seeded WITHOUT the ISS-8593 bookkeeping, i.e. the
+  // pre-ISS-8593 durable shape a legacy cursor row still hands back.
   const afterRestart = new ComponentSyncDeadLetterTracker();
-  afterRestart.seedDeadLetters(snapshot, clock);
+  afterRestart.seedDeadLetters(
+    snapshot.map((record) => record.id),
+    clock
+  );
   assert.equal(
     afterRestart.size,
     2,
@@ -262,17 +275,27 @@ test("dead-letter durability: seedDeadLetters does not reset an already-tracked 
   );
 });
 
-test("advanceComponentCursor: persists the current dead-letter ids onto the durable cursor row", () => {
-  const persisted: { deadLetteredIds: string[] }[] = [];
+test("advanceComponentCursor: persists the dead-letter ids AND their bookkeeping onto the durable cursor row", () => {
+  const persisted: {
+    deadLetteredIds: string[];
+    deadLetterAttempts?: ComponentDeadLetterRecord[];
+  }[] = [];
+  const snapshot: ComponentDeadLetterRecord[] = [
+    { id: "dead-1", attempts: 2, tombstoned: false },
+    { id: "dead-2", attempts: 0, tombstoned: true },
+  ];
   const next = advanceComponentCursor(
     { watermark: null, lastId: null },
     { id: "row-1", last_seen_at: "2026-07-20T10:00:00.000Z" },
     "source-key",
     (_key, state) => {
-      persisted.push({ deadLetteredIds: state.deadLetteredIds });
+      persisted.push({
+        deadLetteredIds: state.deadLetteredIds,
+        deadLetterAttempts: state.deadLetterAttempts,
+      });
       return undefined;
     },
-    ["dead-1", "dead-2"]
+    snapshot
   );
   assert.deepEqual(next, {
     watermark: "2026-07-20T10:00:00.000Z",
@@ -286,7 +309,12 @@ test("advanceComponentCursor: persists the current dead-letter ids onto the dura
   assert.deepEqual(
     persisted[0].deadLetteredIds,
     ["dead-1", "dead-2"],
-    "the durable cursor row carries the current dead-letter ids (ISS-4542)"
+    "the durable row still carries the plain id list (ISS-4542) — the membership record a pre-ISS-8593 reader sees unchanged"
+  );
+  assert.deepEqual(
+    persisted[0].deadLetterAttempts,
+    snapshot,
+    "and the ISS-8593 per-id bookkeeping rides the same row"
   );
 });
 
@@ -320,13 +348,19 @@ test("classifyComponentSyncHttpStatus: 2xx is Accepted", () => {
   }
 });
 
-test("classifyComponentSyncHttpStatus: auth/timeout/rate-limit/5xx and a bare 400 are LaneFailure (never charge the poison budget)", () => {
+test("classifyComponentSyncHttpStatus: auth/timeout/rate-limit/5xx and an UNCODED 400 are LaneFailure (never charge the poison budget)", () => {
   // The exact statuses davetho called out: 401/403 must NOT walk the inventory
-  // forward, 408/429 are transient, and every 5xx is a server-side outage. A bare
-  // 400 joins them (davetho follow-up): the sync endpoint returns generic 400 for
-  // a version-skew `schemaVersion` mismatch that 400s every page, so dead-lettering
-  // it would walk the whole inventory forward on one side of the skew.
-  for (const status of [400, 401, 403, 408, 429, 500, 502, 503, 504]) {
+  // forward, 408/429 are transient, and every 5xx is a server-side outage. An
+  // UNCODED 400 joins them (davetho follow-up). Since ISS-8609 the route codes
+  // its skew 400 `schema_version_unsupported`, so what is left bare is a server
+  // predating that deploy plus the two shared write-lane helpers (ISS-10090) —
+  // and each 400s every page, so dead-lettering one would walk the whole
+  // inventory forward on one side of the skew.
+  //
+  // 409 joins them too as of PRD-699 C1 (ISS-8614): Appendix A verified it
+  // unreachable on this route, so the lane no longer carries a verdict for it and
+  // it takes the standard's own ENVIRONMENTAL default.
+  for (const status of [400, 401, 403, 408, 409, 429, 500, 502, 503, 504]) {
     assert.equal(
       classifyComponentSyncHttpStatus(status),
       ComponentSyncSendOutcome.LaneFailure,
@@ -335,8 +369,29 @@ test("classifyComponentSyncHttpStatus: auth/timeout/rate-limit/5xx and a bare 40
   }
 });
 
+test("ISS-8609 cross-version: an INSTALLED build that reads no body folds a coded 400 exactly as a bare one", () => {
+  // The acceptance criterion's "old client + new server unaffected" half, made
+  // explicit. A desktop predating ISS-8609 never reads the response body, so it
+  // calls this classifier with ONE argument — and the absent second argument is
+  // precisely what that build is. Every verdict must be the pre-ISS-8609 verdict,
+  // whatever code the new server put on the wire, because the old build cannot
+  // see it. Asserted in both directions so a fold that collapsed to one outcome
+  // would fail: the deferring arm AND the charging arm.
+  assert.equal(
+    classifyComponentSyncHttpStatus(400),
+    ComponentSyncSendOutcome.LaneFailure
+  );
+  assert.equal(
+    classifyComponentSyncHttpStatus(422),
+    ComponentSyncSendOutcome.BatchRejected
+  );
+});
+
 test("classifyComponentSyncHttpStatus: permanent per-batch 4xx are BatchRejected (the only class that dead-letters)", () => {
-  for (const status of [409, 413, 422]) {
+  // 422 stays here deliberately (PRD-699 v2): it is this route's primary
+  // validation rejection, and deferring it environmentally would strand a
+  // permanently-invalid batch forever instead of clearing the keyset boundary.
+  for (const status of [413, 422]) {
     assert.equal(
       classifyComponentSyncHttpStatus(status),
       ComponentSyncSendOutcome.BatchRejected,

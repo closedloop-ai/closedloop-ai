@@ -4,7 +4,10 @@ import type {
 } from "@repo/api/src/types/desktop-analytics";
 import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import { computeTargetsService } from "@/app/compute-targets/service";
-import { captureDesktopAnalytics } from "@/lib/desktop-analytics-capture";
+import {
+  aliasDesktopAnalytics,
+  captureDesktopAnalytics,
+} from "@/lib/desktop-analytics-capture";
 import { handleDesktopAnalyticsEvent } from "@/lib/desktop-analytics-handler";
 
 type DesktopAnalyticsCaptureServiceInput = {
@@ -17,12 +20,10 @@ type DesktopAnalyticsCaptureServiceInput = {
 };
 
 /**
- * FEA-3425 (PLN-1437 Phase 3, D4): REST twin of the relay `desktop.analytics`
- * socket event. Verifies compute-target ownership per request — the socket path
- * gets this implicitly from its per-connection `hello` binding; a stateless
- * route must re-check — then delegates to the same shared handler and capture
- * sink as the socket dispatcher, so validation, feature gating, rate limiting,
- * and PostHog enrichment cannot drift between transports.
+ * FEA-3425 (PLN-1437 Phase 3, D4): verifies compute-target ownership per
+ * request, since a stateless route has no per-connection `hello` binding, then
+ * delegates to the shared handler and capture sink for validation, rate
+ * limiting, and PostHog enrichment.
  */
 export const desktopAnalyticsService = {
   async capture(
@@ -52,13 +53,21 @@ export const desktopAnalyticsService = {
         targetId: input.computeTargetId,
         pluginVersion: input.pluginVersion,
       },
-      { capture: captureDesktopAnalytics }
+      // ISS-10503 (PRD-736 D5): the HTTP write lane is the one transport the
+      // desktop presents the alias-triggering onboarding id on, so only this
+      // service supplies the alias sink.
+      { alias: aliasDesktopAnalytics, capture: captureDesktopAnalytics }
     );
 
     if (!ack.accepted) {
       return Result.err(ack.reason);
     }
 
-    return Result.ok({ captured: true });
+    // ISS-10503: the alias outcome rides the ack so the desktop clears its
+    // pending-alias latch only on a genuine merge; omission preserved.
+    return Result.ok({
+      captured: true,
+      ...(ack.aliased === undefined ? {} : { aliased: ack.aliased }),
+    });
   },
 };

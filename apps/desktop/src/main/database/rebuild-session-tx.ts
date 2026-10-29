@@ -17,20 +17,26 @@
  * capturing them from a closure.
  */
 
+import {
+  classifyStaleRow,
+  StaleRowAdmission,
+} from "../collectors/engine/data-revision.js";
 import type { Harness, NormalizedSession } from "../collectors/types.js";
 import { CodexOtelTokenUsageSource } from "../otel/codex-otel-contract.js";
-import { TERMINAL_STATUS_SET } from "./db-constants.js";
+import type { ParsePolicy } from "../parse-policy/parse-policy.js";
 import type { Prisma } from "./generated/client.js";
 import type { createSqliteTokenUsageStore } from "./read-stores.js";
 import type { SessionIdentityProvider } from "./session-owner-identity.js";
+import { advanceSessionSyncWatermark } from "./session-sync-watermark.js";
 import { computeSyncedChildRowFingerprint } from "./synced-child-row-fingerprint.js";
 import { importSessionWithTx } from "./write-core.js";
+import { mainAgentId } from "./write-core-main-agent-spine.js";
 
 /** The result contract `rebuildSessionFromParse` returns. */
 export type RebuildSessionResult = {
   rebuilt: boolean;
   activeRace: boolean;
-  contentChanged?: boolean;
+  needsResync?: boolean;
 };
 
 /**
@@ -40,6 +46,8 @@ export type RebuildSessionResult = {
 export type RebuildSessionTxDeps = {
   session: NormalizedSession;
   harness: Harness;
+  /** ISS-12552: the policy the session was re-parsed under. */
+  parsePolicy: ParsePolicy;
   /** Row-digest capability, probed BEFORE the tx opens (see caller). */
   hasRowDigest: boolean;
   tokenUsage: ReturnType<typeof createSqliteTokenUsageStore>;
@@ -57,6 +65,13 @@ export type RebuildSessionTxDeps = {
   log: (message: string) => void;
   /** The store's clock (`options.now` or wall clock). */
   now: () => string;
+  /**
+   * ISS-8741: the formatted source revision this replacement is derived at,
+   * stamped as the new known-good IN THIS TRANSACTION once every write above it
+   * has succeeded. Optional: a caller that does not compute one gets the
+   * pre-substrate behaviour, and the row keeps whatever stamp it had.
+   */
+  projectionRevision?: string | null;
 };
 
 /**
@@ -70,13 +85,31 @@ export async function runRebuildSessionTransaction(
 ): Promise<RebuildSessionResult> {
   const { session, harness, hasRowDigest, tokenUsage, detectBillingMode, log } =
     deps;
-  // In-tx re-check: a session that is non-terminal (active, running, etc.) must
-  // not be rebuilt — it heals via ordinary reimport.
+  // In-tx re-check: a LIVE CAPTURE must not be rebuilt — it heals via ordinary
+  // reimport, and tearing its projection down mid-capture would race the live
+  // write paths.
+  //
+  // ISS-8601 narrowed this from "non-terminal" to "live". A non-terminal row that
+  // has been silent past the staleness bound is admitted, because no ordinary
+  // reimport is coming for it — the stale-active sweep leaves exactly those rows
+  // untouched, so they stay non-terminal for good. Reading `last_activity_at`
+  // HERE, inside the transaction, is what keeps the guard honest: a row that
+  // genuinely revived since the boot-time snapshot carries a fresh timestamp and
+  // is still refused, so `activeRace` finally means what it says.
   const current = await tx.session.findUnique({
     where: { id: session.sessionId },
-    select: { status: true },
+    select: { status: true, lastActivityAt: true },
   });
-  if (current && !TERMINAL_STATUS_SET.has(current.status)) {
+  if (
+    current &&
+    classifyStaleRow(current, new Date(deps.now())) ===
+      StaleRowAdmission.LiveCapture
+  ) {
+    // ISS-8741: nothing is being replaced, so the claim taken before this
+    // transaction describes no in-flight work. Release it here rather than in the
+    // caller so every exit from the replacement clears its own marker and a later
+    // sweep cannot mistake an abandoned attempt for an interrupted one.
+    await releaseProjectionCandidate(tx, session.sessionId, deps);
     return { rebuilt: false, activeRace: true };
   }
   // ISS-4606: read-before-delete for `token_usage.baseline_*`. Those columns are
@@ -106,21 +139,18 @@ export async function runRebuildSessionTransaction(
   );
   // ISS-4606: read-before-delete. The teardown below still drops PR rows the
   // re-parse no longer references (deliberate stale-row removal), but a row that
-  // comes back must keep its first-observation provenance AND the GitHub-enrichment
-  // lifecycle the importer cannot re-derive. Widened from created_at/observed_at to
-  // carry state/merged_at/closed_at/opened_at through the re-insert.
+  // comes back must keep its first-observation provenance AND the closed_at/opened_at
+  // the importer cannot re-derive.
   const pullRequestPreservedRows = await tx.$queryRawUnsafe<
     {
       id: string;
       created_at: string | null;
       observed_at: string | null;
-      state: string | null;
-      merged_at: string | null;
       closed_at: string | null;
       opened_at: string | null;
     }[]
   >(
-    `SELECT id, created_at, observed_at, state, merged_at, closed_at, opened_at
+    `SELECT id, created_at, observed_at, closed_at, opened_at
        FROM pull_requests WHERE session_id = $1`,
     session.sessionId
   );
@@ -130,8 +160,6 @@ export async function runRebuildSessionTransaction(
       {
         createdAt: row.created_at,
         observedAt: row.observed_at,
-        state: row.state,
-        mergedAt: row.merged_at,
         closedAt: row.closed_at,
         openedAt: row.opened_at,
       },
@@ -169,47 +197,60 @@ export async function runRebuildSessionTransaction(
   // Claude Code cost/permission/api-request rows. None of it is re-derivable from a
   // transcript re-read, so the rebuild is where it went permanently missing.
   //
-  // For `events` and `session_artifact_links` those deletes were also REDUNDANT:
-  // `importSessionWithTx` below already tears down exactly what the parser
-  // re-derives, and ITS predicates are the ones that encode provenance —
-  // `importPhaseEvents` deletes only the event types this importer re-emits, and
-  // `importPhaseArtifactLinks` excludes `commit_sha_correlation`. Deleting first ran
-  // AHEAD of that scoping and defeated it. Letting the import phases own their own
-  // teardown keeps ONE source of truth for "what the parser owns" instead of two
-  // that can drift.
+  // For `events`, `session_artifact_links` and `token_usage` those deletes were
+  // also REDUNDANT: `importSessionWithTx` below already tears down exactly what
+  // the parser re-derives, and ITS predicates are the ones that encode provenance —
+  // `importPhaseEvents` deletes the event types this importer re-emits plus
+  // (ISS-5107) every row keyed to a subagent the reparse dropped and did NOT
+  // bring back — a stable-id subagent keeps its hook rows across the rewrite —
+  // and `importPhaseArtifactLinks` excludes `commit_sha_correlation` (ISS-8905 adds
+  // `normalized_pr`, which `importPhasePullRequests` tears down and rebuilds
+  // itself). Deleting first ran AHEAD of that scoping and defeated it. Letting the
+  // import phases own their own teardown keeps ONE source of truth for "what the
+  // parser owns" instead of two that can drift.
+  //
+  // ISS-7736 is that drift, caught: `importPhaseTokenUsage` now declines to
+  // replace when the re-parse yields ZERO models, because an empty derivation is
+  // "the parse produced nothing usable", not "this session used nothing". A raw
+  // `DELETE FROM token_usage` here ran ahead of that guard and defeated it — the
+  // rows went, the guarded reinsert correctly wrote nothing back, and the wipe
+  // ISS-7736 exists to close happened anyway on the rebuild path. Worse on this
+  // path than on the ordinary one: the rebuild is gated to TERMINAL sessions
+  // (see above), which do not cycle back through ordinary reimport, so the loss
+  // would wait for the next DATA_REVISION bump. The predicate was byte-identical
+  // to the import phase's, so removing it changes nothing for a non-empty
+  // re-parse: the same rows are still deleted and replaced wholesale, one layer
+  // down. The `baseline_*` ledger still rides across on the seed read below.
   //
   // Still torn down here, deliberately:
   //
-  // `agents` — NOT yet narrowed. The delete the import itself runs covers only TERMINAL
-  // parser-namespace subagents, and the main-agent spine upsert runs on the
-  // new-session branch only, so a session being rebuilt never re-derives its
-  // `<id>-main` row. Dropping this delete therefore stops parser-owned main-agent
-  // columns (`metadata`, `task`, `parent_agent_id`) from healing on a re-parse — a
-  // real regression, caught by the FEA-3659 child-projection test. Doing this
-  // properly needs a provenance discriminator so hook-spawned rows can be told
-  // apart from parser-derived ones; `agents` has no such column, and the `-sub-` id
-  // infix is explicitly SHARED between the importer and the live-hook spawner, so it
-  // cannot stand in for one. Tracked as the open `agents` item on ISS-4606.
+  // `agents` — narrowed to the canonical `<id>-main` spine row, which the import
+  // below re-derives unconditionally (`importPhaseSessionAndMainAgent`'s
+  // ON CONFLICT DO NOTHING insert) and which therefore heals its parser-owned
+  // columns — `started_at` above all — only if it is gone first.
+  //
+  // The subagent rows are NOT ours to drop. `importPhaseEvents` already deletes
+  // every subagent row the parser can re-derive: the parser writes subagent rows
+  // ONLY with a terminal status (`completed`/`error`, write-core.ts), which is
+  // exactly what its predicate matches. The rows the wholesale delete took that
+  // the import deliberately spares are the live-hook spawner's non-terminal
+  // (`status = 'working'`) rows — a hook push with no transcript to re-read, so
+  // deleting them here was unrecoverable loss, and it ran AHEAD of that scoping
+  // in the import phase and defeated it. Same shape, and same fix, as the `events` and
+  // `session_artifact_links` deletes above: the import phase owns the predicate,
+  // as the single source of truth for "what the parser owns".
   //
   // `pull_requests` — dropping rows the re-parse no longer references is deliberate
-  // (pinned by `pr-store-write.test.ts`), so the delete stays and the enrichment
-  // lifecycle rides across it on the read-before-delete seed above instead.
-  //
-  // `token_usage` — scoped to the JSONL-parser source, so the OTel-sourced rows
-  // survive (mirrors `codex_trace_span`). Its `baseline_*` ledger rides across on
-  // the seed read below.
+  // (pinned by `pr-store-write.test.ts`), so the delete stays and the preserved
+  // timestamps ride across it on the read-before-delete seed above instead.
   await tx.$executeRawUnsafe(
-    "DELETE FROM agents WHERE session_id = $1",
-    session.sessionId
+    "DELETE FROM agents WHERE session_id = $1 AND id = $2",
+    session.sessionId,
+    mainAgentId(session.sessionId)
   );
   await tx.$executeRawUnsafe(
     "DELETE FROM pull_requests WHERE session_id = $1",
     session.sessionId
-  );
-  await tx.$executeRawUnsafe(
-    "DELETE FROM token_usage WHERE session_id = $1 AND usage_source = $2",
-    session.sessionId,
-    CodexOtelTokenUsageSource.JsonlParser
   );
   await tx.$executeRawUnsafe(
     "DELETE FROM artifact_link_backfill_seen WHERE session_id = $1",
@@ -235,6 +276,7 @@ export async function runRebuildSessionTransaction(
       launchMetadataRootByCwd: new Map(),
       repoFullNameByPath: new Map(),
     },
+    deps.parsePolicy,
     pullRequestPreserved
   );
   // ISS-4606: restore the compaction ledger onto whichever re-derived rows came
@@ -307,16 +349,25 @@ export async function runRebuildSessionTransaction(
   // incremental scan (the explicit enqueue is the belt; this is the suspenders, and
   // keeps the watermark truthful).
   if (contentChanged && importResult.sessionDataChanged !== true) {
-    await tx.$executeRawUnsafe(
-      "UPDATE sessions SET updated_at = $1 WHERE id = $2",
-      deps.now(),
-      session.sessionId
-    );
+    // ISS-8871: strictly forward, and this one shares its transaction with the
+    // re-import above — so a raw clock here does not merely no-op on a tie, it
+    // writes back DOWN over the advance the reactivation or terminal-end writers
+    // may have just made in this same transaction.
+    await advanceSessionSyncWatermark(tx, session.sessionId, deps.now());
   }
+  // ISS-8741: LAST, so the known-good stamp can only exist alongside a complete
+  // replacement. Everything above has succeeded; anything that throws before this
+  // point rolls the whole transaction back and leaves the prior projection AND
+  // its prior stamp standing.
+  await stampProjectionKnownGood(tx, session.sessionId, deps);
   return {
     rebuilt: true,
     activeRace: false,
-    contentChanged,
+    // ISS-12251: a `created_at`-only change is owed to the cloud too, with no
+    // watermark advance (Desktop shows `updated_at`). The import already wrote
+    // its outbox row in this transaction; reporting it here also feeds it to
+    // the live lane through the rebuild's after-pass hand-off.
+    needsResync: contentChanged || importResult.createdAtChanged === true,
   };
 }
 
@@ -336,4 +387,47 @@ async function readSessionLastActivityAt(
     sessionId
   );
   return rows[0]?.last_activity_at ?? null;
+}
+
+/**
+ * ISS-8741: promote this replacement to known-good, on the same `tx`.
+ *
+ * One unconditional assignment of a value derived from the revision alone, so a
+ * replay writes the same bytes rather than accumulating — the idempotence the
+ * substrate promises comes from the statement shape, not from a guard.
+ */
+async function stampProjectionKnownGood(
+  tx: Prisma.TransactionClient,
+  sessionId: string,
+  deps: RebuildSessionTxDeps
+): Promise<void> {
+  if (!deps.projectionRevision) {
+    return;
+  }
+  await tx.$executeRawUnsafe(
+    `UPDATE sessions
+        SET projection_known_good_revision = $1,
+            projection_candidate_revision = NULL
+      WHERE id = $2`,
+    deps.projectionRevision,
+    sessionId
+  );
+}
+
+/**
+ * ISS-8741: clear the in-flight marker without touching the known-good stamp,
+ * for an exit that replaces nothing.
+ */
+async function releaseProjectionCandidate(
+  tx: Prisma.TransactionClient,
+  sessionId: string,
+  deps: RebuildSessionTxDeps
+): Promise<void> {
+  if (!deps.projectionRevision) {
+    return;
+  }
+  await tx.$executeRawUnsafe(
+    "UPDATE sessions SET projection_candidate_revision = NULL WHERE id = $1",
+    sessionId
+  );
 }

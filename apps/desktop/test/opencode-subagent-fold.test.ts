@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { createOpencodeCollector } from "../src/main/collectors/opencode/opencode-collector.js";
 import {
   loadSessionParentLinksFromDb,
@@ -326,7 +326,7 @@ test("OpenCode fold recomputes root artifacts so a child-only PR ref surfaces on
   });
   // Child runs a bash tool whose output contains a PR URL — the ONLY artifact
   // reference in the whole batch, and it lives on the folded child.
-  const childPrUrl = "https://github.com/closedloop-ai/example-repo/pull/4097";
+  const childPrUrl = "https://github.com/closedloop-ai/closedloop-ai/pull/4097";
   db.prepare(`
     INSERT INTO session (
       id, parent_id, slug, directory, title, version, agent, model, permission,

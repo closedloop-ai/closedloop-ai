@@ -13,7 +13,7 @@
  * pinned directly rather than through the harness.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import {
   decideHydrationAbsence,
   HydrationAbsenceVerdict,
@@ -98,7 +98,11 @@ test("ISS-6031: a rejected async probe is unverified too", async () => {
 });
 
 test("ISS-6031: a source with no probe is unverified, but a real EMPTY answer is not", async () => {
-  const absent = await probeSessionPresence(() => undefined);
+  // ISS-8115: absence is the CALLBACK being absent, not a callback that answers
+  // `undefined` — the latter is now a peer answering outside its contract and is
+  // reported. Passing `() => undefined` here would still assert `ok: false` and
+  // so would keep passing while describing the wrong case entirely.
+  const absent = await probeSessionPresence(undefined);
   assert.equal(absent.ok, false, "no probe means nothing was established");
 
   // The sentinel must not swallow a legitimate zero-result: a probe that ran and

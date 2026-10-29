@@ -37,9 +37,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ElectronApplication, Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 import { launchDesktopApp, seedDesktopSettings } from "./helpers/desktop-app";
+import {
+  installOpenExternalSpy,
+  openedUrls,
+} from "./helpers/open-external-spy";
 
 /** A non-production profile — the exact case the fixed host set rejected. */
 const STAGE_ORIGIN = "https://app.stage.example";
@@ -93,33 +97,6 @@ test.describe("Renderer external-link guard on a configured origin (ISS-4898)", 
     }
   });
 });
-
-/**
- * Replace `shell.openExternal` in the MAIN process with a recorder. The window
- * open handler and the allowlist are untouched — only the OS hand-off at the end
- * of the real path is captured.
- */
-async function installOpenExternalSpy(app: ElectronApplication): Promise<void> {
-  await app.evaluate(({ shell }) => {
-    const opened: string[] = [];
-    (
-      globalThis as unknown as { __openedExternalUrls: string[] }
-    ).__openedExternalUrls = opened;
-    shell.openExternal = (url: string) => {
-      opened.push(url);
-      return Promise.resolve();
-    };
-  });
-}
-
-/** Every URL the main process handed to `shell.openExternal` so far. */
-function openedUrls(app: ElectronApplication): Promise<string[]> {
-  return app.evaluate(
-    () =>
-      (globalThis as unknown as { __openedExternalUrls?: string[] })
-        .__openedExternalUrls ?? []
-  );
-}
 
 /**
  * Ask the renderer to open `url` in a new window — the same request an

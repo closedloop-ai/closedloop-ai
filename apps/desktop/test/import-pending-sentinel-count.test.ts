@@ -16,11 +16,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
-import {
-  DATA_REVISION,
-  DATA_REVISION_IMPORT_PENDING,
-} from "../src/main/collectors/engine/data-revision.js";
+import { test } from "vitest";
+import { DATA_REVISION_IMPORT_PENDING } from "../src/main/collectors/engine/data-revision.js";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import {
   BASELINE_MIGRATIONS,
   LEGACY_SCHEMA_REASSERT_SEQUENCE,
@@ -60,7 +58,7 @@ const SEED_ROWS: SeedRow[] = [
     updatedAt: null,
   },
   // Sealed at the real revision — never returned, however old.
-  { id: "sealed", dataRevision: DATA_REVISION, updatedAt: LONG_AGO },
+  { id: "sealed", dataRevision: effectiveDataRevision(), updatedAt: LONG_AGO },
 ];
 
 async function openSeededDatabase(dataDir: string) {

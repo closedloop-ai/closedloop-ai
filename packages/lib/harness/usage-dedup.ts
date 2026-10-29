@@ -16,6 +16,7 @@
  */
 
 import {
+  TOKEN_SOURCE_IDENTITY_MAX_IDENTIFIERS,
   type TokenSourceIdentity,
   TokenSourceIdentityAvailability,
   TokenSourceIdentityUnavailableReason,
@@ -127,6 +128,21 @@ export type UsageLineParams = {
   lineUuid: unknown;
   requestId: string | null;
   timestamp: string;
+  /**
+   * ISS-6738: the stamp BEFORE normalization, kept for identity only — the same
+   * reason `lineUuid` above is `unknown`.
+   *
+   * When a line carries neither `messageId` nor `lineUuid`, the timestamp IS the
+   * dedup identity. `toIso` answers `null` for text no `Date` can read, which the
+   * caller stores as `""`, so two lines with DIFFERENT unreadable stamps would
+   * collapse onto the same key and last-occurrence-wins would drop the earlier
+   * line's tokens outright. The normalizer that preceded it echoed the raw text
+   * back, which kept them apart by accident (whitlockk, ISS-6738 review).
+   *
+   * Identity only: it never reaches `firstTs`, so an unreadable stamp still does
+   * not become a stored timestamp.
+   */
+  rawTimestamp?: unknown;
   model: string;
   input: number;
   output: number;
@@ -205,7 +221,7 @@ export function recordUsageLine(
     params.messageId,
     dedupLineUuid,
     params.requestId,
-    params.timestamp
+    dedupIdentityTimestamp(params)
   );
 
   const cacheWriteTtl = validateCacheWriteTtl(
@@ -279,39 +295,36 @@ export function foldDedupMap(map: Map<string, UsageDedupEntry>): {
   tokensByModel: Record<string, NormalizedTokenCounts>;
   tokenSeries: NormalizedTokenRecord[];
 } {
-  const tokensByModel: Record<string, NormalizedTokenCounts> = {};
+  // ISS-8235: accumulate into a null-prototype object so a model literally
+  // named `__proto__` cannot reach `Object.prototype` at all — see
+  // `ensureModelCounts` for what the plain literal did instead.
+  const tokensByModel: Record<string, NormalizedTokenCounts> =
+    Object.create(null);
   const tokenSeries: NormalizedTokenRecord[] = [];
   for (const entry of map.values()) {
-    if (tokensByModel[entry.model] === undefined) {
-      tokensByModel[entry.model] = {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-      };
-    }
-    tokensByModel[entry.model].input = addStorageTokenCounts(
-      tokensByModel[entry.model].input,
+    const counts = ensureModelCounts(tokensByModel, entry.model);
+    counts.input = addStorageTokenCounts(
+      counts.input,
       entry.input,
       "input_tokens"
     );
-    tokensByModel[entry.model].output = addStorageTokenCounts(
-      tokensByModel[entry.model].output,
+    counts.output = addStorageTokenCounts(
+      counts.output,
       entry.output,
       "output_tokens"
     );
-    tokensByModel[entry.model].cacheRead = addStorageTokenCounts(
-      tokensByModel[entry.model].cacheRead,
+    counts.cacheRead = addStorageTokenCounts(
+      counts.cacheRead,
       entry.cacheRead,
       "cache_read_input_tokens"
     );
-    tokensByModel[entry.model].cacheWrite = addStorageTokenCounts(
-      tokensByModel[entry.model].cacheWrite,
+    counts.cacheWrite = addStorageTokenCounts(
+      counts.cacheWrite,
       entry.cacheWrite,
       "cache_creation_input_tokens"
     );
     if (entry.cacheWriteTtl) {
-      accumulateCacheWriteTtl(tokensByModel[entry.model], entry.cacheWriteTtl);
+      accumulateCacheWriteTtl(counts, entry.cacheWriteTtl);
     }
 
     const record = buildUsageTokenRecord(entry);
@@ -319,7 +332,9 @@ export function foldDedupMap(map: Map<string, UsageDedupEntry>): {
       tokenSeries.push(record);
     }
   }
-  return { tokensByModel, tokenSeries };
+  // Spread restores a normal prototype for downstream consumers (object spread
+  // defines rather than assigns, so an own `__proto__` key survives the copy).
+  return { tokensByModel: { ...tokensByModel }, tokenSeries };
 }
 
 /**
@@ -375,12 +390,11 @@ function recordSourceIdentity(
   ) {
     return "replay";
   }
-  const candidate = tokenSourceIdentitySchema.safeParse({
-    availability: TokenSourceIdentityAvailability.Available,
-    scheme: claudeTranscriptEntryUuidScheme,
-    sourceRecordIds: [...entry.sourceRecordIds, parsedUuid.data],
-  });
-  if (candidate.success) {
+  // Every accumulated id already cleared `claudeTranscriptEntryUuidSchema`
+  // above and the scheme is a fixed constant, so the identifier cap is the only
+  // clause a full re-parse of the grown array could newly fail. Check it
+  // directly instead of re-validating up to 64 strings per usage-bearing line.
+  if (entry.sourceRecordIds.length < TOKEN_SOURCE_IDENTITY_MAX_IDENTIFIERS) {
     entry.sourceRecordIds.push(parsedUuid.data);
   } else {
     entry.sourceIdentityUnavailableReason =
@@ -480,40 +494,92 @@ export function mergeFoldedUsage(
   }
 ): void {
   for (const [model, counts] of Object.entries(source.tokensByModel)) {
-    if (target.tokensByModel[model] === undefined) {
-      target.tokensByModel[model] = {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-      };
-    }
-    target.tokensByModel[model].input = addStorageTokenCounts(
-      target.tokensByModel[model].input,
+    // ISS-8235: `target.tokensByModel` is caller-owned and normally
+    // prototyped, so a `__proto__` model — which `foldDedupMap` now emits as a
+    // real own key rather than dropping — must be DEFINED, not assigned.
+    const targetCounts = ensureModelCounts(target.tokensByModel, model);
+    targetCounts.input = addStorageTokenCounts(
+      targetCounts.input,
       counts.input,
       "input_tokens"
     );
-    target.tokensByModel[model].output = addStorageTokenCounts(
-      target.tokensByModel[model].output,
+    targetCounts.output = addStorageTokenCounts(
+      targetCounts.output,
       counts.output,
       "output_tokens"
     );
-    target.tokensByModel[model].cacheRead = addStorageTokenCounts(
-      target.tokensByModel[model].cacheRead,
+    targetCounts.cacheRead = addStorageTokenCounts(
+      targetCounts.cacheRead,
       counts.cacheRead,
       "cache_read_input_tokens"
     );
-    target.tokensByModel[model].cacheWrite = addStorageTokenCounts(
-      target.tokensByModel[model].cacheWrite,
+    targetCounts.cacheWrite = addStorageTokenCounts(
+      targetCounts.cacheWrite,
       counts.cacheWrite,
       "cache_creation_input_tokens"
     );
     if (counts.cacheWriteTtl) {
-      accumulateCacheWriteTtl(
-        target.tokensByModel[model],
-        counts.cacheWriteTtl
-      );
+      accumulateCacheWriteTtl(targetCounts, counts.cacheWriteTtl);
     }
   }
   target.tokenSeries.push(...source.tokenSeries);
+}
+
+/**
+ * The timestamp component of the dedup key: the normalized stamp when there is
+ * one, else a stable rendering of the RAW stamp.
+ *
+ * Only reached when a line carries neither `messageId` nor `lineUuid`; see
+ * {@link UsageLineParams.rawTimestamp} for why the fallback exists. A raw value
+ * that is neither a non-empty string nor a finite number carries no identity, so
+ * it yields `""` — the same collapse as before, but now only for stamps that
+ * genuinely say nothing rather than for every unreadable one.
+ */
+function dedupIdentityTimestamp(params: UsageLineParams): string {
+  if (params.timestamp.length > 0) {
+    return params.timestamp;
+  }
+  const raw = params.rawTimestamp;
+  if (typeof raw === "string" && raw.length > 0) {
+    return raw;
+  }
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return String(raw);
+  }
+  return "";
+}
+
+/**
+ * The own `tokensByModel` bucket for `model`, zero-initialized on first write.
+ *
+ * ISS-8235: a model is a raw transcript string — `parse-claude-assistant.ts`
+ * reads `message.model` verbatim — so `__proto__` (and `constructor`,
+ * `toString`, `valueOf`) reaches here. Both halves below are load-bearing, and
+ * a plain `=== undefined` check over a plain literal failed both: it read
+ * `Object.prototype` back as an already-initialized record, skipped the
+ * initializer, and then assigned the running total onto `Object.prototype`
+ * itself — after which every plain object in the process inherits an `input`,
+ * and `readStorageTokenCountAlias` returns that fabricated count for unrelated
+ * sessions that never contained the poisoned name.
+ *
+ * `Object.hasOwn` is the only presence check that cannot mistake an inherited
+ * member for an initialized record, and `defineProperty` DEFINES the key
+ * instead of assigning it, so the bucket lands as an own data property rather
+ * than invoking `Object.prototype`'s `__proto__` setter (which would discard
+ * that model's whole spend). The attributes match what a plain assignment
+ * creates, so a normal model name is unaffected.
+ */
+function ensureModelCounts(
+  tokensByModel: Record<string, NormalizedTokenCounts>,
+  model: string
+): NormalizedTokenCounts {
+  if (!Object.hasOwn(tokensByModel, model)) {
+    Object.defineProperty(tokensByModel, model, {
+      value: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return tokensByModel[model];
 }

@@ -1,5 +1,4 @@
 /**
- * @file plugins-panel.test.tsx
  * @description Unit tests for the desktop PluginsPanel (FEA-2923 / T-16.4;
  * unified Packs UX).
  *
@@ -17,25 +16,55 @@
  */
 
 import type { PackView } from "@repo/app/packs/lib/pack-view";
+import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
+import { NavigationProvider } from "@repo/navigation/provider";
 import {
+  act,
   fireEvent,
   render,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// ISS-6925: `PluginsPanel` now reads pack selection off the route through the
+// navigation port, so every render needs the adapter the real renderer mounts
+// at its root. Test mechanics only — no expectation here changed.
+function renderWithNav(ui: ReactElement) {
+  const nav = createMemoryNavigation({ initialPath: "/packs" });
+  return render(
+    <NavigationProvider adapter={nav.adapter}>{ui}</NavigationProvider>
+  );
+}
+
 import type {
   CatalogEntry,
   InstalledPack,
   InstallRunRecord,
 } from "../../../../shared/agent-db-contract";
+import {
+  IPC_WRAPPER_PHRASE,
+  ipcWrappedError,
+  LEAKY_IPC_CHANNEL,
+} from "../../../__tests__/ipc-wrapper-error-fixture";
 import { PluginsPanel } from "../plugins-panel";
 
 // Feature-flag hook has no provider in this unit env; pin it deterministically.
+// ISS-6925: the addressable-detail gate `PluginsPanel` reads. Held OFF for
+// every case written against the component-state selection; the routed case
+// below flips it.
+const packsDetailRouteFlag = { enabled: false };
+
 vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   useFeatureFlagEnabled: () => false,
   useFeatureFlagEnabledOptional: () => false,
+  useFeatureFlagGateOptional: () => ({
+    enabled: packsDetailRouteFlag.enabled,
+    isReady: true,
+    isResolved: true,
+  }),
 }));
 
 // Lightweight PacksWorkspace stub: renders the derived packs and exposes the
@@ -45,11 +74,17 @@ vi.mock("@repo/app/packs/components/packs-workspace", () => ({
   PacksWorkspace: (props: {
     packs: PackView[];
     footerSlot?: React.ReactNode;
+    // The real workspace renders this in its install controls; the stub surfaces
+    // it so the container's mutation-failure message is assertable here.
+    installError?: string | null;
     onInstall?: (id: string, harness?: string) => void;
     onUninstall?: (id: string, harness: string) => void;
     onUpdate?: (id: string, harness: string) => void;
   }) => (
     <div data-testid="packs-workspace">
+      {props.installError ? (
+        <div data-testid="install-error">{props.installError}</div>
+      ) : null}
       {props.packs.map((pack) => (
         <div data-testid={`pv-${pack.id}`} key={pack.id}>
           <span>{pack.name}</span>
@@ -97,7 +132,6 @@ function makeCatalogEntry(over: Partial<CatalogEntry> = {}): CatalogEntry {
     installNotes: null,
     placeholderReason: null,
     verified: true,
-    readmeExcerpt: null,
     stars: null,
     forks: null,
     lastRelease: null,
@@ -200,7 +234,7 @@ describe("PluginsPanel (T-16.4, unified Packs UX)", () => {
         .mockResolvedValue([makeInstalledPack({ packId: "gstack" })]),
     });
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
 
     await waitFor(() =>
       expect(screen.getByTestId("packs-workspace")).toBeDefined()
@@ -221,7 +255,7 @@ describe("PluginsPanel (T-16.4, unified Packs UX)", () => {
       getCatalog: vi.fn().mockResolvedValue([makeCatalogEntry()]),
     });
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
     await waitFor(() => expect(screen.getByTestId("pv-rtk")).toBeDefined());
 
     fireEvent.click(within(screen.getByTestId("pv-rtk")).getByText("install"));
@@ -240,7 +274,7 @@ describe("PluginsPanel (T-16.4, unified Packs UX)", () => {
         ]),
     });
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
     await waitFor(() => expect(screen.getByTestId("pv-rtk")).toBeDefined());
 
     fireEvent.click(
@@ -262,7 +296,7 @@ describe("PluginsPanel (T-16.4, unified Packs UX)", () => {
         .mockResolvedValue([makeInstalledPack({ packId: "gstack" })]),
     });
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
     await waitFor(() => expect(screen.getByTestId("pv-gstack")).toBeDefined());
 
     fireEvent.click(
@@ -284,7 +318,7 @@ describe("PluginsPanel (T-16.4, unified Packs UX)", () => {
         .mockResolvedValue([makeInstalledPack({ packId: "gstack" })]),
     });
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
     await waitFor(() => expect(screen.getByTestId("pv-gstack")).toBeDefined());
 
     fireEvent.click(
@@ -304,7 +338,7 @@ describe("PluginsPanel (T-16.4, unified Packs UX)", () => {
         .mockResolvedValue([makeRun(), makeRun({ id: 2, exitCode: 1 })]),
     });
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
 
     await waitFor(() =>
       expect(screen.getByTestId("run-history-list")).toBeDefined()
@@ -316,10 +350,107 @@ describe("PluginsPanel (T-16.4, unified Packs UX)", () => {
   it("shows an error state when the IPC bridge is unavailable", async () => {
     (window as unknown as { desktopApi?: unknown }).desktopApi = undefined;
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
 
     await waitFor(() =>
       expect(screen.getByTestId("plugins-error")).toBeDefined()
     );
   });
 });
+
+/**
+ * ISS-7599: `runMutation`'s catch renders the caught message. The vetted
+ * catalog IPC rejects through `ipcRenderer.invoke`, so an untreated catch shows
+ * the user the private `catalogInstall` channel name instead of why the install
+ * failed.
+ */
+describe("PluginsPanel — Electron IPC wrapper never reaches the user", () => {
+  it("cleans a wrapped catalogInstall rejection", async () => {
+    installDesktopApi({
+      getCatalog: vi.fn().mockResolvedValue([makeCatalogEntry()]),
+      catalogInstall: vi
+        .fn()
+        .mockRejectedValue(ipcWrappedError("harness not on PATH")),
+    });
+
+    renderWithNav(<PluginsPanel />);
+    const pack = await screen.findByTestId("pv-rtk");
+    fireEvent.click(within(pack).getByRole("button", { name: "install" }));
+
+    const error = await screen.findByTestId("install-error");
+    expect(error.textContent).toBe("harness not on PATH");
+    expect(error.textContent).not.toContain(LEAKY_IPC_CHANNEL);
+    expect(error.textContent).not.toContain(IPC_WRAPPER_PHRASE);
+  });
+});
+
+/**
+ * ISS-6925 review (whitlockk): with detail addressable, Back and Forward move the
+ * selection straight past `handleSelect`. The install failure is keyed on
+ * (machine × harness), never on the pack, so a reset that lived in the click
+ * handler leaves pack A's failure rendered under pack B.
+ */
+describe("PluginsPanel — routed selection clears the previous pack's failure", () => {
+  afterEach(() => {
+    packsDetailRouteFlag.enabled = false;
+  });
+
+  it("drops the install error when the route moves to another pack", async () => {
+    packsDetailRouteFlag.enabled = true;
+    installDesktopApi({
+      getCatalog: vi
+        .fn()
+        .mockResolvedValue([
+          makeCatalogEntry(),
+          makeCatalogEntry({ packId: "gstack", displayName: "GStack" }),
+        ]),
+      catalogInstall: vi
+        .fn()
+        .mockResolvedValue({ started: false, error: { message: "no claude" } }),
+    });
+    const nav = createRouteParamNavigation("/packs/rtk");
+
+    render(
+      <NavigationProvider adapter={nav.adapter}>
+        <PluginsPanel />
+      </NavigationProvider>
+    );
+
+    const pack = await screen.findByTestId("pv-rtk");
+    fireEvent.click(within(pack).getByRole("button", { name: "install" }));
+    expect((await screen.findByTestId("install-error")).textContent).toBe(
+      "no claude"
+    );
+
+    act(() => {
+      nav.navigate("/packs/gstack");
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("install-error")).toBeNull()
+    );
+  });
+});
+
+/**
+ * A memory adapter whose route params are DERIVED from the current path, the
+ * way the desktop adapter derives them from the hash. `createMemoryNavigation`
+ * alone returns a fixed `routeParams` object, so a navigation would move the
+ * path while `id` stayed put — which is precisely the transition under test.
+ */
+function createRouteParamNavigation(initialPath: string) {
+  const nav = createMemoryNavigation({ initialPath });
+  const adapter = {
+    ...nav.adapter,
+    useRouteParamsValue: () => {
+      const path = nav.adapter.usePathValue();
+      const id = path.startsWith(PACK_DETAIL_PREFIX)
+        ? path.slice(PACK_DETAIL_PREFIX.length)
+        : "";
+      return id ? { id } : {};
+    },
+  };
+  return { adapter, navigate: nav.navigate };
+}
+
+const PACK_DETAIL_PREFIX = "/packs/";

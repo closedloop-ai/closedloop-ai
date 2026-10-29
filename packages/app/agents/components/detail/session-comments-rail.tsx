@@ -15,9 +15,11 @@ export function renderCommentsRail({
   onExpand,
   onJump,
   onReply,
+  onRetrySync,
   onUpdate,
   onWidthChange,
   open,
+  selectedThreadId,
   traceIdentity,
   width,
 }: Readonly<{
@@ -32,12 +34,16 @@ export function renderCommentsRail({
     commentId: string,
     draft: { body: string; mentions?: string[] }
   ) => void;
+  /** ISS-8597: absent when this surface's source cannot dead-letter a comment. */
+  onRetrySync?: (commentId: string) => void;
   onUpdate: (
     commentId: string,
     update: { body: string; mentions?: string[] }
   ) => void;
   onWidthChange: (width: number) => void;
   open: boolean;
+  /** ISS-11004: the comment a `?comment=` link addressed, if any. */
+  selectedThreadId?: string | null;
   traceIdentity: string;
   width: number;
 }>): ReactNode {
@@ -57,8 +63,10 @@ export function renderCommentsRail({
       onDelete={onDelete}
       onJump={onJump}
       onReply={onReply}
+      onRetrySync={onRetrySync}
       onUpdate={onUpdate}
       onWidthChange={onWidthChange}
+      selectedThreadId={selectedThreadId}
       traceIdentity={traceIdentity}
       width={width}
     />

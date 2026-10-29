@@ -2,17 +2,13 @@ import {
   KEYLESS_TELEMETRY_EXPORT_EVENT,
   KEYLESS_TELEMETRY_HANDSHAKE_EVENT,
   type KeylessTelemetryExportAck,
+  KeylessTelemetryRejectionReason,
   type KeylessTelemetrySessionAck,
 } from "@closedloop-ai/shared-platform/keyless-telemetry";
-import {
-  DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
-  type DesktopAgentSessionsAck,
-} from "@repo/api/src/types/agent-session";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveCollectorOrigin } from "../keyless-otlp-ingress";
 import {
   connectClient,
-  delay,
   type Harness,
   type KeylessClient,
   makeHarness,
@@ -196,37 +192,40 @@ describe("resolveCollectorOrigin — SSRF / open-proxy guard", () => {
 });
 
 describe("keyless namespace isolation", () => {
-  it("ignores DB-sync, command, dispatch, and arbitrary events (no collector, stays connected)", async () => {
+  it("ignores gateway, dispatch, and arbitrary events (no collector, stays connected)", async () => {
     const h = await harness();
     const c = await client(h.url);
     await openSession(c, "install-x");
 
     // None of these have a listener on /telemetry — they must be inert.
-    c.emitNoAck(DESKTOP_AGENT_SESSIONS_SOCKET_EVENT, { sessions: [] });
+    c.emitNoAck("desktop.command.ack", { commandId: "x" });
     c.emitNoAck("desktop.command.event", { commandId: "x" });
     c.emitNoAck("desktop.hello", { apiKey: "sk_live_x" });
     c.emitNoAck("_relay.validate", {});
     c.emitNoAck("telemetry.unknown", { body: new Uint8Array([1]) });
-    await delay(50);
+
+    // Ordering barrier, not a wall-clock margin: Socket.IO preserves per-socket
+    // frame order, so this handshake's ack proves the server has already
+    // processed all five preceding frames.
+    await openSession(c, "install-barrier");
 
     expect(h.records).toHaveLength(0);
     expect(c.socket.connected).toBe(true);
   });
 
-  it("does not ack DB-sync events (no DesktopAgentSessionsAck path reachable)", async () => {
+  it("does not ack a gateway event emitted with an ack callback (no gateway handler reachable)", async () => {
     const h = await harness();
     const c = await client(h.url);
     let acked = false;
-    await new Promise<void>((resolve) => {
-      c.socket.emit(
-        DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
-        { sessions: [] },
-        (_ack: DesktopAgentSessionsAck) => {
-          acked = true;
-        }
-      );
-      setTimeout(resolve, 50);
+    c.socket.emit("desktop.command.ack", { commandId: "x" }, () => {
+      acked = true;
     });
+
+    // Ordering barrier, not a wall-clock margin: the handshake leaves after the
+    // gateway frame on the same socket, so its ack round-trip proves the server
+    // has already processed both.
+    await openSession(c, "install-no-ack");
+
     expect(acked).toBe(false);
   });
 });
@@ -261,6 +260,45 @@ describe("keyless export — per-install limiting + collector error mapping", ()
       expect(second.reason).toBe("rate_limited");
     }
     expect(h.records).toHaveLength(1);
+  });
+
+  it("still acks when the collector's diagnostic body cannot be read (ISS-7976)", async () => {
+    // readCappedText swallows a res.text() rejection and returns "". Without
+    // that catch the rejection propagates out of proxyToCollector, the ack
+    // callback never fires, and the client waits out its own timeout instead
+    // of learning the export was rejected -- which is what this asserts.
+    const unreadableBodyFetch = () =>
+      Promise.resolve({
+        ok: false,
+        status: 400,
+        text: () => Promise.reject(new Error("body stream aborted")),
+      });
+    const h = await harness(
+      {
+        collectorUrl: "http://collector.internal",
+        fetchImpl: unreadableBodyFetch as never,
+      },
+      { withCollector: false }
+    );
+    const c = await client(h.url);
+    const sessionId = await openSession(c, "install-unreadable");
+
+    const ack = await c.emit<KeylessTelemetryExportAck>(
+      KEYLESS_TELEMETRY_EXPORT_EVENT,
+      {
+        sessionId,
+        signal: "traces",
+        contentType: PROTOBUF,
+        body: new Uint8Array([1, 2, 3]),
+      }
+    );
+
+    expect(ack.accepted).toBe(false);
+    if (!ack.accepted) {
+      // 4xx maps to otlp_rejected regardless of whether the diagnostic read
+      // succeeded -- the diagnostic is never forwarded to the client.
+      expect(ack.reason).toBe(KeylessTelemetryRejectionReason.OtlpRejected);
+    }
   });
 
   it("maps a collector timeout to request_timeout (retryable)", async () => {

@@ -1,0 +1,11 @@
+-- ISS-11213 (PLN-2162 M5.4): drop the desktop-local trace-comment store.
+--
+-- Desktop comments read and write over the REST API in every mode, and the
+-- local comment lane (its store, IPC, sync driver and dead-letter flow) is
+-- deleted in the same change, so nothing in this build reads or writes this
+-- table. Rows still queued or dead-lettered here are dropped WITHOUT being sent
+-- (Kerensa, 2026-10-05: "just drop the table"; PLN-2162 decision 13).
+--
+-- Dropping the table drops its indexes with it. `IF EXISTS` follows the
+-- precedent table drops (0050_iss5135_drop_wall_clock_heal_seen).
+DROP TABLE IF EXISTS "trace_comments";

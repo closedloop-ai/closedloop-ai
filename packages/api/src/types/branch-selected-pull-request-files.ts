@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { BranchPageDetail } from "./branch.ts";
 import { normalizeRepoFullName } from "./branch-repository.ts";
 import type { BranchViewFileDiff } from "./branch-view.ts";
 import type { GitHubAccessDenialReason } from "./github.ts";
@@ -541,4 +542,41 @@ function projectBranchSelectedPullRequestFile(
     deletions: file.deletions,
     changes: file.changes,
   };
+}
+
+/**
+ * Query accepted by the revision-pinned Branch selected-PR checks route
+ * (ISS-12278). `headSha` is the selected PR head the client's detail rendered,
+ * so a head that moved between the two reads answers stale, not another head's checks.
+ */
+export const branchSelectedPullRequestChecksQuerySchema =
+  branchSelectedPullRequestFilesQuerySchema
+    .extend({ headSha: gitShaSchema })
+    .strict();
+export type BranchSelectedPullRequestChecksQuery = z.infer<
+  typeof branchSelectedPullRequestChecksQuerySchema
+>;
+
+/**
+ * The checks query for a detail's selected PR, or `null` when the detail names
+ * no selected PR at a valid head. ISS-12278: shared by the client's lazy checks
+ * read and the server's inline enrichment for callers that have not opted in.
+ */
+export function branchSelectedPullRequestChecksQueryForDetail(
+  detail: BranchPageDetail
+): BranchSelectedPullRequestChecksQuery | null {
+  const selectedId = detail.associatedPullRequests?.selectedId;
+  const selected = detail.associatedPullRequests?.items.find(
+    (pullRequest) => pullRequest.id === selectedId
+  );
+  const selectedDetail = detail.selectedPullRequest;
+  if (!(selected && selectedDetail?.id === selected.id)) {
+    return null;
+  }
+  const parsed = branchSelectedPullRequestChecksQuerySchema.safeParse({
+    repositoryFullName: selected.repositoryFullName,
+    pullRequestNumber: selected.number,
+    headSha: selectedDetail.headRefOid,
+  });
+  return parsed.success ? parsed.data : null;
 }

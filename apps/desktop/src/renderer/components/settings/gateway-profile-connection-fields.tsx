@@ -1,15 +1,15 @@
 import { Input } from "@closedloop-ai/design-system/components/ui/input";
 import { Label } from "@closedloop-ai/design-system/components/ui/label";
 import { type KeyboardEvent, useId } from "react";
+import type { GatewayProfileFormState } from "./gateway-profile-form";
 import { ProfileSandboxField } from "./gateway-profile-sandbox-field";
-import type { GatewayProfileFormState } from "./SettingsPanel";
 
 /**
  * ISS-4577: the shared gateway-profile connection form (name, token, relay/api/
  * app URIs, and the per-profile sandbox field). Rendered by both the New-profile
- * dialog and the selected-profile editor in SettingsPanel.
+ * dialog and the selected-profile editor in `GatewayProfilesCard`.
  *
- * Extracted from the (grandfathered, shrink-only) SettingsPanel.tsx so that file
+ * Extracted from SettingsPanel.tsx so that file
  * trends smaller per the repo file-size discipline, following the sibling
  * ProfileSandboxField split (FEA-4005).
  */

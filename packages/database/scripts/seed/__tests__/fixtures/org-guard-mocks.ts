@@ -23,17 +23,26 @@
  * No database: every Prisma call is mocked.
  */
 
+import { type DeepMockProxy, mockDeep } from "vitest-mock-extended";
 import {
   type ArtifactSubtype,
   DocumentStatus,
   type FeatureStatus,
+  type PrismaClient,
 } from "../../../../generated/client";
 import { deterministicUuid } from "../../helpers";
 import { BASELINE_ORG_ID } from "./baseline-org";
-import { createMockPrisma } from "./mock-prisma";
-
-// Shorthand to access mock call records without fighting Prisma's fluent types.
-export type AnyDelegate = any;
+import {
+  artifactEvaluationRow,
+  artifactRow,
+  commentRow,
+  customFieldRow,
+  gitHubInstallationRow,
+  linearIntegrationRow,
+  projectRow,
+  slackIntegrationRow,
+  teamRow,
+} from "./org-guard-rows";
 
 const KEY_TOKEN_SEPARATOR_PATTERN = /_/g;
 const ORG_SLUG_PREFIX_LENGTH = 8;
@@ -41,22 +50,23 @@ const ORG_SLUG_PREFIX_LENGTH = 8;
 /** A sampled `artifact.findMany` row as the guard selects it. */
 export type SeedArtifactRow = { id: string; slug: string };
 
+export type OrgGuardPrismaMock = DeepMockProxy<PrismaClient>;
+
 /**
  * Builds a mock PrismaClient where no integrations exist and all
  * entity counts are zero — representing a clean, empty org.
  */
-export function buildEmptyOrgMock() {
-  const prisma = createMockPrisma();
-  const p = prisma as AnyDelegate;
+export function buildEmptyOrgMock(): OrgGuardPrismaMock {
+  const prisma = createGuardPrismaMock();
 
   // No integrations
-  p.gitHubInstallation.findUnique.mockResolvedValue(null);
-  p.linearIntegration.findUnique.mockResolvedValue(null);
-  p.slackIntegration.findUnique.mockResolvedValue(null);
+  prisma.gitHubInstallation.findUnique.mockResolvedValue(null);
+  prisma.linearIntegration.findUnique.mockResolvedValue(null);
+  prisma.slackIntegration.findUnique.mockResolvedValue(null);
 
   // No entity rows
-  p.project.count.mockResolvedValue(0);
-  p.team.count.mockResolvedValue(0);
+  prisma.project.count.mockResolvedValue(0);
+  prisma.team.count.mockResolvedValue(0);
 
   return prisma;
 }
@@ -65,96 +75,99 @@ export function buildEmptyOrgMock() {
  * Builds a mock PrismaClient where all 6 models have pre-existing data —
  * representing a fully non-empty org.
  */
-export function buildFullyConflictedOrgMock() {
-  const prisma = createMockPrisma();
-  const p = prisma as AnyDelegate;
+export function buildFullyConflictedOrgMock(): OrgGuardPrismaMock {
+  const prisma = createGuardPrismaMock();
 
-  p.gitHubInstallation.findUnique.mockResolvedValue({ id: "gh-install-1" });
-  p.linearIntegration.findUnique.mockResolvedValue({ id: "linear-1" });
-  p.slackIntegration.findUnique.mockResolvedValue({ id: "slack-1" });
-  p.project.count.mockResolvedValue(3);
-  p.team.count.mockResolvedValue(2);
+  prisma.gitHubInstallation.findUnique.mockResolvedValue(
+    gitHubInstallationRow({ id: "gh-install-1" })
+  );
+  prisma.linearIntegration.findUnique.mockResolvedValue(
+    linearIntegrationRow({ id: "linear-1" })
+  );
+  prisma.slackIntegration.findUnique.mockResolvedValue(
+    slackIntegrationRow({ id: "slack-1" })
+  );
+  prisma.project.count.mockResolvedValue(3);
+  prisma.team.count.mockResolvedValue(2);
 
   return prisma;
 }
 
-export function buildSeedOwnedOrgMock() {
-  const prisma = createMockPrisma();
-  const p = prisma as AnyDelegate;
+export function buildSeedOwnedOrgMock(): OrgGuardPrismaMock {
+  const prisma = createGuardPrismaMock();
 
-  p.gitHubInstallation.findUnique.mockResolvedValue({
-    id: deterministicUuid(`github-installation:${BASELINE_ORG_ID}:seed`),
-  });
+  prisma.gitHubInstallation.findUnique.mockResolvedValue(
+    gitHubInstallationRow({
+      id: deterministicUuid(`github-installation:${BASELINE_ORG_ID}:seed`),
+    })
+  );
   // The seed creates no LinearIntegration — see the module header. A seeded org
   // has no row here, so any row the guard finds is customer-owned.
-  p.linearIntegration.findUnique.mockResolvedValue(null);
-  p.slackIntegration.findUnique.mockResolvedValue({
-    id: deterministicUuid(`slack-integration:${BASELINE_ORG_ID}:seed`),
-  });
-  p.project.count.mockResolvedValue(2);
-  p.project.findMany.mockResolvedValue([
-    {
+  prisma.linearIntegration.findUnique.mockResolvedValue(null);
+  prisma.slackIntegration.findUnique.mockResolvedValue(
+    slackIntegrationRow({
+      id: deterministicUuid(`slack-integration:${BASELINE_ORG_ID}:seed`),
+    })
+  );
+  prisma.project.count.mockResolvedValue(2);
+  prisma.project.findMany.mockResolvedValue([
+    projectRow({
       id: deterministicUuid(`project:${BASELINE_ORG_ID}:platform-foundation`),
       slug: "platform-foundation",
-    },
-    {
+    }),
+    projectRow({
       id: deterministicUuid(`project:${BASELINE_ORG_ID}:developer-experience`),
       slug: "developer-experience",
-    },
+    }),
   ]);
-  p.team.count.mockResolvedValue(1);
-  p.team.findMany.mockResolvedValue([
-    {
+  prisma.team.count.mockResolvedValue(1);
+  prisma.team.findMany.mockResolvedValue([
+    teamRow({
       id: deterministicUuid(`team:${BASELINE_ORG_ID}:default`),
       slug: "default",
-    },
+    }),
   ]);
-  p.artifact.count.mockResolvedValue(4);
-  p.artifact.findMany.mockResolvedValue(seedArtifactRows());
-  p.loop.count.mockResolvedValue(1);
-  p.loop.findMany.mockResolvedValue([
-    {
-      id: deterministicUuid(`loop:${BASELINE_ORG_ID}:plan-generation`),
-      prompt: "Generate an implementation plan for the seed workstream",
-    },
-  ]);
-  p.comment.count.mockResolvedValue(5);
-  p.comment.findMany.mockResolvedValue([
-    {
+  prisma.artifact.count.mockResolvedValue(4);
+  prisma.artifact.findMany.mockResolvedValue(
+    seedArtifactRows().map(artifactRow)
+  );
+  prisma.comment.count.mockResolvedValue(5);
+  prisma.comment.findMany.mockResolvedValue([
+    commentRow({
       id: deterministicUuid(`comment:${BASELINE_ORG_ID}:seed`),
       plainText: "Seed baseline comment",
-    },
-    {
+    }),
+    commentRow({
       id: deterministicUuid(`comment:${BASELINE_ORG_ID}:native`),
       plainText: "Initial feedback on this document.",
-    },
-    {
+    }),
+    commentRow({
       id: deterministicUuid(`comment:${BASELINE_ORG_ID}:native-reply`),
       plainText: "Follow-up: looks good after review.",
-    },
-    {
+    }),
+    commentRow({
       id: deterministicUuid(`comment:${BASELINE_ORG_ID}:liveblocks`),
       plainText: "Liveblocks collaborative comment.",
-    },
-    {
+    }),
+    commentRow({
       id: deterministicUuid(`comment:${BASELINE_ORG_ID}:github`),
       plainText:
         "GitHub PR review comment — please address the naming convention.",
-    },
+    }),
   ]);
-  p.customField.count.mockResolvedValue(1);
-  p.customField.findMany.mockResolvedValue([
-    {
+  prisma.customField.count.mockResolvedValue(1);
+  prisma.customField.findMany.mockResolvedValue([
+    customFieldRow({
       id: deterministicUuid(`custom-field:${BASELINE_ORG_ID}:notes`),
       name: "Notes",
-    },
+    }),
   ]);
-  p.artifactEvaluation.count.mockResolvedValue(1);
-  p.artifactEvaluation.findMany.mockResolvedValue([
-    {
+  prisma.artifactEvaluation.count.mockResolvedValue(1);
+  prisma.artifactEvaluation.findMany.mockResolvedValue([
+    artifactEvaluationRow({
       id: deterministicUuid(`artifact-evaluation:${BASELINE_ORG_ID}:plan`),
       reportId: `seed-report-plan-${BASELINE_ORG_ID}`,
-    },
+    }),
   ]);
 
   return prisma;
@@ -251,4 +264,27 @@ export function seedArtifactRows(): SeedArtifactRow[] {
     seedDeploymentArtifactRow(),
     seedSessionArtifactRow(),
   ];
+}
+
+/**
+ * A deep Prisma mock whose every read the guard issues starts out answering
+ * "no rows": `count` resolves 0 and `findMany` an empty array, as a real
+ * client does for an empty org. Builders and tests override from there.
+ */
+function createGuardPrismaMock(): OrgGuardPrismaMock {
+  const prisma = mockDeep<PrismaClient>();
+  prisma.project.count.mockResolvedValue(0);
+  prisma.project.findMany.mockResolvedValue([]);
+  prisma.team.count.mockResolvedValue(0);
+  prisma.team.findMany.mockResolvedValue([]);
+  prisma.artifact.count.mockResolvedValue(0);
+  prisma.artifact.findMany.mockResolvedValue([]);
+  prisma.loop.count.mockResolvedValue(0);
+  prisma.comment.count.mockResolvedValue(0);
+  prisma.comment.findMany.mockResolvedValue([]);
+  prisma.customField.count.mockResolvedValue(0);
+  prisma.customField.findMany.mockResolvedValue([]);
+  prisma.artifactEvaluation.count.mockResolvedValue(0);
+  prisma.artifactEvaluation.findMany.mockResolvedValue([]);
+  return prisma;
 }

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { schema } from "@tiptap/pm/schema-basic";
 import { EditorState } from "@tiptap/pm/state";
+import { schema } from "prosemirror-schema-basic";
 import { describe, expect, it } from "vitest";
 import {
   createInlineImageUploadPlaceholderPlugin,

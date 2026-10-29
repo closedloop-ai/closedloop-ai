@@ -183,6 +183,112 @@ export function numericArgumentsOf(
   return perCall;
 }
 
+/**
+ * Argument identifiers of each `calleeName(...)` call, one entry per call site
+ * in source order. A non-identifier argument — a literal, a member access, a
+ * nested call — is `null`, which no variable name can collide with.
+ *
+ * The counterpart to {@link calledIdentifiers}: that one proves a helper is
+ * still CALLED, this one proves where its result is still USED. A shell can
+ * keep calling a helper and quietly pass a literal on to the consumer, which
+ * reads as fully wired from a call count alone.
+ *
+ * Identifier text only, never `getText()` — parent pointers are off on these
+ * source files (see the module header).
+ */
+export function callArgumentIdentifiers(
+  source: ts.SourceFile,
+  calleeName: string
+): (string | null)[][] {
+  const perCall: (string | null)[][] = [];
+  forEachNode(source, (node) => {
+    if (
+      !(ts.isCallExpression(node) && ts.isIdentifier(node.expression)) ||
+      node.expression.text !== calleeName
+    ) {
+      return;
+    }
+    perCall.push(
+      node.arguments.map((argument) =>
+        ts.isIdentifier(argument) ? argument.text : null
+      )
+    );
+  });
+  return perCall;
+}
+
+/**
+ * Map of `const x = callee(...)` variable name to the callee's name, for every
+ * variable in `source` initialized by a direct call.
+ *
+ * Resolves what an argument NAME was actually bound from, so an assertion can
+ * follow a value from its producer to its consumer instead of trusting that a
+ * well-named identifier holds what its name suggests.
+ */
+export function variableInitializerCallees(
+  source: ts.SourceFile
+): Record<string, string> {
+  const byName: Record<string, string> = Object.create(null);
+  forEachNode(source, (node) => {
+    if (
+      !(
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.initializer !== undefined &&
+        ts.isCallExpression(node.initializer) &&
+        ts.isIdentifier(node.initializer.expression)
+      )
+    ) {
+      return;
+    }
+    byName[node.name.text] = node.initializer.expression.text;
+  });
+  return byName;
+}
+
+/**
+ * Method names invoked on `receiverPath` — a dotted path such as
+ * `process.stdout` or `child.stdout` — sorted and de-duplicated.
+ *
+ * Which stream API forwards a child's output IS a behaviour: `pipe` pauses the
+ * source when the sink stops accepting, a `write` inside a `data` handler
+ * queues without a bound. The difference is only observable at runtime as an
+ * ABSENCE (bytes that do not arrive, memory that does not grow), which cannot
+ * be asserted without a wall-clock wait, so it is pinned structurally instead.
+ */
+export function methodsCalledOn(
+  source: ts.SourceFile,
+  receiverPath: string
+): string[] {
+  const methods = new Set<string>();
+  forEachNode(source, (node) => {
+    if (
+      !(
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression)
+      )
+    ) {
+      return;
+    }
+    if (dottedName(node.expression.expression) === receiverPath) {
+      methods.add(node.expression.name.text);
+    }
+  });
+  return [...methods].sort();
+}
+
+/** `a.b.c` as a string, or `null` for anything that is not a plain dotted path. */
+function dottedName(node: ts.Node): string | null {
+  if (ts.isIdentifier(node)) {
+    return node.text;
+  }
+  if (!(ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.name))) {
+    return null;
+  }
+  const receiver = dottedName(node.expression);
+  return receiver === null ? null : `${receiver}.${node.name.text}`;
+}
+
 /** Whether `node` is `require("<moduleSpecifier>")`. */
 function isRequireCallOf(node: ts.Node, moduleSpecifier: string): boolean {
   return (

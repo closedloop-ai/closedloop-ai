@@ -52,6 +52,7 @@
 
 import type { AgentSessionSyncSource } from "../../agent-sync/agent-session-sync-source.js";
 import type { BranchReadFacadeMethods } from "../branch-read-facades.js";
+import type { DiagnosticsMethods } from "../diagnostics-methods.js";
 import type { SqliteAgentDatabase } from "../sqlite-contract.js";
 
 /**
@@ -169,11 +170,15 @@ type BranchReadOpName = Extract<keyof BranchReadFacadeMethods, string>;
  * would queue the sync lane and the UI behind corpus reads for no memory win.
  */
 const SYNC_SOURCE_OP_LANES = {
+  adoptOutboxRowsFromRetiredComputeTargets: DbHostAdmissionLane.Ungated,
   advanceSyncState: DbHostAdmissionLane.Ungated,
   aggregateAnalytics: DbHostAdmissionLane.BoundedRead,
   aggregateUsage: DbHostAdmissionLane.BoundedRead,
   clearAcknowledgedInvocationSyncPart: DbHostAdmissionLane.Ungated,
   clearOutboxEntries: DbHostAdmissionLane.Ungated,
+  // ISS-7730: one narrow `updateMany` over rows the caller already named —
+  // same shape and cost as its `recordOutboxRetry` sibling below.
+  clearOutboxLaneStall: DbHostAdmissionLane.Ungated,
   close: DbHostAdmissionLane.Ungated,
   countSessions: DbHostAdmissionLane.Ungated,
   deadLetterInvocationSyncPart: DbHostAdmissionLane.Ungated,
@@ -184,25 +189,68 @@ const SYNC_SOURCE_OP_LANES = {
   listComponentCursorRows: DbHostAdmissionLane.Ungated,
   listRepositoryScopedSessionIds: DbHostAdmissionLane.Ungated,
   listSessionCursorPage: DbHostAdmissionLane.Ungated,
+  projectSessionList: DbHostAdmissionLane.BoundedRead,
   listTopSessionCursorRows: DbHostAdmissionLane.Ungated,
   listUpdatedSessionCursorRows: DbHostAdmissionLane.Ungated,
   loadComponentRows: DbHostAdmissionLane.Ungated,
   loadPendingOutboxIds: DbHostAdmissionLane.Ungated,
   loadPendingOutboxRetryState: DbHostAdmissionLane.Ungated,
+  loadPendingSessionOutboxEngineState: DbHostAdmissionLane.Ungated,
+  loadInvocationSyncParents: DbHostAdmissionLane.Ungated,
   loadReadyInvocationSyncParts: DbHostAdmissionLane.Ungated,
   loadSessionBranchLinkKeys: DbHostAdmissionLane.Ungated,
   loadSessionDocumentArtifactRefs: DbHostAdmissionLane.Ungated,
   loadSessionEventCounts: DbHostAdmissionLane.Ungated,
+  // ISS-9857: a keyset page bounded by `LIMIT` in SQL, the same shape as the
+  // `list*CursorRows` probes above.
+  loadSessionEventPage: DbHostAdmissionLane.Ungated,
+  // ISS-10737: bounded by `LIMIT` in SQL at
+  // `AGENT_COMPONENT_INVOCATION_SESSION_TREE_PAGE_ROWS + 1` — one row past the
+  // page, which is what decides exhaustion — beside one COUNT on the same
+  // predicate. The same shape as the keyset page above.
+  loadSessionInvocationTree: DbHostAdmissionLane.Ungated,
   loadSessionTokenEvents: DbHostAdmissionLane.Ungated,
   loadSyncState: DbHostAdmissionLane.Ungated,
   loadSyncedSessions: DbHostAdmissionLane.BoundedRead,
   loadUsageSessions: DbHostAdmissionLane.BoundedRead,
   markOutboxDeadLettered: DbHostAdmissionLane.Ungated,
+  markOutboxWithheld: DbHostAdmissionLane.Ungated,
   prepareInvocationSyncTarget: DbHostAdmissionLane.Ungated,
+  // ISS-9418 / PLN-2028: narrow upserts on the one lane-run row the caller named
+  // — the same shape and cost as their `advanceSyncState` sibling above.
+  recordLaneGiveUp: DbHostAdmissionLane.Ungated,
+  recordLaneRun: DbHostAdmissionLane.Ungated,
+  rePendWithheldOutbox: DbHostAdmissionLane.Ungated,
   reEnqueueRecoveredDeadLetter: DbHostAdmissionLane.Ungated,
+  recoverInvocationSyncDeadLetters: DbHostAdmissionLane.Ungated,
   readSyncBurndown: DbHostAdmissionLane.Ungated,
+  recordActivityTilingDebt: DbHostAdmissionLane.Ungated,
   recordInvocationSyncRetry: DbHostAdmissionLane.Ungated,
   recordOutboxRetry: DbHostAdmissionLane.Ungated,
+  readSessionCompactFilterCapabilities: DbHostAdmissionLane.Ungated,
+  // ISS-10717: the Claude Code telemetry lane. The candidate sweep is a
+  // multi-table aggregate over the whole `claude_code_*` corpus, so it is the
+  // one op here that holds a reader long enough to matter and belongs in
+  // `BoundedRead`; the counter read and the three cursor writes are single-row
+  // probes on their own tables, so they are `Ungated`.
+  loadClaudeCodeTelemetryDropCounters: DbHostAdmissionLane.Ungated,
+  loadClaudeCodeTelemetryPendingSessions: DbHostAdmissionLane.BoundedRead,
+  markClaudeCodeTelemetryDropCountersDelivered: DbHostAdmissionLane.Ungated,
+  recordClaudeCodeTelemetryAbandoned: DbHostAdmissionLane.Ungated,
+  recordClaudeCodeTelemetryDelivered: DbHostAdmissionLane.Ungated,
+  recordClaudeCodeTelemetryRejection: DbHostAdmissionLane.Ungated,
+  recordClaudeCodeTelemetrySessionAbsent: DbHostAdmissionLane.Ungated,
+  // ISS-7265: the tiling-repair sweep. `Ungated` for the same reason
+  // `adoptOutboxRowsFromRetiredComputeTargets` is — a durable maintenance walk
+  // whose reads are keyset/PK probes bounded to one chunk at a time. A bounded
+  // read permit is held for the whole op, so gating a loop that drains until
+  // empty would hold one permit across the entire sweep and starve the reads it
+  // is meant to protect.
+  requeueOwedActivityTilings: DbHostAdmissionLane.Ungated,
+  settleActivityTilingDebt: DbHostAdmissionLane.Ungated,
+  // ISS-10332: narrow updates on the rows one acked batch named.
+  settlePriorityUploads: DbHostAdmissionLane.Ungated,
+  resolveComponentSessionIds: DbHostAdmissionLane.BoundedRead,
 } satisfies Record<SyncSourceOpName, InvokeRoutableLane>;
 
 /**
@@ -242,6 +290,35 @@ const DASHBOARD_OP_LANES = {
 
 /** The `dashboard.*` names declared here. See {@link DeclaredSyncSourceOpName}. */
 export type DeclaredDashboardOpName = keyof typeof DASHBOARD_OP_LANES;
+/** The `diagnostics.*` ops on the contract, derived from the methods group. */
+type DiagnosticsOpName = Extract<
+  keyof DiagnosticsMethods["diagnostics"],
+  string
+>;
+
+/**
+ * Lane for every `diagnostics.*` op — the ISS-6758 addition.
+ *
+ * `getData` qualifies on the same PEAK-ALLOCATION axis as the `dashboard.*`
+ * members. Once the Coverage tab is selected it drives a full scan plus a temp
+ * B-tree over `session_activity_metrics` through `prisma.read`, on the SAME
+ * 2-connection pool, on the Diagnostics panel's 5-second poll — the exact shape
+ * ISS-6027 found ungated, arriving through the same generic invoke path. It is
+ * declared on the op NAME, so the cheaper no-coverage poll takes a permit too;
+ * that is this lane's known name-granularity cost (see `BOUNDED_READ_OPS`), and
+ * it is small here because the panel issues one request at a time.
+ *
+ * The other two are cheap: a bounded reconcile write and a `sourcePath`
+ * projection over one small table, both on the writer client.
+ */
+const DIAGNOSTICS_OP_LANES = {
+  getData: DbHostAdmissionLane.BoundedRead,
+  listOpencodeWithheldScanPaths: DbHostAdmissionLane.Ungated,
+  recordOpencodeWithheld: DbHostAdmissionLane.Ungated,
+} satisfies Record<DiagnosticsOpName, InvokeRoutableLane>;
+
+/** The `diagnostics.*` names declared here. See {@link DeclaredSyncSourceOpName}. */
+export type DeclaredDiagnosticsOpName = keyof typeof DIAGNOSTICS_OP_LANES;
 
 /**
  * Lane for the two named Branch read facades — the ISS-5957 addition.
@@ -266,6 +343,7 @@ export type DeclaredDashboardOpName = keyof typeof DASHBOARD_OP_LANES;
  * `BRANCHES_PAGE_MAX_CONCURRENT_BOUNDED_OPS`, which is 1. The cost is purely
  * cross-surface, and is the same cost ISS-6027 already accepted for dashboard.
  */
+
 const BRANCH_READ_OP_LANES = {
   readBranchCanonicalActivityRows: DbHostAdmissionLane.BoundedRead,
   readBranchMetricEventEvidence: DbHostAdmissionLane.BoundedRead,
@@ -291,6 +369,7 @@ export const DB_HOST_OP_LANE_REGISTRY: ReadonlyArray<
 > = [
   ["syncSource", SYNC_SOURCE_OP_LANES],
   ["dashboard", DASHBOARD_OP_LANES],
+  ["diagnostics", DIAGNOSTICS_OP_LANES],
   ["", BRANCH_READ_OP_LANES],
 ];
 

@@ -2,7 +2,7 @@
  * @file write-core-main-agent-spine.ts
  * @description ISS-4476: the new-session import path's canonical `<sessionId>-main`
  * agent recovery, extracted from `write-core.ts` as its own responsibility (and to
- * keep the grandfathered `write-core.ts` shrinking, not growing).
+ * keep `write-core.ts` shrinking, not growing).
  *
  * `importPhaseSessionAndMainAgent` (in `write-core.ts`) calls
  * {@link upsertImportedMainAgentSpine} on the branch where `getImportSession`
@@ -40,6 +40,8 @@ export function getImportSession(
       // content change when it upgrades a previously-stored `/model` fallback
       // label (which would otherwise be COALESCE-sticky and never re-sync).
       model: true,
+      // ISS-12251: the stored side of the `created_at` fill-or-min merge.
+      createdAt: true,
     },
   });
 }

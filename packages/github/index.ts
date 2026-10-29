@@ -3,52 +3,36 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import {
-  type BundledPullRequestsGraphqlResponse,
-  buildBundledPullRequestsVariables,
-  bundledPullRequestsFoundAllTargets,
-  GITHUB_BUNDLED_PULL_REQUESTS_QUERY,
-  mapBundledPullRequestsResponse,
-  mergeBundledPullRequestsResults,
-  normalizeBundledPullRequestsPageOptions,
-} from "@repo/api/src/github-read-model";
-import {
   type BranchViewCheck,
   BranchViewCheckKind,
 } from "@repo/api/src/types/branch-view";
-import type { GitHubContributor } from "@repo/api/src/types/github";
 import type {
   GitHubBundledPullRequestsObserver,
-  GitHubBundledPullRequestsPageOptions,
   GitHubBundledPullRequestsResult,
   GitHubRepositoryDefaultObservationContext,
 } from "@repo/api/src/types/github-read-model";
-import {
-  GitHubBundledPullRequestsStopReason,
-  GitHubProviderBudgetState,
-} from "@repo/api/src/types/github-read-model";
+import { GitHubBundledPullRequestsStopReason } from "@repo/api/src/types/github-read-model";
 import {
   StatusCheckRollupFailureReason,
   type StatusCheckRollupState,
 } from "@repo/api/src/types/github-status";
 import { log } from "@repo/observability/log";
+import { queryBundledPullRequestsWithProviderResult } from "./bundled-pull-requests";
 import {
   type GitHubPullRequestIssueComment,
   type GitHubPullRequestReview,
   type GitHubPullRequestReviewComment,
-  mapGitHubPullRequestReviewAuthor,
   mapPullRequestIssueComment,
+  mapPullRequestReview,
   mapPullRequestReviewComment,
 } from "./comment-payloads";
-import {
-  getInstallationAccessToken as getInstallationAccessTokenForInstallation,
-  getInstallationOctokit,
-} from "./installation-auth";
+import { parseDispatchRepo } from "./dispatch-repo";
+import { getInstallationOctokit } from "./installation-auth";
 import { keys, webhookSecretKeys } from "./keys";
 import {
-  classifyBundledRepositoryAccessFailure,
   classifyGitHubProviderError,
+  recoverPartialGraphqlEnvelope,
   toGitHubProviderFailure,
-  toGitHubUserTokenProviderFailure,
 } from "./provider-error-classification";
 import {
   getStatusCheckDedupeKey,
@@ -61,14 +45,13 @@ import {
 import {
   type GitHubProviderResult,
   GitHubProviderResultStatus,
-  type GitHubUserTokenProviderResult,
 } from "./provider-result";
 import {
-  GITHUB_PULL_REQUEST_REST_HEADERS,
-  type GitHubPullRequestRestAuthorityObservation,
-  type GitHubSinglePullRequestResult,
-  mapSinglePullRequestResponse,
-} from "./pull-request-rest";
+  type GitHubPageBounds,
+  readPullRequestIssueCommentPages,
+  readPullRequestReviewCommentPages,
+  readPullRequestReviewPages,
+} from "./pull-request-comment-pages";
 import {
   mapRepositoryPullRequest,
   normalizeRepositoryPullRequestListLimit,
@@ -81,35 +64,35 @@ import {
   MAX_PR_METADATA_PAGES,
 } from "./review-thread-lookup";
 
+// biome-ignore lint/performance/noBarrelFile: packages/github/index.ts is the package API surface.
+export { queryBundledPullRequestsWithProviderResult } from "./bundled-pull-requests";
 export type {
-  CreatePullRequestReviewCommentWithUserTokenInput,
   GitHubCommentAuthor,
   GitHubPullRequestIssueComment,
   GitHubPullRequestReview,
   GitHubPullRequestReviewComment,
 } from "./comment-payloads";
-// biome-ignore lint/performance/noBarrelFile: packages/github/index.ts is the package API surface.
 export {
-  createPullRequestIssueCommentWithUserToken,
-  createPullRequestReviewCommentWithUserToken,
-  createReplyForReviewCommentWithUserToken,
-  deletePullRequestIssueCommentWithUserToken,
-  deletePullRequestReviewCommentWithUserToken,
-  resolvePullRequestReviewThreadWithUserToken,
-  unresolvePullRequestReviewThreadWithUserToken,
-  updatePullRequestIssueCommentWithUserToken,
-  updatePullRequestReviewCommentWithUserToken,
-} from "./comment-user-token";
+  compareBranchFileChangesWithProviderResult,
+  GITHUB_COMPARE_FILE_LIMIT,
+  type GitHubChangedFile,
+  type GitHubComparedFiles,
+} from "./compare-branch-file-changes";
 export {
+  GitHubOperationProviderResultStatus,
+  GitHubProviderFailureStage,
   type GitHubProviderResult,
   GitHubProviderResultStatus,
   type GitHubUserTokenProviderResult,
   GitHubUserTokenProviderResultStatus,
 } from "./provider-result";
-export type {
-  GitHubPullRequestRestAuthorityObservation,
-  GitHubSinglePullRequestResult,
+export {
+  type GitHubPullRequestRestAuthorityObservation,
+  type GitHubSinglePullRequestResult,
+  getSinglePullRequest,
+  getSinglePullRequestWithProviderResult,
 } from "./pull-request-rest";
+export { queryPullRequestsByNumberWithProviderResult } from "./pull-requests-by-number";
 
 // Top-level regex for performance
 const COMMIT_SHA_REGEX = /^[0-9a-f]{40}$/i;
@@ -125,13 +108,6 @@ function getConfig() {
   return _config;
 }
 
-// Lazy installation-repo parser. GITHUB_APP_DISPATCH_REPO names the
-// owner/repo whose GitHub App installation backs app-authenticated reads.
-function getDispatchRepo() {
-  const config = getConfig();
-  return config.GITHUB_APP_DISPATCH_REPO.split("/") as [string, string];
-}
-
 /**
  * Create an authenticated Octokit instance using the GitHub App installation token.
  * Resolves the installation for the configured app-installation repo
@@ -140,7 +116,9 @@ function getDispatchRepo() {
  */
 export async function getAuthenticatedOctokit(): Promise<Octokit> {
   const config = getConfig();
-  const [dispatchOwner, dispatchRepo] = getDispatchRepo();
+  const { owner: dispatchOwner, repo: dispatchRepo } = parseDispatchRepo(
+    config.GITHUB_APP_DISPATCH_REPO
+  );
 
   const auth = createAppAuth({
     appId: config.GITHUB_APP_ID,
@@ -400,7 +378,7 @@ export async function getRepositoryPullRequestsWithMetadata(
       ),
       limit,
       options?.targetNumbers ?? []
-    ).map(mapRepositoryPullRequest);
+    ).map((pr) => mapRepositoryPullRequest(pr, `${owner}/${name}`));
     return {
       pullRequests,
       hasMore: result.value.hasMore === true,
@@ -592,157 +570,37 @@ export async function queryStatusCheckRollupWithProviderResult(
   }
 }
 
-/**
- * Fetch a visible repository window of pull requests with review/check summary
- * data in one GraphQL request. Every call selects rateLimit budget metadata via
- * the shared query so callers can back off from GitHub-reported limits.
- */
-export async function queryBundledPullRequestsWithProviderResult(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  numbers: readonly number[],
-  options: GitHubBundledPullRequestsPageOptions = {},
-  // PLN-1535 M0: invoked once per fetched page with the mapped `rateLimit`
-  // budget (incl. the `cost` this read otherwise discards) so callers can
-  // measure GraphQL spend per route. Pages already fetched before an early
-  // paging exit are still reported.
-  observer?: GitHubBundledPullRequestsObserver,
-  repositoryDefaultContext?: GitHubRepositoryDefaultObservationContext
-): Promise<GitHubProviderResult<GitHubBundledPullRequestsResult>> {
-  try {
-    const normalized = normalizeBundledPullRequestsPageOptions({
-      ...options,
-      targetNumbers: options.targetNumbers ?? numbers,
-    });
-    const pages: GitHubBundledPullRequestsResult[] = [];
-    let after = normalized.after;
-
-    for (let page = 0; page < normalized.maxPages; page++) {
-      const remainingItems =
-        normalized.maxItems - countBundledPullRequests(pages);
-      if (remainingItems <= 0) {
-        break;
-      }
-      let data: BundledPullRequestsGraphqlResponse;
-      try {
-        data = await octokit.graphql<BundledPullRequestsGraphqlResponse>(
-          GITHUB_BUNDLED_PULL_REQUESTS_QUERY,
-          buildBundledPullRequestsVariables(owner, repo, numbers, {
-            ...normalized,
-            after,
-            pageSize: Math.min(normalized.pageSize, remainingItems),
-          })
-        );
-      } catch (error) {
-        return resolveBundledPullRequestsPageFailure(error, pages, normalized);
-      }
-      const mapped = mapBundledPullRequestsResponse(
-        data,
-        undefined,
-        repositoryDefaultContext
-      );
-      pages.push(mapped);
-      observer?.({
-        page,
-        itemCount: mapped.pullRequests.length,
-        rateLimit: mapped.rateLimit,
-      });
-
-      if (
-        normalized.targetNumbers.length > 0 &&
-        bundledPullRequestsFoundAllTargets(
-          pages.flatMap((current) => current.pullRequests),
-          normalized.targetNumbers
-        )
-      ) {
-        return {
-          status: GitHubProviderResultStatus.Success,
-          value: mergeBundledPullRequestsResults(
-            pages,
-            normalized,
-            GitHubBundledPullRequestsStopReason.TargetFound
-          ),
-        };
-      }
-      if (mapped.rateLimit.state === GitHubProviderBudgetState.Low) {
-        return {
-          status: GitHubProviderResultStatus.Success,
-          value: mergeBundledPullRequestsResults(
-            pages,
-            normalized,
-            GitHubBundledPullRequestsStopReason.BudgetLow
-          ),
-        };
-      }
-      if (!(mapped.pageInfo?.hasNextPage && mapped.pageInfo.endCursor)) {
-        return {
-          status: GitHubProviderResultStatus.Success,
-          value: mergeBundledPullRequestsResults(pages, normalized),
-        };
-      }
-      after = mapped.pageInfo.endCursor;
-    }
-
-    return {
-      status: GitHubProviderResultStatus.Success,
-      value: mergeBundledPullRequestsResults(pages, normalized),
-    };
-  } catch (error) {
-    return toGitHubProviderFailure(error);
-  }
-}
-
 function mapPartialStatusCheckRollupError(
   error: unknown,
   context: StatusCheckRollupQueryContext
 ): StatusCheckRollupResult | null {
-  const data = getPartialGraphqlData(error);
-  if (!data) {
+  const partial = recoverPartialGraphqlEnvelope(
+    error,
+    isStatusCheckRollupResponse
+  );
+  if (!partial) {
     return null;
   }
 
-  const result = mapStatusCheckRollupResponse(data.repository ?? null, context);
+  const result = mapStatusCheckRollupResponse(
+    partial.data.repository ?? null,
+    context
+  );
   if (!result.ok) {
     return null;
   }
 
   log.warn("[github/rollup] Recovered rollup from partial GraphQL data", {
     ...context,
-    graphqlErrorCount: getGraphqlErrorCount(error),
+    graphqlErrorCount: partial.errors.length,
   });
   return result;
-}
-
-function getPartialGraphqlData(
-  error: unknown
-): StatusCheckRollupResponse | null {
-  const data = (error as { data?: unknown }).data;
-  if (isStatusCheckRollupResponse(data)) {
-    return data;
-  }
-
-  const responseData = (error as { response?: { data?: unknown } }).response
-    ?.data;
-  if (isStatusCheckRollupResponse(responseData)) {
-    return responseData;
-  }
-
-  const nestedResponseData = (responseData as { data?: unknown } | null)?.data;
-  return isStatusCheckRollupResponse(nestedResponseData)
-    ? nestedResponseData
-    : null;
 }
 
 function isStatusCheckRollupResponse(
   value: unknown
 ): value is StatusCheckRollupResponse {
   return typeof value === "object" && value !== null && "repository" in value;
-}
-
-function getGraphqlErrorCount(error: unknown): number {
-  const errors = (error as { errors?: unknown }).errors;
-  return Array.isArray(errors) ? errors.length : 0;
 }
 
 function validateStatusCheckRollupInput(
@@ -936,89 +794,9 @@ function shouldReplaceStatusCheckCandidate(
   return candidate.position > previous.position;
 }
 
-/**
- * Fetch a single pull request by number.
- * Returns null on any error (not found, permission denied, etc.).
- */
-export async function getSinglePullRequest(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  pullNumber: number,
-  authorityObservation?: GitHubPullRequestRestAuthorityObservation
-): Promise<GitHubSinglePullRequestResult | null> {
-  const result = await getSinglePullRequestWithProviderResult(
-    octokit,
-    owner,
-    repo,
-    pullNumber,
-    authorityObservation
-  );
-  if (result.status === GitHubProviderResultStatus.Success) {
-    return result.value;
-  }
-  log.warn("[github/pull-request] Failed to fetch single pull request", {
-    owner,
-    repo,
-    pullNumber,
-    status: result.status,
-  });
-  return null;
-}
-
-/**
- * Fetch a single pull request with the caller's client (PLN-1525 step 4: one
- * credential-agnostic function replaces the installation/user-token variant
- * pair). The result carries the credential-fault statuses so user-token lanes
- * can distinguish a revoked/underscoped credential; installation-lane callers
- * treat them like any other non-success.
- */
-export async function getSinglePullRequestWithProviderResult(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  pullNumber: number,
-  authorityObservation?: GitHubPullRequestRestAuthorityObservation
-): Promise<GitHubUserTokenProviderResult<GitHubSinglePullRequestResult>> {
-  try {
-    const { data: pr } = await octokit.rest.pulls.get({
-      owner,
-      repo,
-      pull_number: pullNumber,
-      headers: GITHUB_PULL_REQUEST_REST_HEADERS,
-    });
-
-    return {
-      status: GitHubProviderResultStatus.Success,
-      value: mapSinglePullRequestResponse(pr, authorityObservation),
-    };
-  } catch (error) {
-    return toGitHubUserTokenProviderFailure(error);
-  }
-}
-
-/**
- * Generate an installation access token for a given GitHub App installation.
- * Used by the loop orchestrator to pass a short-lived token to containers.
- */
-export async function getInstallationAccessToken(
-  installationId: string
-): Promise<string> {
-  return await getInstallationAccessTokenForInstallation(installationId);
-}
-
-export type GitHubChangedFile = {
-  filename: string;
-  previousFilename?: string;
-  status: string;
-  additions: number;
-  deletions: number;
-  changes: number;
-  patch?: string;
-};
-
-const MAX_COMPARE_FILES = 500;
 const MAX_PR_METADATA_ROWS = 500;
+/** GitHub REST caps `per_page` at 100 on every paginated endpoint. */
+const MAX_PAGE_SIZE = 100;
 
 export type GitHubPullRequestMetadataListOptions = {
   /** Maximum rows to fetch before returning a bounded result. */
@@ -1028,74 +806,6 @@ export type GitHubPullRequestMetadataListOptions = {
   /** Whether to enrich review comments with review-thread id/resolution metadata. */
   includeReviewThreadMetadata?: boolean;
 };
-
-type CompareCommitFile = {
-  filename: string;
-  previous_filename?: string;
-  status: string;
-  additions: number;
-  deletions: number;
-  changes: number;
-  patch?: string;
-};
-
-/**
- * Compare two refs and return bounded file-change metadata from GitHub with
- * the caller's client. Raw file contents are intentionally not fetched here;
- * callers decide how to truncate or omit patch snippets before persisting
- * metadata.
- */
-export async function compareBranchFileChangesWithProviderResult(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  base: string,
-  head: string
-): Promise<GitHubProviderResult<GitHubChangedFile[]>> {
-  try {
-    const files: GitHubChangedFile[] = [];
-    await octokit.paginate(
-      octokit.rest.repos.compareCommitsWithBasehead,
-      {
-        owner,
-        repo,
-        basehead: `${base}...${head}`,
-        per_page: 100,
-      },
-      (response, done) => {
-        const responseData = response.data as { files?: CompareCommitFile[] };
-        for (const file of responseData.files ?? []) {
-          if (files.length >= MAX_COMPARE_FILES) {
-            done();
-            break;
-          }
-          const changedFile: GitHubChangedFile = {
-            filename: file.filename,
-            status: file.status,
-            additions: file.additions,
-            deletions: file.deletions,
-            changes: file.changes,
-          };
-          if (file.previous_filename) {
-            changedFile.previousFilename = file.previous_filename;
-          }
-          if (file.patch) {
-            changedFile.patch = file.patch;
-          }
-          files.push(changedFile);
-        }
-        if (files.length >= MAX_COMPARE_FILES) {
-          done();
-        }
-        return [];
-      }
-    );
-
-    return { status: GitHubProviderResultStatus.Success, value: files };
-  } catch (error) {
-    return toGitHubProviderFailure(error);
-  }
-}
 
 // getMergeBaseSha / getBoundedFileContentAtRef moved to the credential-agnostic
 // `@repo/github/file-content` subpath (PLN-1525 step 3) — they take an Octokit
@@ -1113,25 +823,13 @@ export async function listPullRequestReviewCommentsWithProviderResult(
   options: GitHubPullRequestMetadataListOptions = {}
 ): Promise<GitHubProviderResult<GitHubPullRequestReviewComment[]>> {
   try {
-    const limit = normalizePullRequestMetadataLimit(options.limit);
-    const pageSize = normalizePullRequestMetadataPageSize(options.pageSize);
-    const comments: Awaited<
-      ReturnType<typeof octokit.pulls.listReviewComments>
-    >["data"] = [];
-    for (let page = 1; page <= MAX_PR_METADATA_PAGES; page++) {
-      const remainingLimit = limit - comments.length;
-      const { data } = await octokit.pulls.listReviewComments({
-        owner,
-        repo,
-        pull_number: pullNumber,
-        per_page: Math.min(pageSize, remainingLimit),
-        page,
-      });
-      comments.push(...data);
-      if (data.length < pageSize || comments.length >= limit) {
-        break;
-      }
-    }
+    const { items: comments } = await readPullRequestReviewCommentPages(
+      octokit,
+      owner,
+      repo,
+      pullNumber,
+      metadataPageBounds(options)
+    );
     const reviewThreadMetadata =
       options.includeReviewThreadMetadata === false
         ? new Map<number, { id: string; isResolved: boolean }>()
@@ -1145,15 +843,13 @@ export async function listPullRequestReviewCommentsWithProviderResult(
 
     return {
       status: GitHubProviderResultStatus.Success,
-      value: comments
-        .slice(0, limit)
-        .map((comment) =>
-          mapPullRequestReviewComment(
-            comment,
-            reviewThreadMetadata.get(comment.id)?.id ?? null,
-            reviewThreadMetadata.get(comment.id)?.isResolved ?? null
-          )
-        ),
+      value: comments.map((comment) =>
+        mapPullRequestReviewComment(
+          comment,
+          reviewThreadMetadata.get(comment.id)?.id ?? null,
+          reviewThreadMetadata.get(comment.id)?.isResolved ?? null
+        )
+      ),
     };
   } catch (error) {
     return toGitHubProviderFailure(error);
@@ -1171,35 +867,16 @@ export async function listPullRequestReviewsWithProviderResult(
   options: GitHubPullRequestMetadataListOptions = {}
 ): Promise<GitHubProviderResult<GitHubPullRequestReview[]>> {
   try {
-    const limit = normalizePullRequestMetadataLimit(options.limit);
-    const pageSize = normalizePullRequestMetadataPageSize(options.pageSize);
-    const reviews: Awaited<
-      ReturnType<typeof octokit.pulls.listReviews>
-    >["data"] = [];
-    for (let page = 1; page <= MAX_PR_METADATA_PAGES; page++) {
-      const remainingLimit = limit - reviews.length;
-      const { data } = await octokit.pulls.listReviews({
-        owner,
-        repo,
-        pull_number: pullNumber,
-        per_page: Math.min(pageSize, remainingLimit),
-        page,
-      });
-      reviews.push(...data);
-      if (data.length < pageSize || reviews.length >= limit) {
-        break;
-      }
-    }
+    const { items: reviews } = await readPullRequestReviewPages(
+      octokit,
+      owner,
+      repo,
+      pullNumber,
+      metadataPageBounds(options)
+    );
     return {
       status: GitHubProviderResultStatus.Success,
-      value: reviews.slice(0, limit).map((r) => ({
-        id: r.id,
-        user: mapGitHubPullRequestReviewAuthor(r.user),
-        state: r.state,
-        body: r.body ?? null,
-        submitted_at: r.submitted_at ?? null,
-        html_url: r.html_url,
-      })),
+      value: reviews.map(mapPullRequestReview),
     };
   } catch (error) {
     return toGitHubProviderFailure(error);
@@ -1219,48 +896,20 @@ export async function listPullRequestIssueCommentsWithProviderResult(
   options: GitHubPullRequestMetadataListOptions = {}
 ): Promise<GitHubProviderResult<GitHubPullRequestIssueComment[]>> {
   try {
-    const limit = normalizePullRequestMetadataLimit(options.limit);
-    const pageSize = normalizePullRequestMetadataPageSize(options.pageSize);
-    const comments: Awaited<
-      ReturnType<typeof octokit.issues.listComments>
-    >["data"] = [];
-    for (let page = 1; page <= MAX_PR_METADATA_PAGES; page++) {
-      const remainingLimit = limit - comments.length;
-      const { data } = await octokit.issues.listComments({
-        owner,
-        repo,
-        issue_number: pullNumber,
-        per_page: Math.min(pageSize, remainingLimit),
-        page,
-      });
-      comments.push(...data);
-      if (data.length < pageSize || comments.length >= limit) {
-        break;
-      }
-    }
+    const { items: comments } = await readPullRequestIssueCommentPages(
+      octokit,
+      owner,
+      repo,
+      pullNumber,
+      metadataPageBounds(options)
+    );
     return {
       status: GitHubProviderResultStatus.Success,
-      value: comments.slice(0, limit).map(mapPullRequestIssueComment),
+      value: comments.map(mapPullRequestIssueComment),
     };
   } catch (error) {
     return toGitHubProviderFailure(error);
   }
-}
-
-function normalizePullRequestMetadataLimit(limit: number | undefined): number {
-  if (typeof limit !== "number" || !Number.isFinite(limit)) {
-    return MAX_PR_METADATA_ROWS;
-  }
-  return Math.min(MAX_PR_METADATA_ROWS, Math.max(1, Math.floor(limit)));
-}
-
-function normalizePullRequestMetadataPageSize(
-  pageSize: number | undefined
-): number {
-  if (typeof pageSize !== "number" || !Number.isFinite(pageSize)) {
-    return 100;
-  }
-  return Math.min(100, Math.max(1, Math.floor(pageSize)));
 }
 
 /**
@@ -1293,53 +942,6 @@ export async function verifyBranchExists(
     throw new Error(
       `Failed to verify branch "${branch}" in ${owner}/${repo}: ${errorMessage}`
     );
-  }
-}
-
-/**
- * Fetch the list of contributors for a repository with the caller's client.
- * Returns a normalized list with login, avatar URL, contribution count, and profile URL.
- * Returns an empty array on 404 or error (the repo may have no commits yet).
- */
-export async function getRepositoryContributors(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  options?: { perPage?: number }
-): Promise<GitHubContributor[]> {
-  const perPage = Math.min(options?.perPage ?? 30, 100);
-
-  try {
-    const { data } = await octokit.repos.listContributors({
-      owner,
-      repo,
-      per_page: perPage,
-    });
-
-    return data.flatMap((contributor) => {
-      if (!contributor.login || contributor.type === "Bot") {
-        return [];
-      }
-      return [
-        {
-          login: contributor.login,
-          avatarUrl: contributor.avatar_url ?? "",
-          contributions: contributor.contributions ?? 0,
-          htmlUrl: contributor.html_url ?? "",
-        },
-      ];
-    });
-  } catch (error) {
-    const status = (error as { status?: number }).status;
-    if (status === 404 || status === 204) {
-      return [];
-    }
-    log.warn("[github/contributors] Failed to list repository contributors", {
-      owner,
-      repo,
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
-    return [];
   }
 }
 
@@ -1388,47 +990,24 @@ export async function listAllBranchNames(
   }
 }
 
-function countBundledPullRequests(
-  pages: readonly GitHubBundledPullRequestsResult[]
+/** Clamp a caller-supplied count into [1, cap]; non-finite uses fallback. */
+function normalizeBoundedCount(
+  value: number | undefined,
+  cap: number,
+  fallback = cap
 ): number {
-  return pages.reduce((total, page) => total + page.pullRequests.length, 0);
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(cap, Math.max(1, Math.floor(value)));
 }
 
-/**
- * Decide what a failed page fetch means for the whole bundled read.
- *
- * Extracted from the paging loop so the reader stays under the cognitive
- * complexity ceiling. Order matters: a repo-access verdict (ISS-5093) is
- * checked first because it is the only outcome the caller records against the
- * credential — and only this repo-scoped read can tell "cannot reach the repo"
- * apart from a transient outage, since a GraphQL denial carries no HTTP status.
- * A rate limit mid-drain still returns the pages already fetched.
- */
-function resolveBundledPullRequestsPageFailure(
-  error: unknown,
-  pages: GitHubBundledPullRequestsResult[],
-  normalized: Parameters<typeof mergeBundledPullRequestsResults>[1]
-): GitHubProviderResult<GitHubBundledPullRequestsResult> {
-  const repositoryAccessFailure = classifyBundledRepositoryAccessFailure(
-    error,
-    pages.length
-  );
-  if (repositoryAccessFailure) {
-    return repositoryAccessFailure;
-  }
-  const failure = toGitHubProviderFailure(error);
-  if (
-    pages.length > 0 &&
-    failure.status === GitHubProviderResultStatus.ProviderRateLimit
-  ) {
-    return {
-      status: GitHubProviderResultStatus.Success,
-      value: mergeBundledPullRequestsResults(
-        pages,
-        normalized,
-        GitHubBundledPullRequestsStopReason.ProviderRateLimit
-      ),
-    };
-  }
-  return failure;
+function metadataPageBounds(
+  options: GitHubPullRequestMetadataListOptions
+): GitHubPageBounds {
+  return {
+    pageSize: normalizeBoundedCount(options.pageSize, MAX_PAGE_SIZE),
+    maxPages: MAX_PR_METADATA_PAGES,
+    limit: normalizeBoundedCount(options.limit, MAX_PR_METADATA_ROWS),
+  };
 }

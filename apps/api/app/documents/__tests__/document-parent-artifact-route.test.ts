@@ -100,6 +100,46 @@ describe("GET /documents/:id artifact type boundary", () => {
     expect(mocks.getByVersion).toHaveBeenCalledWith("document-1", 1);
     expect(mocks.getLatest).toHaveBeenCalledWith("document-1");
   });
+
+  // `2147483648` and the overlong digit string are the int4-overflow half:
+  // `DocumentVersion.version` is a Prisma `Int`, so both clear a lower-bound-only
+  // guard and then make Prisma throw, which the route's catch returns as the very
+  // 500 this suite pins to 400. `parseVersionParam` is unmocked here, so this
+  // covers the guard for the by-slug route that shares it too.
+  it.each(["0", "-1", "abc", "1.5", "2147483648", "9".repeat(400)])(
+    "rejects the malformed version %s as a 400, not a 500",
+    async (versionParam) => {
+      mocks.resolveDocumentId.mockResolvedValue("document-1");
+      mocks.documentService.findById.mockResolvedValue(createDocument());
+
+      const response = await getDocument(
+        request(`/documents/document-1?version=${versionParam}`),
+        { params: Promise.resolve({ id: "document-1" }) }
+      );
+
+      expect(response.status).toBe(400);
+      expect(mocks.getByVersion).not.toHaveBeenCalled();
+    }
+  );
+
+  it("still serves a well-formed version after a malformed one is rejected", async () => {
+    mocks.resolveDocumentId.mockResolvedValue("document-1");
+    mocks.documentService.findById.mockResolvedValue(createDocument());
+    mocks.getByVersion.mockResolvedValue(
+      createVersion({ content: "Historical content", version: 2 })
+    );
+    mocks.getLatest.mockResolvedValue(
+      createVersion({ content: "Latest content", version: 3 })
+    );
+
+    const response = await getDocument(
+      request("/documents/document-1?version=2"),
+      { params: Promise.resolve({ id: "document-1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.getByVersion).toHaveBeenCalledWith("document-1", 2);
+  });
 });
 
 function createDocument() {

@@ -1,3 +1,5 @@
+// ISS-10249: My Tasks owns the recency window's "Show all time" wording.
+import { MY_TASKS_RECENCY_SHOW_ALL_LABEL } from "@repo/app/my-tasks/lib/my-tasks-recency-window";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -35,7 +37,9 @@ describe("BranchesEmptyState (#3663)", () => {
       screen.getByText("No branches were active in the selected date range.")
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show all time" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: MY_TASKS_RECENCY_SHOW_ALL_LABEL })
+    );
     expect(onShowAllTime).toHaveBeenCalledTimes(1);
   });
 

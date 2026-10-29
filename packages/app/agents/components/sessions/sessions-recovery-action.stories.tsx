@@ -18,9 +18,9 @@ import { SessionsRecoveryAction } from "./sessions-recovery-action";
  * label, which is the part that lied.
  */
 const meta = {
-  title: "App Core/Agents/Sessions Recovery Action",
+  title: "Composites v1.0/Sessions/Sessions Recovery Action",
   component: SessionsRecoveryAction,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "centered" },
   args: {
     href: "/sessions",

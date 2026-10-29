@@ -24,7 +24,7 @@ const mockListActivityFeed = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
   withAnyAuth: (
-    handler: any,
+    handler: (...args: unknown[]) => Promise<Response>,
     _options?: { requiredScopes?: ApiKeyScope[] }
   ) => {
     return (request: NextRequest, ctx: { params: Promise<unknown> }) =>

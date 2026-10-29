@@ -4,33 +4,35 @@
  * Tests the handlePullRequestReview function which processes PR review events:
  * - submitted (approved/changes_requested) → Upserts per-reviewer record, recomputes aggregate
  * - dismissed → Sets reviewer to DISMISSED, recomputes aggregate
+ * - review summary bodies → one REVIEW_SUMMARY upsert through applyExternal
+ *   on submitted and edited; a delete when an edit clears the body; none on
+ *   dismissed, a blank submitted body, or a non-current pull request
+ *   (PLN-2122 decision 6)
  * - Priority-based aggregate decision logic (CHANGES_REQUESTED > APPROVED > COMMENTED, DISMISSED filtered)
  * - Multi-reviewer scenarios (approval recovery, re-submit after dismissal)
  * - Missing repository/PR → Graceful early exit
  */
 
-import type {
-  PullRequestReviewDismissedEvent,
-  PullRequestReviewSubmittedEvent,
-} from "@octokit/webhooks-types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockWithDbTx as setupMockWithDbTx } from "../utils/db-helpers";
 
 const reviewProjectionMocks = vi.hoisted(() => ({
   persistLatestGitHubPRReview: vi.fn(),
+  applyExternal: vi.fn(),
 }));
 
 // Mock modules before importing
-vi.mock("@repo/database", () => ({
-  ArtifactType: {
-    DOCUMENT: "DOCUMENT",
-    BRANCH: "BRANCH",
-    DEPLOYMENT: "DEPLOYMENT",
-  },
-  GitHubInstallationStatus: {
-    ACTIVE: "ACTIVE",
-  },
+vi.mock("@/app/branches/branch-detail-signal", () => ({
+  emitBranchDetailChanged: vi.fn(),
+}));
+
+vi.mock("@repo/database", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   withDb: vi.fn(),
+}));
+
+vi.mock("@/app/comments/service", () => ({
+  commentsService: { applyExternal: reviewProjectionMocks.applyExternal },
 }));
 
 vi.mock("@/app/integrations/github/pr-review-projection", () => ({
@@ -49,6 +51,9 @@ vi.mock("@/app/webhooks/github/handlers/branch-activity-producer", () => ({
 }));
 
 // Import after mocking
+import { CommentSyncProvider } from "@repo/api/src/types/comment-thread-dto";
+import { GitHubCommentThreadKind } from "@repo/database";
+import { GitHubExternalEventKind } from "@/app/comments/service/github/apply-external-events";
 import {
   GitHubBranchActivityEventName,
   persistGitHubBranchActivity,
@@ -56,14 +61,17 @@ import {
 import { handlePullRequestReview } from "@/app/webhooks/github/handlers/pull-request-review-handler";
 import {
   createPullRequest,
+  createPullRequestReviewDismissedEvent,
+  createPullRequestReviewEditedEvent,
+  createPullRequestReviewSubmittedEvent,
   createRepository,
   createReview,
-  createSender,
+  createUser,
 } from "../fixtures/github-webhook-fixtures";
 import { makePrDetailRow } from "../utils/pr-detail-helpers";
 
 // Mock database transaction client
-let mockTx: any;
+let mockTx: ReturnType<typeof createReviewTx>;
 const mockPersistGitHubBranchActivity =
   persistGitHubBranchActivity as ReturnType<typeof vi.fn>;
 
@@ -72,26 +80,7 @@ describe("handlePullRequestReview", () => {
     vi.clearAllMocks();
 
     // Set up transaction mock
-    mockTx = {
-      gitHubInstallationRepository: {
-        findFirst: vi.fn(),
-      },
-      pullRequestDetail: {
-        findUnique: vi.fn(),
-        update: vi.fn().mockResolvedValue({}),
-      },
-      gitHubPRReview: {
-        upsert: vi.fn().mockResolvedValue({}),
-        findMany: vi.fn().mockResolvedValue([]),
-      },
-      // PLN-1034: a submitted review bumps branch_detail.last_activity_at.
-      branchDetail: {
-        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
-      },
-      workstreamEvent: {
-        create: vi.fn(),
-      },
-    };
+    mockTx = createReviewTx();
     reviewProjectionMocks.persistLatestGitHubPRReview.mockResolvedValue(
       undefined
     );
@@ -117,14 +106,9 @@ describe("handlePullRequestReview", () => {
         body: "Looks good to me!",
       });
 
-      const event: PullRequestReviewSubmittedEvent = {
-        action: "submitted",
-        review,
-        pull_request: pullRequest,
+      const event = createPullRequestReviewSubmittedEvent(review, pullRequest, {
         repository,
-        sender: createSender(),
-        installation: { id: 99 },
-      } as any;
+      });
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-123",
@@ -198,6 +182,8 @@ describe("handlePullRequestReview", () => {
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
         where: { id: "artifact-pr-456" },
         data: { reviewDecision: "APPROVED" },
+        // ISS-6322 narrowed this discarded write's RETURNING to the primary key.
+        select: { id: true },
       });
 
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
@@ -226,13 +212,10 @@ describe("handlePullRequestReview", () => {
       body: "Ready",
     });
 
-    const event: PullRequestReviewSubmittedEvent = {
-      action: "submitted",
-      review,
-      pull_request: pullRequest,
+    const event = createPullRequestReviewSubmittedEvent(review, pullRequest, {
       repository,
-      sender: createSender(),
-    } as any;
+      installation: null,
+    });
 
     mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
       id: "repo-uuid-123",
@@ -265,6 +248,8 @@ describe("handlePullRequestReview", () => {
     expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
       where: { id: "pr-detail-current" },
       data: { reviewDecision: "APPROVED" },
+      // ISS-6322 narrowed this discarded write's RETURNING to the primary key.
+      select: { id: true },
     });
     expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
   });
@@ -282,13 +267,10 @@ describe("handlePullRequestReview", () => {
         body: "Please fix the typo",
       });
 
-      const event: PullRequestReviewSubmittedEvent = {
-        action: "submitted",
-        review,
-        pull_request: pullRequest,
+      const event = createPullRequestReviewSubmittedEvent(review, pullRequest, {
         repository,
-        sender: createSender(),
-      } as any;
+        installation: null,
+      });
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-123",
@@ -313,6 +295,8 @@ describe("handlePullRequestReview", () => {
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
         where: { id: "artifact-pr-789" },
         data: { reviewDecision: "CHANGES_REQUESTED" },
+        // ISS-6322 narrowed this discarded write's RETURNING to the primary key.
+        select: { id: true },
       });
 
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
@@ -332,13 +316,10 @@ describe("handlePullRequestReview", () => {
         body: "No longer relevant",
       });
 
-      const event: PullRequestReviewDismissedEvent = {
-        action: "dismissed",
-        review,
-        pull_request: pullRequest,
+      const event = createPullRequestReviewDismissedEvent(review, pullRequest, {
         repository,
-        sender: createSender(),
-      } as any;
+        installation: null,
+      });
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-dismiss",
@@ -376,6 +357,8 @@ describe("handlePullRequestReview", () => {
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
         where: { id: "artifact-pr-dismiss" },
         data: { reviewDecision: null },
+        // ISS-6322 narrowed this discarded write's RETURNING to the primary key.
+        select: { id: true },
       });
 
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
@@ -395,13 +378,10 @@ describe("handlePullRequestReview", () => {
         body: "Just a comment",
       });
 
-      const event: PullRequestReviewSubmittedEvent = {
-        action: "submitted",
-        review,
-        pull_request: pullRequest,
+      const event = createPullRequestReviewSubmittedEvent(review, pullRequest, {
         repository,
-        sender: createSender(),
-      } as any;
+        installation: null,
+      });
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-priority",
@@ -434,6 +414,8 @@ describe("handlePullRequestReview", () => {
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
         where: { id: "artifact-pr-priority" },
         data: { reviewDecision: "CHANGES_REQUESTED" },
+        // ISS-6322 narrowed this discarded write's RETURNING to the primary key.
+        select: { id: true },
       });
 
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
@@ -451,13 +433,10 @@ describe("handlePullRequestReview", () => {
         body: "Dismissed",
       });
 
-      const event: PullRequestReviewDismissedEvent = {
-        action: "dismissed",
-        review,
-        pull_request: pullRequest,
+      const event = createPullRequestReviewDismissedEvent(review, pullRequest, {
         repository,
-        sender: createSender(),
-      } as any;
+        installation: null,
+      });
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-dismiss-priority",
@@ -482,6 +461,8 @@ describe("handlePullRequestReview", () => {
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
         where: { id: "artifact-pr-dismiss-priority" },
         data: { reviewDecision: "CHANGES_REQUESTED" },
+        // ISS-6322 narrowed this discarded write's RETURNING to the primary key.
+        select: { id: true },
       });
     });
 
@@ -497,13 +478,10 @@ describe("handlePullRequestReview", () => {
         body: "Actually, changes needed",
       });
 
-      const event: PullRequestReviewSubmittedEvent = {
-        action: "submitted",
-        review,
-        pull_request: pullRequest,
+      const event = createPullRequestReviewSubmittedEvent(review, pullRequest, {
         repository,
-        sender: createSender(),
-      } as any;
+        installation: null,
+      });
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-resubmit",
@@ -537,6 +515,8 @@ describe("handlePullRequestReview", () => {
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
         where: { id: "artifact-pr-resubmit" },
         data: { reviewDecision: "CHANGES_REQUESTED" },
+        // ISS-6322 narrowed this discarded write's RETURNING to the primary key.
+        select: { id: true },
       });
 
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
@@ -555,13 +535,10 @@ describe("handlePullRequestReview", () => {
         state: "approved",
       });
 
-      const event: PullRequestReviewSubmittedEvent = {
-        action: "submitted",
-        review,
-        pull_request: pullRequest,
+      const event = createPullRequestReviewSubmittedEvent(review, pullRequest, {
         repository,
-        sender: createSender(),
-      } as any;
+        installation: null,
+      });
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue(null);
 
@@ -586,13 +563,10 @@ describe("handlePullRequestReview", () => {
         state: "approved",
       });
 
-      const event: PullRequestReviewSubmittedEvent = {
-        action: "submitted",
-        review,
-        pull_request: pullRequest,
+      const event = createPullRequestReviewSubmittedEvent(review, pullRequest, {
         repository,
-        sender: createSender(),
-      } as any;
+        installation: null,
+      });
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-exists",
@@ -618,16 +592,13 @@ describe("handlePullRequestReview", () => {
         id: 21,
         state: "approved",
         body: "Fixed, LGTM",
-        user: { login: "reviewer-b", id: 200 },
+        user: createUser({ login: "reviewer-b", id: 200 }),
       });
 
-      const event: PullRequestReviewSubmittedEvent = {
-        action: "submitted",
-        review,
-        pull_request: pullRequest,
+      const event = createPullRequestReviewSubmittedEvent(review, pullRequest, {
         repository,
-        sender: createSender(),
-      } as any;
+        installation: null,
+      });
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-multi2",
@@ -653,6 +624,8 @@ describe("handlePullRequestReview", () => {
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
         where: { id: "artifact-pr-multi2" },
         data: { reviewDecision: "APPROVED" },
+        // ISS-6322 narrowed this discarded write's RETURNING to the primary key.
+        select: { id: true },
       });
     });
 
@@ -666,16 +639,13 @@ describe("handlePullRequestReview", () => {
         id: 23,
         state: "approved",
         body: "LGTM",
-        user: { login: "specific-reviewer", id: 400 },
+        user: createUser({ login: "specific-reviewer", id: 400 }),
       });
 
-      const event: PullRequestReviewSubmittedEvent = {
-        action: "submitted",
-        review,
-        pull_request: pullRequest,
+      const event = createPullRequestReviewSubmittedEvent(review, pullRequest, {
         repository,
-        sender: createSender(),
-      } as any;
+        installation: null,
+      });
 
       mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-upsert",
@@ -708,4 +678,158 @@ describe("handlePullRequestReview", () => {
       );
     });
   });
+
+  describe("review summary thread (PLN-2122 decision 6)", () => {
+    function reviewEvent(
+      action: "submitted" | "edited" | "dismissed",
+      body: string
+    ) {
+      const pullRequest = createPullRequest({ number: 42 });
+      const envelope = { repository: createRepository(789) };
+      switch (action) {
+        case "submitted":
+          return createPullRequestReviewSubmittedEvent(
+            createReview({ id: 77, state: "commented", body }),
+            pullRequest,
+            envelope
+          );
+        case "edited":
+          return createPullRequestReviewEditedEvent(
+            createReview({ id: 77, state: "commented", body }),
+            pullRequest,
+            envelope,
+            { body: { from: "old" } }
+          );
+        default:
+          return createPullRequestReviewDismissedEvent(
+            createReview({ id: 77, state: "dismissed", body }),
+            pullRequest,
+            envelope
+          );
+      }
+    }
+
+    function mockCurrentPullRequest(currentPullRequestDetailId: string | null) {
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        id: "repo-uuid-123",
+        fullName: "owner/test-repo",
+        installation: { organizationId: "org-uuid-123" },
+      });
+      mockTx.pullRequestDetail.findUnique.mockResolvedValue(
+        makePrDetailRow({
+          artifactId: "pr-detail-1",
+          branchArtifactId: "branch-artifact-1",
+          currentPullRequestDetailId,
+          linkedDoc: null,
+        })
+      );
+    }
+
+    it("stores a submitted review's body as a summary thread keyed by the review id", async () => {
+      mockCurrentPullRequest("pr-detail-1");
+
+      await handlePullRequestReview(reviewEvent("submitted", "Summary body"));
+
+      expect(reviewProjectionMocks.applyExternal).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: CommentSyncProvider.Github,
+          organizationId: "org-uuid-123",
+          branchArtifactId: "branch-artifact-1",
+          pullRequestDetailId: "pr-detail-1",
+          events: [
+            expect.objectContaining({
+              kind: GitHubExternalEventKind.ReviewSummaryUpsert,
+              reviewId: 77,
+              comment: expect.objectContaining({
+                githubCommentId: 77,
+                bodyMarkdown: "Summary body",
+                providerUpdatedAt: new Date("2026-02-10T12:00:00Z"),
+              }),
+            }),
+          ],
+        })
+      );
+    });
+
+    it("applies an edited review's body without rewriting the reviewer decision", async () => {
+      mockCurrentPullRequest(null);
+
+      await handlePullRequestReview(reviewEvent("edited", "Edited body"));
+
+      expect(reviewProjectionMocks.applyExternal).toHaveBeenCalledTimes(1);
+      expect(
+        reviewProjectionMocks.persistLatestGitHubPRReview
+      ).not.toHaveBeenCalled();
+    });
+
+    it("leaves the summary thread alone on a dismissal", async () => {
+      mockCurrentPullRequest("pr-detail-1");
+
+      await handlePullRequestReview(reviewEvent("dismissed", "Summary body"));
+
+      expect(reviewProjectionMocks.applyExternal).not.toHaveBeenCalled();
+      expect(
+        reviewProjectionMocks.persistLatestGitHubPRReview
+      ).toHaveBeenCalledTimes(1);
+    });
+
+    it("stores nothing for a blank review body", async () => {
+      mockCurrentPullRequest("pr-detail-1");
+
+      await handlePullRequestReview(reviewEvent("submitted", "   "));
+
+      expect(reviewProjectionMocks.applyExternal).not.toHaveBeenCalled();
+    });
+
+    it("deletes the stored summary when an edit clears the review body", async () => {
+      mockCurrentPullRequest("pr-detail-1");
+
+      await handlePullRequestReview(reviewEvent("edited", "  "));
+
+      expect(reviewProjectionMocks.applyExternal).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pullRequestDetailId: "pr-detail-1",
+          events: [
+            {
+              kind: GitHubExternalEventKind.CommentDelete,
+              threadKind: GitHubCommentThreadKind.REVIEW_SUMMARY,
+              githubCommentId: 77,
+              providerUpdatedAt: new Date("2026-02-10T12:00:00Z"),
+            },
+          ],
+        })
+      );
+    });
+
+    it("stores nothing for a pull request that is not current for its branch", async () => {
+      mockCurrentPullRequest("pr-detail-newer");
+
+      await handlePullRequestReview(reviewEvent("submitted", "Summary body"));
+
+      expect(reviewProjectionMocks.applyExternal).not.toHaveBeenCalled();
+    });
+  });
 });
+
+function createReviewTx() {
+  return {
+    gitHubInstallationRepository: {
+      findFirst: vi.fn(),
+    },
+    pullRequestDetail: {
+      findUnique: vi.fn(),
+      update: vi.fn().mockResolvedValue({}),
+    },
+    gitHubPRReview: {
+      upsert: vi.fn().mockResolvedValue({}),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
+    // PLN-1034: a submitted review bumps branch_detail.last_activity_at.
+    branchDetail: {
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
+    workstreamEvent: {
+      create: vi.fn(),
+    },
+  };
+}

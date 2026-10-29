@@ -16,9 +16,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@repo/database", async () =>
   (await import("@/__tests__/support/insights/service.test-db")).databaseMock()
 );
+vi.mock("./delivery-pull-request-facts", () => ({
+  readDeliveryPullRequestFacts: vi.fn(),
+}));
 
 import { withDb } from "@repo/database";
 import { makeFakeDb, ORG } from "@/__tests__/support/insights/service.test-db";
+import { readDeliveryPullRequestFacts } from "./delivery-pull-request-facts";
 import { insightsService } from "./service";
 
 const USER = "user-1";
@@ -28,10 +32,29 @@ const HOUR = 3_600_000;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockPullRequestFacts({ medianSize: null });
 });
 
+/** The shared fold's answer; the figures a test does not name read as none. */
+function mockPullRequestFacts(
+  facts: Partial<Awaited<ReturnType<typeof readDeliveryPullRequestFacts>>>
+): void {
+  vi.mocked(readDeliveryPullRequestFacts).mockResolvedValue({
+    merged: 0,
+    sized: 0,
+    closedUnmerged: 0,
+    medianSize: null,
+    priorMerged: 0,
+    ...facts,
+  });
+}
+
 describe("insightsService.getDelivery — merged-PR LOC", () => {
-  it("medians PR size over PRs with a KNOWN size, excluding unsized ones (FEA-2988 / PLN-1535 M4)", async () => {
+  it("publishes the SQL median beside the scan's lines-landed sum and unsized-PR coverage (ISS-11589)", async () => {
+    // The eligible cohort is DELIBERATELY not the scan: 2 merged, both sized,
+    // against the scan's 3 rows of which 1 is unsized. The two captions below
+    // must then differ (B2, tamsinb review on #8791).
+    mockPullRequestFacts({ medianSize: 200, merged: 2, sized: 2 });
     const mergedAt = new Date("2026-06-08T00:00:00.000Z");
     const openedAt = new Date(mergedAt.getTime() - 2 * HOUR);
     const { db } = makeFakeDb({
@@ -45,9 +68,9 @@ describe("insightsService.getDelivery — merged-PR LOC", () => {
           additions: 100,
           deletions: 0,
           repositoryId: "r1",
-          repositoryFullName: "acme/example-repo",
+          repositoryFullName: "acme/closedloop-ai",
           branchArtifactId: "b1",
-          repository: { name: "example-repo" },
+          repository: { name: "closedloop-ai" },
           branchArtifact: { createdAt: openedAt },
         },
         {
@@ -94,10 +117,17 @@ describe("insightsService.getDelivery — merged-PR LOC", () => {
       NOW
     );
 
-    // Median over sized PRs only: [100, 300] → 200. Folding the unsized PR in
-    // as 0 would median [0, 100, 300] → 100.
+    // The median is the shared SQL read's, over the window the other merged-PR
+    // reads take; its known-size semantics are pinned beside that SQL.
     const prSize = result.kpis.find((k) => k.key === "pr-size");
     expect(prSize?.value).toBe(200);
+    expect(readDeliveryPullRequestFacts).toHaveBeenCalledWith(
+      ORG_CTX,
+      expect.objectContaining({
+        start: expect.any(Date),
+        end: expect.any(Date),
+      })
+    );
 
     // KLOC sums the sized PRs: 400 / 1000. The unsized PR is EXCLUDED rather
     // than contributing 0 — it is reported as coverage instead, so the tile
@@ -110,17 +140,20 @@ describe("insightsService.getDelivery — merged-PR LOC", () => {
       3
     );
 
-    // ISS-5414: both tiles' captions quote that coverage, so the caveat the two
-    // internal KPIs carry actually reaches a reader. 3 scanned, 1 unsized → 2.
+    // ISS-5414: the KLOC caption quotes the scan it sums — 3 scanned, 1 unsized.
     expect(kloc?.sub).toBe(
       "thousand lines landed · sized 2 of 3 deduped merged PRs scanned"
     );
+    // B2: the median's caption quotes the median's OWN cohort. The scan admits
+    // a merged PR on a branch failing default-branch authority and the eligible
+    // set does not, so quoting "2 of 3" here would caption this value with a
+    // population it never took.
     expect(prSize?.sub).toBe(
-      "lines changed · sized 2 of 3 deduped merged PRs scanned"
+      "lines changed · sized 2 of 2 deduped merged PRs scanned"
     );
   });
 
-  it("counts a known-zero PR as 0 in the PR-size median (FEA-2988 / PLN-1535 M4)", async () => {
+  it("counts a known-zero PR as sized in the coverage pair (FEA-2988 / PLN-1535 M4)", async () => {
     const mergedAt = new Date("2026-06-08T00:00:00.000Z");
     const openedAt = new Date(mergedAt.getTime() - 2 * HOUR);
     const { db } = makeFakeDb({
@@ -151,9 +184,9 @@ describe("insightsService.getDelivery — merged-PR LOC", () => {
           additions: 100,
           deletions: 0,
           repositoryId: "r1",
-          repositoryFullName: "acme/example-repo",
+          repositoryFullName: "acme/closedloop-ai",
           branchArtifactId: "b1",
-          repository: { name: "example-repo" },
+          repository: { name: "closedloop-ai" },
           branchArtifact: { createdAt: openedAt },
         },
         {
@@ -183,15 +216,17 @@ describe("insightsService.getDelivery — merged-PR LOC", () => {
       NOW
     );
 
-    // Median over [0, 100, 300] → 100. Dropping the known-zero PR as if its
-    // size were unknown would median [100, 300] → 200.
-    const prSize = result.kpis.find((k) => k.key === "pr-size");
-    expect(prSize?.value).toBe(100);
+    // Dropping the known-zero PR as if its size were unknown would report 1
+    // unsized PR and a 0.4 thousand-line sum over two.
+    expect(result.kpis.find((k) => k.key === "kloc")?.value).toBe(0.4);
     const unsized = result.kpis.find((k) => k.key === "mergedPrsWithoutLoc");
     expect(unsized?.value).toBe(0);
   });
 
   it("reports KLOC as unavailable, not zero, when no merged PR is sized (PLN-1535 M4)", async () => {
+    // The eligible cohort holds the same single unsized merged PR, so both
+    // captions state zero coverage over their own population of one.
+    mockPullRequestFacts({ medianSize: null, merged: 1, sized: 0 });
     const mergedAt = new Date("2026-06-08T00:00:00.000Z");
     const openedAt = new Date(mergedAt.getTime() - 2 * HOUR);
     const { db } = makeFakeDb({
@@ -205,9 +240,9 @@ describe("insightsService.getDelivery — merged-PR LOC", () => {
           additions: null,
           deletions: null,
           repositoryId: "r1",
-          repositoryFullName: "acme/example-repo",
+          repositoryFullName: "acme/closedloop-ai",
           branchArtifactId: "b1",
-          repository: { name: "example-repo" },
+          repository: { name: "closedloop-ai" },
           branchArtifact: { createdAt: openedAt },
         },
       ],

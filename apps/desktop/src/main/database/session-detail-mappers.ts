@@ -14,10 +14,10 @@ import type {
 import { resolveTokenUsageCostUsd } from "../agent-sync/agent-session-token-cost-resolution.js";
 import type { TokenUsageRow } from "../dashboard/agent-dashboard-db-types.js";
 import { tokenCountValue } from "./db-helpers.js";
-import type { DesktopPrismaReadClient } from "./prisma-client.js";
+import type { DesktopPrismaReader } from "./prisma-client.js";
 
 export function selectRowsByIds<T extends Record<string, unknown>>(
-  reader: DesktopPrismaReadClient,
+  reader: DesktopPrismaReader,
   sql: string,
   ids: string[]
 ): Promise<T[]> {

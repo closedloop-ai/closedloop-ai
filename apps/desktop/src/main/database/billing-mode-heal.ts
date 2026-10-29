@@ -190,7 +190,11 @@ export function billingModeHealChunkSelectSql(hasKeysetBound: boolean): string {
   const keysetSql = hasKeysetBound ? "\n       AND id > $2" : "";
   const passStartParam = hasKeysetBound ? "$3" : "$2";
   const limitParam = hasKeysetBound ? "$4" : "$3";
-  return `SELECT id FROM sessions
+  // ISS-12439: pinned to the primary key. `idx_sessions_harness` (added for the
+  // Sessions list's Harness facet) makes `harness = $1` look cheaper than the
+  // `id` range, and the planner takes it, then sorts every match for ORDER BY id
+  // on each chunk.
+  return `SELECT id FROM sessions INDEXED BY sqlite_autoindex_sessions_1
      WHERE ${UNRESOLVED_BILLING_MODE_SQL}
        AND harness = $1${keysetSql}
        AND ${beforePassStartSql(passStartParam)}

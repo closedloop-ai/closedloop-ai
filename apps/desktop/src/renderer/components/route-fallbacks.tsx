@@ -1,4 +1,5 @@
 import { Skeleton } from "@closedloop-ai/design-system/components/ui/skeleton";
+import { SESSION_DETAIL_LOADING_LABEL } from "@repo/app/agents/lib/session-detail-slots";
 import type { ReactNode } from "react";
 
 /**
@@ -141,11 +142,28 @@ export type DetailFallbackKind =
  * vocabulary ("Component" is the user-facing name for an agent detail). Also the
  * breadcrumb's ISS-4839 pending-segment labels, so the body and the trail name
  * the same thing.
+ *
+ * The session name is IMPORTED, not spelled here (ISS-5662): the handoff from
+ * this fallback to `SessionDetailLoading` only reads as one continuous
+ * announcement while both sides say the identical string, and a second copy is
+ * a rename away from silently re-opening the ISS-5593 gap. The geometry the
+ * fallbacks duplicate cannot be imported (it would pull the lazy detail slice
+ * into the eager bundle); this constant can, because
+ * `@repo/app/agents/lib/session-detail-slots` is a React-free module with no
+ * imports of its own.
+ *
+ * The other two stay literals because neither has an owner to import: branch —
+ * `BranchDetailLoading` announces nothing at all; agent — `AgentDetailLoading`
+ * announces its own DIFFERENT string ("Loading component details…"), so the
+ * agent route still hands off between two names for one state. That is the
+ * ISS-5593 discontinuity unclosed on a second route, not something ISS-5662
+ * reaches; unifying it is a product-copy call for those slices, not a rename
+ * this change can make on their behalf.
  */
 export const DETAIL_FALLBACK_LABELS = {
   agent: "Loading component",
   branch: "Loading branch",
-  session: "Loading session",
+  session: SESSION_DETAIL_LOADING_LABEL,
 } as const satisfies Record<DetailFallbackKind, string>;
 
 export type DetailFallbackLabel =

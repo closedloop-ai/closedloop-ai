@@ -41,7 +41,7 @@ const SESSION_STATE_META: Record<
 type SessionColumnSpec = TableColumn & { width: string; tooltip?: string };
 
 // ISS-4788: Cost sits ahead of Repository here, matching the production table
-// (`packages/app/agents/components/sessions/sessions-table.tsx`). The original
+// (`packages/app/agents/components/sessions/session-detail-table.tsx`). The original
 // mock ordered it seventh, which put its track ~1220px from the table's left
 // edge — past the fold on a default 1380px desktop window, so the row's headline
 // number rendered clipped ("$772.3"). Repository / Branch / PR are truncated

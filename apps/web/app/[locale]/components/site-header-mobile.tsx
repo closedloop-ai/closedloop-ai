@@ -6,25 +6,31 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@repo/design-system/components/ui/sheet";
-import { Github, Menu } from "lucide-react";
+import { Menu } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
-
-type NavLink = {
-  label: string;
-  href: string;
-  external?: boolean;
-  hardNavigate?: boolean;
-};
+import { GitHubLogo } from "@/components/github-logo";
 
 type MobileNavProps = {
-  navLinks: NavLink[];
+  docsHref: string;
+  resourcesHref: string;
   githubUrl: string;
 };
 
-export const MobileNav = ({ githubUrl, navLinks }: MobileNavProps) => {
-  const [open, setOpen] = useState(false);
+const NAV_LINK_CLASS =
+  "rounded-md px-3 py-2 text-foreground/80 text-sm transition-colors hover:bg-muted hover:text-primary";
 
+export const MobileNav = ({
+  docsHref,
+  githubUrl,
+  resourcesHref,
+}: MobileNavProps) => {
+  const [open, setOpen] = useState(false);
+  const close = () => setOpen(false);
+
+  // Links are written out, not mapped from a list, so the build can stamp
+  // their labels as product copy for click analytics (ISS-12557). Docs
+  // hard-navigates for the reason given in site-header.tsx.
   return (
     <Sheet onOpenChange={setOpen} open={open}>
       <SheetTrigger
@@ -33,51 +39,23 @@ export const MobileNav = ({ githubUrl, navLinks }: MobileNavProps) => {
       >
         <Menu className="size-5" />
       </SheetTrigger>
-      <SheetContent className="w-72" side="right">
+      <SheetContent aria-describedby={undefined} className="w-72" side="right">
         <SheetTitle className="sr-only">Site navigation</SheetTitle>
         <nav aria-label="Mobile" className="flex flex-col gap-1 p-4 pt-12">
-          {navLinks.map((link) => {
-            const className =
-              "rounded-md px-3 py-2 text-foreground/80 text-sm transition-colors hover:bg-muted hover:text-primary";
-            const rel = link.external ? "noopener noreferrer" : undefined;
-            const target = link.external ? "_blank" : undefined;
-
-            if (link.hardNavigate) {
-              return (
-                <a
-                  className={className}
-                  href={link.href}
-                  key={link.href}
-                  onClick={() => setOpen(false)}
-                  rel={rel}
-                  target={target}
-                >
-                  {link.label}
-                </a>
-              );
-            }
-
-            return (
-              <Link
-                className={className}
-                href={link.href}
-                key={link.href}
-                onClick={() => setOpen(false)}
-                rel={rel}
-                target={target}
-              >
-                {link.label}
-              </Link>
-            );
-          })}
+          <a className={NAV_LINK_CLASS} href={docsHref} onClick={close}>
+            Documentation
+          </a>
+          <Link className={NAV_LINK_CLASS} href={resourcesHref} onClick={close}>
+            Resources
+          </Link>
           <Link
             className="mt-2 flex items-center gap-2 rounded-md px-3 py-2 text-foreground/80 text-sm transition-colors hover:bg-muted hover:text-primary"
             href={githubUrl}
-            onClick={() => setOpen(false)}
+            onClick={close}
             rel="noopener noreferrer"
             target="_blank"
           >
-            <Github className="size-4" />
+            <GitHubLogo className="size-4" />
             GitHub
           </Link>
         </nav>

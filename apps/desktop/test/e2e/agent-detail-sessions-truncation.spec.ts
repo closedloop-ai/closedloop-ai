@@ -92,13 +92,13 @@ const RETIRED_NOTICE = /total unavailable/i;
  * whole tab could regress here without turning anything red.
  *
  * The state under test needs the LOCAL reader's own row bound to bind while its
- * count keeps counting: `readAgentComponentInvocationPage` takes `LIMIT 500`
- * over the rows and a bare uncapped `COUNT(*)` beside it, then derives
- * `hasMore: total > rows.length`. One invocation past that bound is therefore
- * the smallest corpus that produces `hasMore: true` over an exactly-known total
- * — the combination that used to print "Showing 50 of 501+ invocations" for a
- * population the query had counted precisely. Seeding 500 or fewer would leave
- * `hasMore` false and the assertion would pass with the `+` logic restored.
+ * count keeps counting: `readAgentComponentInvocationPage` serves 500 rows a
+ * page and reads a bare uncapped `COUNT(*)` beside them. One invocation past
+ * that bound is therefore the smallest corpus that produces `hasMore: true`
+ * over an exactly-known total — the combination that used to print "Showing 50
+ * of 501+ invocations" for a population the query had counted precisely.
+ * Seeding 500 or fewer would leave `hasMore` false and the assertion would pass
+ * with the `+` logic restored.
  */
 const INVOCATIONS_ONE_PAST_THE_READ_BOUND =
   AGENT_COMPONENT_INVOCATION_READ_MAX_ROWS + 1;
@@ -181,7 +181,8 @@ test.describe("Agent detail Evidence total, desktop adapter (ISS-5520)", () => {
     await withSeededDesktop(
       heavyInvocationCorpus(INVOCATIONS_ONE_PAST_THE_READ_BOUND),
       async (page) => {
-        await gotoHash(page, `#/agents/${COMPONENT_SLUG}`);
+        await test.step("navigate to the original component detail", () =>
+          gotoHash(page, `#/agents/${COMPONENT_SLUG}`));
 
         // Gate on the detail actually resolving before touching the tab.
         await expect(page.getByText(sessionRowName(0)).first()).toBeVisible({
@@ -213,7 +214,8 @@ test.describe("Agent detail Sessions truncation, desktop adapter (ISS-5464)", ()
     await withSeededDesktop(
       completeCorpus(SESSIONS_AT_THE_CLOUD_BOUND),
       async (page) => {
-        await gotoHash(page, `#/agents/${COMPONENT_SLUG}`);
+        await test.step("navigate to the original component detail", () =>
+          gotoHash(page, `#/agents/${COMPONENT_SLUG}`));
 
         // Positive control: the Sessions tab really mounted seeded rows, so the
         // absence assertion below cannot pass against an empty state.
@@ -232,7 +234,8 @@ test.describe("Agent detail Sessions truncation, desktop adapter (ISS-5464)", ()
     // The control that proves the assertion above is about the BOUND and not
     // about the notice being globally unreachable on this surface.
     await withSeededDesktop(completeCorpus(4), async (page) => {
-      await gotoHash(page, `#/agents/${COMPONENT_SLUG}`);
+      await test.step("navigate to the original component detail", () =>
+        gotoHash(page, `#/agents/${COMPONENT_SLUG}`));
 
       await expect(page.getByText(sessionRowName(0)).first()).toBeVisible({
         timeout: MOUNT_TIMEOUT_MS,
@@ -244,7 +247,7 @@ test.describe("Agent detail Sessions truncation, desktop adapter (ISS-5464)", ()
 
 /**
  * Launch once to migrate the store, seed with the app DOWN, then relaunch and
- * run. Mirrors `agents-loc-per-dollar-display.spec.ts` — a running app does not
+ * run. A running app does not
  * reliably observe a test-process write, while reading the committed schema
  * across processes is fine.
  */
@@ -260,24 +263,30 @@ async function withSeededDesktop(
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-udd-`));
 
   try {
-    const first = await launchDesktopApp({
-      env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
-      keepUserDataDir: true,
-      userDataDir,
-    });
+    const first =
+      await test.step("launch the real schema or seeded subject", () =>
+        launchDesktopApp({
+          env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
+          keepUserDataDir: true,
+          userDataDir,
+        }));
     try {
-      await waitForAgentComponentsSchema(userDataDir);
+      await test.step("await original agent-component schema", () =>
+        waitForAgentComponentsSchema(userDataDir));
     } finally {
       await first.cleanup();
     }
 
-    await seedAgentComponentUsage(userDataDir, corpus);
+    await test.step("seed the original component corpus with app closed", () =>
+      seedAgentComponentUsage(userDataDir, corpus));
 
-    const { page, cleanup } = await launchDesktopApp({
-      env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
-      keepUserDataDir: true,
-      userDataDir,
-    });
+    const { page, cleanup } =
+      await test.step("launch the real schema or seeded subject", () =>
+        launchDesktopApp({
+          env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
+          keepUserDataDir: true,
+          userDataDir,
+        }));
     try {
       await page.setViewportSize(DESKTOP_VIEWPORT);
       // NOT optional, and the reason this spec is a detail-route adapter rather
@@ -288,9 +297,9 @@ async function withSeededDesktop(
       // on which the truncation-absence assertions below would pass vacuously,
       // which is exactly the false green this spec exists to rule out. Polling
       // the real `listAgentComponents` IPC proves the responder is live before
-      // any navigation. (Same gate `agents-loc-per-dollar-display.spec.ts` takes
-      // before opening the Agents grid.)
-      await waitForLocalAgentComponentList(page, MOUNT_TIMEOUT_MS);
+      // any navigation.
+      await test.step("await the real local component IPC before navigation", () =>
+        waitForLocalAgentComponentList(page, MOUNT_TIMEOUT_MS));
       await run(page);
     } finally {
       await cleanup();

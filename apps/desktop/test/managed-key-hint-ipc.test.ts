@@ -19,14 +19,12 @@
  * clock with mock.timers so the result is deterministic.
  */
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "node:test";
-import {
-  ManagedKeyHintIpcChannel,
-  registerManagedKeyHintIpcHandlers,
-} from "../src/main/ipc/managed-key-hint-ipc.js";
+import { afterEach, describe, test } from "vitest";
+import { registerManagedKeyHintIpcHandlers } from "../src/main/ipc/managed-key-hint-ipc.js";
 import type { ApiKeyStore } from "../src/main/settings/api-key-store.js";
 import type { SettingsStore } from "../src/main/settings/settings-store.js";
 import type { ApiKeyProvenance } from "../src/shared/contracts.js";
+import { ManagedKeyHintIpcChannel } from "../src/shared/managed-key-hint-ipc-channel.js";
 import {
   createIpcRegistrar,
   TRUSTED_EVENT,

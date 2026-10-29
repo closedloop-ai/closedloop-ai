@@ -3,9 +3,11 @@
  * @description FEA-2905: the canonical JSONL line-scan-with-parse-quality helper
  * shared by the transcript parsers. Streaming a `.jsonl` transcript and tracking
  * malformed-line drops was duplicated across the Claude parser's main
- * `parseSessionFile` loop and its subagent-sidecar `collectEntriesFromFile`
- * loop; both need identical semantics so a corrupt line surfaces as a
- * parse-quality signal instead of a silent turn drop.
+ * `parseSessionFile` loop and its subagent-sidecar reader — `readAgentFile`
+ * since the ISS-6531 rewrite deleted `collectEntriesFromFile` (ISS-6576). Both
+ * need identical semantics so a corrupt line surfaces as a parse-quality signal
+ * instead of a silent turn drop, which is why they share this helper rather
+ * than each streaming their own way.
  *
  * `readJsonlLinesWithQuality` streams a file line by line, skips blank lines,
  * JSON-parses each non-blank line, and yields only the successfully-parsed
@@ -109,16 +111,89 @@ export type ChildParseQuality = {
  * `truncatedFinalLine` stays a property of the parent's main file, never the
  * child's, so it is intentionally not propagated onto the parent.
  *
- * The parent target is structural — just `totalLines`/`malformedLines` — so both
- * the desktop `ParseQualityScan` (inline collectors) and the extracted parser
- * cores' post-normalization `NormalizedParseQuality` (FEA-2717, whose last field
- * is named `truncatedFinalLine` not `lastLineMalformed`) can be folded into.
+ * The parent target is structural — the two line counts plus the ISS-6336
+ * discount tally — so both the desktop `ParseQualityScan` (inline collectors)
+ * and the extracted parser cores' post-normalization `NormalizedParseQuality`
+ * (FEA-2717, whose last field is named `truncatedFinalLine` not
+ * `lastLineMalformed`) can be folded into.
  */
 export function foldChildParseQuality(
-  parent: Pick<ParseQualityScan, "totalLines" | "malformedLines">,
+  parent: FoldTarget,
   child: ChildParseQuality
 ): void {
   parent.totalLines += child.totalLines;
-  parent.malformedLines +=
-    child.malformedLines - (child.truncatedFinalLine ? 1 : 0);
+  const childCorrupt = corruptLineCount(child);
+  parent.malformedLines += childCorrupt;
+  // ISS-12036: attribute the same number this fold just added, so the child's
+  // share and the parent's own are separable afterwards. Written only when it
+  // grows past zero, so a clean fold leaves the key absent.
+  if (childCorrupt > 0) {
+    parent.foldedChildMalformedLines =
+      (parent.foldedChildMalformedLines ?? 0) + childCorrupt;
+  }
+  if (child.truncatedFinalLine) {
+    // ISS-6336 (whitlockk review): the line above just discounted this child's
+    // trailing truncation out of the numerator while leaving it in
+    // `totalLines`. Recording the discount is what lets a ratio reader put the
+    // two back on the same footing; without it an all-corrupt multi-file
+    // session measures as partially readable.
+    parent.childTruncatedFinalLines =
+      (parent.childTruncatedFinalLines ?? 0) + 1;
+  }
+}
+
+/**
+ * Lines a parse-quality summary reports as GENUINELY corrupt: its malformed
+ * count with a benign trailing truncation discounted.
+ *
+ * The canonical form of the expression the `NormalizedParseQuality` contract
+ * prescribes. It was re-derived at every reader, so a change to how truncation
+ * is discounted had to be found in each of them — and finding all but one still
+ * ships a wrong answer from the one that was missed.
+ *
+ * `malformedLines` is always >= its own truncation term, so this never goes
+ * negative. Structural in its input so both the desktop `ParseQualityScan` and
+ * the post-normalization `NormalizedParseQuality` (whose field is named
+ * `truncatedFinalLine`, not `lastLineMalformed`) can be measured by it.
+ */
+export function corruptLineCount(
+  quality: Pick<ChildParseQuality, "malformedLines" | "truncatedFinalLine">
+): number {
+  return quality.malformedLines - (quality.truncatedFinalLine ? 1 : 0);
+}
+
+/**
+ * The parent target a child folds into: structural, so both the desktop
+ * `ParseQualityScan` and the post-normalization `NormalizedParseQuality` satisfy
+ * it. `childTruncatedFinalLines` and `foldedChildMalformedLines` are optional and
+ * written only when a child actually carried a trailing truncation or corrupt
+ * lines, so a clean fold leaves both keys absent exactly as the sibling optional
+ * counters do.
+ */
+type FoldTarget = Pick<ParseQualityScan, "totalLines" | "malformedLines"> & {
+  childTruncatedFinalLines?: number;
+  /** ISS-12036: the folded-child share of `malformedLines`, written when non-zero. */
+  foldedChildMalformedLines?: number;
+};
+
+/**
+ * Lines a parse-quality summary COULD have reported corrupt — the denominator
+ * {@link corruptLineCount} is measured against.
+ *
+ * Every benign trailing truncation is discounted, the parent's own and each
+ * child's alike, because a discounted line is not available to be counted. Pair
+ * this with `corruptLineCount`: measuring a discounted numerator against an
+ * undiscounted total is what made "every line was lost" unreachable for the
+ * short and multi-file transcripts where it is most likely to be true.
+ */
+export function corruptibleLineCount(
+  quality: Pick<ChildParseQuality, "totalLines" | "truncatedFinalLine"> & {
+    childTruncatedFinalLines?: number;
+  }
+): number {
+  return (
+    quality.totalLines -
+    (quality.truncatedFinalLine ? 1 : 0) -
+    (quality.childTruncatedFinalLines ?? 0)
+  );
 }

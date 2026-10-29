@@ -7,18 +7,16 @@
  *    listCatalogItemsForOrg / createCatalogItem / getUploadIntent /
  *    confirmAssetUpload / archiveCatalogItem / updateCatalogItem /
  *    getCatalogItemDetail. All DB calls are mocked via
- *    vi.mock("@repo/database"); AWS S3 helpers via vi.mock("@repo/aws").
+ *    vi.mock("@repo/database"); AWS S3 helpers via vi.mock("@repo/aws/catalog-assets").
  *
- * 2. FEA-2923 (Gap A, forward path) — the catalog ingest write bridge that
- *    keeps `agent_components` in sync when a NEW org_custom agent is created via
- *    bulkIngestAgents (bootstrap loop ingestion). The one-time backfill
- *    migration only snapshotted EXISTING org_custom catalog items into
- *    agent_components; these tests pin the ongoing forward path so a regression
- *    can't silently re-open the bug where a natively-created org_custom agent
- *    has no agent_components row and is therefore invisible in the Agents
- *    workspace (agentComponentsService.listForOrg reads agent_components).
+ * 2. FEA-2923 (Gap A, forward path) — POST /catalog keeps `agent_components` in
+ *    sync when a NEW org_custom agent is created (the `createCatalogItem` agent
+ *    cases below), so a natively-created org_custom agent is never invisible in
+ *    the Agents workspace (agentComponentsService.listForOrg reads
+ *    agent_components).
  *
- * Note: The isOrgAdmin gate is enforced at the route layer (route.ts), not
+ * Note: The admin gate (`requireOrgAdmin`) is enforced at the route layer
+ * (route.ts), not
  * inside the service functions themselves. The 403 gate tests exercise the
  * curated-item guard path, which doubles as the admin-gate enforcement for
  * curated items.
@@ -39,11 +37,10 @@ import {
 
 const mocks = vi.hoisted(() => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  getPrismaErrorCode: vi.fn().mockReturnValue(undefined),
   parsePackZip: vi.fn(),
   fetchRepoComponents: vi.fn(),
   // FEA-3909: the F1 registry writer, mocked to return a synthetic version id.
-  registerDefinitionVersion: vi.fn().mockResolvedValue("dv-test"),
+  registerDefinitionVersion: vi.fn(async () => "dv-test"),
   // FEA-4011 Slice A: the fail-open, post-commit search index hooks. The
   // catalog write paths flush accumulated projections through the BATCH hook
   // (`indexManyAfterCommit`) — one multi-row upsert instead of a per-row
@@ -52,28 +49,12 @@ const mocks = vi.hoisted(() => ({
   removeAfterCommit: vi.fn(),
 }));
 
-vi.mock("@repo/database", () => ({
-  withDb: mocks.withDb,
-  // The repo-import path builds a where-clause referencing this enum, so the
-  // mock must expose it (otherwise `GitHubInstallationStatus.ACTIVE` throws).
-  GitHubInstallationStatus: { ACTIVE: "ACTIVE" },
-  // FEA-3909: the pack-member F4 link path references these registry enums.
-  SourceOccurrenceType: {
-    local: "local",
-    repository: "repository",
-    pack: "pack",
-  },
-  SourceAccessState: { accessible: "accessible", inaccessible: "inaccessible" },
-  // `getCatalogItemDetail` resolves child content with a raw DISTINCT ON query
-  // (FEA-3299), so the tagged-template helper must exist. Capture the
-  // interpolated values so tests can assert what was bound.
-  Prisma: {
-    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
-      strings,
-      values,
-    }),
-  },
-}));
+vi.mock("@repo/database", async () => {
+  const { createCatalogDatabaseMockModule } = await import(
+    "./service-test-harness"
+  );
+  return createCatalogDatabaseMockModule(mocks.withDb);
+});
 
 // FEA-3909: the catalog service now calls the F1 registry writer when it creates
 // a content-bearing pack member. Mock it to a spy that returns a synthetic
@@ -100,34 +81,19 @@ vi.mock("@/app/search/search-index-service", async (importOriginal) => {
   };
 });
 
-vi.mock("@/lib/db-utils", () => ({
-  getPrismaErrorCode: mocks.getPrismaErrorCode,
-}));
+vi.mock("../pack-zip-import", async () => {
+  const { createPackZipImportMockModule } = await import(
+    "./service-test-harness"
+  );
+  return createPackZipImportMockModule(mocks.parsePackZip);
+});
 
-vi.mock("../pack-zip-import", () => ({
-  parsePackZip: mocks.parsePackZip,
-  // Re-export the real error class so the 413 mapping (zip over budget) is
-  // testable via `instanceof` in the service under test.
-  PackZipTooLargeError: class PackZipTooLargeError extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = "PackZipTooLargeError";
-    }
-  },
-}));
-
-vi.mock("../pack-repo-import", () => ({
-  fetchRepoComponents: mocks.fetchRepoComponents,
-  // Re-export the real error class so the guard/surfacing behavior is testable.
-  RepoTreeTruncatedError: class RepoTreeTruncatedError extends Error {
-    constructor(owner: string, repo: string) {
-      super(
-        `GitHub returned a truncated file tree for ${owner}/${repo}; the repository is too large to import in full. Narrow the import with a subPath (e.g. \`.claude\`).`
-      );
-      this.name = "RepoTreeTruncatedError";
-    }
-  },
-}));
+vi.mock("../pack-repo-import", async () => {
+  const { createPackRepoImportMockModule } = await import(
+    "./service-test-harness"
+  );
+  return createPackRepoImportMockModule(mocks.fetchRepoComponents);
+});
 
 vi.mock("@repo/observability/log", async () => {
   const { createLogMockModule } = await import(
@@ -136,25 +102,12 @@ vi.mock("@repo/observability/log", async () => {
   return createLogMockModule();
 });
 
-vi.mock("@repo/aws", () => ({
-  catalogAssetKey: vi.fn(
-    (orgId: string, itemId: string, kind: string) =>
-      `org/${orgId}/catalog/${itemId}/${kind}`
-  ),
-  getCatalogAssetBytes: vi.fn().mockResolvedValue(Buffer.from("zip-bytes")),
-  getCatalogAssetUploadUrl: vi.fn(),
-  getCatalogAssetDownloadUrl: vi.fn(),
-  headCatalogAsset: vi.fn(),
-  resolveCatalogBucket: vi.fn(() => "plugin-store-bucket"),
-  // Re-export the real error class so the 413 mapping (asset over raw-byte cap)
-  // is testable via `instanceof` in the service under test.
-  CatalogAssetTooLargeError: class CatalogAssetTooLargeError extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = "CatalogAssetTooLargeError";
-    }
-  },
-}));
+vi.mock("@repo/aws/catalog-assets", async () => {
+  const { createCatalogAssetsMockModule } = await import(
+    "./service-test-harness"
+  );
+  return createCatalogAssetsMockModule();
+});
 
 // ---------------------------------------------------------------------------
 // Imports (after mocks)
@@ -162,7 +115,6 @@ vi.mock("@repo/aws", () => ({
 
 import { computeComponentUuid } from "@repo/api/src/component-identity";
 import { AgentComponentKind } from "@repo/api/src/types/agent-component";
-import { CatalogItemSource } from "@repo/api/src/types/distribution";
 import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
 import {
   CatalogAssetTooLargeError,
@@ -171,7 +123,7 @@ import {
   getCatalogAssetDownloadUrl,
   getCatalogAssetUploadUrl,
   headCatalogAsset,
-} from "@repo/aws";
+} from "@repo/aws/catalog-assets";
 import { SourceOccurrenceType } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { agentComponentProjection } from "@/app/search/search-index-service";
@@ -179,7 +131,6 @@ import { RepoTreeTruncatedError } from "../pack-repo-import";
 import { PackZipTooLargeError, parsePackZip } from "../pack-zip-import";
 import {
   archiveCatalogItem,
-  bulkIngestAgents,
   confirmAssetUpload,
   createCatalogItem,
   getCatalogItemDetail,
@@ -187,14 +138,23 @@ import {
   importPackRepoComponents,
   importPackZipComponents,
   listCatalogItemsForOrg,
-  updateCatalogItem,
 } from "../service";
+import {
+  type CatalogWithDbMock,
+  createWithDbSetters,
+  ITEM_ID,
+  makeCatalogRow,
+  NOW,
+  ORG_ID,
+  OTHER_ORG_ID,
+  USER_ID,
+} from "./service-test-harness";
 
 // ---------------------------------------------------------------------------
 // Typed mock handles
 // ---------------------------------------------------------------------------
 
-const mockWithDb = mocks.withDb as unknown as Mock & { tx: Mock };
+const mockWithDb = mocks.withDb as unknown as CatalogWithDbMock;
 const mockGetCatalogAssetUploadUrl =
   getCatalogAssetUploadUrl as unknown as Mock;
 const mockGetCatalogAssetDownloadUrl =
@@ -209,70 +169,7 @@ const mockFetchRepoComponents = mocks.fetchRepoComponents as unknown as Mock;
 // Shared test fixtures
 // ---------------------------------------------------------------------------
 
-const ORG_ID = "org-111";
-const OTHER_ORG_ID = "org-222";
-const USER_ID = "user-abc";
-const ITEM_ID = "item-uuid-1";
-const NOW = new Date("2026-01-15T10:00:00.000Z");
-
-function makeCatalogRow(
-  overrides: Partial<{
-    id: string;
-    organizationId: string | null;
-    targetKind: string;
-    source: string;
-    scope: string;
-    name: string;
-    description: string | null;
-    version: string;
-    sortOrder: number;
-    enabled: boolean;
-    archived: boolean;
-    coaching: boolean;
-    coachingConfig: Record<string, unknown> | null;
-    zipAssetKey: string | null;
-    logoAssetKey: string | null;
-    createdById: string | null;
-    createdAt: Date;
-    updatedAt: Date;
-  }> = {}
-) {
-  return {
-    id: ITEM_ID,
-    organizationId: ORG_ID,
-    targetKind: "plugin",
-    source: "org_custom",
-    scope: "org",
-    name: "My Plugin",
-    description: "A test plugin",
-    version: "1.0.0",
-    sortOrder: 0,
-    enabled: true,
-    archived: false,
-    coaching: false,
-    coachingConfig: null,
-    zipAssetKey: null,
-    logoAssetKey: null,
-    createdById: USER_ID,
-    createdAt: NOW,
-    updatedAt: NOW,
-    ...overrides,
-  };
-}
-
-/** Set up withDb to return from a simple (non-tx) callback. */
-function setupWithDb(clientStub: Record<string, unknown>) {
-  mockWithDb.mockImplementation(
-    (callback: (db: Record<string, unknown>) => unknown) => callback(clientStub)
-  );
-}
-
-/** Set up withDb.tx to invoke its callback with the given tx stub. */
-function setupWithDbTx(txStub: Record<string, unknown>) {
-  mockWithDb.tx.mockImplementation(
-    (callback: (tx: Record<string, unknown>) => unknown) => callback(txStub)
-  );
-}
+const { setupWithDb, setupWithDbTx } = createWithDbSetters(mockWithDb);
 
 // ---------------------------------------------------------------------------
 // listCatalogItemsForOrg
@@ -314,73 +211,10 @@ describe("listCatalogItemsForOrg", () => {
     expect(items.map((i) => i.id)).toContain("item-curated");
   });
 
-  it("passes correct org-scoping filter to findMany", async () => {
-    let capturedWhere: unknown;
-    mockWithDb.mockImplementation(
-      (callback: (db: Record<string, unknown>) => unknown) =>
-        callback({
-          catalogItem: {
-            findMany: vi.fn((args: { where: unknown }) => {
-              capturedWhere = args.where;
-              return Promise.resolve([]);
-            }),
-          },
-        })
-    );
-
-    await listCatalogItemsForOrg({ organizationId: ORG_ID });
-
-    expect(capturedWhere).toEqual(
-      expect.objectContaining({
-        OR: [
-          { organizationId: ORG_ID },
-          { scope: "global", source: "curated" },
-        ],
-      })
-    );
-  });
-
-  it("excludes archived items by default", async () => {
-    let capturedWhere: Record<string, unknown> = {};
-    mockWithDb.mockImplementation(
-      (callback: (db: Record<string, unknown>) => unknown) =>
-        callback({
-          catalogItem: {
-            findMany: vi.fn((args: { where: Record<string, unknown> }) => {
-              capturedWhere = args.where;
-              return Promise.resolve([]);
-            }),
-          },
-        })
-    );
-
-    await listCatalogItemsForOrg({ organizationId: ORG_ID });
-
-    expect(capturedWhere.archived).toBe(false);
-  });
-
-  it("includes archived items when includeArchived=true", async () => {
-    let capturedWhere: Record<string, unknown> = {};
-    mockWithDb.mockImplementation(
-      (callback: (db: Record<string, unknown>) => unknown) =>
-        callback({
-          catalogItem: {
-            findMany: vi.fn((args: { where: Record<string, unknown> }) => {
-              capturedWhere = args.where;
-              return Promise.resolve([]);
-            }),
-          },
-        })
-    );
-
-    await listCatalogItemsForOrg({
-      organizationId: ORG_ID,
-      includeArchived: true,
-    });
-
-    // archived filter should be undefined (not false) when includeArchived=true
-    expect(capturedWhere.archived).toBeUndefined();
-  });
+  // ISS-6665: the org-scoping, exclude-archived and include-archived cases used
+  // to live here as three assertions on the captured Prisma `where`. They now
+  // assert the ROWS the service returns, against a double that evaluates the
+  // predicate, in `./list-catalog-items-rows.test.ts`.
 
   it("does NOT return items belonging to a different org", async () => {
     // The DB query is already org-scoped; verify no other-org rows slip through
@@ -760,7 +594,7 @@ describe("createCatalogItem", () => {
   it("materializes a cloud-sentinel agent_components row for an agent item", async () => {
     // FEA-2923 (Gap A, second forward path): POST /catalog with an agent item
     // must also land an agent_components row so the agent is visible in the
-    // Agents workspace — mirroring bulkIngestAgents → createNewItem.
+    // Agents workspace.
     const row = makeCatalogRow({
       id: "cat-agent-1",
       targetKind: "agent",
@@ -812,7 +646,7 @@ describe("createCatalogItem", () => {
     expect(agentComponentUpsert).toHaveBeenCalledTimes(1);
     const upsertArg = agentComponentUpsert.mock.calls[0][0];
     // Deterministic (computeTargetId, subagent, cloud:agent:<catalogItemId>) key
-    // shared with the backfill migration and createNewItem.
+    // shared with the backfill migration.
     expect(
       upsertArg.where.computeTargetId_componentKind_externalComponentId
     ).toEqual({
@@ -840,6 +674,115 @@ describe("createCatalogItem", () => {
         updatedAt: NOW,
       }),
     ]);
+  });
+
+  it("reuses an existing cloud sentinel instead of creating a second one", async () => {
+    const row = makeCatalogRow({
+      id: "cat-agent-2",
+      targetKind: "agent",
+      name: "My Agent",
+    });
+    const computeTargetCreate = vi.fn();
+    const userFindFirst = vi.fn();
+    const agentComponentUpsert = vi.fn().mockResolvedValue({
+      id: "ac-cat-agent-2",
+      organizationId: ORG_ID,
+      componentKind: "subagent",
+      name: "My Agent",
+      componentKey: "My Agent",
+      externalComponentId: "cloud:agent:cat-agent-2",
+      description: null,
+      updatedAt: NOW,
+      uninstalledAt: null,
+    });
+    setupWithDbTx({
+      catalogItem: { create: vi.fn().mockResolvedValue(row) },
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue({ id: "sentinel-existing" }),
+        create: computeTargetCreate,
+      },
+      user: { findFirst: userFindFirst },
+      agentComponent: { upsert: agentComponentUpsert },
+    });
+
+    await createCatalogItem({
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      targetKind: "agent",
+      name: "My Agent",
+    });
+
+    expect(computeTargetCreate).not.toHaveBeenCalled();
+    expect(userFindFirst).not.toHaveBeenCalled();
+    const upsertArg = agentComponentUpsert.mock.calls[0][0];
+    expect(
+      upsertArg.where.computeTargetId_componentKind_externalComponentId
+        .computeTargetId
+    ).toBe("sentinel-existing");
+  });
+
+  it("skips materialization (but still creates the item) when the org has no active user", async () => {
+    const row = makeCatalogRow({
+      id: "cat-agent-3",
+      targetKind: "agent",
+      name: "My Agent",
+    });
+    const catalogItemCreate = vi.fn().mockResolvedValue(row);
+    const computeTargetCreate = vi.fn();
+    const agentComponentUpsert = vi.fn();
+    setupWithDbTx({
+      catalogItem: { create: catalogItemCreate },
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: computeTargetCreate,
+      },
+      user: { findFirst: vi.fn().mockResolvedValue(null) },
+      agentComponent: { upsert: agentComponentUpsert },
+    });
+
+    await createCatalogItem({
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      targetKind: "agent",
+      name: "My Agent",
+    });
+
+    // The catalog item still lands; the visibility bridge is best-effort.
+    expect(catalogItemCreate).toHaveBeenCalledTimes(1);
+    // No sentinel could be owned, so no inventory row.
+    expect(computeTargetCreate).not.toHaveBeenCalled();
+    expect(agentComponentUpsert).not.toHaveBeenCalled();
+  });
+
+  it("sets componentUuid on the created row via the shared derivation", async () => {
+    const row = makeCatalogRow({ targetKind: "plugin" });
+    const catalogItemCreate = vi.fn().mockResolvedValue(row);
+    setupWithDbTx({
+      catalogItem: { create: catalogItemCreate },
+      catalogItemVersion: {
+        create: vi.fn().mockResolvedValue({ id: "version-1" }),
+      },
+    });
+
+    await createCatalogItem({
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      targetKind: "plugin",
+      name: "My Plugin",
+      sourceRepo: "acme/repo",
+      content: "plugin body",
+    });
+
+    const createData = catalogItemCreate.mock.calls[0][0].data;
+    // Same (source=sourceRepo, owner=organizationId, content) provenance the
+    // helper feeds computeComponentUuid.
+    expect(createData.componentUuid).toBe(
+      computeComponentUuid({
+        source: "acme/repo",
+        owner: ORG_ID,
+        content: "plugin body",
+      })
+    );
   });
 
   it("does NOT index a non-agent catalog item into unified search (FEA-4011)", async () => {
@@ -1501,526 +1444,6 @@ describe("archiveCatalogItem", () => {
 });
 
 // ---------------------------------------------------------------------------
-// updateCatalogItem
-// ---------------------------------------------------------------------------
-
-describe("updateCatalogItem", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetCatalogAssetDownloadUrl.mockResolvedValue(null);
-  });
-
-  afterEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("updates admin-managed fields on an org_custom item for admins", async () => {
-    let capturedData: Record<string, unknown> = {};
-    let capturedWhere: Record<string, unknown> = {};
-    const updatedRow = makeCatalogRow({ name: "Updated Name", sortOrder: 5 });
-    // Ownership lookup runs via withDb; the mutation runs via withDb.tx.
-    setupWithDb({
-      catalogItem: {
-        findFirst: vi.fn().mockResolvedValue({
-          id: ITEM_ID,
-          source: CatalogItemSource.OrgCustom,
-          archived: false,
-          targetKind: "plugin",
-          organizationId: ORG_ID,
-          createdById: USER_ID,
-          sourceRepo: null,
-        }),
-      },
-    });
-    setupWithDbTx({
-      catalogItem: {
-        updateMany: vi.fn(
-          (args: {
-            data: Record<string, unknown>;
-            where: Record<string, unknown>;
-          }) => {
-            capturedData = args.data;
-            capturedWhere = args.where;
-            return Promise.resolve({ count: 1 });
-          }
-        ),
-        findUnique: vi.fn().mockResolvedValue(updatedRow),
-      },
-      catalogItemVersion: {
-        findFirst: vi.fn().mockResolvedValue(null),
-        create: vi.fn().mockResolvedValue({}),
-      },
-    });
-
-    const result = await updateCatalogItem({
-      id: ITEM_ID,
-      organizationId: ORG_ID,
-      userId: USER_ID,
-      canUpdateAny: true,
-      name: "Updated Name",
-      sortOrder: 5,
-    });
-
-    expect(result.ok).toBe(true);
-    expect(capturedWhere).toEqual(
-      expect.objectContaining({
-        id: ITEM_ID,
-        organizationId: ORG_ID,
-        source: CatalogItemSource.OrgCustom,
-        archived: false,
-      })
-    );
-    expect(capturedWhere).not.toHaveProperty("createdById");
-    expect(capturedData.name).toBe("Updated Name");
-    expect(capturedData.sortOrder).toBe(5);
-  });
-
-  it("updates metadata and content for the org_custom item owner", async () => {
-    let capturedData: Record<string, unknown> = {};
-    let capturedWhere: Record<string, unknown> = {};
-    const createVersion = vi.fn().mockResolvedValue({});
-    const updatedRow = makeCatalogRow({
-      name: "Owner Name",
-      description: "Owner description",
-    });
-    setupWithDb({
-      catalogItem: {
-        findFirst: vi.fn().mockResolvedValue({
-          id: ITEM_ID,
-          source: CatalogItemSource.OrgCustom,
-          archived: false,
-          targetKind: "plugin",
-          organizationId: ORG_ID,
-          createdById: USER_ID,
-          sourceRepo: "closedloop-ai/example-repo",
-        }),
-      },
-    });
-    setupWithDbTx({
-      catalogItem: {
-        updateMany: vi.fn(
-          (args: {
-            data: Record<string, unknown>;
-            where: Record<string, unknown>;
-          }) => {
-            capturedData = args.data;
-            capturedWhere = args.where;
-            return Promise.resolve({ count: 1 });
-          }
-        ),
-        findUnique: vi.fn().mockResolvedValue(updatedRow),
-      },
-      catalogItemVersion: {
-        findFirst: vi.fn().mockResolvedValue({ version: 2 }),
-        create: createVersion,
-      },
-    });
-
-    const result = await updateCatalogItem({
-      id: ITEM_ID,
-      organizationId: ORG_ID,
-      userId: USER_ID,
-      name: "Owner Name",
-      description: "Owner description",
-      content: "updated content",
-    });
-
-    expect(result.ok).toBe(true);
-    expect(capturedWhere).toEqual(
-      expect.objectContaining({
-        id: ITEM_ID,
-        organizationId: ORG_ID,
-        source: CatalogItemSource.OrgCustom,
-        archived: false,
-        createdById: USER_ID,
-      })
-    );
-    expect(capturedData.name).toBe("Owner Name");
-    expect(capturedData.description).toBe("Owner description");
-    expect(capturedData.componentUuid).toBe(
-      computeComponentUuid({
-        source: "closedloop-ai/example-repo",
-        owner: ORG_ID,
-        content: "updated content",
-      })
-    );
-    expect(createVersion).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        catalogItemId: ITEM_ID,
-        version: 3,
-        name: "Owner Name",
-        content: "updated content",
-        changedById: USER_ID,
-      }),
-      // The version id is selected so a pack-member edit can link the new version.
-      select: { id: true },
-    });
-  });
-
-  it("links a content edit on a PACK MEMBER to the F1 registry and stamps the new version (FEA-3909 F4)", async () => {
-    const PACK_ID = "pack-uuid-9";
-    const versionUpdate = vi.fn().mockResolvedValue({});
-    const updatedRow = makeCatalogRow({ name: "Member" });
-    // The owning item is a pack MEMBER: `parentPackId` is set on the ownership row.
-    setupWithDb({
-      catalogItem: {
-        findFirst: vi.fn().mockResolvedValue({
-          id: ITEM_ID,
-          source: CatalogItemSource.OrgCustom,
-          archived: false,
-          targetKind: "skill",
-          organizationId: ORG_ID,
-          createdById: USER_ID,
-          sourceRepo: null,
-          parentPackId: PACK_ID,
-        }),
-      },
-    });
-    setupWithDbTx({
-      catalogItem: {
-        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        findUnique: vi.fn().mockResolvedValue(updatedRow),
-      },
-      catalogItemVersion: {
-        findFirst: vi.fn().mockResolvedValue({ version: 4 }),
-        create: vi.fn().mockResolvedValue({ id: "civ-new" }),
-        update: versionUpdate,
-      },
-    });
-
-    const result = await updateCatalogItem({
-      id: ITEM_ID,
-      organizationId: ORG_ID,
-      userId: USER_ID,
-      content: "# Edited member body",
-    });
-
-    expect(result.ok).toBe(true);
-    // The registry link is written with the pack occurrence shape, keyed to the
-    // owning pack, for the edited member's exact new body.
-    expect(mocks.registerDefinitionVersion).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        organizationId: ORG_ID,
-        packId: PACK_ID,
-        occurrenceType: SourceOccurrenceType.pack,
-        componentKind: AgentComponentKind.Skill,
-        content: "# Edited member body",
-      })
-    );
-    // ...and the returned definitionVersionId is stamped onto the NEW version row.
-    expect(versionUpdate).toHaveBeenCalledWith({
-      where: { id: "civ-new" },
-      data: { definitionVersionId: "dv-test" },
-    });
-  });
-
-  it("does NOT link an empty-content edit on a pack member (conservative PD5 — parity with the backfill)", async () => {
-    const PACK_ID = "pack-uuid-9";
-    const versionUpdate = vi.fn().mockResolvedValue({});
-    const updatedRow = makeCatalogRow({ name: "Member" });
-    setupWithDb({
-      catalogItem: {
-        findFirst: vi.fn().mockResolvedValue({
-          id: ITEM_ID,
-          source: CatalogItemSource.OrgCustom,
-          archived: false,
-          targetKind: "skill",
-          organizationId: ORG_ID,
-          createdById: USER_ID,
-          sourceRepo: null,
-          parentPackId: PACK_ID,
-        }),
-      },
-    });
-    setupWithDbTx({
-      catalogItem: {
-        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        findUnique: vi.fn().mockResolvedValue(updatedRow),
-      },
-      catalogItemVersion: {
-        findFirst: vi.fn().mockResolvedValue({ version: 4 }),
-        create: vi.fn().mockResolvedValue({ id: "civ-empty" }),
-        update: versionUpdate,
-      },
-    });
-
-    const result = await updateCatalogItem({
-      id: ITEM_ID,
-      organizationId: ORG_ID,
-      userId: USER_ID,
-      content: "",
-    });
-
-    expect(result.ok).toBe(true);
-    // Empty body ⇒ no version minted, no link stamped (the shared conservative
-    // guard leaves it NULL, exactly as the backfill leaves an empty member).
-    expect(mocks.registerDefinitionVersion).not.toHaveBeenCalled();
-    expect(versionUpdate).not.toHaveBeenCalled();
-  });
-
-  it("returns 403 when the write-time ownership predicate no longer matches", async () => {
-    const createVersion = vi.fn().mockResolvedValue({});
-    const findUnique = vi.fn();
-    const updateMany = vi.fn().mockResolvedValue({ count: 0 });
-    setupWithDb({
-      catalogItem: {
-        findFirst: vi.fn().mockResolvedValue({
-          id: ITEM_ID,
-          source: CatalogItemSource.OrgCustom,
-          archived: false,
-          targetKind: "plugin",
-          organizationId: ORG_ID,
-          createdById: USER_ID,
-          sourceRepo: null,
-        }),
-      },
-    });
-    setupWithDbTx({
-      catalogItem: {
-        updateMany,
-        findUnique,
-      },
-      catalogItemVersion: {
-        findFirst: vi.fn().mockResolvedValue(null),
-        create: createVersion,
-      },
-    });
-
-    const result = await updateCatalogItem({
-      id: ITEM_ID,
-      organizationId: ORG_ID,
-      userId: USER_ID,
-      name: "Stale Owner",
-      content: "stale content",
-    });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe(403);
-    }
-    expect(updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          id: ITEM_ID,
-          organizationId: ORG_ID,
-          source: CatalogItemSource.OrgCustom,
-          archived: false,
-          createdById: USER_ID,
-        }),
-      })
-    );
-    expect(findUnique).not.toHaveBeenCalled();
-    expect(createVersion).not.toHaveBeenCalled();
-  });
-
-  it("returns 403 when an owner tries to update admin-only fields", async () => {
-    setupWithDb({
-      catalogItem: {
-        findFirst: vi.fn().mockResolvedValue({
-          id: ITEM_ID,
-          source: CatalogItemSource.OrgCustom,
-          archived: false,
-          targetKind: "plugin",
-          organizationId: ORG_ID,
-          createdById: USER_ID,
-          sourceRepo: null,
-        }),
-      },
-    });
-
-    const result = await updateCatalogItem({
-      id: ITEM_ID,
-      organizationId: ORG_ID,
-      userId: USER_ID,
-      enabled: false,
-    });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe(403);
-    }
-    expect(mockWithDb.tx).not.toHaveBeenCalled();
-  });
-
-  it("returns 403 when an owner sends content for a metadata-only pack", async () => {
-    setupWithDb({
-      catalogItem: {
-        findFirst: vi.fn().mockResolvedValue({
-          id: ITEM_ID,
-          source: CatalogItemSource.OrgCustom,
-          archived: false,
-          targetKind: "pack",
-          organizationId: ORG_ID,
-          createdById: USER_ID,
-          sourceRepo: null,
-        }),
-      },
-    });
-
-    const result = await updateCatalogItem({
-      id: ITEM_ID,
-      organizationId: ORG_ID,
-      userId: USER_ID,
-      content: "pack content should not be accepted",
-    });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe(403);
-    }
-    expect(mockWithDb.tx).not.toHaveBeenCalled();
-  });
-
-  it("returns 403 for a non-owner non-admin caller", async () => {
-    setupWithDb({
-      catalogItem: {
-        findFirst: vi.fn().mockResolvedValue({
-          id: ITEM_ID,
-          source: CatalogItemSource.OrgCustom,
-          archived: false,
-          targetKind: "plugin",
-          organizationId: ORG_ID,
-          createdById: "different-user",
-          sourceRepo: null,
-        }),
-      },
-    });
-
-    const result = await updateCatalogItem({
-      id: ITEM_ID,
-      organizationId: ORG_ID,
-      userId: USER_ID,
-      name: "Attempted Mutation",
-    });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe(403);
-    }
-    expect(mockWithDb.tx).not.toHaveBeenCalled();
-  });
-
-  it("returns 403 for null-owner rows when the caller is not an admin", async () => {
-    setupWithDb({
-      catalogItem: {
-        findFirst: vi.fn().mockResolvedValue({
-          id: ITEM_ID,
-          source: CatalogItemSource.OrgCustom,
-          archived: false,
-          targetKind: "plugin",
-          organizationId: ORG_ID,
-          createdById: null,
-          sourceRepo: null,
-        }),
-      },
-    });
-
-    const result = await updateCatalogItem({
-      id: ITEM_ID,
-      organizationId: ORG_ID,
-      userId: USER_ID,
-      name: "Attempted Mutation",
-    });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe(403);
-    }
-    expect(mockWithDb.tx).not.toHaveBeenCalled();
-  });
-
-  it("returns 403 for archived org_custom items even for admins", async () => {
-    setupWithDb({
-      catalogItem: {
-        findFirst: vi.fn().mockResolvedValue({
-          id: ITEM_ID,
-          source: CatalogItemSource.OrgCustom,
-          archived: true,
-          targetKind: "plugin",
-          organizationId: ORG_ID,
-          createdById: USER_ID,
-          sourceRepo: null,
-        }),
-      },
-    });
-
-    const result = await updateCatalogItem({
-      id: ITEM_ID,
-      organizationId: ORG_ID,
-      userId: USER_ID,
-      canUpdateAny: true,
-      name: "Attempted Mutation",
-    });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe(403);
-    }
-    expect(mockWithDb.tx).not.toHaveBeenCalled();
-  });
-
-  it("returns 404 when the item is hidden by the visibility predicate", async () => {
-    let capturedWhere: Record<string, unknown> = {};
-    setupWithDb({
-      catalogItem: {
-        findFirst: vi.fn((args: { where: Record<string, unknown> }) => {
-          capturedWhere = args.where;
-          return Promise.resolve(null);
-        }),
-      },
-    });
-
-    const result = await updateCatalogItem({
-      id: "nonexistent",
-      organizationId: ORG_ID,
-      userId: USER_ID,
-      name: "New Name",
-    });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe(404);
-    }
-    expect(capturedWhere).toEqual(
-      expect.objectContaining({
-        id: "nonexistent",
-        OR: [
-          { organizationId: ORG_ID },
-          { scope: "global", source: CatalogItemSource.Curated },
-        ],
-      })
-    );
-  });
-
-  it("returns 403 for curated items (read-only catalog source)", async () => {
-    mockWithDb.mockImplementationOnce(
-      (callback: (db: Record<string, unknown>) => unknown) =>
-        callback({
-          catalogItem: {
-            findFirst: vi.fn().mockResolvedValue({
-              id: ITEM_ID,
-              source: CatalogItemSource.Curated,
-            }),
-          },
-        })
-    );
-
-    const result = await updateCatalogItem({
-      id: ITEM_ID,
-      organizationId: ORG_ID,
-      userId: USER_ID,
-      name: "Attempted Mutation",
-    });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe(403);
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
 // getCatalogItemDetail
 // ---------------------------------------------------------------------------
 
@@ -2341,260 +1764,6 @@ describe("getCatalogItemDetail", () => {
 });
 
 // ---------------------------------------------------------------------------
-// FEA-2923 (Gap A, forward path) — bulkIngestAgents → agent_components bridge
-// ---------------------------------------------------------------------------
-
-type Tx = {
-  catalogItem: {
-    findFirst: ReturnType<typeof vi.fn>;
-    findMany: ReturnType<typeof vi.fn>;
-    create: ReturnType<typeof vi.fn>;
-  };
-  catalogItemVersion: { create: ReturnType<typeof vi.fn> };
-  repoBootstrapConfig: { upsert: ReturnType<typeof vi.fn> };
-  computeTarget: {
-    findFirst: ReturnType<typeof vi.fn>;
-    create: ReturnType<typeof vi.fn>;
-  };
-  user: { findFirst: ReturnType<typeof vi.fn> };
-  agentComponent: { upsert: ReturnType<typeof vi.fn> };
-};
-
-function buildTx(overrides: Partial<Tx> = {}): Tx {
-  return {
-    catalogItem: {
-      // generateUniqueAgentSlug probes for slug collisions → none.
-      findFirst: vi.fn().mockResolvedValue(null),
-      // No existing items → every agent goes through createNewItem.
-      findMany: vi.fn().mockResolvedValue([]),
-      create: vi.fn().mockResolvedValue({
-        id: "catalog-item-1",
-        role: "planner",
-        name: "Planner",
-      }),
-    },
-    catalogItemVersion: { create: vi.fn().mockResolvedValue({}) },
-    repoBootstrapConfig: { upsert: vi.fn().mockResolvedValue({}) },
-    computeTarget: {
-      // No sentinel yet → the forward path creates one.
-      findFirst: vi.fn().mockResolvedValue(null),
-      create: vi.fn().mockResolvedValue({ id: "sentinel-1" }),
-    },
-    user: {
-      findFirst: vi.fn().mockResolvedValue({ id: "earliest-user-1" }),
-    },
-    agentComponent: { upsert: vi.fn().mockResolvedValue({}) },
-    ...overrides,
-  };
-}
-
-function installTx(tx: Tx) {
-  mocks.withDb.tx.mockImplementation((cb: (t: unknown) => unknown) => cb(tx));
-  mocks.withDb.mockImplementation((cb: (t: unknown) => unknown) => cb(tx));
-}
-
-const INGEST_INPUT = {
-  agents: [
-    {
-      name: "Planner",
-      role: "planner",
-      description: "Plans work",
-      prompt: "You are a planner.",
-    },
-  ],
-  bootstrapRunId: "loop-1",
-  sourceRepo: "acme/repo",
-};
-
-describe("bulkIngestAgents forward path → agent_components", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.getPrismaErrorCode.mockReturnValue(undefined);
-  });
-
-  it("materializes an agent_components row for a newly created org_custom agent", async () => {
-    const tx = buildTx();
-    installTx(tx);
-
-    const result = await bulkIngestAgents("org-1", "user-1", INGEST_INPUT);
-    expect(result.created).toBe(1);
-
-    // The catalog item was created as source=org_custom / targetKind=agent.
-    expect(tx.catalogItem.create).toHaveBeenCalledTimes(1);
-
-    // A sentinel compute target was created (none existed), owned by the org's
-    // earliest active user.
-    expect(tx.user.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { organizationId: "org-1", active: true },
-        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      })
-    );
-    expect(tx.computeTarget.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          organizationId: "org-1",
-          userId: "earliest-user-1",
-          machineName: "__cloud_sentinel__",
-          platform: "cloud",
-          isCloudSentinel: true,
-        }),
-      })
-    );
-
-    // The inventory row is upserted onto the sentinel with the migration's
-    // deterministic (computeTargetId, subagent, cloud:agent:<id>) key.
-    expect(tx.agentComponent.upsert).toHaveBeenCalledTimes(1);
-    const upsertArg = tx.agentComponent.upsert.mock.calls[0][0];
-    expect(upsertArg.where).toEqual({
-      computeTargetId_componentKind_externalComponentId: {
-        computeTargetId: "sentinel-1",
-        componentKind: "subagent",
-        externalComponentId: "cloud:agent:catalog-item-1",
-      },
-    });
-    expect(upsertArg.create).toEqual(
-      expect.objectContaining({
-        organizationId: "org-1",
-        computeTargetId: "sentinel-1",
-        componentKind: "subagent",
-        externalComponentId: "cloud:agent:catalog-item-1",
-        harness: "claude",
-        name: "Planner",
-        scope: "org",
-        sourceUrl: "acme/repo",
-      })
-    );
-    expect(upsertArg.create.metadata).toEqual(
-      expect.objectContaining({
-        cloudAuthored: true,
-        catalogItemId: "catalog-item-1",
-        source: "org_custom",
-        createdById: "user-1",
-      })
-    );
-  });
-
-  it("reuses an existing sentinel instead of creating a second one", async () => {
-    const tx = buildTx({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue({ id: "sentinel-existing" }),
-        create: vi.fn(),
-      },
-    });
-    installTx(tx);
-
-    await bulkIngestAgents("org-1", "user-1", INGEST_INPUT);
-
-    expect(tx.computeTarget.create).not.toHaveBeenCalled();
-    expect(tx.user.findFirst).not.toHaveBeenCalled();
-    const upsertArg = tx.agentComponent.upsert.mock.calls[0][0];
-    expect(
-      upsertArg.where.computeTargetId_componentKind_externalComponentId
-        .computeTargetId
-    ).toBe("sentinel-existing");
-  });
-
-  it("skips materialization (but still ingests) when the org has no active user", async () => {
-    const tx = buildTx({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue(null),
-        create: vi.fn(),
-      },
-      user: { findFirst: vi.fn().mockResolvedValue(null) },
-    });
-    installTx(tx);
-
-    const result = await bulkIngestAgents("org-1", "user-1", INGEST_INPUT);
-
-    // Catalog item still created — visibility bridge is best-effort.
-    expect(result.created).toBe(1);
-    expect(tx.catalogItem.create).toHaveBeenCalledTimes(1);
-    // No sentinel could be owned → no inventory row.
-    expect(tx.computeTarget.create).not.toHaveBeenCalled();
-    expect(tx.agentComponent.upsert).not.toHaveBeenCalled();
-  });
-
-  it("does not materialize a component when the agent already exists (update path)", async () => {
-    const tx = buildTx();
-    // Existing agent by role → updateExistingItem path.
-    tx.catalogItem.findMany.mockResolvedValue([
-      {
-        id: "existing-1",
-        role: "planner",
-        name: "Planner",
-        versions: [{ version: 1 }],
-      },
-    ]);
-    // updateExistingItem calls tx.catalogItem.update.
-    (tx.catalogItem as unknown as { update: ReturnType<typeof vi.fn> }).update =
-      vi.fn().mockResolvedValue({});
-    installTx(tx);
-
-    const result = await bulkIngestAgents("org-1", "user-1", INGEST_INPUT);
-
-    expect(result.updated).toBe(1);
-    expect(tx.catalogItem.create).not.toHaveBeenCalled();
-    // Forward path only fires on creation; the existing agent already has its
-    // (backfilled or previously-materialized) inventory row.
-    expect(tx.agentComponent.upsert).not.toHaveBeenCalled();
-  });
-
-  // A second content-bearing writer (bulk bootstrap ingest → createNewItem)
-  // must set the same content-addressed identity as createCatalogItem, routed
-  // through the shared deriveComponentUuid helper, so the bootstrap-ingested
-  // copy dedups/joins with the manually-authored one.
-  it("sets componentUuid on the created row via the shared derivation", async () => {
-    const tx = buildTx();
-    installTx(tx);
-
-    await bulkIngestAgents("org-1", "user-1", INGEST_INPUT);
-
-    expect(tx.catalogItem.create).toHaveBeenCalledTimes(1);
-    const createData = tx.catalogItem.create.mock.calls[0][0].data;
-    // Same (source=sourceRepo, owner=organizationId, content=prompt) provenance
-    // the helper feeds computeComponentUuid.
-    expect(createData.componentUuid).toBe(
-      computeComponentUuid({
-        source: "acme/repo",
-        owner: "org-1",
-        content: "You are a planner.",
-      })
-    );
-  });
-
-  // The re-generation (update) writer must also re-derive the identity so the
-  // dedup/analytics key tracks the current body.
-  it("re-derives componentUuid on the update path via the shared derivation", async () => {
-    const tx = buildTx();
-    tx.catalogItem.findMany.mockResolvedValue([
-      {
-        id: "existing-1",
-        role: "planner",
-        name: "Planner",
-        versions: [{ version: 1 }],
-      },
-    ]);
-    const update = vi.fn().mockResolvedValue({});
-    (tx.catalogItem as unknown as { update: ReturnType<typeof vi.fn> }).update =
-      update;
-    installTx(tx);
-
-    await bulkIngestAgents("org-1", "user-1", INGEST_INPUT);
-
-    expect(update).toHaveBeenCalledTimes(1);
-    const updateData = update.mock.calls[0][0].data;
-    expect(updateData.componentUuid).toBe(
-      computeComponentUuid({
-        source: "acme/repo",
-        owner: "org-1",
-        content: "You are a planner.",
-      })
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
 // importPackZipComponents (PR #2804 review: validate + atomic dedupe)
 // ---------------------------------------------------------------------------
 
@@ -2730,6 +1899,8 @@ describe("importPackZipComponents", () => {
       expect(call[0]).toEqual({
         where: { id: expect.any(String) },
         data: { definitionVersionId: "dv-test" },
+        // ISS-6322 narrowed this discarded write's RETURNING to the primary key.
+        select: { id: true },
       });
     }
   });

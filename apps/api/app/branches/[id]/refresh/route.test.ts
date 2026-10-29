@@ -56,11 +56,16 @@ describe("POST /branches/[id]/refresh", () => {
 
     expect(response.status).toBe(200);
     expect(mocks.withAnyAuthOptions).toEqual([{ requiredScopes: ["write"] }]);
-    expect(mocks.refreshBranch).toHaveBeenCalledWith("org-1", branchId, {
-      userId: "user-1",
-      authMethod: "session",
-      tagPermissions: { canApply: true, canRemove: true },
-    });
+    expect(mocks.refreshBranch).toHaveBeenCalledWith(
+      "org-1",
+      branchId,
+      {
+        userId: "user-1",
+        authMethod: "session",
+        tagPermissions: { canApply: true, canRemove: true },
+      },
+      undefined
+    );
   });
 
   it("forwards API-key tag permissions into the refresh projection", async () => {
@@ -77,11 +82,16 @@ describe("POST /branches/[id]/refresh", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(mocks.refreshBranch).toHaveBeenCalledWith("org-1", branchId, {
-      userId: "user-1",
-      authMethod: "api_key",
-      tagPermissions: { canApply: true, canRemove: false },
-    });
+    expect(mocks.refreshBranch).toHaveBeenCalledWith(
+      "org-1",
+      branchId,
+      {
+        userId: "user-1",
+        authMethod: "api_key",
+        tagPermissions: { canApply: true, canRemove: false },
+      },
+      undefined
+    );
     expect(body.data.branch.tagPermissions).toEqual({
       canApply: true,
       canRemove: false,

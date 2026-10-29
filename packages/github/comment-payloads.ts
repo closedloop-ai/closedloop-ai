@@ -72,16 +72,6 @@ export type GitHubPullRequestReview = {
   html_url: string;
 };
 
-export type CreatePullRequestReviewCommentWithUserTokenInput = {
-  body: string;
-  commitId: string;
-  path: string;
-  line?: number;
-  side?: "LEFT" | "RIGHT";
-  startLine?: number;
-  startSide?: "LEFT" | "RIGHT";
-};
-
 type GitHubCommentAuthorPayload = {
   id?: number | null;
   login: string;
@@ -113,7 +103,7 @@ export function mapGitHubCommentAuthor(
 }
 
 /** Normalize a review-body author without widening the established review DTO. */
-export function mapGitHubPullRequestReviewAuthor(
+function mapGitHubPullRequestReviewAuthor(
   user: GitHubCommentAuthorPayload
 ): GitHubPullRequestReview["user"] {
   const author = mapGitHubCommentAuthor(user);
@@ -187,7 +177,7 @@ export function mapPullRequestReviewComment(
     id: comment.id,
     node_id: comment.node_id ?? null,
     path: comment.path,
-    line: comment.line ?? comment.original_line ?? null,
+    line: comment.line ?? null,
     side: comment.side ?? null,
     start_line: comment.start_line ?? null,
     start_side: comment.start_side ?? null,
@@ -207,5 +197,23 @@ export function mapPullRequestReviewComment(
     deleted_at: null,
     is_deleted: false,
     is_updated: comment.updated_at !== comment.created_at,
+  };
+}
+
+export function mapPullRequestReview(review: {
+  id: number;
+  user: GitHubCommentAuthorPayload;
+  state: string;
+  body?: string | null;
+  submitted_at?: string | null;
+  html_url: string;
+}): GitHubPullRequestReview {
+  return {
+    id: review.id,
+    user: mapGitHubPullRequestReviewAuthor(review.user),
+    state: review.state,
+    body: review.body ?? null,
+    submitted_at: review.submitted_at ?? null,
+    html_url: review.html_url,
   };
 }

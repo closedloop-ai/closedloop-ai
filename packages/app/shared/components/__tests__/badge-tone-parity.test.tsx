@@ -1,5 +1,3 @@
-import { LoopCommand } from "@closedloop-ai/loops-api/commands";
-import { LoopCommandLabel } from "@repo/app/shared/components/status-badge";
 import { badgeVariants } from "@repo/design-system/components/ui/badge";
 import { ToneBadge } from "@repo/design-system/components/ui/primitives/status-badge";
 import { ToneLabel } from "@repo/design-system/components/ui/tone-label";
@@ -13,8 +11,7 @@ import { describe, expect, it } from "vitest";
  * `TONE_TEXT_CLASS` — all named some version of "tone", and `ToneBadge` had
  * already drifted from `badgeVariants` on its `default` row.
  *
- * The consolidation routes `ToneBadge` and `LoopCommandLabel` through the shared
- * variant vocabulary. That is only a safe refactor if nothing on screen moves,
+ * The consolidation routes `ToneBadge` through the shared variant vocabulary. That is only a safe refactor if nothing on screen moves,
  * so these pin the RESOLVED utilities each tone renders — as literals, which are
  * the frozen pre-consolidation contract. If a mapping row is repointed at a
  * different variant, the utility changes and one of these fails.
@@ -77,35 +74,5 @@ describe("the ai badge variant (FEA-4035)", () => {
     // fails AA, which is why `success`/`info` already reach for `-foreground`.
     render(<ToneLabel variant="ai">Plan</ToneLabel>);
     expect(screen.getByText("Plan").className).toContain("text-ai-foreground");
-  });
-});
-
-describe("LoopCommandLabel routed through ToneLabel (FEA-4035)", () => {
-  // The three tones the fourteen loop commands collapse to, each with the text
-  // utility the deleted bespoke map spelled out.
-  const COMMAND_TEXT_UTILITY: [LoopCommand, string, string][] = [
-    [LoopCommand.Plan, "Plan", "text-ai-foreground"],
-    [LoopCommand.Execute, "Execute", "text-info-foreground"],
-    [LoopCommand.Manual, "Manual", "text-warning-foreground"],
-  ];
-
-  for (const [command, label, utility] of COMMAND_TEXT_UTILITY) {
-    it(`renders ${label} with the color its bespoke span used`, () => {
-      render(<LoopCommandLabel command={command} />);
-      expect(screen.getByText(label).className).toContain(utility);
-    });
-  }
-
-  it("keeps the plain-label chrome the bespoke span rendered", () => {
-    // Same element, same three base utilities — the consolidation is a swap of
-    // WHO owns the color, not a restyle.
-    render(<LoopCommandLabel command={LoopCommand.Plan} />);
-    const label = screen.getByText("Plan");
-    for (const utility of ["truncate", "font-medium", "text-xs"]) {
-      expect(label.className).toContain(utility);
-    }
-    // Never boxed: a low-variance categorical value reads as clutter in a pill,
-    // which is the whole reason `ToneLabel` exists beside `Badge`.
-    expect(label.getAttribute("data-slot")).not.toBe("badge");
   });
 });

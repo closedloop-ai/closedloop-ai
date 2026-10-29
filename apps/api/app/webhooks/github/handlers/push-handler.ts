@@ -27,10 +27,10 @@ import { parseArtifactReferences } from "@repo/github/artifact-reference-parser"
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
-import {
-  branchService,
-  type UpsertBranchArtifactInput,
-} from "@/app/branches/branch-service";
+import { branchPushBackfillService } from "@/app/branches/branch-push-backfill-service";
+import { invalidateBranchPushCoverageAfterWebhook } from "@/app/branches/branch-push-contribution-service";
+import type { UpsertBranchArtifactInput } from "@/app/branches/branch-service";
+import { upsertBranchArtifactWithAttribution } from "@/app/branches/branch-upsert-with-attribution";
 import { resolveCloudBranchWriteEligibility } from "@/app/branches/branch-write-eligibility";
 import { refreshBranchFileChangeCache } from "@/app/branches/file-cache-service";
 import {
@@ -46,11 +46,8 @@ import {
 } from "@/lib/github/repository-default-observation-receipt";
 import { githubAppWebhookFetchProvenance } from "@/lib/github-fetch-provenance";
 import { pickPrimaryArtifactReference } from "./artifact-reference";
-import {
-  GitHubBranchActivityEventName,
-  persistGitHubBranchActivity,
-} from "./branch-activity-producer";
 import { publishGitHubDirtyScopes } from "./dirty-scope-publisher";
+import { capturePushBranchActivity } from "./push-loc-evidence";
 
 const HEAD_REF_PREFIX = "refs/heads/";
 
@@ -243,10 +240,13 @@ export async function handlePush(
     });
   }
 
-  const result = await branchService.upsertBranchArtifact({
+  const result = await upsertBranchArtifactWithAttribution({
     ...eligibilityInput,
     defaultBranch: repository.default_branch,
     projectId: source.projectId,
+    // ISS-10995: lineage, so a FILL — a later push never re-files a branch a
+    // user filed from the Details Project row.
+    projectFillOnly: true,
     sourceArtifactId: source.sourceArtifactId,
     createdById: source.createdById,
     baseBranch: repository.default_branch,
@@ -254,10 +254,10 @@ export async function handlePush(
     headSha: deleted ? null : after,
     headShaSource: deleted ? null : BranchHeadShaSource.PushWebhook,
     headShaObservedAt: lastPushedAt,
-    // The push payload has no documented per-delivery occurrence timestamp.
-    // Keep head ordering metadata, but let the canonical activity producer
-    // fail closed instead of treating repository state or receipt time as
-    // qualifying Last-active evidence.
+    // A push is not Last-active evidence: repository state and receipt time are
+    // not qualifying occurrence times, and the per-push atom ISS-10009 captures
+    // is written under the NON-canonical `push_loc` lane precisely so it cannot
+    // reach this scalar or the aggregate behind the Branches list's sort.
     activityAt: null,
     // PRD-510 FR2 / PLN-1099 Phase 2: a non-delete push is unambiguous push
     // evidence — stamp it set-once/earliest-wins in the service. A delete is not
@@ -283,16 +283,12 @@ export async function handlePush(
     });
     return NextResponse.json({ message, ok: true });
   }
-  await persistGitHubBranchActivity({
-    eventName: GitHubBranchActivityEventName.Push,
-    deliveryId: observation?.deliveryId,
-    payload: event,
-    attribution: {
-      organizationId,
-      branchArtifactId: result.value.id,
-    },
+  await captureBranchPushCollaborator({
+    event,
+    organizationId,
+    branchArtifactId: result.value.id,
+    observation,
   });
-
   if (!deleted) {
     waitUntil(
       refreshBranchFileChangeCache(result.value.id, {
@@ -316,6 +312,20 @@ export async function handlePush(
             error: error instanceof Error ? error.message : String(error),
           });
         })
+    );
+    // ISS-10009: capture this push's own occurrence time, sha range and line
+    // delta. Deferred like the file-cache refresh above because it reads the
+    // provider compare, and it swallows its own failures so neither a provider
+    // outage nor a database error can fail this webhook. A delete carries no
+    // commits, so it has no occurrence time and no range to measure.
+    waitUntil(
+      capturePushBranchActivity({
+        branchArtifactId: result.value.id,
+        deliveryId: observation?.deliveryId,
+        event,
+        installationId: String(installationId),
+        organizationId,
+      })
     );
   }
 
@@ -613,3 +623,38 @@ export const PushSourceSkipReason = {
 
 export type PushSourceSkipReason =
   (typeof PushSourceSkipReason)[keyof typeof PushSourceSkipReason];
+
+/** Reopen coverage before a deferred provider lookup so a failed lookup remains retryable. */
+async function captureBranchPushCollaborator(input: {
+  event: PushEvent;
+  organizationId: string;
+  branchArtifactId: string;
+  observation?: GitHubWebhookObservationContext;
+}): Promise<void> {
+  if (input.event.deleted || input.event.commits.length === 0) {
+    return;
+  }
+  await invalidateBranchPushCoverageAfterWebhook({
+    organizationId: input.organizationId,
+    branchArtifactId: input.branchArtifactId,
+  });
+  waitUntil(
+    branchPushBackfillService
+      .captureWebhookPush({
+        organizationId: input.organizationId,
+        branchArtifactId: input.branchArtifactId,
+        beforeSha: input.event.before,
+        afterSha: input.event.after,
+        observedAt: input.observation?.observedAt ?? new Date(),
+        sender: input.event.sender,
+        deliveryId: input.observation?.deliveryId,
+      })
+      .catch((error) => {
+        log.warn("[handlePush] Branch pusher lookup failed", {
+          organizationId: input.organizationId,
+          branchArtifactId: input.branchArtifactId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+  );
+}

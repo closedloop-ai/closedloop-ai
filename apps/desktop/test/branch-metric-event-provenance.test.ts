@@ -1,19 +1,19 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { ArtifactRefRelation } from "@repo/api/src/types/session-artifact-link";
+import { describe, test } from "vitest";
 import { readCanonicalBranchMetricEventRows } from "../src/main/branch/branch-metric-event-read.js";
 import {
   BranchMetricOutsideEventSide,
   createBranchMetricEventEvidenceMethods,
 } from "../src/main/database/branch-metric-event-provenance.js";
-import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import { seeder, withAcDb } from "./branch-reads-ac-test-helpers.js";
+import { makeSqlCapturePrisma } from "./sql-capture-prisma.js";
 
 describe("Desktop Branch metric outside-event provenance", () => {
   test("uses a parameterized, capped per-segment and per-side SQL aggregate", async () => {
     let capturedSql = "";
     let capturedParameters: unknown[] = [];
-    const prisma = makePrisma((sql, parameters) => {
+    const prisma = makeSqlCapturePrisma((sql, parameters) => {
       capturedSql = sql;
       capturedParameters = parameters;
       return [];
@@ -46,7 +46,7 @@ describe("Desktop Branch metric outside-event provenance", () => {
   });
 
   test("maps zero-cost presence and aggregate overflow signals without coercing them away", async () => {
-    const prisma = makePrisma(() => [
+    const prisma = makeSqlCapturePrisma(() => [
       segmentRawRow(),
       {
         row_kind: "provenance",
@@ -339,19 +339,6 @@ async function withSingleBranchSegment(
     );
     await run(db);
   });
-}
-
-function makePrisma(
-  query: (sql: string, parameters: unknown[]) => unknown[]
-): DesktopPrisma {
-  const client = {
-    $queryRawUnsafe: (sql: string, ...parameters: unknown[]) =>
-      Promise.resolve(query(sql, parameters)),
-  };
-  return {
-    client,
-    read: (read: (reader: typeof client) => Promise<unknown>) => read(client),
-  } as unknown as DesktopPrisma;
 }
 
 function segmentRawRow() {

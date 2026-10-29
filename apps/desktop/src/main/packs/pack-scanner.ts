@@ -16,29 +16,47 @@
  * re-running bumps `last_seen_at` but never produces duplicate rows.
  */
 
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-
+import { execFileNonBlocking } from "../../server/non-blocking-exec.js";
 import {
   type BinaryName,
   isResolvedOnHost,
   resolveBinaryFromLoginShellSync,
 } from "../../server/shell-path.js";
+import { isTccProtectedPath } from "../../shared/sandbox-policy.js";
 import type { DesktopPrisma } from "../database/prisma-client.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
+import {
+  detectBmadProjectInstall,
+  readBmadProjectManifest,
+} from "./bmad-project-install.js";
 import { resolveClaudeHome, resolveCodexHome } from "./claude-home.js";
 import {
   RESERVED_PLUGIN_PACK_IDS,
   readClaudeInstalledPluginRegistry,
 } from "./claude-plugin-registry.js";
 import {
+  groupInstalledPluginsByMarketplace,
+  scanBundledMarketplace,
+  scanPerPluginMarketplace,
+} from "./marketplace-scan.js";
+import { pruneStaleRows } from "./pack-prune.js";
+import {
   upsertPack,
   upsertProjectAssociation,
   upsertSkill,
 } from "./pack-store.js";
+import {
+  deterministicSkillId,
+  findSkillFiles,
+  isSymlink,
+  parseSkillFrontmatter,
+  safeReadDir,
+  safeReadFile,
+  safeRealpath,
+  safeStat,
+} from "./skill-files.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -90,7 +108,7 @@ export type PackScannerSummary = {
 // ---------------------------------------------------------------------------
 // Compute/write split (FEA-3628)
 //
-// The heavy scan work (filesystem walk, execFileSync, frontmatter/marketplace
+// The heavy scan work (filesystem walk, git/npm probes, frontmatter/marketplace
 // parsing) is pure compute and must NOT run inside the db-host utilityProcess,
 // where it starves renderer DB reads. Instead the scan phases write their
 // results into a `PackScanSink` — an in-memory collector, NOT a DB connection —
@@ -230,26 +248,19 @@ export class CollectingSink implements PackScanSink {
 const PROJECT_LOOKBACK_DAYS = 90;
 const GIT_REMOTE_TIMEOUT_MS = 1500;
 const PACK_SCANNER_PHASE_PAUSE_MS = 25;
-const CLOSEDLOOP_WEB_COMMAND_PACK_ID = "closedloop-web-command-pack";
-const CLOSEDLOOP_WEB_COMMAND_PACK_HARNESSES = [
-  "claude",
-  "codex",
-  "cursor",
-  "opencode",
-] as const;
 
-// Known Claude Code plugin marketplaces -> upstream repo URL. Marketplaces
-// outside this table are still detected and registered as packs; they just
-// get no source_url chip in the UI.
-const KNOWN_MARKETPLACE_SOURCES: Record<string, string> = {
-  "closedloop-ai": "https://github.com/closedloop-ai/claude-plugins",
-  "claude-plugins-official":
-    "https://github.com/anthropics/claude-plugins-official",
-};
+// Known marketplace URLs; unknown marketplaces still register without one.
+const KNOWN_MARKETPLACE_SOURCES: Record<string, string> = Object.assign(
+  Object.create(null),
+  {
+    "closedloop-ai": "https://github.com/closedloop-ai/claude-plugins",
+    "claude-plugins-official":
+      "https://github.com/anthropics/claude-plugins-official",
+  }
+);
 
-// Marketplaces whose plugins are conceptually ONE bundle (one logical pack
-// shipped together) rather than independently-installable units. closedloop-ai
-// is the canonical example: code/code-review/judges/platform/self-learning
+// Marketplaces whose plugins ship as ONE logical pack instead of separately.
+// For closedloop-ai, code/code-review/judges/platform/self-learning
 // are 5 plugins but install as a unit and the user thinks of them as "the
 // closedloop pack." For these, the agent_packs row is keyed on the
 // marketplace name and skills aggregate across plugins.
@@ -261,159 +272,17 @@ const KNOWN_MARKETPLACE_SOURCES: Record<string, string> = {
 const MARKETPLACE_BUNDLE_AS_PACK = new Set(["closedloop-ai"]);
 
 // ---------------------------------------------------------------------------
-// Filesystem helpers (sync — fine for probing)
-// ---------------------------------------------------------------------------
-
-function safeStat(p: string) {
-  try {
-    return lstatSync(p);
-  } catch {
-    return null;
-  }
-}
-
-function safeReadDir(p: string) {
-  try {
-    return readdirSync(p, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-}
-
-export function safeReadFile(p: string): string | null {
-  try {
-    return readFileSync(p, "utf8");
-  } catch {
-    return null;
-  }
-}
-
-function safeRealpath(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
-  }
-}
-
-function isSymlink(p: string): boolean {
-  const st = safeStat(p);
-  return !!st && st.isSymbolicLink();
-}
-
-// ---------------------------------------------------------------------------
-// Deterministic IDs and frontmatter
-// ---------------------------------------------------------------------------
-
-export function deterministicSkillId(
-  harness: string,
-  installPath: string,
-  name: string
-): string {
-  return createHash("sha256")
-    .update(`${harness}|${installPath}|${name}`)
-    .digest("hex")
-    .slice(0, 32);
-}
-
-/**
- * Parse YAML frontmatter from a SKILL.md file. Lenient: missing fields are
- * returned as null rather than throwing. Returns null when no frontmatter
- * block is present.
- */
-/**
- * Unquote a YAML scalar value read from frontmatter.
- *
- * A double-quoted value (the form our writers emit via `JSON.stringify`, which
- * is a valid YAML double-quoted flow scalar) must be *unescaped*, not merely
- * stripped of its outer quotes — otherwise a name/description containing a quote
- * or backslash (e.g. `Deploy: production "now"`) round-trips back with literal
- * `\"`/`\\` in it. JSON string-escapes are a subset of YAML double-quote
- * escapes, so `JSON.parse` decodes them faithfully; we fall back to a plain
- * strip if the value is not valid JSON. Single-quoted scalars keep the simple
- * strip (YAML single quotes only escape `''`, which our writers never emit).
- */
-function unquoteScalar(value: string): string {
-  if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
-    try {
-      return JSON.parse(value) as string;
-    } catch {
-      return value.slice(1, -1);
-    }
-  }
-  if (value.startsWith("'") && value.endsWith("'") && value.length >= 2) {
-    return value.slice(1, -1).replace(/''/g, "'");
-  }
-  return value;
-}
-
-export function parseSkillFrontmatter(
-  content: string
-): Record<string, string> | null {
-  if (typeof content !== "string") {
-    return null;
-  }
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!match) {
-    return null;
-  }
-  const fields: Record<string, string> = {};
-  for (const rawLine of match[1].split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) {
-      continue;
-    }
-    const sep = line.indexOf(":");
-    if (sep < 0) {
-      continue;
-    }
-    const key = line.slice(0, sep).trim().toLowerCase();
-    fields[key] = unquoteScalar(line.slice(sep + 1).trim());
-  }
-  return fields;
-}
-
-// ---------------------------------------------------------------------------
-// Recursive skill-file walker
-// ---------------------------------------------------------------------------
-
-/**
- * Walk a directory recursively (bounded depth) and yield every SKILL.md path.
- * Symlinks inside a pack are followed once; depth is capped to avoid runaway
- * traversal if a user has a weird layout.
- */
-export function findSkillFiles(root: string, maxDepth = 6): string[] {
-  const results: string[] = [];
-  const stack: Array<{ dir: string; depth: number }> = [
-    { dir: root, depth: 0 },
-  ];
-  while (stack.length) {
-    const { dir, depth } = stack.pop()!;
-    if (depth > maxDepth) {
-      continue;
-    }
-    for (const entry of safeReadDir(dir)) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name === "node_modules" || entry.name === ".git") {
-          continue;
-        }
-        stack.push({ dir: full, depth: depth + 1 });
-      } else if (entry.isFile() && entry.name === "SKILL.md") {
-        results.push(full);
-      }
-    }
-  }
-  return results;
-}
-
-// ---------------------------------------------------------------------------
 // Git remote helper
 // ---------------------------------------------------------------------------
 
-function deriveGitRemoteUrl(dir: string): string | null {
+async function deriveGitRemoteUrl(dir: string): Promise<string | null> {
+  // ISS-11914: `git` reads `.git/config`, which raises a macOS permission prompt
+  // inside a TCC-protected folder.
+  if (isTccProtectedPath(dir)) {
+    return null;
+  }
   try {
-    const out = execFileSync(
+    const out = await execFileNonBlocking(
       "git",
       ["-C", dir, "remote", "get-url", "origin"],
       {
@@ -503,7 +372,7 @@ async function ingestPackDir(
 ): Promise<number> {
   const real = safeRealpath(opts.installPath);
   const installKind = isSymlink(opts.installPath) ? "symlink" : "directory";
-  const remoteUrl = opts.sourceUrl || deriveGitRemoteUrl(real);
+  const remoteUrl = opts.sourceUrl || (await deriveGitRemoteUrl(real));
 
   await sink.pack({
     pack_id: opts.packId,
@@ -603,7 +472,7 @@ export async function scanGStack(
       for (let i = 0; i < 5 && !version; i++) {
         version = readGStackVersion(probe);
         if (!sourceUrl) {
-          sourceUrl = deriveGitRemoteUrl(probe);
+          sourceUrl = await deriveGitRemoteUrl(probe);
         }
         const next = path.dirname(probe);
         if (next === probe) {
@@ -679,76 +548,6 @@ function readBmadMarketplace(dir: string): { version: string | null } | null {
     /* malformed JSON — non-fatal */
   }
   return null;
-}
-
-/**
- * Parse the project-local BMad install manifest (`_bmad/_config/manifest.yaml`)
- * to extract the installed version.
- */
-function readBmadProjectManifest(
-  projectRoot: string
-): { version: string } | null {
-  const manifestPath = path.join(
-    projectRoot,
-    "_bmad",
-    "_config",
-    "manifest.yaml"
-  );
-  const content = safeReadFile(manifestPath);
-  if (!content) {
-    return null;
-  }
-  const lines = content.split(/\r?\n/);
-  let inInstallation = false;
-  for (const raw of lines) {
-    if (/^installation:\s*$/.test(raw)) {
-      inInstallation = true;
-      continue;
-    }
-    if (
-      inInstallation &&
-      /^[A-Za-z_][^:]*:/.test(raw) &&
-      !raw.startsWith(" ")
-    ) {
-      break;
-    }
-    if (inInstallation) {
-      const m = raw.match(
-        /^\s+version:\s*['"]?([0-9][0-9A-Za-z.\-+]*)['"]?\s*$/
-      );
-      if (m) {
-        return { version: m[1] };
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * Detect a BMad v6+ project install: project root has `.agents/skills/bmad-*`
- * directories with SKILL.md files.
- */
-function detectBmadProjectInstall(
-  projectRoot: string
-): { installPath: string; version: string | null } | null {
-  const skillsRoot = path.join(projectRoot, ".agents", "skills");
-  if (!safeStat(skillsRoot)) {
-    return null;
-  }
-  const hasBmadSkill = safeReadDir(skillsRoot).some(
-    (e) =>
-      (e.isDirectory() || e.isSymbolicLink()) &&
-      e.name.startsWith("bmad-") &&
-      safeStat(path.join(skillsRoot, e.name, "SKILL.md"))
-  );
-  if (!hasBmadSkill) {
-    return null;
-  }
-  const manifest = readBmadProjectManifest(projectRoot);
-  return {
-    installPath: skillsRoot,
-    version: manifest ? manifest.version : null,
-  };
 }
 
 /**
@@ -834,6 +633,11 @@ export async function scanBmad(sink: PackScanSink): Promise<ScanBmadResult> {
 
   // 2 & 3. Per-project: walk distinct sessions.cwd from the last 90 days.
   for (const projectRoot of sink.recentProjectRoots()) {
+    // ISS-11914: detecting BMad reads inside the project, which raises a macOS
+    // permission prompt in a TCC-protected folder.
+    if (isTccProtectedPath(projectRoot)) {
+      continue;
+    }
     let added = 0;
     let installedHere = false;
 
@@ -904,35 +708,12 @@ export async function scanClaudeMarketplaces(
   sink: PackScanSink
 ): Promise<ScanMarketplacesResult> {
   // Shared low-level read/parse of ~/.claude/plugins/installed_plugins.json.
-  // The pack projection collapses a marketplace bundle to ONE pack, so it only
-  // groups entries that carry a marketplace (`<name>@<marketplace>`); a plugin
-  // installed directly into the harness (null marketplace) is not a pack.
   const read = readClaudeInstalledPluginRegistry();
   if (read.status !== "ok") {
     return { installs: 0, skills: 0, marketplaces: 0 };
   }
 
-  // Group installed plugins by marketplace name.
-  const byMarketplace = new Map<
-    string,
-    Array<{ pluginName: string; installPath: string; version: string | null }>
-  >();
-  for (const entry of read.entries) {
-    if (entry.marketplace === null) {
-      continue;
-    }
-    const bucket = byMarketplace.get(entry.marketplace) ?? [];
-    bucket.push({
-      pluginName: entry.pluginName,
-      installPath: entry.installPath,
-      version: entry.version,
-    });
-    byMarketplace.set(entry.marketplace, bucket);
-  }
-
-  // Pack IDs that already have dedicated scanners — skip them here so
-  // marketplace installs of gstack or bmad-method don't get double-counted.
-  const reservedPackIds = RESERVED_PLUGIN_PACK_IDS;
+  const byMarketplace = groupInstalledPluginsByMarketplace(read.entries);
 
   const results: ScanMarketplacesResult & { plugins: number } = {
     installs: 0,
@@ -942,105 +723,20 @@ export async function scanClaudeMarketplaces(
   };
 
   for (const [marketplace, plugins] of byMarketplace.entries()) {
-    if (reservedPackIds.has(marketplace)) {
+    // Pack IDs that already have dedicated scanners — skip them here so
+    // marketplace installs of gstack or bmad-method don't get double-counted.
+    if (RESERVED_PLUGIN_PACK_IDS.has(marketplace)) {
       continue;
     }
     const sourceUrl = KNOWN_MARKETPLACE_SOURCES[marketplace] || null;
 
-    if (MARKETPLACE_BUNDLE_AS_PACK.has(marketplace)) {
-      // BUNDLED PATH: closedloop-ai and friends — the marketplace IS the
-      // pack, sub-plugins are skills.
-      const cacheRoot = path.join(
-        resolveClaudeHome(),
-        "plugins",
-        "cache",
-        marketplace
-      );
-      await sink.pack({
-        pack_id: marketplace,
-        harness: "claude",
-        install_path: cacheRoot,
-        install_kind: "directory",
-        source_url: sourceUrl,
-        version: null,
-      });
-      results.installs += 1;
-      for (const plugin of plugins) {
-        if (!safeStat(plugin.installPath)) {
-          continue;
-        }
-        const skillsDir = path.join(plugin.installPath, "skills");
-        for (const skillFile of findSkillFiles(skillsDir)) {
-          const content = safeReadFile(skillFile);
-          if (content == null) {
-            continue;
-          }
-          const meta = parseSkillFrontmatter(content) || {};
-          const dirName = path.basename(path.dirname(skillFile));
-          const name = meta.name || dirName;
-          if (!name) {
-            continue;
-          }
-          await sink.skill({
-            skill_id: deterministicSkillId("claude", cacheRoot, name),
-            pack_id: marketplace,
-            harness: "claude",
-            install_path: skillFile,
-            name,
-            version: meta.version || plugin.version || null,
-            description: meta.description || null,
-            source_url: sourceUrl,
-          });
-          results.skills += 1;
-        }
-      }
-      results.marketplaces += 1;
-      continue;
-    }
+    const arm = MARKETPLACE_BUNDLE_AS_PACK.has(marketplace)
+      ? await scanBundledMarketplace({ marketplace, plugins, sourceUrl, sink })
+      : await scanPerPluginMarketplace({ plugins, sourceUrl, sink });
 
-    // PER-PLUGIN PATH: claude-plugins-official, superpowers-marketplace, etc.
-    for (const plugin of plugins) {
-      if (!safeStat(plugin.installPath)) {
-        continue;
-      }
-      if (reservedPackIds.has(plugin.pluginName)) {
-        continue;
-      }
-      await sink.pack({
-        pack_id: plugin.pluginName,
-        harness: "claude",
-        install_path: plugin.installPath,
-        install_kind: "directory",
-        source_url: sourceUrl,
-        version: plugin.version,
-      });
-      results.installs += 1;
-      results.plugins += 1;
-      const skillsDir = path.join(plugin.installPath, "skills");
-      for (const skillFile of findSkillFiles(skillsDir)) {
-        const content = safeReadFile(skillFile);
-        if (content == null) {
-          continue;
-        }
-        const meta = parseSkillFrontmatter(content) || {};
-        const dirName = path.basename(path.dirname(skillFile));
-        const name = meta.name || dirName;
-        if (!name) {
-          continue;
-        }
-        await sink.skill({
-          skill_id: deterministicSkillId("claude", plugin.installPath, name),
-          pack_id: plugin.pluginName,
-          harness: "claude",
-          install_path: skillFile,
-          name,
-          version: meta.version || plugin.version || null,
-          description: meta.description || null,
-          source_url: sourceUrl,
-        });
-        results.skills += 1;
-      }
-    }
+    results.installs += arm.installs;
+    results.skills += arm.skills;
+    results.plugins += arm.plugins;
     results.marketplaces += 1;
   }
   return results;
@@ -1254,7 +950,7 @@ async function detectBinaryTool(
   let version: string | null = null;
   if (Array.isArray(opts.versionArgs) && opts.versionArgs.length > 0) {
     try {
-      const out = execFileSync(binaryPath, opts.versionArgs, {
+      const out = await execFileNonBlocking(binaryPath, opts.versionArgs, {
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 2000,
       });
@@ -1293,7 +989,7 @@ async function detectClaudeCodeRouter(sink: PackScanSink): Promise<boolean> {
   // Global npm install — probe via `npm ls -g` (fast, no network).
   let installed = false;
   try {
-    execFileSync(
+    await execFileNonBlocking(
       "npm",
       ["ls", "-g", "--depth=0", "@musistudio/claude-code-router"],
       { stdio: ["ignore", "pipe", "ignore"], timeout: 5000 }
@@ -1321,93 +1017,9 @@ async function detectClaudeCodeRouter(sink: PackScanSink): Promise<boolean> {
 // runCatalogDetectorAdapters
 // ---------------------------------------------------------------------------
 
-function resolveBundledCommandPackPath(): string | null {
-  const processWithResources = process as NodeJS.Process & {
-    resourcesPath?: string;
-  };
-  const candidates = [
-    processWithResources.resourcesPath
-      ? path.join(
-          processWithResources.resourcesPath,
-          "command-packs",
-          CLOSEDLOOP_WEB_COMMAND_PACK_ID
-        )
-      : null,
-    path.join(
-      process.cwd(),
-      "resources",
-      "command-packs",
-      CLOSEDLOOP_WEB_COMMAND_PACK_ID
-    ),
-    path.join(
-      process.cwd(),
-      "apps",
-      "desktop",
-      "resources",
-      "command-packs",
-      CLOSEDLOOP_WEB_COMMAND_PACK_ID
-    ),
-    path.join(
-      __dirname,
-      "..",
-      "..",
-      "resources",
-      "command-packs",
-      CLOSEDLOOP_WEB_COMMAND_PACK_ID
-    ),
-  ].filter((candidate): candidate is string => typeof candidate === "string");
-
-  for (const candidate of candidates) {
-    const manifest = path.join(candidate, "manifest.json");
-    const stat = safeStat(manifest);
-    if (stat?.isFile()) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
-function readCommandPackVersion(installPath: string): string | null {
-  const raw = safeReadFile(path.join(installPath, "manifest.json"));
-  if (!raw) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(raw) as { version?: unknown };
-    return typeof parsed.version === "number" ||
-      typeof parsed.version === "string"
-      ? String(parsed.version)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function detectClosedloopWebCommandPack(
-  sink: PackScanSink
-): Promise<boolean> {
-  const installPath = resolveBundledCommandPackPath();
-  if (!installPath) {
-    return false;
-  }
-  const version = readCommandPackVersion(installPath);
-  for (const harness of CLOSEDLOOP_WEB_COMMAND_PACK_HARNESSES) {
-    await sink.pack({
-      pack_id: CLOSEDLOOP_WEB_COMMAND_PACK_ID,
-      harness,
-      install_path: installPath,
-      install_kind: "directory",
-      source_url: "https://github.com/closedloop-ai/example-repo",
-      version,
-    });
-  }
-  return true;
-}
-
 type CatalogAdapter = [string, (sink: PackScanSink) => Promise<boolean>];
 
 const CATALOG_ADAPTERS: CatalogAdapter[] = [
-  [CLOSEDLOOP_WEB_COMMAND_PACK_ID, detectClosedloopWebCommandPack],
   ["voltagent-subagents", detectVoltagentSubagents],
   ["alirezarezvani-claude-skills", detectAlirezaSkills],
   ["superclaude", detectSuperClaude],
@@ -1438,57 +1050,6 @@ export async function runCatalogDetectorAdapters(
     }
   }
   return results;
-}
-
-// ---------------------------------------------------------------------------
-// Prune stale rows
-// ---------------------------------------------------------------------------
-
-/**
- * Tombstone rows the current scan didn't observe. Packs/skills that USED to
- * be installed are kept around with `uninstalled_at` set so the catalog can
- * surface "previously installed, used N times" badges.
- * project_pack_associations is still pruned (associations are observational).
- */
-async function pruneStaleRows(
-  db: PackScannerDb,
-  scanStartedAt: string
-): Promise<void> {
-  try {
-    await db.write((client) =>
-      client.agentPack.updateMany({
-        where: { lastSeenAt: { lt: scanStartedAt }, uninstalledAt: null },
-        data: { uninstalledAt: scanStartedAt },
-      })
-    );
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    gatewayLog.warn("pack-scanner", `tombstone agent_packs failed: ${msg}`);
-  }
-  try {
-    await db.write((client) =>
-      client.skill.updateMany({
-        where: { lastSeenAt: { lt: scanStartedAt }, uninstalledAt: null },
-        data: { uninstalledAt: scanStartedAt },
-      })
-    );
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    gatewayLog.warn("pack-scanner", `tombstone skills failed: ${msg}`);
-  }
-  try {
-    await db.write((client) =>
-      client.projectPackAssociation.deleteMany({
-        where: { lastSeenAt: { lt: scanStartedAt } },
-      })
-    );
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    gatewayLog.warn(
-      "pack-scanner",
-      `prune project_pack_associations failed: ${msg}`
-    );
-  }
 }
 
 // ---------------------------------------------------------------------------

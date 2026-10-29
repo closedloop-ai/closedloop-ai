@@ -1,5 +1,6 @@
 import type { AgentSessionUsageSummary } from "@repo/api/src/types/agent-session";
 import { useEffect, useRef, useState } from "react";
+import { isBootImportDegraded } from "../../hooks/ingest-progress-terminal";
 import {
   type IngestProgress,
   useIngestProgress,
@@ -141,20 +142,22 @@ export function resolveLocalSummaryCardsProps({
 /**
  * FEA-4128: is a first-launch local import actively populating the store? A
  * positive total with `processed < total`, or the pre-scan `preparing` phase
- * before a total is known. Matches `deriveImportState`'s `importing` in
- * `first-launch-import-banner.tsx` (the "Importing your agent history N/M"
- * banner). `null` (runtime not up / not yet polled) is treated as not importing.
+ * before a total is known. `null` (runtime not up / not yet polled) is treated
+ * as not importing.
  *
  * FEA-4156 (whitlockk): the boot-import watchdog `timedOut` state is TERMINAL — the
  * import gave up without settling, so `processed < total` stays true forever on
  * the wedged harness. Treat a timed-out import as no-longer-in-progress so the
  * summary cards resolve to their real (partial) values instead of skeletoning
  * indefinitely after the splash has already surfaced its graceful degraded state.
+ * ISS-6207 adds the second degraded terminal (a settled import whose re-drive
+ * budget was spent) through the same `isBootImportDegraded` fold, for the same
+ * reason: `processed < total` is permanent there too.
  */
 export function isLocalImportInProgress(
   ingest: IngestProgress | null
 ): boolean {
-  if (ingest === null || ingest.timedOut === true) {
+  if (ingest === null || isBootImportDegraded(ingest)) {
     return false;
   }
   const importing = ingest.total > 0 && ingest.processed < ingest.total;
@@ -211,8 +214,9 @@ export function useSessionsImportProgress(
  * query's error/loading flags in one named place instead of inline in the
  * `SessionsView` JSX.
  *
- * - `isUnavailable` — an errored read OR a not-yet-hydrated local source; never a
- *   false "no sessions" all-clear.
+ * - `isUnavailable` — a read that FAILED WITH NOTHING LOADED, a settled transient
+ *   failure, or a not-yet-hydrated local source; never a false "no sessions"
+ *   all-clear, and (ISS-7528) never an outage claim over a read that succeeded.
  * - `isSyncing` — the read is not a genuine breakage: either the local source
  *   hasn't come up yet (still initializing), OR the list read failed TRANSIENTLY
  *   (ISS-4483: the db-host child restarting mid-backfill, `isListErrorTransient`).
@@ -225,9 +229,10 @@ export function useSessionsImportProgress(
  */
 /**
  * ISS-4444 (whitlockk): is the boot import at a genuinely terminal state the poll may
- * latch off on? ONLY the two authoritative main-process signals qualify —
- * `complete` (every harness's boot import finished) or `timedOut` (the watchdog
- * gave up). Aggregate `processed >= total` is deliberately NOT terminal: it is
+ * latch off on? ONLY the authoritative main-process signals qualify — `complete`
+ * (every harness's boot import finished) or either degraded terminal (`timedOut`,
+ * the watchdog gave up; or ISS-6207's `retriesExhausted`, it settled with sources
+ * left behind). Aggregate `processed >= total` is deliberately NOT terminal: it is
  * briefly true between the staggered per-harness passes, and — critically —
  * `recordFailure` increments `quarantinedCount` AFTER a poison source's
  * `processed` has already reached `total`. Latching on the aggregate count would
@@ -236,13 +241,15 @@ export function useSessionsImportProgress(
  * interval still tears down once one is observed.
  */
 export function isImportSettled(ingest: IngestProgress): boolean {
-  return ingest.complete || ingest.timedOut === true;
+  return ingest.complete || isBootImportDegraded(ingest);
 }
 
 export function deriveSessionsAvailability({
   displayState,
   isListError,
   isListErrorTransient,
+  isListErrorTransientSource,
+  isListLoadingError,
   isListLoading,
 }: {
   displayState: SessionsDisplayState;
@@ -255,14 +262,40 @@ export function deriveSessionsAvailability({
    * pre-ISS-4483 behavior.
    */
   isListErrorTransient?: boolean;
+  /**
+   * ISS-7528: did the list read fail with NOTHING ever loaded (query-core's
+   * `isLoadingError`), as opposed to a background refetch that failed over a
+   * result the view still holds? `isError` is equally true for both — the error
+   * reducer never clears `data`, and this read runs with `keepPreviousData` — so
+   * only this flag can tell a genuine outage from a blip over a read that
+   * succeeded — a surface that claimed the outage for both told the user a
+   * breakage its own succeeded read disproves. ISS-7519 (PR #5596, still open)
+   * makes the same split on the web Sessions page; on `main` today that page
+   * still feeds the raw flag, so the two surfaces are wrong together until it
+   * lands.
+   */
+  isListLoadingError: boolean;
+  /**
+   * ISS-7528: was the settled error a db-host transient failure AT ALL, before
+   * exhaustion is folded in? A transient failure is never a genuine empty — while
+   * it is still retrying it holds the quiet reconnecting surface, and once its
+   * retries are exhausted it must fall through to the hard error card that
+   * carries the recovery action (ISS-4483 review cid 3679535437). Both need it to
+   * stay classified unavailable, which `isListErrorTransient` alone cannot do
+   * because it closes at exhaustion. Defaults to `false` for callers that cannot
+   * classify.
+   */
+  isListErrorTransientSource?: boolean;
   isListLoading: boolean;
 }): { isUnavailable: boolean; isSyncing: boolean; isTableLoading: boolean } {
   const sourceUnavailable = displayState === "unavailable";
+  const listErrorTransient = isListError && isListErrorTransient === true;
   return {
-    isUnavailable: sourceUnavailable || isListError,
-    isSyncing:
-      (sourceUnavailable && !isListError) ||
-      (isListError && isListErrorTransient === true),
+    isUnavailable:
+      sourceUnavailable ||
+      isListLoadingError ||
+      (isListError && isListErrorTransientSource === true),
+    isSyncing: (sourceUnavailable && !isListError) || listErrorTransient,
     isTableLoading: displayState === "starting" || isListLoading,
   };
 }

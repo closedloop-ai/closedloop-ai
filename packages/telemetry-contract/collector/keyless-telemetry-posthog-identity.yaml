@@ -4,7 +4,7 @@
 # PostHog's OTLP person key only after redaction and product-signal filtering.
 # Missing installation ids are left unset so older Desktop builds keep the
 # current PostHog fallback behavior.
-# Vendor this into the example-infrastructure collector config (cross-repo) after
+# Vendor this into the infrastructure collector config (cross-repo) after
 # `redaction` and `filter/product_signals` in the `traces/posthog` pipeline
 # and regenerate from @closedloop-ai/telemetry-contract on any FEA-2184
 # identity mapping change:

@@ -23,11 +23,11 @@ export function RichTextEditor({
   readOnly,
   liveblocksExtension,
   liveblocksIsReady,
+  skipEmptyRoomSeed,
   onEditorReady,
   scrollMode = "inner",
   externalToolbar,
   toolbarMode = "always",
-  mermaidEnhancementsEnabled,
   inlineImagesEnabled,
   uploadInlineImage,
   resolveInlineImages,
@@ -52,7 +52,6 @@ export function RichTextEditor({
             inlineImagesEnabled={inlineImagesEnabled}
             liveblocksExtension={liveblocksExtension}
             liveblocksIsReady={liveblocksIsReady}
-            mermaidEnhancementsEnabled={mermaidEnhancementsEnabled}
             onChange={onChange}
             onEditorReady={onEditorReady}
             onInlineImageUploadError={onInlineImageUploadError}
@@ -60,6 +59,7 @@ export function RichTextEditor({
             readOnly={readOnly}
             resolveInlineImages={resolveInlineImages}
             scrollMode={scrollMode}
+            skipEmptyRoomSeed={skipEmptyRoomSeed}
             toolbarMode={toolbarMode}
             uploadInlineImage={uploadInlineImage}
             validateInlineImageFile={validateInlineImageFile}

@@ -23,9 +23,9 @@ function buildTool(overrides: Partial<ToolItem> = {}): ToolItem {
 }
 
 const meta = {
-  title: "App Core/Agents/Session Trace Tool Row Detail",
+  title: "Composites v1.0/Agents/Detail/Session Trace Tool Row Detail",
   component: SessionTraceToolRowDetail,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     tool: buildTool({

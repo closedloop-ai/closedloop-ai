@@ -3,9 +3,9 @@ import { PrDescriptionMarkdown } from "./pr-comment-markdown";
 
 /** GitHub PR-description structure and untrusted-link/image safety matrix. */
 const meta = {
-  title: "App Core/Branches/PR Description Markdown",
+  title: "Composites v1.0/Branches/PR Comment Markdown",
   component: PrDescriptionMarkdown,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   decorators: [
     (Story) => (
       <div className="w-[640px] p-4 text-[13px]">

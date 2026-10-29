@@ -6,8 +6,8 @@
 // id still wins when present. The label is a display name, never a priceable wire
 // id — it must not leak into `tokensByModel`.
 import { describe, expect, it } from "vitest";
+import { parseClaudeTranscript } from "./parse-claude";
 import { ASSISTANT_LINE } from "./parse-claude.test-fixtures";
-import { parseClaudeTranscript } from "./parse-claude-core";
 import { extractModelSwitchLabel } from "./parse-claude-model-switch-label";
 
 // The harness wraps the label in ANSI bold: ESC[1m … ESC[22m. The parser strips

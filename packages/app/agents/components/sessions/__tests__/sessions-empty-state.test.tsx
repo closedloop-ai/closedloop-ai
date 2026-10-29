@@ -1,7 +1,12 @@
 import type { ListEmptyStateSignals } from "@repo/api/src/list-empty-state";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { SessionsEmptyState } from "../sessions-empty-state";
+import {
+  SESSIONS_CLEAR_FILTERS_LABEL,
+  SessionsEmptyState,
+} from "../sessions-empty-state";
+
+const RETRY_BUTTON_NAME = "Retry";
 
 const HYDRATED_EMPTY: ListEmptyStateSignals = {
   isUnavailable: false,
@@ -30,6 +35,34 @@ describe("SessionsEmptyState (FEA-4181)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
     expect(onClearFilters).toHaveBeenCalledTimes(1);
+  });
+
+  // ISS-11913: Branches' date-range case with "sessions" for "branches" — the
+  // same words and the same single button (Kaito, ISS-11913, 2026-10-02). Both
+  // handlers are wired so "no Clear filters" is the component's choice, not an
+  // absent prop.
+  it("filtered by the window alone offers Show all time instead of Clear filters", () => {
+    const onClearFilters = vi.fn();
+    const onShowAllTime = vi.fn();
+    render(
+      <SessionsEmptyState
+        onClearFilters={onClearFilters}
+        onShowAllTime={onShowAllTime}
+        signals={{ isUnavailable: false, hasActiveFilters: true }}
+      />
+    );
+
+    expect(screen.getByText("No matching sessions")).toBeInTheDocument();
+    expect(
+      screen.getByText("No sessions were active in the selected date range.")
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: SESSIONS_CLEAR_FILTERS_LABEL })
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show all time" }));
+    expect(onShowAllTime).toHaveBeenCalledTimes(1);
+    expect(onClearFilters).not.toHaveBeenCalled();
   });
 
   it("genuinely-empty (no rows, no filters) renders the onboarding zero-state, not a filters message", () => {
@@ -79,7 +112,7 @@ describe("SessionsEmptyState (FEA-4181)", () => {
     expect(screen.queryByText("No matching sessions")).not.toBeInTheDocument();
 
     // ISS-4534: with no recovery affordance wired, the card still has one action.
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    fireEvent.click(screen.getByRole("button", { name: RETRY_BUTTON_NAME }));
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
@@ -105,7 +138,7 @@ describe("SessionsEmptyState (FEA-4181)", () => {
       screen.queryByText("Couldn't load sessions")
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Retry" })
+      screen.queryByRole("button", { name: RETRY_BUTTON_NAME })
     ).not.toBeInTheDocument();
     expect(onRetry).not.toHaveBeenCalled();
   });
@@ -133,7 +166,7 @@ describe("SessionsEmptyState (FEA-4181)", () => {
     expect(recovery).toHaveAttribute("href", "/sessions");
     // ...and the redundant standalone Retry is gone (superset, not a second button).
     expect(
-      screen.queryByRole("button", { name: "Retry" })
+      screen.queryByRole("button", { name: RETRY_BUTTON_NAME })
     ).not.toBeInTheDocument();
   });
 
@@ -151,7 +184,7 @@ describe("SessionsEmptyState (FEA-4181)", () => {
       screen.getByRole("link", { name: "Clear filters and reload" })
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Retry" })
+      screen.queryByRole("button", { name: RETRY_BUTTON_NAME })
     ).not.toBeInTheDocument();
   });
 

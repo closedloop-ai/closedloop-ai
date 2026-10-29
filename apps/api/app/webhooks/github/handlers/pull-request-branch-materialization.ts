@@ -5,6 +5,7 @@ import {
 } from "@repo/api/src/types/artifact";
 import { normalizeRepoFullName } from "@repo/api/src/types/branch";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import { mapPullRequestAuthor } from "@repo/github/pull-request-author";
 import { log } from "@repo/observability/log";
 import { branchService } from "@/app/branches/branch-service";
 import type { GitHubWebhookObservationContext } from "@/lib/github/github-webhook-observation";
@@ -56,6 +57,8 @@ export async function materializeWebhookPullRequestBranch(
     organizationId: input.organizationId,
     repositoryFullName: headAuthority.repository.fullName,
     projectId: input.artifact.projectId,
+    // ISS-10995: the source document's project, so a FILL — see `push-handler`.
+    projectFillOnly: true,
     repositoryId: headMatchesBase ? input.repo.id : null,
     pullRequestRepositoryId: input.repo.id,
     pullRequestBaseRepositoryFullName: input.repo.fullName,
@@ -88,6 +91,7 @@ export async function materializeWebhookPullRequestBranch(
       closedAt: dateOrNull(input.pullRequest.closed_at),
       mergedAt: dateOrNull(input.pullRequest.merged_at),
       mergeCommitSha: input.pullRequest.merge_commit_sha ?? null,
+      ...mapPullRequestAuthor(input.pullRequest.user),
       headRepositoryObservation: observation,
     },
   });

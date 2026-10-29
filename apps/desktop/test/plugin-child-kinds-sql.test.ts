@@ -14,11 +14,11 @@
  * order — is load-bearing rather than cosmetic.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   AgentComponentKind,
   PLUGIN_CHILD_KINDS,
 } from "@repo/api/src/types/agent-component";
+import { test } from "vitest";
 import { PLUGIN_CHILD_KINDS_SQL_LIST } from "../src/main/database/db-helpers.js";
 
 test("renders every plugin child kind as a quoted SQL literal, in the constant's order", () => {

@@ -1,6 +1,7 @@
 "use client";
 
 import type { ApiResult } from "@repo/api/src/types/common";
+import { listRequestUrl } from "@repo/api/src/types/list-query-request-params";
 import type { Tag } from "@repo/api/src/types/tag";
 import { TagColor } from "@repo/api/src/types/tag";
 
@@ -33,7 +34,19 @@ export type FixtureRoute = {
   respond: (context: FixtureRequestContext) => unknown | Promise<unknown>;
   /** Optional HTTP status for exercising query error states in tests. */
   status?: number;
+  /**
+   * Message carried by the failure envelope when `status` is not 2xx.
+   *
+   * Set it when the assertion is that a surface renders the SERVER's own
+   * message rather than its local fallback copy: without this the envelope
+   * always said the same generic thing, so a surface that swallowed the server
+   * message and substituted its own was indistinguishable from one that
+   * forwarded it.
+   */
+  error?: string;
 };
+
+const DEFAULT_FIXTURE_ERROR = "Fixture request failed";
 
 export function createFixtureFetch(
   routes: FixtureRoute[] = DEFAULT_TAG_ROUTES
@@ -49,7 +62,9 @@ export function createFixtureFetch(
       ? await route.respond({
           pathname,
           search: url.search,
-          searchParams: url.searchParams,
+          // PRD-721: a list route compiles `listQuery` into its legacy params
+          // before it reads them, so a fixture standing in for one does too.
+          searchParams: listRequestUrl(url).searchParams,
           method,
           body,
         })
@@ -57,16 +72,37 @@ export function createFixtureFetch(
     return jsonResponse(
       status >= 200 && status < 300
         ? { success: true, data }
-        : { success: false, error: "Fixture request failed" },
+        : { success: false, error: route?.error ?? DEFAULT_FIXTURE_ERROR },
       status
     );
   };
 }
 
+/**
+ * GET paths whose response is a LIST, so an unregistered route must default to
+ * `[]` rather than `{}`. An array-consuming hook that receives `{}` passes its
+ * `if (!data) return` guard and then throws on iteration — the failure is
+ * timing-dependent, because it only appears once the query actually resolves,
+ * which under the sweep depends on how long the rest of the suite runs.
+ *
+ * `/projects` was added after exactly that: `useSessionProjectNameResolver`
+ * iterates `useProjects()`'s data, and `SessionsActiveFiltersBar`'s story began
+ * failing with "projects is not iterable" only when an unrelated story made the
+ * suite run long enough for its pending roster read to settle.
+ */
+const LIST_READ_PATH_SUFFIXES = [
+  "/trace-comments",
+  "/users",
+  "/projects",
+  "/favorites",
+  "/custom-fields",
+  "/tags",
+];
+
 function defaultFixtureData(method: string, pathname: string): unknown {
   if (
     method === "GET" &&
-    (pathname.endsWith("/trace-comments") || pathname.endsWith("/users"))
+    LIST_READ_PATH_SUFFIXES.some((suffix) => pathname.endsWith(suffix))
   ) {
     // List reads default to an empty array so array-consuming hooks (e.g.
     // useOrganizationUsers for @-mention resolution, FEA-3490) never receive a

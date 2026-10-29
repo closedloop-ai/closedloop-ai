@@ -3,12 +3,6 @@ import {
   DOCUMENT_TYPE_INPUT_OPTIONS as SHARED_DOCUMENT_TYPE_INPUT_OPTIONS,
   DOCUMENT_TYPE_OPTIONS as SHARED_DOCUMENT_TYPE_OPTIONS,
   ISSUE_STATUS_OPTIONS as SHARED_ISSUE_STATUS_OPTIONS,
-  MAX_DOCUMENT_VERSION_INLINE_EXPANDED_CONTENT_CHARS as SHARED_MAX_DOCUMENT_INLINE_EXPANDED_CONTENT_CHARS,
-  MAX_DOCUMENT_VERSION_INLINE_IMAGE_ALT_TEXT_CHARS as SHARED_MAX_DOCUMENT_INLINE_IMAGE_ALT_TEXT_CHARS,
-  MAX_DOCUMENT_VERSION_INLINE_IMAGE_FILENAME_CHARS as SHARED_MAX_DOCUMENT_INLINE_IMAGE_FILENAME_CHARS,
-  MAX_DOCUMENT_VERSION_INLINE_IMAGE_PLACEHOLDER_CHARS as SHARED_MAX_DOCUMENT_INLINE_IMAGE_PLACEHOLDER_CHARS,
-  MAX_DOCUMENT_VERSION_INLINE_IMAGES as SHARED_MAX_DOCUMENT_INLINE_IMAGES,
-  MAX_CREATE_DOCUMENT_VERSION_REQUEST_BODY_BYTES as SHARED_MAX_DOCUMENT_INLINE_REQUEST_BODY_BYTES,
   TERMINAL_DOCUMENT_STATUSES as SHARED_TERMINAL_DOCUMENT_STATUSES,
   TERMINAL_ISSUE_STATUSES as SHARED_TERMINAL_ISSUE_STATUSES,
   ChecksStatus as SharedChecksStatus,
@@ -24,19 +18,36 @@ import {
   artifactRepositoryEntrySchema as sharedArtifactRepositoryEntrySchema,
   artifactRepositorySnapshotSchema as sharedArtifactRepositorySnapshotSchema,
   fallbackStatusForSubtype as sharedFallbackStatusForSubtype,
+  isPrimaryRepoObserved as sharedIsPrimaryRepoObserved,
+  isSnapshotCorrectable as sharedIsSnapshotCorrectable,
   isTerminalStatusForSubtype as sharedIsTerminalStatusForSubtype,
   normalizeDocumentType as sharedNormalizeDocumentType,
+  snapshotSourceSchema as sharedSnapshotSourceSchema,
   statusOptionsForSubtype as sharedStatusOptionsForSubtype,
 } from "@closedloop-ai/loops-api/document";
 import { z } from "zod";
+import type { ArtifactStatusEditSurface } from "./artifact-status-contract.js";
+import type { BranchProductEligibility } from "./branch-product-eligibility.ts";
 import type { Priority } from "./common.js";
+import {
+  CreateDocumentErrorCode as sharedCreateDocumentErrorCode,
+  MAX_CREATE_DOCUMENT_INLINE_EXPANDED_CONTENT_CHARS as sharedMaxCreateDocumentInlineExpandedContentChars,
+  MAX_CREATE_DOCUMENT_INLINE_IMAGE_ALT_TEXT_CHARS as sharedMaxCreateDocumentInlineImageAltTextChars,
+  MAX_CREATE_DOCUMENT_INLINE_IMAGE_FILENAME_CHARS as sharedMaxCreateDocumentInlineImageFilenameChars,
+  MAX_CREATE_DOCUMENT_INLINE_IMAGE_PLACEHOLDER_CHARS as sharedMaxCreateDocumentInlineImagePlaceholderChars,
+  MAX_CREATE_DOCUMENT_INLINE_IMAGE_REQUEST_BODY_BYTES as sharedMaxCreateDocumentInlineImageRequestBodyBytes,
+  MAX_CREATE_DOCUMENT_INLINE_IMAGES as sharedMaxCreateDocumentInlineImages,
+  SourceLinkedPlanCreateErrorCode as sharedSourceLinkedPlanCreateErrorCode,
+  SourceLinkedPlanOutcome as sharedSourceLinkedPlanOutcome,
+  SourceLinkedPlanPolicy as sharedSourceLinkedPlanPolicy,
+  sourceLinkedPlanPolicySchema as sharedSourceLinkedPlanPolicySchema,
+} from "./create-document.ts";
 import type { CustomFieldValueDetail } from "./custom-field.js";
-import type {
-  CreateDocumentVersionInlineImageInput,
-  CreatedDocumentVersionInlineImage,
-  DocumentVersion,
-} from "./document-version.js";
+import type { DocumentStatusMutationCapability } from "./document-status-mutation.ts";
+import type { DocumentVersion } from "./document-version.js";
+import { TABLE_PAGE_SIZE_MAX } from "./table-page-size-limits.ts";
 import type { TagSummary } from "./tag.js";
+import type { ProjectTeamOption } from "./teams.js";
 import type { BasicUser } from "./user.js";
 
 export const artifactRepositoryEntrySchema =
@@ -64,6 +75,9 @@ export const PullRequestState = SharedPullRequestState;
 export const RepositoryRole = SharedRepositoryRole;
 export const ReviewDecision = SharedReviewDecision;
 export const SnapshotSource = SharedSnapshotSource;
+export const snapshotSourceSchema = sharedSnapshotSourceSchema;
+export const isPrimaryRepoObserved = sharedIsPrimaryRepoObserved;
+export const isSnapshotCorrectable = sharedIsSnapshotCorrectable;
 
 export type ArtifactRepositoryEntry = z.infer<
   typeof artifactRepositoryEntrySchema
@@ -113,6 +127,46 @@ export type ReviewDecision =
 export type SnapshotSource =
   (typeof SnapshotSource)[keyof typeof SnapshotSource];
 
+export type {
+  CreateDocumentInlineImageInput,
+  CreateDocumentInput,
+  CreateDocumentRequestBody,
+  CreateDocumentResponse,
+  CreatedDocumentInlineImage,
+  RepositorySelectionInput,
+  SourceLinkedPlanAmbiguousPlan,
+  SourceLinkedPlanAmbiguousResponse,
+  SourceLinkedPlanResult,
+} from "./create-document.ts";
+
+export const CreateDocumentErrorCode = sharedCreateDocumentErrorCode;
+export const MAX_CREATE_DOCUMENT_INLINE_EXPANDED_CONTENT_CHARS =
+  sharedMaxCreateDocumentInlineExpandedContentChars;
+export const MAX_CREATE_DOCUMENT_INLINE_IMAGE_ALT_TEXT_CHARS =
+  sharedMaxCreateDocumentInlineImageAltTextChars;
+export const MAX_CREATE_DOCUMENT_INLINE_IMAGE_FILENAME_CHARS =
+  sharedMaxCreateDocumentInlineImageFilenameChars;
+export const MAX_CREATE_DOCUMENT_INLINE_IMAGE_PLACEHOLDER_CHARS =
+  sharedMaxCreateDocumentInlineImagePlaceholderChars;
+export const MAX_CREATE_DOCUMENT_INLINE_IMAGE_REQUEST_BODY_BYTES =
+  sharedMaxCreateDocumentInlineImageRequestBodyBytes;
+export const MAX_CREATE_DOCUMENT_INLINE_IMAGES =
+  sharedMaxCreateDocumentInlineImages;
+export const SourceLinkedPlanCreateErrorCode =
+  sharedSourceLinkedPlanCreateErrorCode;
+export const SourceLinkedPlanOutcome = sharedSourceLinkedPlanOutcome;
+export const SourceLinkedPlanPolicy = sharedSourceLinkedPlanPolicy;
+export const sourceLinkedPlanPolicySchema = sharedSourceLinkedPlanPolicySchema;
+
+export type CreateDocumentErrorCode =
+  (typeof CreateDocumentErrorCode)[keyof typeof CreateDocumentErrorCode];
+export type SourceLinkedPlanCreateErrorCode =
+  (typeof SourceLinkedPlanCreateErrorCode)[keyof typeof SourceLinkedPlanCreateErrorCode];
+export type SourceLinkedPlanOutcome =
+  (typeof SourceLinkedPlanOutcome)[keyof typeof SourceLinkedPlanOutcome];
+export type SourceLinkedPlanPolicy =
+  (typeof SourceLinkedPlanPolicy)[keyof typeof SourceLinkedPlanPolicy];
+
 export type PullRequestInfo = {
   id: string;
   number: number;
@@ -127,40 +181,44 @@ export type PullRequestInfo = {
   reviewDecision: ReviewDecision | null;
   externalLinkId: string | null;
   repoFullName: string | null;
+  /** Eligibility inherited from the owning Branch Artifact when projected. */
+  productEligibility?: BranchProductEligibility;
+  /** True only when the API verified a provider PR compatibility fallback. */
+  hasCompatibilityProviderFallback?: boolean;
 };
 
+export const DOCUMENT_ROUTE_PREFIX = "documents";
+export const ISSUES_LIST_ROUTE_SEGMENT = "issues";
+export const RETIRED_ISSUES_ROUTE_SEGMENT = "features";
+
 /**
- * Maps document types to their URL route prefixes.
- * Single source of truth for type->route mapping used by:
- * - apps/app/lib/artifact-navigation.ts (frontend navigation)
- * - apps/app/app/(authenticated)/artifacts/[slug]/page.tsx (redirect fallback)
- * - packages/collaboration/room-metadata.ts (Liveblocks notification URLs)
+ * Maps document types to their detail route prefix. Every navigable document
+ * opens at `/documents/:slug` (ISS-12855, PRD-799 G-01); Template has no detail
+ * route.
  */
 export const TYPE_ROUTE_PREFIX: Partial<Record<DocumentType, string>> = {
-  [DocumentType.Prd]: "prds",
-  [DocumentType.ImplementationPlan]: "implementation-plans",
-  // FEA-4137: the Feature artifact is now "Issue" and routes under /issues/. The
-  // legacy /features/[slug] route is retained as a redirect (deep-link and query
-  // params preserved) so old links keep working during the migration.
-  [DocumentType.Feature]: "issues",
-  [DocumentType.Doc]: "documents",
+  [DocumentType.Prd]: DOCUMENT_ROUTE_PREFIX,
+  [DocumentType.ImplementationPlan]: DOCUMENT_ROUTE_PREFIX,
+  [DocumentType.Feature]: DOCUMENT_ROUTE_PREFIX,
+  [DocumentType.Doc]: DOCUMENT_ROUTE_PREFIX,
 };
 
 /**
- * FEA-4137: retired route-path aliases per document type, kept so old deep links
- * keep resolving during the Feature → Issue migration. The Feature detail route
- * moved from `/features/` to `/issues/`; `/features/[slug]` now redirects to the
- * `/issues/` equivalent (ISS-4570: 308 once the path carries its org prefix, 302
- * while it must still inject the caller's — `apps/app/lib/app-route-redirects.ts`
- * owns that choice). Single source of truth for the legacy path — the
- * redirect route and the GitHub artifact-reference URL parser both read it, so a
- * future prefix rename only edits this map. Do NOT drop an entry without human
- * approval (external bookmarks and PR bodies still carry the legacy path).
+ * Retired detail-route prefixes per document type. Redirected by
+ * `apps/app/lib/legacy-document-route-redirects.ts`, parsed by
+ * `packages/github/artifact-reference-parser.ts`, and still matched by the
+ * Desktop route table. `issues` is also the live Issues LIST segment. Removing
+ * an entry needs human approval.
  */
 export const LEGACY_TYPE_ROUTE_PREFIXES: Partial<
   Record<DocumentType, readonly string[]>
 > = {
-  [DocumentType.Feature]: ["features"],
+  [DocumentType.Prd]: ["prds"],
+  [DocumentType.ImplementationPlan]: ["implementation-plans"],
+  [DocumentType.Feature]: [
+    ISSUES_LIST_ROUTE_SEGMENT,
+    RETIRED_ISSUES_ROUTE_SEGMENT,
+  ],
 };
 
 /**
@@ -179,6 +237,13 @@ export function getRoutePrefixForType(type: string): string | null {
  * snapshot is empty (`source: 'none'`). Consumers that only need the single
  * primary repo (chat panel local-fs lookup, PR ordering, plan-editor primary
  * PR selection) use this helper rather than reaching into `repositories[0]`.
+ *
+ * A returned entry is NOT necessarily a measured fact: rows created before
+ * ISS-8164 — and any row whose artifact never got a branch link — can carry a
+ * project-level default that names a repository the work never touched. Those
+ * rows are disclosed, not repaired, so a repo-scoped rollup or blast-radius
+ * query must filter on {@link isPrimaryRepoObserved} rather than trusting this
+ * `fullName`.
  */
 export function getPrimaryRepoFromSnapshot(
   snapshot: ArtifactRepositorySnapshot | null | undefined
@@ -199,7 +264,17 @@ export type Document = {
   slug: string;
   fileName: string | null;
   status: ArtifactStatus;
-  priority: Priority;
+  /**
+   * ISS-9665: `null` means the artifact has NO priority — a real state, not a
+   * missing read. `Artifact.priority` has been nullable since the artifact-parent
+   * refactor, but `toDocument` used to fold `null` into `MEDIUM`, so one artifact
+   * serialized `MEDIUM` here and `null` on `/search`, `/artifact-links/resolved`,
+   * and the project tree. `null` is emitted rather than the key omitted because
+   * this is a REQUIRED response field older clients already read positionally;
+   * dropping it would make "unset" indistinguishable from "this build is too old
+   * to send a priority".
+   */
+  priority: Priority | null;
   latestVersion: number;
   createdById: string;
   /** Original artifact creator summary. Null when the creator record is unavailable. */
@@ -211,11 +286,14 @@ export type Document = {
   approverId: string | null;
   approver: BasicUser | null;
   /**
-   * Immutable per-document record of the repositories this artifact was
-   * created against. Populated server-side at creation time and never
-   * editable through `PATCH /documents/:id`. Always present post-backfill
-   * (PLN-602) — documents without any resolved repos carry `source: 'none'`
-   * with an empty `repositories` array.
+   * Server-owned per-document record of the repositories this artifact belongs
+   * to. Populated at creation and never editable through
+   * `PATCH /documents/:id`; the one post-create writer is the ISS-8164
+   * reconcile, which replaces a never-observed snapshot with the repository a
+   * linked branch resolves. Always present post-backfill (PLN-602) — documents
+   * without any resolved repos carry `source: 'none'` with an empty
+   * `repositories` array. Read {@link isPrimaryRepoObserved} before treating a
+   * `fullName` here as a measured fact.
    */
   repositorySnapshot: ArtifactRepositorySnapshot;
   templateForType: DocumentType | null;
@@ -228,10 +306,10 @@ export type DocumentWithProject = Document & {
   project?: {
     id: string;
     name: string;
-    teams?: { id: string; name: string }[];
+    teams?: ProjectTeamOption[];
   } | null;
-  /** The latest generation status for this document. Omitted when no generation status is available. */
-  generationStatus?: GenerationStatus;
+  /** Server-computed status-write contract for this document's subtype. Omitted by older API deploys during version skew. */
+  statusMutation?: DocumentStatusMutationCapability;
   /** Custom field values attached to this document. Omitted when not requested. */
   customFields?: CustomFieldValueDetail[];
   tags?: TagSummary[];
@@ -249,6 +327,8 @@ export type DocumentDetail = DocumentWithProject & {
 };
 
 export type FindDocumentsOptions = {
+  /** Exact complete cohort; summary readers bound IDs per request. */
+  artifactIds?: string[];
   /**
    * Accepted request-side document-type filter: the persisted
    * {@link DocumentType} superset plus the `ISSUE` alias ({@link DocumentTypeInput},
@@ -259,12 +339,15 @@ export type FindDocumentsOptions = {
    * alias never becomes a `subtype` filter.
    */
   type?: DocumentTypeInput;
+  /** Optional union of artifact subtypes; repeated `types` query parameters. */
+  types?: readonly DocumentTypeInput[];
   projectId?: string;
   assigneeId?: string;
   /**
    * When true, return only project-less (org-level / evergreen) documents —
-   * those with `projectId === null`. Used by the org-level Documents index
-   * (FEA-4140), which lists DOC artifacts that are not attached to any project.
+   * those with `projectId === null`. Kept for API callers; the org Documents
+   * index stopped sending it in ISS-12858 (PRD-799 G-04: project membership
+   * never removes a document from the global list).
    * Mutually exclusive with `projectId`: passing a concrete `projectId` already
    * scopes to that project, so this flag only applies when no project is given.
    */
@@ -282,8 +365,8 @@ export type FindDocumentsOptions = {
   limit?: number;
   /**
    * Zero-based offset for paging (FEA-4373). Only honored alongside `limit`
-   * (an offset into an unbounded result is meaningless). Clamped to
-   * [0, {@link DOCUMENT_LIST_MAX_OFFSET}].
+   * (an offset into an unbounded result is meaningless). Floored at 0 and
+   * otherwise uncapped since ISS-11161 — see {@link DOCUMENT_LIST_MAX_OFFSET}.
    */
   offset?: number;
   /**
@@ -324,6 +407,72 @@ export type FindDocumentsOptions = {
    * that HAVE a related row.
    */
   includeArchivedProjects?: boolean;
+  /**
+   * Free-text narrowing on the artifact's own `title` and `slug`, executed in
+   * the database over the WHOLE matching population rather than over a page a
+   * client happens to hold (ISS-9724).
+   *
+   * **Matching is case-insensitive SUBSTRING, and that is a decision, not a
+   * default.** It is the semantics the Documents index search box already has —
+   * `matchesFilter` in `@repo/app/documents/lib/document-filter` is a
+   * `toLowerCase().includes()` over exactly these two fields — so moving the
+   * search server-side answers the same question the reader is already asking.
+   * The repo's other matching semantics, the `search_document` FTS projection
+   * behind `GET /search`, was considered and NOT reused here for two reasons.
+   * (1) It is lexeme-based: it would stop matching the mid-word fragments a
+   * substring box matches today (`"eploy"` finds `"deployment"`; a tsquery
+   * cannot), so adopting it would silently change what this surface finds.
+   * (2) It cannot compose into this list predicate without giving up the very
+   * property the ticket is about — its candidate query is itself paged behind a
+   * keyset cursor, so folding it in would mean either an unbounded id
+   * materialization or a truncated id set, and a truncated id set IS a
+   * page-scoped search wearing a server-side costume.
+   * The `SEMANTICS_PROBES` cases in
+   * `apps/api/app/documents/document-list-search.integration.test.ts` are what
+   * stop the two predicates this surface now has — the client filter and this
+   * one — from drifting apart: they ask both the same terms over one corpus and
+   * require the same answer.
+   *
+   * Additive and opt-in: omission means no text narrowing at all, the
+   * long-standing behavior every existing consumer (pickers, MCP,
+   * version-skewed API clients) reads. A blank or whitespace-only value is
+   * REJECTED at the boundary rather than treated as omission, so a search that
+   * cannot narrow anything can never be silently dropped while the box claims
+   * otherwise. Capped at {@link DOCUMENT_LIST_MAX_SEARCH_LENGTH} characters.
+   */
+  search?: string;
+  /**
+   * Lifecycle-status narrowing, applied as an `IN` predicate on
+   * `Artifact.status` IN THE DATABASE rather than over rows a client already
+   * holds (ISS-6778).
+   *
+   * **This is the whole ticket: without it the status question can only be
+   * asked after the rows arrive, so the answer is bounded by the page rather
+   * than by the population.** `symphony-nightly-apply` logged "no TODO issues to
+   * sweep" on every run while 25 tagged TODOs waited, because the first 100 rows
+   * of a 1,144-artifact project held none of them — they sat at positions
+   * 158-394. The My Tasks board has the same defect today at a larger scale: an
+   * operator with 1,093 assigned artifacts inside the 90-day window spends its
+   * entire {@link DOCUMENT_LIST_MAX_LIMIT}-row budget on rows it is about to
+   * discard, to surface the 48 that are `TODO`.
+   *
+   * **Values are matched literally against the stored column, and the requested
+   * `type` does not restrict which are accepted.** `Artifact.status` is a
+   * freeform String carrying two disjoint vocabularies selected by `subtype`
+   * ({@link statusOptionsForSubtype}), and off-vocabulary rows demonstrably
+   * exist — a FEATURE carrying the {@link DocumentStatus} member `OBSOLETE` is
+   * the live example {@link fallbackStatusForSubtype} documents, and the API
+   * still returns it raw. Refusing `type=FEATURE&status=OBSOLETE` would make
+   * exactly those rows unreachable through the filter that exists to find them,
+   * so a combination with no matching rows returns an empty page rather than a
+   * 400. A value outside BOTH vocabularies is still rejected at the boundary, so
+   * a typo stays loud.
+   *
+   * Additive and opt-in: omission means no status narrowing at all, the
+   * long-standing behavior every existing consumer (Documents index, pickers,
+   * MCP, version-skewed API clients) reads.
+   */
+  status?: readonly ArtifactStatus[];
 };
 
 /**
@@ -349,72 +498,6 @@ export type DocumentListPageParams = FindDocumentsOptions & {
 };
 
 /**
- * Client-supplied repository selection used to build the document's
- * `repositorySnapshot` at creation time (PLN-602). When present, the server
- * assembles a `loop_selection` snapshot from this input. When absent the
- * snapshot falls through to project defaults. Branch/ref are optional —
- * projects do not pin branches by default.
- */
-export type RepositorySelectionInput = {
-  primary: { fullName: string; branch?: string | null };
-  additional?: Array<{ fullName: string; branch?: string | null }>;
-};
-
-export type CreateDocumentInput = {
-  /**
-   * Owning project. Optional for org-level artifacts — a generic Document
-   * (DOC) or a Template — which carry no project (FEA-1749/FEA-4345). Required
-   * for project-bound subtypes (PRD/IMPLEMENTATION_PLAN/FEATURE). Because this
-   * shared type serves both org-level and project-bound creates it is typed
-   * optional; the "required for project-bound types" rule is enforced at
-   * runtime by BOTH the create validator refine AND the service-layer guard in
-   * `createDocumentRecord` (via {@link isProjectOptionalDocumentType}), so a
-   * direct service caller cannot bypass the check the validator would apply on
-   * the HTTP path.
-   */
-  projectId?: string;
-  sourceId?: string;
-  /**
-   * Accepted request-side document type: the persisted {@link DocumentType}
-   * superset plus the `ISSUE` alias ({@link DocumentTypeInput}, ISS-4397). A
-   * typed caller (e.g. `useCreateDocument`) may pass `ISSUE` or `FEATURE`; both
-   * create FEATURE-typed artifacts. Normalized to a persisted
-   * {@link DocumentType} at the API/MCP boundary ({@link normalizeDocumentType}) —
-   * and defensively re-normalized in `createDocumentRecord` for the in-code
-   * service callers — so the alias never persists as `Artifact.subtype`.
-   */
-  type: DocumentTypeInput;
-  title: string;
-  fileName?: string;
-  approverId?: string | null;
-  status?: ArtifactStatus;
-  priority?: Priority;
-  dueDate?: Date | null;
-  content: string;
-  assigneeId?: string | null;
-  templateForType?: DocumentType | null;
-  /**
-   * Explicit per-document repository selection (e.g. the user picked these in
-   * the Create-Document modal). Accepted by the client validator; the server
-   * builds a `loop_selection` snapshot from it. See PLN-602.
-   */
-  repositorySelection?: RepositorySelectionInput;
-};
-
-export const MAX_CREATE_DOCUMENT_INLINE_IMAGES =
-  SHARED_MAX_DOCUMENT_INLINE_IMAGES;
-export const MAX_CREATE_DOCUMENT_INLINE_IMAGE_FILENAME_CHARS =
-  SHARED_MAX_DOCUMENT_INLINE_IMAGE_FILENAME_CHARS;
-export const MAX_CREATE_DOCUMENT_INLINE_IMAGE_PLACEHOLDER_CHARS =
-  SHARED_MAX_DOCUMENT_INLINE_IMAGE_PLACEHOLDER_CHARS;
-export const MAX_CREATE_DOCUMENT_INLINE_IMAGE_ALT_TEXT_CHARS =
-  SHARED_MAX_DOCUMENT_INLINE_IMAGE_ALT_TEXT_CHARS;
-export const MAX_CREATE_DOCUMENT_INLINE_EXPANDED_CONTENT_CHARS =
-  SHARED_MAX_DOCUMENT_INLINE_EXPANDED_CONTENT_CHARS;
-export const MAX_CREATE_DOCUMENT_INLINE_IMAGE_REQUEST_BODY_BYTES =
-  SHARED_MAX_DOCUMENT_INLINE_REQUEST_BODY_BYTES;
-
-/**
  * Page size the My Tasks board requests from GET /documents (FEA-4373). The
  * board renders one row/card per assigned artifact, so a very large set could
  * crash it; it passes this as an explicit `limit` to bound its own fetch. It is
@@ -427,9 +510,40 @@ export const DOCUMENT_LIST_DEFAULT_LIMIT = 200;
 /**
  * Hard ceiling on GET /documents result size (FEA-4373). A caller-supplied
  * `limit` is clamped to this; the fetch can never exceed it in one page.
+ *
+ * ISS-9724: DERIVED from {@link TABLE_PAGE_SIZE_MAX}, the largest rung the
+ * shared rows-per-page ladder offers, rather than written out. It was a bare
+ * `500` that happened to agree; the same coincidence in Sessions and Branches
+ * is what ISS-9692 had to repair, because a ladder that grows past a
+ * hand-written cap offers a page size the endpoint answers with a 400.
+ * `apps/api/__tests__/unit/list-page-size-caps.test.ts` drives the real
+ * validator at the ladder's largest rung, so the two cannot part again.
  */
-export const DOCUMENT_LIST_MAX_LIMIT = 500;
-/** Upper bound on the accepted `offset` (FEA-4373), matching the Branches list. */
+export const DOCUMENT_LIST_MAX_LIMIT = TABLE_PAGE_SIZE_MAX;
+/**
+ * Longest accepted {@link FindDocumentsOptions.search} term (ISS-9724), bounding
+ * the `ILIKE` pattern the predicate compiles to. Far past any real title or
+ * slug, so it rejects only a term that was never going to match anything.
+ *
+ * The Branches list happens to bound its own `search` at the same number, but
+ * this deliberately does NOT claim to be kept level with it: nothing enforces
+ * that, and an unenforced "these stay in step" comment is the drift the sibling
+ * {@link DOCUMENT_LIST_MAX_LIMIT} two lines up exists to demonstrate. Making the
+ * two one declaration would mean reaching into the Branches contract, which this
+ * ticket has no cause to touch.
+ */
+export const DOCUMENT_LIST_MAX_SEARCH_LENGTH = 200;
+/**
+ * The deepest `offset` EVERY deployed `GET /documents` accepts (FEA-4373).
+ *
+ * ISS-11161: the endpoint no longer rejects past it. A deep offset costs a scan
+ * bounded by the matching population, which the endpoint's own unbounded arm
+ * already reads in full, so the ceiling protected nothing, while refusing past
+ * it pushed the MCP `list-documents` tool onto whole-corpus reads for every
+ * deep page. An API older than that change still 400s past this value, so a
+ * client that may meet one (the web pagers, the MCP tool's fallback) treats
+ * this as the skew-safe ceiling.
+ */
 export const DOCUMENT_LIST_MAX_OFFSET = 10_000;
 /**
  * The recency window, in days, that the My Tasks board REQUESTS once its
@@ -467,43 +581,57 @@ export type DocumentListRecency =
 /** Accepted `recencyDays` values: a day count, or the "all" opt-out. */
 export type DocumentListRecencyDays = number | DocumentListRecency;
 
-export const CreateDocumentErrorCode = {
-  DocumentCreateFailed: "document_create_failed",
-  DuplicateInlineImagePlaceholder: "duplicate_inline_image_placeholder",
-  ExpandedContentTooLarge: "expanded_inline_image_content_too_large",
-  InlineImageCreationFailed: "inline_image_creation_failed",
-  MissingInlineImagePlaceholder: "missing_inline_image_placeholder",
-  OverlappingInlineImagePlaceholder: "overlapping_inline_image_placeholder",
-  RequestBodyTooLarge: "create_document_inline_images_request_too_large",
-  VersionContentUpdateFailed: "document_initial_version_update_failed",
-} as const;
-export type CreateDocumentErrorCode =
-  (typeof CreateDocumentErrorCode)[keyof typeof CreateDocumentErrorCode];
-
-export type CreateDocumentInlineImageInput =
-  CreateDocumentVersionInlineImageInput;
-export type CreatedDocumentInlineImage = Pick<
-  CreatedDocumentVersionInlineImage,
-  "attachmentId" | "attachmentRef" | "markdownImage" | "placeholder"
->;
-
-export type CreateDocumentRequestBody = CreateDocumentInput & {
-  inlineImages?: CreateDocumentInlineImageInput[];
-};
-
-export type CreateDocumentResponse = Document & {
-  inlineImages?: CreatedDocumentInlineImage[];
-  versionContent?: string;
-};
-
 export type UpdateDocumentInput = {
   id: string;
   title?: string;
   fileName?: string;
-  projectId?: string;
+  /**
+   * `null` clears the project; omitting the key leaves it untouched
+   * (ISS-12858, PRD-799 G-04).
+   */
+  projectId?: string | null;
   approverId?: string | null;
   status?: ArtifactStatus;
-  priority?: Priority;
+  /**
+   * Which surface this write was made from, recorded on the activity receipt
+   * (ISS-9436) and counted by the priority telemetry event (ISS-9443). One
+   * field for the whole write, not one per field: the surface describes WHERE
+   * the user acted, and a single PUT that moves a status and a priority moved
+   * both from the same place.
+   *
+   * Omitted by a caller that cannot name one — an API-key write, an MCP agent,
+   * a browser on an older build — and omission is preserved end to end, never
+   * serialized as `null`.
+   */
+  surface?: ArtifactStatusEditSurface;
+  /**
+   * Optional stale-write guard. When present, the write is rejected with
+   * `stale_status` unless the current persisted status still equals this value
+   * or already equals `status` (ISS-9486 ruling 2: a retry never conflicts
+   * with its own earlier success).
+   */
+  expectedStatus?: string;
+  /**
+   * ISS-9440: the priority half of the same guard. Rejected with
+   * `stale_priority` unless the persisted priority still equals this value,
+   * where `null` ASSERTS that the artifact holds no priority rather than
+   * meaning "unguarded" — absence is spelled by omitting the key. A `priority`
+   * the artifact already holds is never refused (ISS-9486).
+   */
+  expectedPriority?: Priority | null;
+  /**
+   * ISS-11198: the title and assignee halves of the same guard, each valid only
+   * beside its own field and refused with `DocumentFieldMutationErrorCode`.
+   * `expectedAssigneeId: null` ASSERTS the document has no assignee.
+   */
+  expectedTitle?: string;
+  expectedAssigneeId?: string | null;
+  /**
+   * ISS-9665: `null` CLEARS the priority (the honest representation of "no
+   * priority"); omitting the key leaves it untouched. The artifact column has
+   * always accepted null — only the API validator refused it.
+   */
+  priority?: Priority | null;
   dueDate?: Date | null;
   assigneeId?: string | null;
   sortOrder?: number | null;
@@ -514,7 +642,7 @@ export type MergeDocumentsInput = {
   secondaryDocumentId: string;
 };
 
-/** Branch artifact summary returned by document and loop projections. */
+/** Branch artifact summary returned by document projections. */
 export type BranchInfo = {
   id: string;
   name: string;
@@ -526,6 +654,10 @@ export type BranchInfo = {
   externalLinkId: string | null;
   repoFullName: string | null;
   currentPullRequest: PullRequestInfo | null;
+  /** Additive Product-navigation decision; omission remains non-navigable. */
+  productEligibility?: BranchProductEligibility;
+  /** True only when the API verified a provider PR compatibility fallback. */
+  hasCompatibilityProviderFallback?: boolean;
 };
 
 export function pickBranchForRepo(
@@ -559,145 +691,6 @@ export function pickPullRequestForRepo(
     null
   );
 }
-
-// Generation status for documents being processed by a Loop
-export type GenerationStatus = {
-  status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
-  command:
-    | "plan"
-    | "execute"
-    | "chat"
-    | "request_changes"
-    | "request_prd_changes"
-    | "generate_prd"
-    | "explore"
-    | "decompose"
-    | "evaluate_prd"
-    | "evaluate_plan"
-    | "evaluate_code"
-    | "evaluate_feature"
-    | null;
-  htmlUrl: string | null;
-  startedAt: Date | null;
-  completedAt: Date | null;
-  correlationId: string | null;
-  /** Identifies the compute backend that produced this status. */
-  source?: "loop";
-  /** Loop ID when source is "loop". Used for internal navigation to /loops/:id. */
-  loopId?: string | null;
-  /**
-   * The SESSION-typed Artifact that materializes this run in the unified
-   * Sessions list (FEA-1718; `Loop.sessionArtifactId`, unique -> at most one per
-   * loop). Lets a surface link the operator to the work in progress without
-   * reintroducing a Loop as a user-facing concept.
-   *
-   * OMITTED, never null, when the loop has not materialized a Session yet: it is
-   * written after the run starts, so an active generation legitimately has none
-   * for the first moments. A consumer must render the in-progress state without
-   * a link rather than emit one that goes nowhere.
-   *
-   * NOT a reversal of `toLoop`, which strips the same column from the Loop
-   * contract (`apps/api/app/loops/service.ts`, pinned by a regression test at
-   * `apps/api/app/loops/__tests__/service.test.ts`). That contract publishes a
-   * LOOP, where the column is an internal materialization FK and exposing it
-   * would make the Loop's own linkage table part of its public shape. This
-   * contract publishes a document's RUN STATE, whose whole job is to point the
-   * operator at the work; the id is the only thing on either record that can do
-   * that, and it is published here as a SESSION artifact id — the same
-   * user-facing identifier `/{orgSlug}/sessions/{id}` already routes on — not as
-   * Loop linkage. Keep `toLoop` stripping it.
-   */
-  sessionArtifactId?: string;
-  /** User who initiated the generation loop. */
-  initiatedBy?: {
-    firstName: string | null;
-    lastName: string | null;
-  } | null;
-  /**
-   * Server-computed stable identifier for a specific generation run.
-   * Used for status dismissal and cross-client synchronization.
-   */
-  runKey?: string | null;
-};
-
-const ACTIVE_GENERATION_STATUSES = ["PENDING", "QUEUED", "RUNNING"] as const;
-
-export function isActiveGenerationStatus(
-  status: GenerationStatus["status"]
-): boolean {
-  return ACTIVE_GENERATION_STATUSES.includes(
-    status as (typeof ACTIVE_GENERATION_STATUSES)[number]
-  );
-}
-
-/**
- * Build a stable run key for generation status identity.
- * Preference order: loopId, correlationId, startedAt, completedAt.
- */
-export function getGenerationStatusRunKey(
-  generationStatus: Pick<
-    GenerationStatus,
-    "loopId" | "correlationId" | "startedAt" | "completedAt"
-  >
-): string | null {
-  if (generationStatus.loopId) {
-    return `loop:${generationStatus.loopId}`;
-  }
-  if (generationStatus.correlationId) {
-    return `corr:${generationStatus.correlationId}`;
-  }
-  if (generationStatus.startedAt) {
-    return `started:${generationStatus.startedAt.toISOString()}`;
-  }
-  if (generationStatus.completedAt) {
-    return `completed:${generationStatus.completedAt.toISOString()}`;
-  }
-  return null;
-}
-
-// Plan JSON types for code plugin artifacts
-export type PlanAcceptanceCriterion = {
-  id: string;
-  criterion: string;
-  source: string;
-};
-
-export type PlanTask = {
-  id: string;
-  description: string;
-  acceptanceCriteria: string[];
-};
-
-export type PlanOpenQuestion = {
-  id: string;
-  question: string;
-  recommendedAnswer?: string | null;
-  blockingTask?: string | null;
-};
-
-export type PlanAnsweredQuestion = {
-  id: string;
-  question: string;
-  answer: string;
-};
-
-export type PlanGap = {
-  id: string;
-  description: string;
-  addressed: boolean;
-  resolution?: string | null;
-};
-
-export type PlanJson = {
-  content: string;
-  acceptanceCriteria: PlanAcceptanceCriterion[];
-  pendingTasks: PlanTask[];
-  completedTasks: PlanTask[];
-  openQuestions: PlanOpenQuestion[];
-  answeredQuestions: PlanAnsweredQuestion[];
-  gaps: PlanGap[];
-  manualTasks?: PlanTask[];
-};
 
 /**
  * Metadata entry for a single document returned by the batch-meta endpoint.
@@ -741,6 +734,8 @@ export function buildScopedDocumentPath(
  * — consumed by the create validator refine (`apps/api/.../validators.ts`) AND
  * the service-layer create guard (`createDocumentRecord`) so a direct service
  * caller cannot bypass the check the way it could when the two lists drifted.
+ * A DOC may also be created WITH a project (ISS-12858); only a TEMPLATE create
+ * refuses one, in the create validator.
  */
 export const PROJECT_OPTIONAL_DOCUMENT_TYPES: ReadonlySet<DocumentType> =
   new Set<DocumentType>([DocumentType.Doc, DocumentType.Template]);
@@ -782,6 +777,8 @@ export const documentTypeInputSchema = z
  * inference a lie the moment the assigned set exceeded the page.
  */
 export type DocumentListPage = {
+  /** Present when this server applied the additive union subtype filter. */
+  appliedTypes?: DocumentType[];
   /** The requested page, in the same order the bare-array response returns. */
   items: DocumentWithProject[];
   /**
@@ -811,6 +808,7 @@ export type DocumentListPage = {
  * `normalizeDocumentListResponse` needs to survive version skew.
  */
 export const documentListPageSchema = z.object({
+  appliedTypes: z.array(documentTypeInputSchema).optional(),
   items: z.array(z.unknown()),
   total: z.number(),
   limit: z.number().nullable(),
@@ -851,6 +849,9 @@ export function normalizeDocumentListResponse(
   const parsed = documentListPageSchema.safeParse(response);
   if (parsed.success) {
     return {
+      ...(parsed.data.appliedTypes
+        ? { appliedTypes: parsed.data.appliedTypes }
+        : {}),
       items: parsed.data.items as DocumentWithProject[],
       total: parsed.data.total,
       limit: parsed.data.limit,
@@ -859,4 +860,84 @@ export function normalizeDocumentListResponse(
     };
   }
   return { items: [], total: 0, limit: null, offset: 0, hasMore: false };
+}
+
+/**
+ * Continuation metadata for `GET /documents`, carried as RESPONSE HEADERS on
+ * the bare-array arm (ISS-6941).
+ *
+ * WHY HEADERS, AND NOT A SECOND BODY SHAPE. The default response is a bare
+ * `DocumentWithProject[]`, and every consumer that reads it — the Documents
+ * index, the plan/document pickers, MCP, version-skewed API clients — indexes
+ * and `.map`s it directly. There is nowhere in an array to put a sibling field,
+ * and wrapping it is the breaking change {@link DocumentListPage} already exists
+ * to avoid. A header is the one addition an existing client cannot notice: an
+ * old caller ignores it, a new one reads it, and the parsed body is byte-for-byte
+ * what it was.
+ *
+ * WHY IT IS NEEDED AT ALL WHEN THE ENVELOPE EXISTS. `includeTotal=true` has
+ * answered this in the body since ISS-4576, but only for a caller who knows to
+ * ask. A caller paging with `limit` + `offset` and nothing else — the shape the
+ * ticket was filed against — receives a capped array and has no way to tell
+ * "that was everything" from "the server capped me", because `limit` caps at
+ * {@link DOCUMENT_LIST_MAX_LIMIT} and a full page is not evidence of either.
+ * These headers are that answer, unconditional and un-asked-for.
+ *
+ * Lowercase names because that is how a `fetch` `Headers` lookup normalizes
+ * them; the constant is what both sides read, so neither can invent a casing.
+ */
+export const DOCUMENT_LIST_CONTINUATION_HEADERS = {
+  /** Real server-side count of every row matching the query's predicate. */
+  Total: "x-document-list-total",
+  /** `"true"` / `"false"` — whether rows exist beyond the page just served. */
+  HasMore: "x-document-list-has-more",
+  /**
+   * The `offset` that reads the next page — this page's offset advanced past
+   * the rows actually served, never past the `limit` the caller asked for: a
+   * short final page would otherwise hand back an offset that skips rows.
+   *
+   * Present exactly when `HasMore` is `"true"`. A next-offset for a page that
+   * does not exist is an invitation to fetch it, and a caller looping until an
+   * empty response is exactly the caller this metadata exists to stop. Since
+   * ISS-11161 the endpoint serves every offset, so the header is no longer
+   * withheld past {@link DOCUMENT_LIST_MAX_OFFSET}.
+   */
+  NextOffset: "x-document-list-next-offset",
+} as const;
+
+/**
+ * The facts {@link buildDocumentListContinuationHeaders} renders.
+ *
+ * Deliberately the same four fields {@link DocumentListPage} carries minus its
+ * `items`, so the two arms of this endpoint state one thing in one vocabulary —
+ * the envelope in its body, the bare array in its headers — rather than growing
+ * a second, subtly different notion of "is there more".
+ */
+export type DocumentListContinuation = {
+  total: number;
+  offset: number;
+  /** Rows in the response just served — what the next offset advances past. */
+  pageCount: number;
+  hasMore: boolean;
+};
+
+/**
+ * Render {@link DocumentListContinuation} as the response headers above.
+ *
+ * Pure, and shared rather than inlined at the route, so a consumer's test can
+ * build the exact header set the server sends instead of transcribing it.
+ */
+export function buildDocumentListContinuationHeaders(
+  continuation: DocumentListContinuation
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    [DOCUMENT_LIST_CONTINUATION_HEADERS.Total]: String(continuation.total),
+    [DOCUMENT_LIST_CONTINUATION_HEADERS.HasMore]: String(continuation.hasMore),
+  };
+  if (continuation.hasMore) {
+    headers[DOCUMENT_LIST_CONTINUATION_HEADERS.NextOffset] = String(
+      continuation.offset + continuation.pageCount
+    );
+  }
+  return headers;
 }

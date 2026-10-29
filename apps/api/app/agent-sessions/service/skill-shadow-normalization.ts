@@ -19,8 +19,8 @@
  *
  * So this lane normalizes POST-HASH: the hash check runs against the unmodified
  * staged rows, and only then — inside `resolveGenerationInvocations`, alongside
- * the resolution-derived columns `applyResolutionUpdates` already rewrites — is
- * the phantom's identity re-pointed at the real skill. NOTHING HERE FEEDS A
+ * the resolution-derived columns `persistedInvocation` already applies — is the
+ * phantom's identity re-pointed at the real skill. NOTHING HERE FEEDS A
  * CONTENT HASH: the desktop's `externalGenerationId` preimage is built from what
  * the desktop sent, and the server only ever re-derives it from the pre-rewrite
  * rows, so no existing record is re-identified by this normalization.
@@ -45,7 +45,7 @@ import type { StagedInvocationRow } from "./component-invocation-helpers";
  * it shadowed. `normalizedName` is OMITTED (never `null`) when the row's own
  * normalized name is not the phantom slash key — mirroring the backfill
  * migration's `CASE WHEN aci.normalized_name = m.phantom_key` guard, and letting
- * the UPDATE's `COALESCE` leave a caller-supplied normalized name untouched.
+ * `persistedInvocation` keep a caller-supplied normalized name untouched.
  */
 export type SkillShadowIdentityRewrite = {
   componentKind: string;

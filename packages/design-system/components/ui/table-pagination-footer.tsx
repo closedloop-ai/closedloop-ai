@@ -1,7 +1,7 @@
 "use client";
 
 import { TablePageSizeSelect } from "@closedloop-ai/design-system/components/ui/table-page-size-select";
-import { TablePagination } from "@closedloop-ai/design-system/components/ui/table-pagination";
+import { TablePagination } from "@closedloop-ai/design-system/components/ui/table-pagination-v2";
 import { cn } from "@closedloop-ai/design-system/lib/utils";
 import type { ReactNode } from "react";
 
@@ -24,10 +24,16 @@ import type { ReactNode } from "react";
  * a readout — a surface with no honest total omits it rather than announcing an
  * empty region.
  *
- * `TablePagination` renders nothing for a single page, so a caller that wants a
- * readout on page one of one can render this footer unconditionally and get the
- * readout without controls. A caller with no readout should keep its own
+ * The footer renders no pager for a single page (unless
+ * `showPagerOnSinglePage` asks it to stay), so a caller that wants a readout on
+ * page one of one can render this footer unconditionally and get the readout
+ * without controls. A caller with no readout should keep its own
  * `totalPages > 1` guard, or the strip becomes an empty bordered band.
+ *
+ * ISS-11412: the pager inside is the v2 `TablePagination`, which stays mounted
+ * on a single page by design. That single-page collapse is this footer's own
+ * deliberate rule (PLN-1936 GV-052 KEEP), so the footer applies it itself with
+ * the predicate the v1 pager used ({@link shouldRenderPager}).
  */
 export function TablePaginationFooter({
   page,
@@ -39,6 +45,8 @@ export function TablePaginationFooter({
   pageSize,
   onPageSizeChange,
   pageSizeOptions,
+  showPagerOnSinglePage = false,
+  disabled = false,
 }: {
   /** Zero-based current page index. */
   page: number;
@@ -70,6 +78,15 @@ export function TablePaginationFooter({
   onPageSizeChange?: (pageSize: number) => void;
   /** Overrides the shared 25/50/100 ladder. */
   pageSizeOptions?: readonly number[];
+  /** Disables every footer control while keeping the footer mounted. */
+  disabled?: boolean;
+  /**
+   * Keeps the pager mounted and disabled on a single page instead of dropping
+   * it, so the footer's height does not change as a filter narrows the result
+   * set. Off by default: the surfaces that shipped the collapsing footer keep
+   * it.
+   */
+  showPagerOnSinglePage?: boolean;
 }) {
   const showPageSize = pageSize != null && onPageSizeChange != null;
   return (
@@ -94,6 +111,7 @@ export function TablePaginationFooter({
         <div className="flex shrink-0 items-center gap-3">
           {showPageSize ? (
             <TablePageSizeSelect
+              disabled={disabled}
               onPageSizeChange={onPageSizeChange}
               options={pageSizeOptions}
               pageSize={pageSize}
@@ -124,12 +142,28 @@ export function TablePaginationFooter({
           ) : null}
         </div>
       ) : null}
-      <TablePagination
-        className="min-w-max"
-        onPageChange={onPageChange}
-        page={page}
-        totalPages={totalPages}
-      />
+      {shouldRenderPager(totalPages, showPagerOnSinglePage) ? (
+        <TablePagination
+          className="min-w-max"
+          disabled={disabled}
+          onPageChange={onPageChange}
+          page={page}
+          totalPages={totalPages}
+        />
+      ) : null}
     </div>
   );
+}
+
+/**
+ * Whether the footer mounts its pager: never for fewer than one page, and for
+ * exactly one page only when the caller opted in. This is the v1 pager's own
+ * visibility predicate, kept verbatim (it reads the raw `totalPages`, as v1
+ * did) so every footer caller keeps the strip it shipped.
+ */
+function shouldRenderPager(
+  totalPages: number,
+  showPagerOnSinglePage: boolean
+): boolean {
+  return !(totalPages < 1 || (totalPages === 1 && !showPagerOnSinglePage));
 }

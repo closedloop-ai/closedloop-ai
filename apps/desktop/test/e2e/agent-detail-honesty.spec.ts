@@ -14,12 +14,13 @@
  * -----------------------------------------------
  * Two things, and they are independent:
  *
- *  1. THE FLAG. The packaged renderer has no PostHog wiring, so it resolves this
- *     key from its own Labs registry. A split key — or a shared key that simply
- *     never got registered here — would land the change on web and leave desktop
- *     dark forever, or (worse, since an unregistered shared key falls through to
- *     the build-type default) leak it on desktop while it is hidden on web. Only
- *     a launched app can prove the registered toggle actually drives the render.
+ *  1. THE FLAG. The renderer runs no PostHog SDK of its own, so it resolves
+ *     this key from the signed-in account's PostHog assignment, delivered over
+ *     the IPC bridge. A split key would land the change on web and leave
+ *     desktop dark forever; an unknown key resolves CLOSED in every build, dev
+ *     included, so a gate that never arrives hides the surface rather than
+ *     leaking it. Only a launched app can prove the assignment actually drives
+ *     the render.
  *
  *  2. THE PAYLOAD. "Lines shipped" and "Total cost" reduce over `branchesTab`,
  *     and the desktop detail producer sends `branchesTab: []` OUTRIGHT — it does
@@ -109,14 +110,11 @@ function sessionRowName(index: number): string {
 }
 
 /**
- * A component with real local usage — sessions that carry lines and cost of
- * their own.
+ * A component with real local usage — sessions that carry cost of their own.
  *
- * The measurements are deliberately NON-zero: they prove the two suppressed
- * cards are empty because the DETAIL PAYLOAD never carries branch measurements,
- * not because this corpus happens to have nothing to measure. A corpus of
- * zero-cost sessions would leave the suppression indistinguishable from an
- * empty-database artifact.
+ * The cost is deliberately NON-zero, so a Total cost that renders the dash
+ * cannot be a corpus with nothing to sum. No lines are seeded: the local store
+ * holds none, so Lines shipped has no such guard here.
  */
 function seededCorpus(): AgentComponentUsageCorpus {
   const sessions = Array.from({ length: 4 }, (_unused, index) => ({

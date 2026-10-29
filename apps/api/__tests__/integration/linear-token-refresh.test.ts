@@ -28,16 +28,30 @@ vi.mock("@/lib/integration-encryption", () => ({
   decryptIntegrationToken: vi
     .fn()
     .mockImplementation((token: string) => Promise.resolve(token)),
-  resolveIntegrationToken: vi
+  // Identity "decryption": a row's stored ciphertext IS its token here.
+  resolveEncryptedIntegrationToken: vi
     .fn()
-    .mockImplementation(
-      (_encrypted: string | null | undefined, plaintext: string | null) =>
-        Promise.resolve(plaintext)
+    .mockImplementation((encrypted: string | null) =>
+      Promise.resolve(encrypted)
     ),
   encryptTokenPair: vi.fn().mockResolvedValue({
     encryptedAccessToken: "mock-encrypted-access",
     encryptedRefreshToken: "mock-encrypted-refresh",
   }),
+  // Mirrors the real helper's encrypt-succeeded path: ciphertext stored, and
+  // the refresh half omitted entirely when the caller has no refresh token to
+  // store.
+  buildIntegrationTokenColumns: vi
+    .fn()
+    .mockImplementation(
+      (_accessToken: string, refreshToken: string | null | undefined) =>
+        Promise.resolve({
+          accessTokenEncrypted: "mock-encrypted-access",
+          ...(refreshToken
+            ? { refreshTokenEncrypted: "mock-encrypted-refresh" }
+            : {}),
+        })
+    ),
 }));
 
 const mockRefreshAccessToken = refreshAccessToken as Mock;
@@ -60,8 +74,8 @@ describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
         db.linearIntegration.create({
           data: {
             organizationId: orgId,
-            accessToken,
-            refreshToken: "refresh_token",
+            accessTokenEncrypted: accessToken,
+            refreshTokenEncrypted: "refresh_token",
             linearOrgId: "org_123",
             linearOrgName: "Test Org",
             defaultTeamId: "team_1",
@@ -86,7 +100,7 @@ describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
         })
       );
 
-      expect(integration?.accessToken).toBe(accessToken);
+      expect(integration?.accessTokenEncrypted).toBe(accessToken);
     });
   });
 
@@ -102,8 +116,8 @@ describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
         db.linearIntegration.create({
           data: {
             organizationId: orgId,
-            accessToken: oldAccessToken,
-            refreshToken: oldRefreshToken,
+            accessTokenEncrypted: oldAccessToken,
+            refreshTokenEncrypted: oldRefreshToken,
             linearOrgId: "org_123",
             linearOrgName: "Test Org",
             defaultTeamId: "team_1",
@@ -147,9 +161,9 @@ describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
         })
       );
 
-      // Token should be updated to new token
-      expect(integration?.accessToken).toBe("new_access_token");
-      expect(integration?.refreshToken).toBe("new_refresh_token");
+      // The refreshed credential lands as ciphertext.
+      expect(integration?.accessTokenEncrypted).toBe("mock-encrypted-access");
+      expect(integration?.refreshTokenEncrypted).toBe("mock-encrypted-refresh");
 
       // Token expiry should be updated to exactly the refresh TTL past the
       // pinned clock.
@@ -168,8 +182,8 @@ describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
         db.linearIntegration.create({
           data: {
             organizationId: orgId,
-            accessToken: "expired_access_token",
-            refreshToken: "invalid_refresh_token",
+            accessTokenEncrypted: "expired_access_token",
+            refreshTokenEncrypted: "invalid_refresh_token",
             linearOrgId: "org_123",
             linearOrgName: "Test Org",
             defaultTeamId: "team_1",
@@ -204,8 +218,8 @@ describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
         db.linearIntegration.create({
           data: {
             organizationId: orgId,
-            accessToken: "expired_access_token",
-            refreshToken: null, // No refresh token
+            accessTokenEncrypted: "expired_access_token",
+            refreshTokenEncrypted: null, // No refresh token
             linearOrgId: "org_123",
             linearOrgName: "Test Org",
             defaultTeamId: "team_1",
@@ -214,26 +228,24 @@ describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
         })
       );
 
-      // When there's no refresh token, the service returns the expired token anyway
-      // and attempts to use it. We need to mock getTeams to succeed or fail.
-      // In this case, we'll mock success to show the service attempts to use it.
+      // getTeams would succeed, so a status that reads connected could only
+      // come from serving the expired access token.
       mockGetTeams.mockResolvedValue([
         { id: "team_1", name: "Team", key: "TM" },
       ]);
 
-      // Try to get integration status
       const result = await linearService.getIntegrationStatus(orgId);
 
-      // Without a refresh token, service returns the expired token and tries to use it
-      // If getTeams succeeds (as we mocked), it returns connected: true
+      // ISS-11096: an expired row with nothing to refresh with fails the read
+      // rather than serving its expired access token.
       expect(result.success).toBe(true);
-      expect(result.connected).toBe(true);
+      expect(result.connected).toBe(false);
 
       // Verify refresh was NOT called (no token to refresh with)
       expect(mockRefreshAccessToken).not.toHaveBeenCalled();
 
-      // Verify getTeams was called (service tried to use the expired token)
-      expect(mockGetTeams).toHaveBeenCalled();
+      // The expired token was never used
+      expect(mockGetTeams).not.toHaveBeenCalled();
     });
   });
 
@@ -248,8 +260,8 @@ describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
         db.linearIntegration.create({
           data: {
             organizationId: orgId,
-            accessToken,
-            refreshToken: "refresh_token",
+            accessTokenEncrypted: accessToken,
+            refreshTokenEncrypted: "refresh_token",
             linearOrgId: "org_123",
             linearOrgName: "Test Org",
             defaultTeamId: "team_1",
@@ -274,7 +286,7 @@ describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
         })
       );
 
-      expect(integration?.accessToken).toBe(accessToken);
+      expect(integration?.accessTokenEncrypted).toBe(accessToken);
     });
   });
 
@@ -287,8 +299,8 @@ describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
         db.linearIntegration.create({
           data: {
             organizationId: orgId,
-            accessToken: "expired_token",
-            refreshToken: "refresh_token",
+            accessTokenEncrypted: "expired_token",
+            refreshTokenEncrypted: "refresh_token",
             linearOrgId: "org_123",
             linearOrgName: "Test Org",
             defaultTeamId: "team_1",

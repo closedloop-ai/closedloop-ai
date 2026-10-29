@@ -19,7 +19,7 @@
  *    and asserts the `SetUserIdentity` request reaches it.
  */
 import assert from "node:assert/strict";
-import { after, before, describe, test } from "node:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import type { createAgentDashboardDbHostLifecycle as CreateLifecycle } from "../src/main/dashboard/agent-dashboard-db-host-lifecycle.js";
 import type { AgentDashboardDesignSystemRuntimeOptions } from "../src/main/dashboard/agent-dashboard-runtime-options.js";
 import {
@@ -224,7 +224,7 @@ describe("ISS-6168 db-host lifecycle identity push (behavioral)", () => {
   let electronMock: ElectronModuleMock;
   let createLifecycle: typeof CreateLifecycle;
 
-  before(async () => {
+  beforeAll(async () => {
     // `agent-dashboard-runtime-paths.ts` imports `electron` at module scope,
     // which throws under `tsx --test` — the ISS-4845 redirect mechanism.
     electronMock = registerElectronModuleMock();
@@ -233,7 +233,7 @@ describe("ISS-6168 db-host lifecycle identity push (behavioral)", () => {
     ));
   });
 
-  after(() => {
+  afterAll(() => {
     electronMock.deregister();
   });
 

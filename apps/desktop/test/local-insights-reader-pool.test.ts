@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
-import { after, test } from "node:test";
 import {
   InsightsPeriod,
   InsightsSection,
 } from "@closedloop-ai/loops-api/insights";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
-import { TOOL_INVOCATION_EVENT_TYPE } from "../src/main/database/dashboard-queries.js";
+import { afterAll, test } from "vitest";
 import { computeLocalInsights } from "../src/main/database/local-insights.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import { openInsightsDb } from "./local-insights-test-helpers.js";
@@ -45,7 +44,7 @@ import { openInsightsDb } from "./local-insights-test-helpers.js";
 // deterministic. Runs at module evaluation, before any DB opens.
 const ORIGINAL_TZ = process.env.TZ;
 process.env.TZ = "America/Chicago";
-after(() => {
+afterAll(() => {
   // Restore EXACTLY: assigning `undefined` would leave the string "undefined".
   if (ORIGINAL_TZ === undefined) {
     Reflect.deleteProperty(process.env, "TZ");
@@ -204,7 +203,7 @@ test("ISS-5938: the writer facade traps raw reads and passes typed delegates", a
     assert.deepEqual(log.writerDelegates, ["agent"]);
   } finally {
     await prisma.disconnect();
-    db.close();
+    await db.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -230,13 +229,13 @@ for (const section of Object.keys(SECTION_EXPECTATIONS) as InsightsSection[]) {
       await db.query(
         `INSERT INTO events (id, session_id, event_type, tool_name, created_at)
          VALUES ($1, $2, $3, 'Read', $4)`,
-        ["event-pool", "session-pool", TOOL_INVOCATION_EVENT_TYPE, IN_WINDOW]
+        ["event-pool", "session-pool", "PreToolUse", IN_WINDOW]
       );
       await db.query(
         `INSERT INTO artifacts
            (id, identity_key, kind, repo_full_name, pr_number,
-            lines_added, lines_removed, files_changed, created_at, last_seen_at)
-         VALUES ($1, $2, 'pull_request', 'acme/repo', 1, 10, 5, 2, $3, $3)`,
+            created_at, last_seen_at)
+         VALUES ($1, $2, 'pull_request', 'acme/repo', 1, $3, $3)`,
         ["pr-pool", "pr:acme/repo:1", IN_WINDOW]
       );
 
@@ -269,7 +268,7 @@ for (const section of Object.keys(SECTION_EXPECTATIONS) as InsightsSection[]) {
       );
     } finally {
       await prisma.disconnect();
-      db.close();
+      await db.close();
       await rm(dir, { recursive: true, force: true });
     }
   });

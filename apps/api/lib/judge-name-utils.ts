@@ -41,9 +41,15 @@ export function isCanonicalJudgePromptName(name: string): boolean {
 
 /**
  * Parses and validates the promptName path segment used by judges analytics routes.
+ *
+ * The caller passes the value Next's route matcher already
+ * `decodeURIComponent`d. Decoding it a second time throws `URIError` on a
+ * malformed-but-rejectable name like `100%-done`, turning a 400 into a 500;
+ * canonical names are `[a-z0-9_]+`, which percent-encode to themselves, so
+ * nothing legitimate ever needed the extra decode.
  */
 export function parsePromptNameParam(rawPromptName: string): string | null {
-  const promptName = decodeURIComponent(rawPromptName).toLowerCase();
+  const promptName = rawPromptName.toLowerCase();
   if (!isCanonicalJudgePromptName(promptName)) {
     return null;
   }

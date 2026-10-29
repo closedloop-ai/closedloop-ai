@@ -1,5 +1,7 @@
 import {
   type CreateDocumentInput,
+  DOCUMENT_ROUTE_PREFIX,
+  DocumentStatus,
   DocumentType,
 } from "@repo/api/src/types/document";
 import { createMockDocument } from "@repo/app/shared/test-fixtures/documents";
@@ -22,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   mutate: vi.fn(),
   navigate: vi.fn(),
   isPending: false,
+  createDocumentOptions: vi.fn(),
 }));
 
 vi.mock("@repo/navigation/use-navigation", () => ({
@@ -40,10 +43,10 @@ vi.mock("../../hooks/use-documents", async () => {
   const actual = await vi.importActual("../../hooks/use-documents");
   return {
     ...actual,
-    useCreateDocument: () => ({
-      mutate: mocks.mutate,
-      isPending: mocks.isPending,
-    }),
+    useCreateDocument: (options?: unknown) => {
+      mocks.createDocumentOptions(options);
+      return { mutate: mocks.mutate, isPending: mocks.isPending };
+    },
   };
 });
 
@@ -140,7 +143,9 @@ describe("NewDocumentModal", () => {
     fireEvent.click(screen.getByRole("button", { name: CREATE_REGEX }));
 
     await waitFor(() => {
-      expect(mocks.navigate).toHaveBeenCalledWith("/acme/prds/my-prd");
+      expect(mocks.navigate).toHaveBeenCalledWith(
+        `/acme/${DOCUMENT_ROUTE_PREFIX}/my-prd`
+      );
     });
   });
 
@@ -207,6 +212,15 @@ describe("NewDocumentModal", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
+  it("asks the create mutation for NO toast suppression, so the shared toast still fires", () => {
+    // The falsifier for its ISS-8938 sibling, which asks for suppression: with
+    // the gate closed the shipped double report is exactly what must remain, so
+    // this arm must not quietly inherit the new behavior.
+    render(<NewDocumentModal onOpenChange={vi.fn()} open />);
+
+    expect(mocks.createDocumentOptions).toHaveBeenCalledWith(undefined);
+  });
+
   it("surfaces a create failure inside the dialog instead of only toasting", async () => {
     mocks.mutate.mockImplementation(
       (
@@ -228,4 +242,22 @@ describe("NewDocumentModal", () => {
     expect(await screen.findByText("Server exploded")).toBeTruthy();
     expect(screen.getByLabelText(TITLE_REGEX)).toHaveValue("A doc");
   });
+});
+
+it("creates in the board lane's requested status", () => {
+  render(
+    <NewDocumentModal
+      initialStatus={DocumentStatus.InReview}
+      onOpenChange={vi.fn()}
+      open
+    />
+  );
+  fireEvent.change(screen.getByLabelText(TITLE_REGEX), {
+    target: { value: "Review draft" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: CREATE_REGEX }));
+  expect(mocks.mutate).toHaveBeenCalledWith(
+    expect.objectContaining({ status: DocumentStatus.InReview }),
+    expect.anything()
+  );
 });

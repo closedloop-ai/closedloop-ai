@@ -16,7 +16,7 @@ describe("auth port", () => {
       getToken: () => Promise.resolve("tok"),
     });
     const { result } = renderHook(() => useAuthSnapshot(), {
-      wrapper: createWrapper(adapter),
+      wrapper: createAuthWrapper(adapter),
     });
 
     expect(result.current).toMatchObject({
@@ -35,14 +35,16 @@ describe("auth port", () => {
 
   it("resolves waitForAuthLoaded immediately when already loaded", async () => {
     const { result } = renderHook(() => useWaitForAuthLoaded(), {
-      wrapper: createWrapper(createStaticAuthAdapter()),
+      wrapper: createAuthWrapper(createStaticAuthAdapter()),
     });
 
     await expect(result.current()).resolves.toBeUndefined();
   });
 });
 
-function createWrapper(adapter: ReturnType<typeof createStaticAuthAdapter>) {
+function createAuthWrapper(
+  adapter: ReturnType<typeof createStaticAuthAdapter>
+) {
   return ({ children }: { children: ReactNode }) => (
     <AuthAdapterProvider adapter={adapter}>{children}</AuthAdapterProvider>
   );

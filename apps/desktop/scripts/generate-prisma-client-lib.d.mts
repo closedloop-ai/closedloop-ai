@@ -6,6 +6,12 @@
  */
 
 /**
+ * Every module `prisma generate` must leave behind, relative to the generated
+ * client directory. POSIX-separated, as they appear in imports.
+ */
+export declare const GENERATED_CLIENT_OUTPUTS: readonly string[];
+
+/**
  * Hash the generator's inputs — repo-relative path AND bytes of each file —
  * into a single fingerprint anchored at `repoRoot`.
  */

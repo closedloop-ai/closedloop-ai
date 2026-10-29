@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  CostAvailability,
+  costLabelIsFigure,
   deriveCostAvailability,
   formatCostLabel,
   getCostTooltip,
@@ -25,13 +25,18 @@ import {
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
 import type { ReactNode } from "react";
+import { SESSION_TIMELINE_TOTAL_TOKENS_UNIT } from "./session-property-labels";
+import {
+  type TimelinePeakBucket,
+  TimelinePeakBucketFact,
+} from "./timeline-peak-bucket-fact";
 
 /**
  * ISS-5970 — the Session Timeline's run-level summary: what the run cost, how
  * many tokens it burned, and how long it took, on one line in the timeline
  * header.
  *
- * Matches the prototype's strip (`apps/prototypes/app/p/sessions/components/
+ * Matches the promoted prototype strip (`packages/app/agents/components/sessions/web-master-legacy-preview/components/
  * session-timeline.tsx`, the `ml-auto` row beside the heading): value in
  * `text-foreground` with `tabular-nums`, unit in muted text, the three facts
  * trailing the title rather than stacked above the controls.
@@ -67,8 +72,17 @@ import type { ReactNode } from "react";
  * exist for a keyboard, touch or screen-reader user.
  */
 export function SessionTimelineSummary({
+  peakBucket = null,
   session,
-}: Readonly<{ session: SessionTimelineSummarySession }>) {
+}: Readonly<{
+  /**
+   * ISS-12665: the costliest column at the strip's current scale. `null` when
+   * the strip has no scale to name the interval by (an unprojected or empty
+   * strip), and the fact is then not drawn.
+   */
+  peakBucket?: TimelinePeakBucket | null;
+  session: SessionTimelineSummarySession;
+}>) {
   // ISS-5575: the same displayed-status window the Properties Duration row and
   // the Sessions LIST cell resolve, so this strip cannot report a span for a run
   // the rest of the screen has already folded to "Stale". The tick gates on the
@@ -114,7 +128,7 @@ export function SessionTimelineSummary({
    */
   const costAvailability = deriveCostAvailability(session);
   const costTooltip = getCostTooltip(costAvailability);
-  const costUnavailable = !COST_FIGURE_AVAILABILITIES.has(costAvailability);
+  const costUnavailable = !costLabelIsFigure(costAvailability);
   const totalTokens = sumSessionTokens(session);
 
   /*
@@ -151,9 +165,16 @@ export function SessionTimelineSummary({
           )
         }
       />
+      {peakBucket == null ? null : (
+        <TimelinePeakBucketFact
+          costUsd={peakBucket.costUsd}
+          explainsFullSession
+          scale={peakBucket.scale}
+        />
+      )}
       <SummaryFact
         tooltip={resolveTokensTooltip(totalTokens)}
-        unit="tokens"
+        unit={SESSION_TIMELINE_TOTAL_TOKENS_UNIT}
         value={
           totalTokens == null || totalTokens === 0 ? (
             <GridEmptyValue />
@@ -278,17 +299,6 @@ function resolveTokensTooltip(totalTokens: number | null): string | null {
   return TOKENS_UNAVAILABLE_TITLE;
 }
 
-/**
- * The availabilities that carry a real figure — the exact pair
- * {@link formatCostLabel} formats rather than dashes. Named here so "is this a
- * dash?" is answered by the same distinction the formatter makes, and a new
- * `CostAvailability` member has one obvious place to be classified.
- */
-const COST_FIGURE_AVAILABILITIES: ReadonlySet<CostAvailability> = new Set([
-  CostAvailability.Available,
-  CostAvailability.Subscription,
-]);
-
 const TOKENS_UNAVAILABLE_TITLE = "No token usage recorded for this session";
 const TOKENS_UNTRUSTWORTHY_TITLE =
   "Token usage for this session could not be read";
@@ -309,7 +319,7 @@ export type SessionTimelineSummarySession = Readonly<{
   /** ISS-5575: the durable awaiting-input signal. See
    * `SessionDurationPropertySession`. */
   awaitingInputSince?: Date | string | null;
-  estimatedCost: number;
+  estimatedCost: number | null;
   billingMode?: string | null;
   turns?: number | null;
   inputTokens: number;
@@ -317,5 +327,6 @@ export type SessionTimelineSummarySession = Readonly<{
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   toolUseCount?: number;
+  componentInvocationCount?: number;
   model?: string | null;
 }>;

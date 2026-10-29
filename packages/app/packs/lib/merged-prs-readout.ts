@@ -2,9 +2,9 @@
  * ISS-6462 — the "Merged PRs" tile's value and population copy on the Packs
  * Performance tab.
  *
- * The server counts distinct merged PRs over the FIRST {@link COHORT_SCAN_CAP}
+ * A server predating ISS-9853 counted distinct merged PRs over the first 2,000
  * cohort sessions (`apps/api/app/agent-components/cohort-performance.ts`), so on
- * a pack with a larger cohort the figure is a floor over an insertion-ordered
+ * a pack with a larger cohort the figure was a floor over an insertion-ordered
  * sample — while the tile printed it as an exact count. ISS-5521 fixed the same
  * claim on the Agents component-detail card behind the `agents-detail-honesty`
  * gate; that gate is scoped to the Agents detail strip and does not reach this

@@ -6,7 +6,6 @@ export type TrayState = "starting" | "ready" | "degraded" | "error";
 
 export type DesktopTrayHandlers = {
   onOpen?: () => void;
-  onManageCommandKeys?: () => void;
   onOpenClaudeDashboard?: () => void;
   onTogglePaused?: (paused: boolean) => void;
 };
@@ -45,9 +44,6 @@ export class DesktopTray {
     this.tray = new Tray(icon);
     this.setState("starting");
     this.refreshContextMenu();
-    this.tray.on("click", () => {
-      this.handlers.onOpen?.();
-    });
   }
 
   setState(state: TrayState, details?: string): void {
@@ -101,20 +97,14 @@ export class DesktopTray {
 
     const openLabelBase =
       this.pendingApprovals > 0
-        ? `Open Symphony (${this.pendingApprovals} pending)`
-        : "Open Symphony";
+        ? `Open ClosedLoop (${this.pendingApprovals} pending)`
+        : "Open ClosedLoop";
     this.tray.setContextMenu(
       Menu.buildFromTemplate([
         {
           label: this.golden ? `${openLabelBase} (GOLDEN)` : openLabelBase,
           click: () => {
             this.handlers.onOpen?.();
-          },
-        },
-        {
-          label: "Manage Browser Command Keys",
-          click: () => {
-            this.handlers.onManageCommandKeys?.();
           },
         },
         {

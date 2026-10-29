@@ -8,10 +8,9 @@
     "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
     "test": "NODE_ENV=test vitest run",
     "test:coverage": "NODE_ENV=test vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=**/*.{ts,tsx}'",
-    "test:a11y": "NODE_ENV=test vitest run test/a11y/axe.test.ts test/a11y/contrast.test.ts insights/components/overview/__tests__/insights-overview-dashboard.test.tsx insights/components/overview/__tests__/insights-overview-dashboard-real-render.test.tsx branches/components/__tests__/branches-summary-cards.test.tsx agents/components/sessions/__tests__/synced-sessions-table.test.tsx shared/lib/__tests__/grid-table-aria-semantics.test.tsx"
+    "test:a11y": "NODE_ENV=test vitest run test/a11y/axe.test.ts test/a11y/contrast.test.ts test/a11y/sidebar-ring-contrast.test.ts test/a11y/theme-contrast.test.ts test/a11y/tailwind-color-utility.test.ts insights/components/overview/__tests__/insights-overview-dashboard.test.tsx insights/components/overview/__tests__/insights-overview-dashboard-real-render.test.tsx branches/components/__tests__/branches-summary-cards.test.tsx agents/components/sessions/__tests__/synced-sessions-table shared/lib/__tests__/grid-table-aria-semantics.test.tsx"
   },
   "dependencies": {
-    "@closedloop-ai/loops-api": "workspace:*",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
@@ -22,28 +21,32 @@
     "@repo/api": "workspace:*",
     "@repo/collaboration": "workspace:*",
     "@repo/cost": "workspace:*",
-    "@repo/crewd": "workspace:*",
     "@repo/design-system": "workspace:@closedloop-ai/design-system@*",
     "@repo/lib": "workspace:*",
+    "@closedloop-ai/loops-api": "workspace:*",
     "@repo/navigation": "workspace:*",
+    "@repo/realtime-client": "workspace:*",
     "@repo/rich-text": "workspace:*",
+    "@repo/shared-platform": "workspace:@closedloop-ai/shared-platform@*",
     "@tanstack/react-query": "^5.90.20",
     "@tanstack/react-virtual": "^3.14.3",
-    "@tiptap/react": "~3.22.3",
+    "@tiptap/react": "~3.31.3",
     "date-fns": "^4.1.0",
     "lucide-react": "^0.556.0",
     "next-themes": "^0.4.6",
-    "react": "19.2.8",
+    "react": "19.2.9",
     "react-diff-viewer-continued": "^4.4.0",
     "react-grid-layout": "^2.2.3",
     "react-hook-form": "^7.71.1",
     "recharts": "^3.7.0",
     "remark-breaks": "^4.0.0",
-    "zod": "^4.3.6"
+    "zod": "catalog:"
   },
   "devDependencies": {
+    "@repo/realtime-contract": "workspace:*",
     "@repo/typescript-config": "workspace:*",
-    "@storybook/react": "^10.4.6",
+    "@repo/vitest-config": "workspace:*",
+    "@storybook/react": "^10.6.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
@@ -51,11 +54,11 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "19.2.3",
     "axe-core": "^4.12.1",
-    "jsdom": "^29.1.1",
-    "react-dom": "19.2.8",
-    "storybook": "^10.4.6",
+    "jsdom": "^30.1.1",
+    "react-dom": "19.2.9",
+    "storybook": "^10.6.0",
     "typescript": "^7.0.2",
     "typescript6": "npm:@typescript/typescript6@6.0.2",
-    "vitest": "^4.1.9"
+    "vitest": "^5.0.2"
   }
 }

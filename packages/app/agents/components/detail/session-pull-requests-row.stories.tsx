@@ -16,12 +16,25 @@ import { SessionPullRequestsRow } from "./session-pull-requests-row";
  * "Pull requests" row under review and the "Lines changed" row it has to
  * reconcile with. Judging the copy on the PR row alone would miss the point.
  *
+ * ISS-9964 / ISS-9980 (RULED 2026-09-11) changed what the second row prints: it
+ * is now the lines landed in MERGED authored PRs, not the session's local churn,
+ * so the merged count is the frame's parameter rather than a fixed `+420 -80`.
+ * That makes the two rows describe ONE population, which is the reconciliation
+ * this canvas now exists to judge — and it is why the empty state below reads a
+ * measured `0` instead of a five-hundred-line figure arguing with "None".
+ *
  * The `.prd-props` grid is `auto-fit, minmax(min(100%, 300px), 1fr)` inside the
  * detail pane's max width, so the frame is capped to a single ~432px column — the
  * narrower of the two shipped column widths, which is where the labels are
  * tightest.
  */
-function PropertiesFrame({ children }: Readonly<{ children: ReactNode }>) {
+function PropertiesFrame({
+  children,
+  mergedAuthoredPrLinesChanged,
+}: Readonly<{
+  children: ReactNode;
+  mergedAuthoredPrLinesChanged: number | null;
+}>) {
   return (
     <section className="prd-props-section sd3-props" data-open="true">
       <div className="prd-props" style={{ maxWidth: "432px" }}>
@@ -29,13 +42,7 @@ function PropertiesFrame({ children }: Readonly<{ children: ReactNode }>) {
         <div className="prd-prop">
           <span className="prd-prop-label">Lines changed</span>
           <div className="prd-prop-value">
-            <SessionOutputDiff
-              session={{
-                linesAdded: 420,
-                linesRemoved: 80,
-                authoredPrLinesChanged: 0,
-              }}
-            />
+            <SessionOutputDiff session={{ mergedAuthoredPrLinesChanged }} />
           </div>
         </div>
       </div>
@@ -44,9 +51,9 @@ function PropertiesFrame({ children }: Readonly<{ children: ReactNode }>) {
 }
 
 const meta = {
-  title: "App Core/Agents/Session Pull Requests Row",
+  title: "Primitives v1.0/Data Display/Session Pull Requests Row",
   component: SessionPullRequestsRow,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof SessionPullRequestsRow>;
 
@@ -55,16 +62,38 @@ type Story = StoryObj<typeof meta>;
 
 /**
  * ISS-4769, as shipped — the state this change exists for. One word narrows the
- * row's claim to what its lane actually computed, and the two rows stop arguing:
- * this session opened no PRs, and it still changed 500 lines. The bare "None"
- * this replaced read as "nothing was delivered" beside that "+420 -80 in
- * session" figure, which is the contradiction the canvas exists to judge.
+ * row's claim to what its lane actually computed.
+ *
+ * Under ISS-9964 the two rows no longer argue at all: a session that authored no
+ * PRs merged no lines, so "None authored" sits beside a measured `0 in merged
+ * PRs` and both sentences describe the same population. The canvas is still
+ * worth keeping because that agreement is a COPY judgment — two true statements
+ * can still read as a contradiction — and because `0` and the not-available
+ * placeholder must stay visibly different at a real width.
  */
 export const EmptyAuthoredNone: Story = {
-  args: { prs: [], repositoryFullName: "closedloop-ai/example-repo" },
+  args: { prs: [], repositoryFullName: "closedloop-ai/closedloop-ai" },
   decorators: [
     (Story) => (
-      <PropertiesFrame>
+      <PropertiesFrame mergedAuthoredPrLinesChanged={0}>
+        <Story />
+      </PropertiesFrame>
+    ),
+  ],
+};
+
+/**
+ * The unresolved numerator, which is a DIFFERENT state from the `0` above and
+ * has to look like one: a desktop session before its first cloud sync, or
+ * ISS-4448's session whose merged PRs have no reachable per-PR LOC rows. The row
+ * prints the shared not-available placeholder rather than a `0` that would claim
+ * a measurement nobody took (ISS-9980, RULED 2026-09-11).
+ */
+export const EmptyAuthoredUnavailableLines: Story = {
+  args: { prs: [], repositoryFullName: "closedloop-ai/closedloop-ai" },
+  decorators: [
+    (Story) => (
+      <PropertiesFrame mergedAuthoredPrLinesChanged={null}>
         <Story />
       </PropertiesFrame>
     ),
@@ -76,6 +105,12 @@ export const EmptyAuthoredNone: Story = {
  * attributed PRs renders no empty-state text at all. Pinned on a canvas because
  * "the label never appears here" is easy to assert in a test and easy to get
  * wrong in the markup.
+ *
+ * The pills are deliberately one MERGED and one OPEN against a merged-lines
+ * figure that counts only the first. Since ISS-9964 the number beside them
+ * describes a narrower population than the pills do, and whether that reads
+ * honestly — rather than as "500 lines across these two PRs" — is a copy
+ * judgment this canvas exists to make.
  */
 export const WithAttributedPrs: Story = {
   args: {
@@ -83,11 +118,11 @@ export const WithAttributedPrs: Story = {
       { num: 4246, title: "One Authored gate", status: "merged" },
       { num: 4249, title: "Drop unused pricing tables", status: "open" },
     ],
-    repositoryFullName: "closedloop-ai/example-repo",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
   },
   decorators: [
     (Story) => (
-      <PropertiesFrame>
+      <PropertiesFrame mergedAuthoredPrLinesChanged={500}>
         <Story />
       </PropertiesFrame>
     ),

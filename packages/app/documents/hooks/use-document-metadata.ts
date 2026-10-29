@@ -1,5 +1,6 @@
 "use client";
 
+import { ArtifactStatusEditSurface } from "@repo/api/src/types/artifact-status-contract";
 import type { Priority } from "@repo/api/src/types/common";
 import type {
   ArtifactStatus,
@@ -72,7 +73,7 @@ export function useDocumentMetadata(config: UseArtifactMetadataConfig) {
 
   // Metadata state - tracks local edits
   const [status, setStatus] = useState(artifact.status);
-  const [priority, setPriority] = useState<Priority>(artifact.priority);
+  const [priority, setPriority] = useState<Priority | null>(artifact.priority);
   const [assignee, setAssignee] = useState<User | null>(() =>
     assigneeToUser(artifact.assignee)
   );
@@ -108,7 +109,10 @@ export function useDocumentMetadata(config: UseArtifactMetadataConfig) {
     (
       updates: Partial<{
         status: ArtifactStatus;
-        priority: Priority;
+        /** ISS-9443: set alongside a status or priority write, never alone. */
+        surface: ArtifactStatusEditSurface;
+        /** ISS-9665: `null` clears the priority; `undefined` is "not this write". */
+        priority: Priority | null;
         parentId: string | null;
         approverId: string | null;
         assigneeId: string | null;
@@ -120,10 +124,38 @@ export function useDocumentMetadata(config: UseArtifactMetadataConfig) {
           onSuccess: () => {
             toast.success("Changes saved");
           },
+          // ISS-9667: the pickers below put the new value on screen BEFORE the
+          // write lands, so a refused write has to take it back off. The value
+          // restored is `artifact`'s — server state — not a remembered previous
+          // local value, because the artifact is what the reader's next refetch
+          // will agree with.
+          //
+          // ONLY the fields THIS call wrote are rolled back. Rolling back all
+          // three would let a failed status write revert a priority edit that
+          // had already succeeded but whose refetch had not landed yet — the
+          // panel would then show a priority the server does not hold, which is
+          // the same class of lie the rollback exists to prevent. `undefined`
+          // means "not part of this write"; `assigneeId` is checked against it
+          // rather than truthiness because `null` is a real value (unassign).
+          //
+          // A per-call `onError` runs ALONGSIDE the shared QueryClient default
+          // rather than replacing it, so the failure is still toasted. Rollback
+          // and message are separate obligations and the panel owes both.
+          onError: () => {
+            if (updates.status !== undefined) {
+              setStatus(artifact.status);
+            }
+            if (updates.priority !== undefined) {
+              setPriority(artifact.priority);
+            }
+            if (updates.assigneeId !== undefined) {
+              setAssignee(assigneeToUser(artifact.assignee));
+            }
+          },
         }
       );
     },
-    [artifact.id, updateArtifact]
+    [artifact, updateArtifact]
   );
 
   /**
@@ -133,7 +165,10 @@ export function useDocumentMetadata(config: UseArtifactMetadataConfig) {
   const handleStatusChange = useCallback(
     (newStatus: ArtifactStatus) => {
       setStatus(newStatus);
-      handleMetadataUpdate({ status: newStatus });
+      handleMetadataUpdate({
+        status: newStatus,
+        surface: ArtifactStatusEditSurface.Detail,
+      });
     },
     [handleMetadataUpdate]
   );
@@ -143,9 +178,12 @@ export function useDocumentMetadata(config: UseArtifactMetadataConfig) {
    * Updates local state and immediately saves to server.
    */
   const handlePriorityChange = useCallback(
-    (newPriority: Priority) => {
+    (newPriority: Priority | null) => {
       setPriority(newPriority);
-      handleMetadataUpdate({ priority: newPriority });
+      handleMetadataUpdate({
+        priority: newPriority,
+        surface: ArtifactStatusEditSurface.Detail,
+      });
     },
     [handleMetadataUpdate]
   );
@@ -156,7 +194,10 @@ export function useDocumentMetadata(config: UseArtifactMetadataConfig) {
    */
   const handleApproverSelect = useCallback(
     (user: User | null) => {
-      handleMetadataUpdate({ approverId: user?.id ?? null });
+      handleMetadataUpdate({
+        approverId: user?.id ?? null,
+        surface: ArtifactStatusEditSurface.Detail,
+      });
     },
     [handleMetadataUpdate]
   );
@@ -167,7 +208,10 @@ export function useDocumentMetadata(config: UseArtifactMetadataConfig) {
    */
   const handleParentChange = useCallback(
     (parentId: string | null) => {
-      handleMetadataUpdate({ parentId });
+      handleMetadataUpdate({
+        parentId,
+        surface: ArtifactStatusEditSurface.Detail,
+      });
     },
     [handleMetadataUpdate]
   );
@@ -179,7 +223,10 @@ export function useDocumentMetadata(config: UseArtifactMetadataConfig) {
   const handleAssigneeChange = useCallback(
     (user: User | null) => {
       setAssignee(user);
-      handleMetadataUpdate({ assigneeId: user?.id ?? null });
+      handleMetadataUpdate({
+        assigneeId: user?.id ?? null,
+        surface: ArtifactStatusEditSurface.Detail,
+      });
     },
     [handleMetadataUpdate]
   );
@@ -187,6 +234,7 @@ export function useDocumentMetadata(config: UseArtifactMetadataConfig) {
   return {
     // Metadata state
     status,
+    statusMutation: artifact.statusMutation,
     priority,
     approver,
     repositorySnapshot: artifact.repositorySnapshot,

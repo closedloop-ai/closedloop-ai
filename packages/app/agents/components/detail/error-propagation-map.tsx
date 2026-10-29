@@ -77,9 +77,6 @@ function ErrorTreeNode({ node }: { node: AgentTreeNode }) {
                 <div className="font-medium">
                   {node.agent.name} — {node.agent.status}
                 </div>
-                {node.agent.task && (
-                  <div className="text-muted-foreground">{node.agent.task}</div>
-                )}
                 <div>
                   {node.errorCount} error event
                   {node.errorCount === 1 ? "" : "s"}

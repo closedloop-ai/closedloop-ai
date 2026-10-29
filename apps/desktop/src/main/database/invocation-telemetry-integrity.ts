@@ -26,8 +26,10 @@
 import {
   AGENT_COMPONENT_INVOCATION_MAX_COST,
   AGENT_COMPONENT_INVOCATION_MAX_TOKENS,
-  AgentComponentInvocationKind,
+  LINE_BEARING_INVOCATION_KINDS,
+  USAGE_BEARING_INVOCATION_KINDS,
 } from "@repo/api/src/types/agent-component-invocation";
+import { AGENT_COMPONENT_INVOCATION_MAX_LINES } from "@repo/api/src/types/agent-component-invocation-lines";
 import { z } from "zod";
 import type { StoreIntegrityIssue } from "../telemetry/telemetry-protocol.js";
 import {
@@ -44,6 +46,15 @@ export type InvocationTelemetryIntegrityCounts = {
   outOfRangeTokenRows: number;
   outOfRangeCostRows: number;
   nonSubagentUsageRows: number;
+  /**
+   * ISS-10730: rows whose stored line attribution is IMPOSSIBLE (negative,
+   * fractional, past the safe-integer ceiling) or half-written (one column set
+   * and the other NULL), plus rows carrying lines on a kind nothing measures.
+   * A half-written delta is corruption rather than absence: the projection
+   * drops it, so without this count the resulting cloud NULL would be
+   * indistinguishable from "capture never computed it".
+   */
+  invalidLineRows: number;
 };
 
 /**
@@ -56,14 +67,36 @@ export type InvocationTelemetryReader = {
   runInvocationTelemetryIntegrityCheck?(): Promise<InvocationTelemetryIntegrityCounts>;
 };
 
-/** The tally as it arrives ACROSS the db-host method proxy. A version-skewed
- *  host that cannot serve the read fails this parse, which drops the whole
- *  check (it is omitted from `checksRun`) rather than reporting it as clean. */
-export const INVOCATION_TELEMETRY_INTEGRITY_SCHEMA = z.object({
+/**
+ * Field validators for the proxied tally, kept as a standalone literal so the
+ * keys-covered guard can see them.
+ *
+ * `satisfies Record<keyof InvocationTelemetryIntegrityCounts, z.ZodTypeAny>` is
+ * the compile-time guard (FEA-3701, root AGENTS.md), and it is not circular here
+ * because {@link InvocationTelemetryIntegrityCounts} is declared independently
+ * rather than inferred from this schema.
+ *
+ * This object is deliberately NOT `.strict()`, which makes the guard MORE
+ * valuable, not less: a fourth count added to the type but never taught here
+ * would be silently STRIPPED off the proxied value, so
+ * {@link classifyInvocationTelemetry} would never see it and the impossible rows
+ * it counts would go unreported forever — with the check still claiming to have
+ * run clean. A `.strict()` schema would at least reject loudly. `satisfies`
+ * turns that silent gap into a `tsc` failure.
+ */
+const invocationTelemetryIntegrityShape = {
   outOfRangeTokenRows: z.number().int().nonnegative(),
   outOfRangeCostRows: z.number().int().nonnegative(),
   nonSubagentUsageRows: z.number().int().nonnegative(),
-});
+  invalidLineRows: z.number().int().nonnegative(),
+} satisfies Record<keyof InvocationTelemetryIntegrityCounts, z.ZodTypeAny>;
+
+/** The tally as it arrives ACROSS the db-host method proxy. A version-skewed
+ *  host that cannot serve the read fails this parse, which drops the whole
+ *  check (it is omitted from `checksRun`) rather than reporting it as clean. */
+export const INVOCATION_TELEMETRY_INTEGRITY_SCHEMA = z.object(
+  invocationTelemetryIntegrityShape
+);
 
 /**
  * Count the stored invocation rows whose per-invocation telemetry is IMPOSSIBLE
@@ -77,7 +110,9 @@ export const INVOCATION_TELEMETRY_INTEGRITY_SCHEMA = z.object({
 export function invocationTelemetryIntegritySql(
   maxTokens: number,
   maxCost: number,
-  subagentKind: string
+  usageBearingKinds: readonly string[],
+  lineBearingKinds: readonly string[],
+  maxLines: number
 ): string {
   const tokenColumns = [
     "input_tokens",
@@ -96,12 +131,30 @@ export function invocationTelemetryIntegritySql(
     .concat("estimated_cost")
     .map((column) => `${column} IS NOT NULL`)
     .join(" OR ");
+  const lineColumns = ["lines_added", "lines_removed"];
+  // SQLite has no integer type check, so a fractional value is detected by
+  // comparing the cell against its own truncation — the `1.5 lines` case a
+  // range check alone admits.
+  const impossibleLine = lineColumns
+    .map(
+      (column) =>
+        `(${column} IS NOT NULL AND (${column} < 0 OR ${column} > ${maxLines} OR ${column} != CAST(${column} AS INTEGER)))`
+    )
+    .join(" OR ");
+  const halfWrittenLine = "((lines_added IS NULL) != (lines_removed IS NULL))";
+  const lineOnForeignKind = `(component_kind NOT IN (${lineBearingKinds
+    .map((kind) => `'${kind}'`)
+    .join(", ")}) AND (lines_added IS NOT NULL OR lines_removed IS NOT NULL))`;
   return `SELECT
+      SUM(CASE WHEN ${impossibleLine} OR ${halfWrittenLine} OR ${lineOnForeignKind}
+               THEN 1 ELSE 0 END) AS invalid_line_rows,
       SUM(CASE WHEN ${outOfRangeToken} THEN 1 ELSE 0 END) AS out_of_range_token_rows,
       SUM(CASE WHEN estimated_cost IS NOT NULL
                 AND (estimated_cost < 0 OR estimated_cost > ${maxCost})
                THEN 1 ELSE 0 END) AS out_of_range_cost_rows,
-      SUM(CASE WHEN component_kind != '${subagentKind}' AND (${usagePresent})
+      SUM(CASE WHEN component_kind NOT IN (${usageBearingKinds
+        .map((kind) => `'${kind}'`)
+        .join(", ")}) AND (${usagePresent})
                THEN 1 ELSE 0 END) AS non_subagent_usage_rows
     FROM agent_component_invocations`;
 }
@@ -115,18 +168,24 @@ export function runInvocationTelemetryIntegrityCheck(
         out_of_range_token_rows: bigint | number | null;
         out_of_range_cost_rows: bigint | number | null;
         non_subagent_usage_rows: bigint | number | null;
+        invalid_line_rows: bigint | number | null;
       }[]
     >(
       invocationTelemetryIntegritySql(
         AGENT_COMPONENT_INVOCATION_MAX_TOKENS,
         AGENT_COMPONENT_INVOCATION_MAX_COST,
-        AgentComponentInvocationKind.Subagent
+        // ISS-7795: the same set the wire boundary admits, so a row this build
+        // legally produces can never be reported here as store corruption.
+        [...USAGE_BEARING_INVOCATION_KINDS],
+        [...LINE_BEARING_INVOCATION_KINDS],
+        AGENT_COMPONENT_INVOCATION_MAX_LINES
       )
     );
     return {
       outOfRangeTokenRows: Number(row?.out_of_range_token_rows ?? 0),
       outOfRangeCostRows: Number(row?.out_of_range_cost_rows ?? 0),
       nonSubagentUsageRows: Number(row?.non_subagent_usage_rows ?? 0),
+      invalidLineRows: Number(row?.invalid_line_rows ?? 0),
     };
   });
 }
@@ -144,6 +203,7 @@ export function classifyInvocationTelemetry(
     { count: counts.outOfRangeTokenRows, object: "token_counts" },
     { count: counts.outOfRangeCostRows, object: "estimated_cost" },
     { count: counts.nonSubagentUsageRows, object: "component_kind" },
+    { count: counts.invalidLineRows, object: "line_attribution" },
   ];
   for (const offender of offenders) {
     if (offender.count > 0) {

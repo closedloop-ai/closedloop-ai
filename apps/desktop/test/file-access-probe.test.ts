@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
 import {
+  abbreviateHomePath,
   checkPathReadable,
+  checkPathReadableAsync,
   classifyAccessError,
   type PathReadability,
   probeFileAccessBlocks,
@@ -58,7 +60,7 @@ describe("checkPathReadable", () => {
   // has no POSIX chmod semantics.
   const cannotDenyRead = process.getuid === undefined || process.getuid() === 0;
   test("a permission-denied directory is blocked", {
-    skip: cannotDenyRead && "needs a non-root POSIX host to chmod 000",
+    skip: cannotDenyRead,
   }, () => {
     const denied = makeTempDir();
     fs.chmodSync(denied, 0o000);
@@ -68,6 +70,71 @@ describe("checkPathReadable", () => {
       // Restore read/exec so the afterEach recursive cleanup can traverse it.
       fs.chmodSync(denied, 0o700);
     }
+  });
+});
+
+// ISS-12521 made this the main-thread probe for a user-picked path, where
+// `opendirSync` against a stalled network volume would freeze the app
+// (marisolashgrove, PR #8917). Same verdicts, so the sync suite's cases are
+// mirrored here against the real syscall rather than restated in prose.
+describe("checkPathReadableAsync", () => {
+  test("a readable directory is readable", async () => {
+    assert.equal(await checkPathReadableAsync(makeTempDir()), "readable");
+  });
+
+  test("a nonexistent path is absent, not blocked", async () => {
+    const missing = path.join(makeTempDir(), "does-not-exist");
+    assert.equal(await checkPathReadableAsync(missing), "absent");
+  });
+
+  // A regular file is the `ENOTDIR` case: not nameable as a denial, so it is
+  // `unknown`, which ISS-12521's handler treats as unreadable.
+  test("a regular file is unknown, not readable", async () => {
+    const file = path.join(makeTempDir(), "transcript.jsonl");
+    fs.writeFileSync(file, "{}");
+    assert.equal(await checkPathReadableAsync(file), "unknown");
+  });
+
+  const cannotDenyReadAsync =
+    process.getuid === undefined || process.getuid() === 0;
+  test("a permission-denied directory is blocked", {
+    skip: cannotDenyReadAsync,
+  }, async () => {
+    const denied = makeTempDir();
+    fs.chmodSync(denied, 0o000);
+    try {
+      assert.equal(await checkPathReadableAsync(denied), "blocked");
+    } finally {
+      fs.chmodSync(denied, 0o700);
+    }
+  });
+});
+
+describe("abbreviateHomePath", () => {
+  const home = os.homedir();
+
+  test("a descendant of home is abbreviated", () => {
+    assert.equal(
+      abbreviateHomePath(path.join(home, "code", "orbit-api")),
+      path.join("~", "code", "orbit-api")
+    );
+  });
+
+  test("home itself is ~", () => {
+    assert.equal(abbreviateHomePath(home), "~");
+  });
+
+  // tamsinb, PR #8917: a bare `startsWith(home)` turned `/Users/bobby/code`
+  // into `~by/code` for home `/Users/bob`. The picker hands this any folder
+  // the user chooses, so a sibling whose name merely starts with the home
+  // basename must stay absolute.
+  test("a sibling whose name merely starts with home's is not abbreviated", () => {
+    const sibling = `${home}by${path.sep}code`;
+    assert.equal(abbreviateHomePath(sibling), sibling);
+  });
+
+  test("a path outside home is returned unchanged", () => {
+    assert.equal(abbreviateHomePath("/opt/orbit/ledger"), "/opt/orbit/ledger");
   });
 });
 

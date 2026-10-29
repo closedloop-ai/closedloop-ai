@@ -22,25 +22,15 @@
  * NOTE: this test deliberately does NOT re-assert the BrowserWindow security
  * config (contextIsolation/sandbox/nodeIntegration). That AST guard was
  * intentionally retired with test/agent-dashboard-boundary.test.ts (see
- * apps/desktop/AGENTS.md, "Test Practices"); FEA-4001 must not resurrect it.
+ * apps/desktop/AGENTS.md, "Test Practices"); FEA-4001 must not resurrect it
+ * HERE. ISS-6710 reinstated it as the dedicated suite AGENTS.md points to,
+ * `test/browser-window-web-preferences-lock.test.ts` — a separate file with a
+ * separate subject, which is what that instruction asked for. This one still
+ * owns only the default window SIZE.
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { test } from "node:test";
-import { fileURLToPath } from "node:url";
-import type { Node, ObjectLiteralExpression, SourceFile } from "typescript6";
-import {
-  createSourceFile,
-  forEachChild,
-  isIdentifier,
-  isNewExpression,
-  isObjectLiteralExpression,
-  isPropertyAssignment,
-  ScriptKind,
-  ScriptTarget,
-} from "typescript6";
+import { test } from "vitest";
 import {
   CONTENT_SCROLLBAR_WIDTH,
   DEFAULT_WINDOW_HEIGHT,
@@ -49,6 +39,11 @@ import {
   SESSIONS_STRIP_COMPUTED_TRACK_WIDTH,
   SESSIONS_STRIP_TRACK_WIDTH,
 } from "../src/shared/window-defaults.js";
+import {
+  findBrowserWindowOptions,
+  parseWindowSource,
+  topLevelPropertyValueText,
+} from "./helpers/window-source-ast.js";
 
 // The proven fresh-window width that keeps the dashboard summary-card titles on
 // a single line, and the modern-laptop logical-width ceiling it must stay under.
@@ -68,59 +63,6 @@ const LAPTOP_MAX_WIDTH = 1440;
 // is: nothing else in the suite guarded the height at all, so a change to the
 // vertical reasoning in `window-defaults.ts` had no test to fail (#4445 review).
 const WORK_AREA_SAFE_HEIGHT = 800;
-
-const testDir = path.dirname(fileURLToPath(import.meta.url));
-const windowSourcePath = path.resolve(testDir, "..", "src/main/window.ts");
-
-function parseWindowSource(): SourceFile {
-  return createSourceFile(
-    windowSourcePath,
-    readFileSync(windowSourcePath, "utf8"),
-    ScriptTarget.Latest,
-    true,
-    ScriptKind.TS
-  );
-}
-
-function findBrowserWindowOptions(
-  source: SourceFile
-): ObjectLiteralExpression | undefined {
-  let options: ObjectLiteralExpression | undefined;
-
-  const visit = (node: Node): void => {
-    if (
-      isNewExpression(node) &&
-      isIdentifier(node.expression) &&
-      node.expression.text === "BrowserWindow" &&
-      node.arguments &&
-      node.arguments.length > 0 &&
-      isObjectLiteralExpression(node.arguments[0])
-    ) {
-      options = node.arguments[0];
-      return;
-    }
-    forEachChild(node, visit);
-  };
-
-  visit(source);
-  return options;
-}
-
-function topLevelPropertyValueText(
-  options: ObjectLiteralExpression,
-  key: string
-): string | undefined {
-  for (const prop of options.properties) {
-    if (
-      isPropertyAssignment(prop) &&
-      isIdentifier(prop.name) &&
-      prop.name.text === key
-    ) {
-      return prop.initializer.getText();
-    }
-  }
-  return undefined;
-}
 
 test("FEA-4001: default fresh-window size is the proven 1400 x 800, laptop-safe", () => {
   // Pin the exact proven value — a looser `> 1280` bound would pass at 1281,
@@ -143,15 +85,15 @@ test("FEA-4001: default fresh-window size is the proven 1400 x 800, laptop-safe"
 
 test("FEA-4001: BrowserWindow uses the default-size constants, not literals", () => {
   const source = parseWindowSource();
-  const options = findBrowserWindowOptions(source);
+  const [options] = findBrowserWindowOptions(source);
   assert.ok(options, "expected a new BrowserWindow({ ... }) call");
 
   assert.equal(
-    topLevelPropertyValueText(options, "width"),
+    topLevelPropertyValueText(options, "width", source),
     "DEFAULT_WINDOW_WIDTH"
   );
   assert.equal(
-    topLevelPropertyValueText(options, "height"),
+    topLevelPropertyValueText(options, "height", source),
     "DEFAULT_WINDOW_HEIGHT"
   );
 });

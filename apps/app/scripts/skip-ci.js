@@ -2,42 +2,40 @@ const { execSync } = require("node:child_process");
 
 const commitMessage = execSync("git log -1 --pretty=%B").toString().trim();
 const commitRef = process.env.VERCEL_GIT_COMMIT_REF ?? "";
-// ISS-4487 (PRD-576): machine-generated branches produce previews nobody opens.
-// This is deliberately an ignored BUILD rather than `git.deploymentEnabled`
-// in vercel.json: a disabled deployment posts no commit status at all, and
-// `Vercel - api-stage` / `app-stage` / `web-stage` are required checks on
-// `main`, so those PRs would never become mergeable. An ignored build still
-// reports success ("Canceled by Ignored Build Step"), which satisfies them.
-// Plain prefixes, not globs — Dependabot nests below its prefix
-// (`dependabot/npm_and_yarn/<pkg>-<ver>`), and `startsWith` covers that.
-const SKIPPED_BRANCH_PREFIXES = ["bot/", "codex/", "dependabot/", "symphony/"];
-
-// This ignoreCommand never skips a merge-queue ref. NOT because a skipped build
-// would fail to report — it would: a skip creates a CANCELED deployment and
-// Vercel posts a `success` commit status for it (verified 2026-08-10, ISS-5433;
-// the earlier comment here claimed the opposite and was wrong). The reason is
-// that a queue ref is the last gate before `main`, so it is the one place we
-// actually want the build to run rather than be reported green without evidence.
-//
-// Scope this precisely: continuing here is not the same as "the build always
-// runs". This script is only the repo's ignoreCommand. Vercel's own
-// affected-project filter runs outside it and does cancel unaffected projects on
-// merge-queue refs — observed 2026-08-10 across 17 real `merge_group` head SHAs,
-// where the three required Vercel contexts posted 39 "Deployment has completed",
-// 9 "Skipped - Not affected" and 3 pending.
-if (commitRef.startsWith("gh-readonly-queue/")) {
-  console.log("Continuing build for GitHub merge queue ref.");
-  process.exit(1);
+// CI runs against container stacks. Automatic Vercel builds are reserved for
+// validated stage/production refs and explicit review environments. Match the
+// git.deploymentEnabled policy in this app's vercel.json.
+const DEPLOY_REFS = new Set(["green", "production"]);
+const REVIEW_PREFIXES = ["vibe/", "functional-prototype/"];
+if (
+  !(
+    DEPLOY_REFS.has(commitRef) ||
+    REVIEW_PREFIXES.some((prefix) => commitRef.startsWith(prefix))
+  )
+) {
+  console.log(
+    `Skipping build: ${commitRef} is not a deployment or review ref.`
+  );
+  process.exit(0);
 }
 
-if (SKIPPED_BRANCH_PREFIXES.some((prefix) => commitRef.startsWith(prefix))) {
-  console.log(`Skipping build for machine-generated branch: ${commitRef}`);
-  process.exit(0); // this causes Vercel to skip the build
-}
+// ISS-9704: the SUBJECT line only, never the whole body. A bare `includes` over
+// the full message meant a commit that merely DISCUSSED this marker — in prose,
+// in backticks, in a changelog bullet — cancelled every Vercel deploy. A real
+// directive is conventionally written on the subject line; a mention is not.
+// GitHub Actions applies its own copy of this rule to the whole message and
+// creates no run for the two events it covers — `push` and `pull_request`, and
+// only those. Not configurable from this repo, so the mention still costs every
+// required PR context — docs/runbooks/pr-authoring.md.
+const commitSubject = commitMessage.split("\n", 1)[0];
 
-if (commitMessage.includes("[skip ci]")) {
+if (commitSubject.includes("[skip ci]")) {
   console.log("Skipping build due to [skip ci] in commit message.");
   process.exit(0); // this causes Vercel to skip the build
 }
 
+// ISS-9705: every exit path names its decision. Exit 1 is also what a child that
+// died before running anything returns, so a harness reading only the status
+// cannot tell "continue the build" from "never executed".
+console.log("Continuing with build.");
 process.exit(1); // continue with build

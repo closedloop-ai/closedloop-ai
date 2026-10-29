@@ -1,0 +1,30 @@
+-- ISS-8596 (PRD-699 §6 item 7): a DURABLE per-row retry clock for the
+-- trace-comment lane.
+--
+-- Every failure on this lane was the same `sync_failed` + flat 10s, forever.
+-- ISS-8615 gave the lane an environmental defer for the class where the WORLD is
+-- broken; what a ROW-attributable rejection still had was no count and no
+-- deadline of its own, so a permanently-rejected comment re-POSTed every 10s for
+-- the life of the install.
+--
+-- `sync_attempt_count` is the row's attempt clock and `sync_next_attempt_at` is
+-- the instant it may next be drained. Durable rather than an id-keyed in-memory
+-- map for the reason `main/sync/AGENTS.md` states next to invariant 4: a
+-- process-scoped counter restarts on every relaunch, so a desktop that keeps
+-- restarting inside a long outage would never reach a terminal path — and an
+-- id-keyed map would owe invariant 10 a bound it cannot cheaply have.
+--
+-- `last_sync_attempt_at` could not serve: it is overwritten on every attempt by
+-- BOTH the root operation and the per-reply path, so it records when we last
+-- tried, never how many times or when we may try next.
+--
+-- Additive and safe under version skew. An install upgraded mid-outage reads
+-- `0` / `NULL` — "never failed, due immediately" — which is byte-identical to
+-- the behavior it had before this migration. Only a row-attributable failure
+-- ever advances them (invariant 4); a lane-wide one leaves both untouched.
+--
+-- This deliberately writes NO terminal status. `sync_abandoned*` plus the
+-- user-visible failed badge is ISS-8597 (PRD-699 D2), which is blocked on a
+-- product decision; the count this migration adds is what unblocks it.
+ALTER TABLE "trace_comments" ADD COLUMN "sync_attempt_count" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "trace_comments" ADD COLUMN "sync_next_attempt_at" TEXT;

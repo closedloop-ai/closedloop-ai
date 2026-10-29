@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Only the sync source reads it, to send operationEvidence; no Desktop view reads it."
+}

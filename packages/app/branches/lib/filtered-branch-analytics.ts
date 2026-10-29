@@ -88,7 +88,23 @@ function wireRowMatchesFilters(
     (filters.owners.length === 0 || filters.owners.includes(owner)) &&
     (filters.repos.length === 0 || filters.repos.includes(repo)) &&
     wireRowMatchesSessionPresence(row, filters.sessionPresence) &&
-    wireRowMatchesLocRange(row, filters.locMin, filters.locMax)
+    wireRowMatchesLocRange(row, filters.locMin, filters.locMax) &&
+    wireRowMatchesSearch(row, filters.search)
+  );
+}
+
+/** The free-text term over a wire row's branch name and repository. */
+function wireRowMatchesSearch(
+  row: WireBranchRow,
+  search: string | undefined
+): boolean {
+  const term = search?.trim().toLocaleLowerCase();
+  if (!term) {
+    return true;
+  }
+  return (
+    row.branchName.toLocaleLowerCase().includes(term) ||
+    (row.repoFullName ?? "").toLocaleLowerCase().includes(term)
   );
 }
 
@@ -159,7 +175,7 @@ function unavailable(): BranchKpi {
  * producer predating FEA-4268, whose displayed fields still carried the file-cache
  * value), preserving the old basis on stale client/server pairings.
  */
-function analyticsLoc(row: WireBranchRow): {
+export function analyticsLoc(row: WireBranchRow): {
   additions: number | null;
   deletions: number | null;
 } {

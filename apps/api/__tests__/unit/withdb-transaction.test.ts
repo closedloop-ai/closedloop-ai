@@ -30,11 +30,9 @@ const mockTxClient: unknown = { _isMockTxClient: true };
 // Build a mock PrismaClient where $transaction invokes the callback with
 // mockTxClient and propagates exceptions correctly.
 const mockPrisma = {
-  $transaction: vi
-    .fn()
-    .mockImplementation((fn: (tx: unknown) => Promise<unknown>) =>
-      fn(mockTxClient)
-    ),
+  $transaction: vi.fn((fn: (tx: unknown) => Promise<unknown>) =>
+    fn(mockTxClient)
+  ),
 } as unknown as PrismaClient;
 
 // ---------------------------------------------------------------------------

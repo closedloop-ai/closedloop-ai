@@ -9,8 +9,9 @@
  * both asserted — no logs, no wall-clock timing.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { TranscriptUploadStatus } from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
+import { test } from "vitest";
 import type { TranscriptSettle } from "../src/main/database/transcript-sync-settle.js";
 import {
   createTranscriptSyncStore,
@@ -24,7 +25,10 @@ import {
   type TranscriptSyncResult,
   TranscriptSyncRevokedError,
 } from "../src/main/transcript-sync/transcript-sync-executor.js";
-import type { TranscriptFingerprint } from "../src/main/transcript-sync/transcript-sync-types.js";
+import {
+  TRANSCRIPT_UPLOAD_LEASE_MS,
+  type TranscriptFingerprint,
+} from "../src/main/transcript-sync/transcript-sync-types.js";
 import { makeRecordingQueue, openTestPrisma } from "./prisma-test-utils.js";
 
 const NOW = "2026-07-09T00:00:00.000Z";
@@ -73,7 +77,7 @@ function batchingFakeExecutor(
       // The claim is a separate per-file write, exactly as production does it
       // before any stat/redaction work — this is the growth-signal guard that
       // must NOT be coalesced.
-      await store.markUploading(fp.externalSessionId, fp.fileKey, NOW);
+      await store.markUploading(fp.externalSessionId, fp.fileKey, NOW, "ct-1");
       const settle = makeSettle(fp);
       if (options?.settleCollector) {
         options.settleCollector(settle);
@@ -87,6 +91,7 @@ function batchingFakeExecutor(
       Promise.resolve({
         acked: true as const,
         status: TranscriptUploadStatus.Skipped,
+        reason: TranscriptSkipReason.RetriesExhausted,
       }),
   };
 }
@@ -175,7 +180,7 @@ test("ISS-4723: a drain batch coalesces every SETTLE into ONE write while markUp
   }
 });
 
-test("ISS-4723/ISS-4849 crash-safety: a settle lost before the batch flush never fakes `idle`, and is re-armed (in-process, then by requeueStale)", async () => {
+test("ISS-4723/ISS-4849 crash-safety: a settle lost before the batch flush never fakes `idle`, and is re-armed (in-process, then by the lease reclaim)", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
     const store = createTranscriptSyncStore(prisma);
@@ -215,7 +220,7 @@ test("ISS-4723/ISS-4849 crash-safety: a settle lost before the batch flush never
     );
 
     // ISS-4849 CHANGED what happens next. It used to stay `uploading` — a status
-    // `listReady` excludes — until the next app launch ran `requeueStale`, so a
+    // `listReady` excludes — until the next app launch re-armed it, so a
     // transient flush failure stranded the row for a whole session. The drain now
     // re-arms it in-process, bounded, so the very next tick retries it.
     assert.equal(
@@ -224,18 +229,25 @@ test("ISS-4723/ISS-4849 crash-safety: a settle lost before the batch flush never
       "ISS-4849: the drain re-queues the unsettled row in-process, not at next boot"
     );
 
-    // Boot recovery is still the backstop for rows past the in-process cap (see
-    // transcript-drain-flush-recovery.test.ts): requeueStale re-arms every
-    // `uploading` row so the next drain re-plans it from the server-authoritative
-    // cursor. Nothing is left behind either way.
-    await store.markUploading("sess-crash", "main", NOW);
-    const revived = await store.requeueStale(NOW);
+    // The sweep's lease reclaim is the backstop for rows past the in-process cap
+    // (see transcript-drain-flush-recovery.test.ts): once the claim expires it
+    // re-arms the row so the next drain re-plans it from the server-authoritative
+    // cursor. ISS-7097 made that reclaim RECURRING rather than boot-only, so
+    // nothing is left behind either way — and nothing waits for a restart.
+    await store.markUploading("sess-crash", "main", NOW, "ct-1");
+    const revived = await store.requeueExpiredUploadLeases({
+      now: new Date(
+        Date.parse(NOW) + TRANSCRIPT_UPLOAD_LEASE_MS + 1
+      ).toISOString(),
+      leaseMs: TRANSCRIPT_UPLOAD_LEASE_MS,
+      claimableFrom: NOW,
+    });
     assert.equal(revived, 1);
     const recovered = await store.get("sess-crash", "main");
     assert.equal(
       recovered?.status,
       "queued",
-      "requeueStale still revives a stranded uploading row to queued"
+      "the expired-lease reclaim still revives a stranded uploading row to queued"
     );
   } finally {
     await close();
@@ -275,7 +287,12 @@ test("ISS-4723: a sibling worker's terminal settle is NOT lost when another work
         fp: TranscriptFingerprint,
         options?: TranscriptSyncFileOptions
       ): Promise<TranscriptSyncResult> {
-        await store.markUploading(fp.externalSessionId, fp.fileKey, NOW);
+        await store.markUploading(
+          fp.externalSessionId,
+          fp.fileKey,
+          NOW,
+          "ct-1"
+        );
         if (fp.externalSessionId === "sess-revoked") {
           // Reject fast so `Promise.all` would short-circuit first.
           throw new TranscriptSyncRevokedError();
@@ -290,6 +307,7 @@ test("ISS-4723: a sibling worker's terminal settle is NOT lost when another work
         Promise.resolve({
           acked: true as const,
           status: TranscriptUploadStatus.Skipped,
+          reason: TranscriptSkipReason.RetriesExhausted,
         }),
     };
     const drain = makeDrainQueue(rejectingStore, executor, 4);
@@ -347,6 +365,8 @@ test("ISS-4723: recordBatchSettled applies every terminal settle kind in one wri
         externalSessionId: "dead",
         fileKey: "main",
         reason: "skipped: terminal",
+        terminalSkipReason: TranscriptSkipReason.TooLarge,
+        terminalSkipComputeTargetId: null,
         now: NOW,
       },
       {
@@ -356,8 +376,11 @@ test("ISS-4723: recordBatchSettled applies every terminal settle kind in one wri
         retryCount: 2,
         missingSourceCount: 0,
         dead: false,
+        terminalSkipReason: null,
+        terminalSkipComputeTargetId: null,
         nextAttemptAt: "2026-07-09T00:05:00.000Z",
         lastError: "boom",
+        laneStalledSince: null,
         now: NOW,
       },
     ];
@@ -401,8 +424,11 @@ test("ISS-4815: a cloudUploaded settle persists its acknowledgement through the 
       retryCount: 2,
       missingSourceCount: 2,
       dead: false,
+      terminalSkipReason: null,
+      terminalSkipComputeTargetId: null,
       nextAttemptAt: NOW,
       lastError: "local transcript source missing",
+      laneStalledSince: null,
       now: NOW,
     });
 

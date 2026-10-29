@@ -14,9 +14,8 @@ import type { TranscriptPrepareResult } from "../../shared/transcript-read-contr
  * hands only the file id to the main process, which mints the signed URL and
  * streams the bytes into a local cache, then returns an opaque same-origin
  * `app://renderer/transcripts/…` URL. The shared `fetchAndParseTranscript` then
- * GETs that URL under the unchanged `connect-src 'self' app:` — the (multi-MB)
- * transcript bytes never cross the IPC bridge and no remote origin is added to
- * the renderer.
+ * GETs that same-origin URL — the (multi-MB) transcript bytes never cross the
+ * IPC bridge and no transcript origin is added to the renderer's `connect-src`.
  *
  * Only exercised in cloud mode: signed-out / offline detail omits `transcripts`,
  * so `useSessionTranscript` stays disabled and this resolver is never called.

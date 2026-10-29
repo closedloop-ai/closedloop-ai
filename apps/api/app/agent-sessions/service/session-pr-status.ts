@@ -7,10 +7,12 @@
 
 import type { SessionPR } from "@repo/api/src/types/agent-session";
 import { normalizeRepoFullName } from "@repo/api/src/types/branch";
-import { PullRequestState } from "@repo/api/src/types/document";
+import { hasObservedPullRequestLifecycle } from "@repo/api/src/types/pull-request-lifecycle-observation";
 import {
   collectSessionPrEvidence,
-  deriveSessionPrPurposeFromMetadata,
+  commandDerivedSessionPrRefsFromMetadata,
+  deriveSessionPrPurposeFromRelationTypes,
+  isProseDerivedSessionPrLink,
   parseSessionPrLinkMetadata,
   resolveSessionPrAdmissionIdentity,
   type SessionPrEvidence,
@@ -23,6 +25,7 @@ import {
   SessionPrLifecycleStatus,
   sessionPrWithLifecycle,
 } from "@repo/lib/session-trace/derivation";
+import { branchCandidatePullRequests } from "@/app/branches/branch-canonical-pull-request";
 import { sessionPrSchema } from "@/lib/desktop-agent-sessions-schema";
 import { parseJsonArray } from "./coercion";
 import type { AgentSessionListRecord } from "./records";
@@ -93,19 +96,31 @@ function resolveTrustedPrDetail(
 export function resolveAuthoredPrLinkIdentity(
   link: SourceLinkRecord
 ): { repositoryFullName: string; prNumber: number } | null {
-  const meta = link.metadata as Record<string, unknown> | null;
-  const repositoryFullName = meta?.repositoryFullName as string | undefined;
-  const prNumber = meta?.prNumber as number | undefined;
-  if (!repositoryFullName || prNumber == null) {
-    return null;
-  }
-  const purpose = deriveSessionPrPurposeFromMetadata(
-    parseSessionPrLinkMetadata(link.metadata)
+  return resolveAuthoredPrLinkIdentities(link)[0] ?? null;
+}
+
+/** Every PR identity this link independently classifies as authored. */
+export function resolveAuthoredPrLinkIdentities(
+  link: SourceLinkRecord
+): { repositoryFullName: string; prNumber: number }[] {
+  const metadata = parseSessionPrLinkMetadata(link.metadata);
+  // ISS-5823: a prose mention is minted `REFERENCED`, so it could not derive
+  // to `Authored` anyway — excluding it here states that rather than relying
+  // on a producer three repos away never emitting a `CREATED` prose ref.
+  return commandDerivedSessionPrRefsFromMetadata(link.metadata).flatMap(
+    (ref) =>
+      deriveSessionPrPurposeFromRelationTypes(
+        ref.relationTypes,
+        metadata?.confidence
+      ) === SessionPrPurpose.Authored
+        ? [
+            {
+              repositoryFullName: ref.repositoryFullName,
+              prNumber: ref.prNumber,
+            },
+          ]
+        : []
   );
-  if (purpose !== SessionPrPurpose.Authored) {
-    return null;
-  }
-  return { repositoryFullName, prNumber };
 }
 
 /**
@@ -148,40 +163,40 @@ function applyAuthoredPrLink(
   acc: SessionPrAccumulator,
   link: SourceLinkRecord
 ): void {
-  const attributed = resolveAuthoredPrLinkIdentity(link);
-  if (!attributed) {
-    return;
+  for (const {
+    repositoryFullName,
+    prNumber,
+  } of resolveAuthoredPrLinkIdentities(link)) {
+    const trustedDetail = resolveTrustedPrDetail(
+      link,
+      repositoryFullName,
+      prNumber
+    );
+    const identityKey = sessionPullRequestIdentityKey(
+      repositoryFullName,
+      prNumber
+    );
+    const legacyIdentityKey = sessionPullRequestIdentityKey(null, prNumber);
+    const existingPr =
+      acc.byIdentity.get(identityKey) ?? acc.byIdentity.get(legacyIdentityKey);
+    const pr = sessionPrWithLifecycle({
+      num: prNumber,
+      title: trustedDetail?.title ?? existingPr?.title ?? null,
+      status: trustedDetail
+        ? null
+        : sanitizeUnverifiedSessionPrStatus(existingPr?.status),
+      prState: trustedDetail?.prState ?? null,
+      closedAt: trustedDetail?.closedAt ?? null,
+      mergedAt: trustedDetail?.mergedAt ?? null,
+    });
+    settleResolvedPr(
+      acc,
+      identityKey,
+      legacyIdentityKey,
+      pr,
+      Boolean(trustedDetail)
+    );
   }
-  const { repositoryFullName, prNumber } = attributed;
-  const trustedDetail = resolveTrustedPrDetail(
-    link,
-    repositoryFullName,
-    prNumber
-  );
-  const identityKey = sessionPullRequestIdentityKey(
-    repositoryFullName,
-    prNumber
-  );
-  const legacyIdentityKey = sessionPullRequestIdentityKey(null, prNumber);
-  const existingPr =
-    acc.byIdentity.get(identityKey) ?? acc.byIdentity.get(legacyIdentityKey);
-  const pr = sessionPrWithLifecycle({
-    num: prNumber,
-    title: trustedDetail?.title ?? existingPr?.title ?? null,
-    status: trustedDetail
-      ? null
-      : sanitizeUnverifiedSessionPrStatus(existingPr?.status),
-    prState: trustedDetail?.prState ?? null,
-    closedAt: trustedDetail?.closedAt ?? null,
-    mergedAt: trustedDetail?.mergedAt ?? null,
-  });
-  settleResolvedPr(
-    acc,
-    identityKey,
-    legacyIdentityKey,
-    pr,
-    Boolean(trustedDetail)
-  );
 }
 
 /**
@@ -208,45 +223,17 @@ type VerifiedPrDetail = {
 };
 
 /** The `(repositoryFullName, prNumber)` a source link authoritatively declares. */
-function sessionPrLinkDeclaredIdentity(
+function sessionPrLinkDeclaredIdentities(
   link: SourceLinkRecord
-): { repositoryFullName: string; prNumber: number } | null {
-  const meta = link.metadata as Record<string, unknown> | null;
-  const repositoryFullName = meta?.repositoryFullName;
-  const prNumber = meta?.prNumber;
-  if (typeof repositoryFullName !== "string" || typeof prNumber !== "number") {
-    return null;
-  }
-  return { repositoryFullName, prNumber };
-}
-
-/**
- * FEA-4317 (whitlockk review): a PR detail's lifecycle is only VERIFIED when a
- * producer actually observed it. `lastVerifiedAt` alone is insufficient: a
- * desktop bare-ref row (a `git_push`/`gh_pr_create` extraction that named a PR
- * number but never ran `gh pr view`) is inserted with the Prisma
- * `prState @default(OPEN)` and no lifecycle timestamps, yet still gets a
- * `lastVerifiedAt` stamp — so trusting `lastVerifiedAt` would launder an Unknown
- * session PR into a fabricated Open the producer never observed. A genuine
- * lifecycle observation carries a terminal timestamp (`mergedAt`/`closedAt`),
- * a terminal `prState` (Merged/Closed), or the PR-opened timestamp
- * `githubCreatedAt` (written only by the webhook / `gh` fetch / App backfill
- * paths that truly saw the PR). Absent all of those, the Open is a default, not
- * an observation, and the PR stays Unknown.
- */
-function hasObservedPrLifecycle(detail: {
-  prState?: string | null;
-  mergedAt?: Date | null;
-  closedAt?: Date | null;
-  githubCreatedAt?: Date | null;
-}): boolean {
-  return (
-    detail.mergedAt != null ||
-    detail.closedAt != null ||
-    detail.prState === PullRequestState.Merged ||
-    detail.prState === PullRequestState.Closed ||
-    detail.githubCreatedAt != null
-  );
+): { repositoryFullName: string; prNumber: number }[] {
+  // ISS-5823: these identities ADJUDICATE — an entry here flips an
+  // unadjudicated legacy-blob PR from KEEP to REJECT. A prose mention is not
+  // evidence that looked at the PR and declined to call it authoring, so it
+  // must not delete a genuinely authored PR whose link was capped out.
+  return commandDerivedSessionPrRefsFromMetadata(link.metadata).map((ref) => ({
+    repositoryFullName: ref.repositoryFullName,
+    prNumber: ref.prNumber,
+  }));
 }
 
 /**
@@ -258,7 +245,7 @@ function hasObservedPrLifecycle(detail: {
  * historical set, so consulting the current pointer alone (as the FEA-4251 pass
  * did) erases it and re-reports it as "unknown". Each candidate keeps the same
  * freshness gate as {@link resolveTrustedPrDetail} (`lastVerifiedAt != null`)
- * PLUS the lifecycle-observed gate {@link hasObservedPrLifecycle} so an
+ * PLUS the lifecycle-observed gate {@link hasObservedPullRequestLifecycle} so an
  * unverified/stale/default-only detail can never launder an unknown PR into a
  * claimed state. `isCurrent` is deliberately NOT required — a historical
  * (superseded) PR is `isCurrent: false` yet its verified lifecycle is still real.
@@ -270,12 +257,12 @@ function collectVerifiedPrDetailsFromLink(
   if (!branch) {
     return [];
   }
-  const candidates = [
-    branch.currentPullRequestDetail,
-    ...(link.target?.pullRequestDetails ?? []),
-  ];
+  const candidates = branchCandidatePullRequests(
+    branch,
+    link.target?.pullRequestDetails
+  );
   const branchRepoRaw = branch.repository?.fullName ?? null;
-  const declared = sessionPrLinkDeclaredIdentity(link);
+  const declared = sessionPrLinkDeclaredIdentities(link);
   const resolved: VerifiedPrDetail[] = [];
   for (const detail of candidates) {
     if (
@@ -284,7 +271,7 @@ function collectVerifiedPrDetailsFromLink(
       detail.number == null ||
       // FEA-4317 (whitlockk review): reject a `lastVerifiedAt`-stamped row whose
       // lifecycle was never observed (a default-OPEN desktop bare-ref).
-      !hasObservedPrLifecycle(detail)
+      !hasObservedPullRequestLifecycle(detail)
     ) {
       continue;
     }
@@ -303,11 +290,12 @@ function collectVerifiedPrDetailsFromLink(
       // FEA-4317 (codex P2): the detail IS the link's declared PR only when its
       // repo + number match the link's own metadata identity. A same-number
       // historical sibling on the branch is NOT link-declared.
-      matchesLinkDeclaredPr:
-        declared != null &&
-        declared.prNumber === detail.number &&
-        normalizeRepoFullName(declared.repositoryFullName) ===
-          normalizeRepoFullName(repositoryFullName),
+      matchesLinkDeclaredPr: declared.some(
+        (identity) =>
+          identity.prNumber === detail.number &&
+          normalizeRepoFullName(identity.repositoryFullName) ===
+            normalizeRepoFullName(repositoryFullName)
+      ),
     });
   }
   return resolved;
@@ -420,10 +408,10 @@ function collectBranchReachablePrEvidence(
   }
   const branchRepoRaw = branch.repository?.fullName ?? null;
   const records: SessionPrEvidenceRecord[] = [];
-  const candidates = [
-    branch.currentPullRequestDetail,
-    ...(link.target?.pullRequestDetails ?? []),
-  ];
+  const candidates = branchCandidatePullRequests(
+    branch,
+    link.target?.pullRequestDetails
+  );
   for (const detail of candidates) {
     if (!detail || detail.number == null) {
       continue;
@@ -452,8 +440,7 @@ function collectSessionPrLinkEvidence(
 ): SessionPrLinkEvidence {
   const records: SessionPrEvidenceRecord[] = [];
   for (const link of links) {
-    const declared = sessionPrLinkDeclaredIdentity(link);
-    if (declared) {
+    for (const declared of sessionPrLinkDeclaredIdentities(link)) {
       records.push({
         kind: SessionPrEvidenceKind.Adjudicated,
         prNumber: declared.prNumber,
@@ -461,8 +448,7 @@ function collectSessionPrLinkEvidence(
       });
     }
     records.push(...collectBranchReachablePrEvidence(link));
-    const authored = resolveAuthoredPrLinkIdentity(link);
-    if (authored) {
+    for (const authored of resolveAuthoredPrLinkIdentities(link)) {
       records.push({
         kind: SessionPrEvidenceKind.Authored,
         prNumber: authored.prNumber,
@@ -557,7 +543,14 @@ export function toSessionPullRequestProjection(
     byIdentity: new Map<string, SessionPR>(),
     verifiedMergedIdentities: new Set<string>(),
   };
-  const links = record.artifact.sourceLinks ?? [];
+  // ISS-5823: prose-derived links are excluded from the rendered PR set
+  // WHOLESALE, not just from the authorship test. A prose-only link puts a
+  // whole BRANCH in scope, and `collectBranchReachablePrEvidence` adjudicates
+  // every PR reachable from it — so admitting the link would let a mention
+  // suppress a real PR even though the mention itself renders nothing.
+  const links = (record.artifact.sourceLinks ?? []).filter(
+    (link) => !isProseDerivedSessionPrLink(link.metadata)
+  );
   // ISS-4768: adjudicate the legacy blob against the session's own link evidence
   // BEFORE seeding, so an uncorroborated (referenced-only / CWD-branch-inherited)
   // blob entry never enters the set. Because the later verified-detail pass only

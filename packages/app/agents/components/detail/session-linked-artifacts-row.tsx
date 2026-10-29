@@ -28,7 +28,7 @@ const VISIBLE_LINKED_ARTIFACTS = 6 as const;
 
 /**
  * ISS-4898: an href a shell hands this row is either root-relative (the web
- * shell's in-app `/<org>/issues/<slug>`) or an absolute `https://` URL to the
+ * shell's in-app `/<org>/documents/<slug>`) or an absolute `https://` URL to the
  * web app (the desktop shell, which hosts no document detail routes and so
  * hands off to the browser). Only the latter may render as an external anchor.
  */
@@ -69,7 +69,7 @@ function linkedArtifactTitle(artifact: SessionLinkedArtifact): string {
  * own rendering, which asserts neither answer.
  *
  * ISS-4793: all three navigable/inert branches deliberately survive. The web shell hosts
- * `/issues|prds|implementation-plans|documents/[slug]`, so its pills are in-app
+ * `/documents/[slug]`, so its pills are in-app
  * links. Handing the desktop renderer a root-relative href would be strictly
  * worse than the span: its nav guard DROPS an href with no route-table entry
  * (`handleUnmappedHref`), so the pill would look clickable and then do nothing.
@@ -246,7 +246,7 @@ function LinkedArtifactsOverflowChip({
  * to {@link VISIBLE_LINKED_ARTIFACTS} navigable pills and, when the resolved
  * `total` exceeds them, a reachable `+N` overflow chip instead of silently
  * dropping links or dead-ending on an "N of M shown" caption. Extracted to a
- * sibling so the grandfathered `agent-session-detail-view.tsx` does not grow.
+ * sibling so `agent-session-detail-view.tsx` does not grow.
  *
  * Renders nothing when there are no linked artifacts — a session with none adds
  * no extra row to the pane.

@@ -1,6 +1,9 @@
 import path from "node:path";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
-import { findWorktreeForBranch, resolveRepoFullName } from "./git-helpers.js";
+import {
+  findWorktreeForBranch,
+  resolveRepoFullNameAsync,
+} from "./git-helpers.js";
 import { loadReposConfig } from "./repos-config-utils.js";
 import { json } from "./response-utils.js";
 import { expandHome, SymphonyDirNotConfiguredError } from "./symphony-utils.js";
@@ -30,11 +33,11 @@ export function registerGitBranchWorktreeRoutes(
 
         for (const repo of config.repos) {
           const expandedRepoPath = expandHome(repo.path);
-          const fullName = resolveRepoFullName(expandedRepoPath);
+          const fullName = await resolveRepoFullNameAsync(expandedRepoPath);
           if (fullName !== repoFullName) {
             continue;
           }
-          const worktreePath = findWorktreeForBranch(
+          const worktreePath = await findWorktreeForBranch(
             expandedRepoPath,
             headBranch
           );

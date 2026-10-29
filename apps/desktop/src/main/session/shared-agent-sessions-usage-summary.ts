@@ -23,11 +23,17 @@ import {
 } from "../../shared/shared-agent-sessions-contract.js";
 import type { AgentSessionUsageAggregate } from "../agent-sync/agent-session-read-model.js";
 import type { SyncedAgentSession } from "../agent-sync/agent-session-sync-contract.js";
-import { resolveBillingModeForRow } from "../agent-sync/agent-session-token-cost-resolution.js";
 import {
+  billingModeAt,
+  resolveBillingModesNonBlocking,
+} from "../cost/billing-mode-detector.js";
+import {
+  accumulateOwnerTotals,
   buildByUserFromCounts,
-  buildByUserRollup,
+  buildByUserRollupFromTotals,
+  createOwnerTotalsAccumulator,
   getOrgDirectorySnapshot,
+  type OwnerTotalsAccumulator,
 } from "./org-directory-cache.js";
 import {
   accumulateUsageRepositoryTotals,
@@ -39,7 +45,6 @@ import {
   getOrCreateModelSummary,
   getSessionLedger,
   type SessionTotals,
-  stripSessionIds,
   sumTokenUsage,
   zeroTotals,
 } from "./session-usage-totals.js";
@@ -47,79 +52,132 @@ import {
 export function buildUsageSummary(
   sessions: readonly SyncedAgentSession[]
 ): SharedAgentSessionUsageSummary {
-  const byModel = new Map<
-    string,
-    SharedAgentSessionUsageByModel & { sessionIds: Set<string> }
-  >();
-  const byHarness = new Map<
-    string,
-    SharedAgentSessionHarnessBreakdown & { sessionIds: Set<string> }
-  >();
-  const totals: SessionTotals = zeroTotals();
-  const ledgerTotals: Record<BillingLedger, number> = {
-    metered: 0,
-    subscription: 0,
-    unknown: 0,
-  };
-  // Per-session (userId, token totals) pairs folded into the Owner rollup.
-  const byUserEntries: { userId: string | null; totals: SessionTotals }[] = [];
-  // FEA-4303: per-PRIMARY-model (`session.model`) session counts — one increment
-  // per session on the single displayed model. Sources the Model filter facet
-  // options so they share the primary-model vocabulary of the Model column and
-  // the predicate, unlike `byModel` (which spans secondary/subagent models).
-  const primaryModelSessionCounts = new Map<string, number>();
-  // FEA-4299: Repository facet options (see `accumulateUsageRepositoryTotals`).
-  const byRepository = new Map<string, SharedAgentSessionRepositoryBreakdown>();
-  let earliestStartMs: number | null = null;
-  let latestStartMs: number | null = null;
-
+  const fold = createUsageSummaryFold();
   for (const session of sessions) {
-    // Bounds skip rows with no real start (see `parseBoundsStartMs`), mirroring
-    // SQL MIN/MAX and the API's Prisma _min/_max.
-    const startMs = parseBoundsStartMs(session.startedAt);
-    if (startMs !== null) {
-      if (earliestStartMs === null || startMs < earliestStartMs) {
-        earliestStartMs = startMs;
-      }
-      if (latestStartMs === null || startMs > latestStartMs) {
-        latestStartMs = startMs;
-      }
+    addSessionToUsageSummaryFold(fold, session);
+  }
+  return finishUsageSummaryFold(fold);
+}
+
+/**
+ * ISS-6895: the running state of {@link buildUsageSummary}, held so the fold can
+ * be driven one hydration window at a time instead of over one array holding the
+ * whole matched population. Every member is keyed by a DIMENSION (model,
+ * harness, repository, owner) or is a scalar, so the accumulator's size is
+ * bounded by the corpus's cardinality, never by its row count — that is what
+ * lets the desktop summary cover a population above any hydration window while
+ * peak memory stays bounded by one window.
+ *
+ * That property is a claim about EVERY member, VALUES included, so the
+ * per-dimension distinct-session counts are plain counters. They were `Set`s of
+ * session id, which made `byModel`/`byHarness` O(rows) — one retained id per
+ * session for the whole read — and quietly reintroduced the corpus-sized
+ * residency the windowed fold exists to remove. Counters are exact here because
+ * a session reaches the fold exactly once (ids are deduped by `sanitizeIds`),
+ * and the only many-per-session dimension (`byModel`, via `tokenUsageByModel`)
+ * dedupes locally within the session. This also matches the SQL twin
+ * `foldUsageAggregate`, which has always counted with `+=`.
+ */
+export type UsageSummaryFold = {
+  byModel: Map<string, SharedAgentSessionUsageByModel>;
+  byHarness: Map<string, SharedAgentSessionHarnessBreakdown>;
+  totals: SessionTotals;
+  ledgerTotals: Record<BillingLedger, number>;
+  byUser: OwnerTotalsAccumulator;
+  primaryModelSessionCounts: Map<string, number>;
+  byRepository: Map<string, SharedAgentSessionRepositoryBreakdown>;
+  sessionCount: number;
+  earliestStartMs: number | null;
+  latestStartMs: number | null;
+};
+
+export function createUsageSummaryFold(): UsageSummaryFold {
+  return {
+    byModel: new Map(),
+    byHarness: new Map(),
+    totals: zeroTotals(),
+    ledgerTotals: { metered: 0, subscription: 0, unknown: 0 },
+    byUser: createOwnerTotalsAccumulator(),
+    // FEA-4303: per-PRIMARY-model (`session.model`) session counts — one
+    // increment per session on the single displayed model. Sources the Model
+    // filter facet options so they share the primary-model vocabulary of the
+    // Model column and the predicate, unlike `byModel` (which spans
+    // secondary/subagent models).
+    primaryModelSessionCounts: new Map(),
+    // FEA-4299: Repository facet options (see `accumulateUsageRepositoryTotals`).
+    byRepository: new Map(),
+    sessionCount: 0,
+    earliestStartMs: null,
+    latestStartMs: null,
+  };
+}
+
+export function addSessionToUsageSummaryFold(
+  fold: UsageSummaryFold,
+  session: SyncedAgentSession
+): void {
+  fold.sessionCount += 1;
+  // Bounds skip rows with no real start (see `parseBoundsStartMs`), mirroring
+  // SQL MIN/MAX and the API's Prisma _min/_max.
+  const startMs = parseBoundsStartMs(session.startedAt);
+  if (startMs !== null) {
+    if (fold.earliestStartMs === null || startMs < fold.earliestStartMs) {
+      fold.earliestStartMs = startMs;
     }
-    const sessionTotals = sumTokenUsage(session);
-    addTotals(totals, sessionTotals);
-    ledgerTotals[getSessionLedger(session)] += sessionTotals.estimatedCost;
-    addSessionToHarnessBreakdown(byHarness, session, sessionTotals);
-    // ISS-4613: every session contributes to the Owner (`byUser`) facet, over
-    // the SAME all-quality corpus as `totalSessions` and every sibling facet
-    // (see the SQL twin's `userResult` in sync-source.ts).
-    byUserEntries.push({
-      userId: session.userId ?? null,
-      totals: sessionTotals,
-    });
-    accumulateUsageRepositoryTotals(byRepository, session, sessionTotals);
-
-    // FEA-4303: one count per session on its primary model (see helper).
-    tallyPrimaryModel(primaryModelSessionCounts, session.model ?? null);
-
-    for (const usage of session.tokenUsageByModel) {
-      const model = usage.model || "unknown";
-      const modelSummary = getOrCreateModelSummary(byModel, model);
-      modelSummary.sessionIds.add(session.externalSessionId);
-      modelSummary.inputTokens += usage.inputTokens;
-      modelSummary.outputTokens += usage.outputTokens;
-      modelSummary.cacheReadTokens += usage.cacheReadTokens;
-      modelSummary.cacheWriteTokens += usage.cacheWriteTokens;
-      modelSummary.estimatedCost += usage.estimatedCostUsd ?? 0;
+    if (fold.latestStartMs === null || startMs > fold.latestStartMs) {
+      fold.latestStartMs = startMs;
     }
   }
+  const sessionTotals = sumTokenUsage(session);
+  addTotals(fold.totals, sessionTotals);
+  fold.ledgerTotals[getSessionLedger(session)] += sessionTotals.estimatedCost;
+  addSessionToHarnessBreakdown(fold.byHarness, session, sessionTotals);
+  // ISS-4613: every session contributes to the Owner (`byUser`) facet, over
+  // the SAME all-quality corpus as `totalSessions` and every sibling facet
+  // (see the SQL twin's `userResult` in sync-source.ts).
+  accumulateOwnerTotals(fold.byUser, session.userId ?? null, sessionTotals);
+  accumulateUsageRepositoryTotals(fold.byRepository, session, sessionTotals);
 
+  // FEA-4303: one count per session on its primary model (see helper).
+  tallyPrimaryModel(fold.primaryModelSessionCounts, session.model ?? null);
+
+  // ISS-6895: `tokenUsageByModel` can carry SEVERAL rows for the same model, so
+  // the per-model distinct-session count needs deduplication — but only WITHIN
+  // this session. This local set is bounded by one session's model cardinality
+  // and is released with the session; the fold itself keeps only a counter, so
+  // no per-row identity outlives the row. Token totals below still sum EVERY
+  // usage row, deduped or not.
+  const countedModels = new Set<string>();
+  for (const usage of session.tokenUsageByModel) {
+    const model = usage.model || "unknown";
+    const modelSummary = getOrCreateModelSummary(fold.byModel, model);
+    if (!countedModels.has(model)) {
+      countedModels.add(model);
+      modelSummary.sessionCount += 1;
+    }
+    modelSummary.inputTokens += usage.inputTokens;
+    modelSummary.outputTokens += usage.outputTokens;
+    modelSummary.cacheReadTokens += usage.cacheReadTokens;
+    modelSummary.cacheWriteTokens += usage.cacheWriteTokens;
+    modelSummary.estimatedCost += usage.estimatedCostUsd ?? 0;
+  }
+}
+
+export function finishUsageSummaryFold(
+  fold: UsageSummaryFold
+): SharedAgentSessionUsageSummary {
+  const { ledgerTotals, totals } = fold;
   return {
     viewerScope: "self",
-    totalSessions: sessions.length,
+    totalSessions: fold.sessionCount,
     earliestSessionAt:
-      earliestStartMs === null ? null : new Date(earliestStartMs).toISOString(),
+      fold.earliestStartMs === null
+        ? null
+        : new Date(fold.earliestStartMs).toISOString(),
     latestSessionAt:
-      latestStartMs === null ? null : new Date(latestStartMs).toISOString(),
+      fold.latestStartMs === null
+        ? null
+        : new Date(fold.latestStartMs).toISOString(),
     totalInputTokens: totals.inputTokens,
     totalOutputTokens: totals.outputTokens,
     totalCacheReadTokens: totals.cacheReadTokens,
@@ -136,18 +194,20 @@ export function buildUsageSummary(
     meteredEstimatedCost: ledgerTotals.metered,
     unknownEstimatedCost: ledgerTotals.unknown,
     // Owner rollup resolved against the cloud org directory (empty until it loads).
-    byUser: buildByUserRollup(byUserEntries, getOrgDirectorySnapshot()),
-    byModel: [...byModel.values()].map(stripSessionIds),
+    byUser: buildByUserRollupFromTotals(fold.byUser, getOrgDirectorySnapshot()),
+    byModel: [...fold.byModel.values()],
     // FEA-4303: Model filter facet options grouped by the primary displayed model
     // (shares the vocabulary of the Model column and the local Model predicate).
     modelFilterOptions: buildModelFilterOptionsFromCounts(
-      [...primaryModelSessionCounts.entries()].map(([model, sessionCount]) => ({
-        model,
-        sessionCount,
-      }))
+      [...fold.primaryModelSessionCounts.entries()].map(
+        ([model, sessionCount]) => ({
+          model,
+          sessionCount,
+        })
+      )
     ),
-    byHarness: [...byHarness.values()].map(stripSessionIds),
-    byRepository: [...byRepository.values()],
+    byHarness: [...fold.byHarness.values()],
+    byRepository: [...fold.byRepository.values()],
     lastSyncTargets: [],
   };
 }
@@ -157,15 +217,25 @@ export function buildUsageSummary(
  * summary, matching `buildUsageSummary` for the same corpus.
  *
  * Cost is folded from persisted token_usage estimates. The ledger bucket uses
- * `resolveBillingModeForRow` PER GROUP (billing mode is re-resolved from the live
- * environment, never read as the raw column — same as the hydrate path's
- * `session.billingMode`). `byHarness` is enumerated from `harnessSessionCounts`
- * so harnesses whose sessions carry zero token rows still appear with their
- * session count (the token join alone cannot see them).
+ * each group's resolved billing mode (re-resolved from the live environment,
+ * never read as the raw column, same as the hydrate path's
+ * `session.billingMode`). ISS-12120: this fold runs on the Electron main thread
+ * (the Sessions usage IPC), so it resolves through the non-blocking resolver,
+ * which never waits on the Keychain probe synchronously. `byHarness` is
+ * enumerated from `harnessSessionCounts` so harnesses whose sessions carry zero
+ * token rows still appear with their session count (the token join alone cannot
+ * see them).
  */
-export function foldUsageAggregate(
+export async function foldUsageAggregate(
   aggregate: AgentSessionUsageAggregate
-): SharedAgentSessionUsageSummary {
+): Promise<SharedAgentSessionUsageSummary> {
+  const groupModes = await resolveBillingModesNonBlocking(
+    aggregate.tokenGroups.map((group) => ({
+      billingMode: group.billingMode,
+      harness: group.harness,
+      model: null,
+    }))
+  );
   const totals = zeroTotals();
   const ledgerTotals: Record<BillingLedger, number> = {
     metered: 0,
@@ -175,7 +245,7 @@ export function foldUsageAggregate(
   const byModel = new Map<string, SharedAgentSessionUsageByModel>();
   const byHarnessTokens = new Map<string, SessionTotals>();
 
-  for (const group of aggregate.tokenGroups) {
+  for (const [index, group] of aggregate.tokenGroups.entries()) {
     const cost = group.estimatedCostUsd ?? 0;
 
     totals.inputTokens += group.inputTokens;
@@ -184,12 +254,7 @@ export function foldUsageAggregate(
     totals.cacheWriteTokens += group.cacheWriteTokens;
 
     const ledger = billingLedger(
-      normalizeBillingMode(
-        resolveBillingModeForRow({
-          billing_mode: group.billingMode,
-          harness: group.harness,
-        })
-      )
+      normalizeBillingMode(billingModeAt(groupModes, index))
     );
     ledgerTotals[ledger] += cost;
 

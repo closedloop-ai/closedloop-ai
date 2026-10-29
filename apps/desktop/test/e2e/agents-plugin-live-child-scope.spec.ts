@@ -136,15 +136,11 @@ const SEEDED_CORPUS: AgentComponentUsageCorpus = {
   sessions: [
     {
       costUsd: 4,
-      linesAdded: 400,
-      linesRemoved: 40,
       name: "ISS-6180 live session",
       sessionId: "iss-6180-live-session",
     },
     {
       costUsd: 2,
-      linesAdded: 120,
-      linesRemoved: 10,
       name: "ISS-6180 dead session",
       sessionId: "iss-6180-dead-session",
     },

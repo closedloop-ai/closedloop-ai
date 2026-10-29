@@ -9,6 +9,7 @@ import {
   createTestProject,
   createTestUser,
 } from "@/__tests__/utils/db-helpers";
+import { systemAuditActor } from "@/app/audit/audit-emit-service";
 import { documentService } from "@/app/documents/document-service";
 
 /**
@@ -400,7 +401,11 @@ describeIfDb("documentService — org scoping on reads and delete", () => {
     await autoRollbackTransaction(async () => {
       const seeded = await seedProjectWithDocuments(2);
 
-      await documentService.delete(seeded.ids[0], seeded.organizationId);
+      await documentService.delete(
+        seeded.ids[0],
+        seeded.organizationId,
+        systemAuditActor()
+      );
 
       expect(
         await documentService.findById(seeded.ids[0], seeded.organizationId)
@@ -412,3 +417,114 @@ describeIfDb("documentService — org scoping on reads and delete", () => {
     });
   });
 });
+
+/**
+ * ISS-8728 — the optional expected-order precondition, through the production
+ * entry point.
+ *
+ * `checkExpectedOrder` has its own pure suite. What that suite cannot show is
+ * that `moveArtifact` CONSULTS it, inside the same transaction as the write —
+ * delete the call and every pure case stays green. These cases assert the
+ * observable consequence instead: on a stale precondition the stored ordering is
+ * byte-identical afterwards, so the refusal is a refusal and not a partial
+ * apply.
+ */
+describeIfDb(
+  "documentService.moveArtifact — expected-order precondition",
+  () => {
+    it("refuses a stale precondition and writes nothing", async () => {
+      await autoRollbackTransaction(async () => {
+        const seeded = await seedProjectWithDocuments(3);
+        const before = await orderedIds(seeded);
+        // The caller believes the first two are swapped — the shape a concurrent
+        // reorder produces, and the one a SET comparison would wave through.
+        const staleOrder = [before[1], before[0], before[2]];
+
+        const result = await documentService.moveArtifact(
+          seeded.projectId,
+          seeded.organizationId,
+          {
+            artifactId: before[2],
+            position: MovePosition.Top,
+            expectedOrder: staleOrder,
+          }
+        );
+
+        expect(result.ok).toBe(false);
+        if (result.ok) {
+          throw new Error("expected a conflict");
+        }
+        expect(result.error.status).toBe(Status.Conflict);
+        // The whole point: nothing moved. Under a client-side re-read this move
+        // would have landed and silently overwritten the other writer's edit.
+        expect(await orderedIds(seeded)).toEqual(before);
+      });
+    });
+
+    it("applies the move when the precondition matches what the transaction sees", async () => {
+      await autoRollbackTransaction(async () => {
+        const seeded = await seedProjectWithDocuments(3);
+        const before = await orderedIds(seeded);
+
+        const result = await documentService.moveArtifact(
+          seeded.projectId,
+          seeded.organizationId,
+          {
+            artifactId: before[2],
+            position: MovePosition.Top,
+            expectedOrder: before,
+          }
+        );
+
+        // The positive control. Without it a precondition that refused
+        // unconditionally would satisfy the case above.
+        expect(result.ok).toBe(true);
+        expect((await orderedIds(seeded))[0]).toBe(before[2]);
+      });
+    });
+
+    it("still moves when no precondition is supplied", async () => {
+      await autoRollbackTransaction(async () => {
+        const seeded = await seedProjectWithDocuments(3);
+        const before = await orderedIds(seeded);
+
+        const result = await documentService.moveArtifact(
+          seeded.projectId,
+          seeded.organizationId,
+          { artifactId: before[2], position: MovePosition.Top }
+        );
+
+        // The compatibility branch every shipped caller takes.
+        expect(result.ok).toBe(true);
+        expect((await orderedIds(seeded))[0]).toBe(before[2]);
+      });
+    });
+
+    it("reports the conflict before a not-found for an id the stale read held", async () => {
+      await autoRollbackTransaction(async () => {
+        const seeded = await seedProjectWithDocuments(2);
+        const before = await orderedIds(seeded);
+        const vanished = "99999999-9999-4999-8999-999999999999";
+
+        const result = await documentService.moveArtifact(
+          seeded.projectId,
+          seeded.organizationId,
+          {
+            artifactId: vanished,
+            position: MovePosition.Top,
+            expectedOrder: [...before, vanished],
+          }
+        );
+
+        expect(result.ok).toBe(false);
+        if (result.ok) {
+          throw new Error("expected a conflict");
+        }
+        // 409, not 404. Both are true of this request, and only one of them names
+        // the cause: the caller's whole read is stale, so "that artifact is not in
+        // the project" would send them to fix the wrong thing.
+        expect(result.error.status).toBe(Status.Conflict);
+      });
+    });
+  }
+);

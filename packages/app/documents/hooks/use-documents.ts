@@ -1,50 +1,58 @@
 "use client";
 
 import {
-  type ArtifactStatus,
-  type CreateDocumentInput,
-  type Document,
-  type DocumentDetail,
-  type DocumentListPage,
-  type DocumentListPageParams,
-  type DocumentWithProject,
-  type FindDocumentsOptions,
-  type GenerationStatus,
-  isActiveGenerationStatus,
-  type MergeDocumentsInput,
-  normalizeDocumentListResponse,
-  type PullRequestInfo,
-  type UpdateDocumentInput,
+  BATCH_ITEM_APPLIED_STATUS,
+  type BatchMutationResponse,
+} from "@repo/api/src/types/batch-mutation-result";
+import { BatchMutationRoute } from "@repo/api/src/types/batch-mutation-routes";
+import type {
+  CreateDocumentInput,
+  Document,
+  DocumentDetail,
+  DocumentListPage,
+  DocumentListPageParams,
+  DocumentWithProject,
+  FindDocumentsOptions,
+  MergeDocumentsInput,
+  PullRequestInfo,
+  UpdateDocumentInput,
 } from "@repo/api/src/types/document";
+import { LONG_RUNNING_API_TIMEOUT_MS } from "@repo/api/src/types/long-running-api-timeout";
+import {
+  bulkReceiptFromCommittedIds,
+  invalidateForBulkArtifactMutation,
+} from "@repo/app/documents/hooks/bulk-artifact-invalidation";
 import { documentKeys } from "@repo/app/documents/hooks/document-keys";
+import {
+  type BatchUpdatePriorityInput,
+  type BatchUpdateStatusInput,
+  withBatchExpectedPriorityGuard,
+  withBatchExpectedStatusGuard,
+  withExpectedValueGuards,
+} from "@repo/app/documents/hooks/expected-value-guards";
 import { projectKeys } from "@repo/app/projects/hooks/project-keys";
-import { projectTreeKeys } from "@repo/app/projects/hooks/use-project-tree";
+import { projectTreeKeys } from "@repo/app/projects/hooks/project-tree-keys";
+import { projectArtifactBoardPageKeys } from "@repo/app/projects/hooks/use-project-artifact-board-page";
+import type { ApiClient } from "@repo/app/shared/api/create-api-client";
 import { useApiClient } from "@repo/app/shared/api/use-api-client";
 import {
+  type MutationToastOptions,
+  mutationToastMeta,
+  toastMutationError,
+} from "@repo/app/shared/query/query-client";
+import {
   type QueryClient,
+  queryOptions,
   type UseQueryOptions,
   useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import {
+  readDocumentPageWithSubtypeUnion,
+  readDocumentsWithSubtypeUnion,
+} from "../lib/document-union-read";
 import { invalidateArtifactLinkQueries } from "./use-artifact-links";
-
-/**
- * Serialize `FindDocumentsOptions` into the `GET /documents` query string.
- * Shared by the bare-array and paged readers so the two cannot drift on how a
- * filter is spelled (a drifted spelling would silently widen one of them).
- */
-function buildDocumentListSearchParams(
-  searchParams: FindDocumentsOptions | DocumentListPageParams
-): string {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(searchParams)) {
-    if (value !== undefined) {
-      params.set(key, value.toString());
-    }
-  }
-  return params.toString();
-}
 
 // Queries
 export function useDocuments(
@@ -55,10 +63,7 @@ export function useDocuments(
 
   return useQuery({
     queryKey: documentKeys.list(searchParams),
-    queryFn: () =>
-      apiClient.get<DocumentWithProject[]>(
-        `/documents?${buildDocumentListSearchParams(searchParams)}`
-      ),
+    queryFn: () => readDocumentsWithSubtypeUnion(apiClient, searchParams),
     ...options,
   });
 }
@@ -120,75 +125,23 @@ export function useDocumentBySlug(
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: version
-      ? [...documentKeys.bySlug(slug), version]
-      : documentKeys.bySlug(slug),
-    queryFn: () => {
-      const versionParam = version ? `?version=${version}` : "";
-      return apiClient.get<DocumentDetail>(
-        `/documents/by-slug/${slug}${versionParam}`
-      );
-    },
+    ...documentBySlugQueryOptions(apiClient, slug, version),
     enabled: !!slug,
     ...options,
   });
 }
 
-const GENERATION_POLL_INTERVAL = 5000;
-
-export function useDocumentGenerationStatus(
-  documentId: string,
-  options?: Omit<UseQueryOptions<GenerationStatus>, "queryKey" | "queryFn"> & {
-    polling?: boolean;
-  }
-) {
-  const { polling, ...queryOptions } = options ?? {};
-  const apiClient = useApiClient();
-  const queryClient = useQueryClient();
-
-  return {
-    ...useQuery<GenerationStatus>({
-      queryKey: documentKeys.generationStatus(documentId),
-      queryFn: () =>
-        apiClient.get<GenerationStatus>(
-          `/documents/${documentId}/generation-status`
-        ),
-      enabled: !!documentId,
-      refetchInterval: polling
-        ? (query) => {
-            const status = query.state.data?.status;
-            if (
-              status &&
-              (isActiveGenerationStatus(status) || status === "FAILURE")
-            ) {
-              return GENERATION_POLL_INTERVAL;
-            }
-            return false;
-          }
-        : undefined,
-      ...queryOptions,
-    }),
-    invalidateCache: () => {
-      queryClient.invalidateQueries({
-        queryKey: documentKeys.detail(documentId),
-      });
-      queryClient.invalidateQueries({
-        queryKey: documentKeys.versions(documentId),
-      });
-      // Invalidate all bySlug queries. We only have the artifact ID, not the slug.
-      queryClient.invalidateQueries({
-        queryKey: documentKeys.bySlugs(),
-      });
-    },
-  };
-}
-
 // Mutations
-export function useCreateDocument() {
+export function useCreateDocument(options?: Readonly<MutationToastOptions>) {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
   return useMutation({
+    // Opt-in, never baked in (ISS-8938). The shared QueryClient toast is the
+    // ONLY failure message most callers of this mutation have, so suppressing
+    // it here for everyone would trade a duplicate for a silent failure. The
+    // one caller that renders its own account of the rejection asks for it.
+    meta: mutationToastMeta(options),
     mutationFn: (input: CreateDocumentInput) =>
       apiClient.post<Document>("/documents", input),
     onSuccess: (_, input) => {
@@ -202,16 +155,46 @@ export function useUpdateDocument() {
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: (input: UpdateDocumentInput) => {
-      const { id, ...body } = input;
-      return apiClient.put<Document>(`/documents/${id}`, body);
+    mutationFn: (input: UpdateDocumentMutationInput) => {
+      const {
+        id,
+        recoverableErrorOwner: _recoverableErrorOwner,
+        ...body
+      } = input;
+      return apiClient.put<Document>(
+        `/documents/${id}`,
+        withExpectedValueGuards(queryClient, id, body)
+      );
     },
-    onSuccess: (data, input) => {
+    // A hook-level `onError` replaces the shared QueryClient default, so this
+    // toasts exactly as that default does, unless the field that sent this
+    // attempt still renders its own adjacent feedback for it (PRD-722).
+    onError: (error, input) => {
+      if (input.recoverableErrorOwner?.() !== true) {
+        toastMutationError(error);
+      }
+    },
+    // ISS-9667: `onSettled`, not `onSuccess`. Callers of this mutation render
+    // optimistically — `useDocumentMetadata` puts the new status on screen the
+    // instant it is picked — and invalidating only on success meant a REFUSED
+    // write left every cache entry untouched. Nothing then refetched, so the
+    // surface kept showing a value the server had rejected, and it kept showing
+    // it indefinitely: the artifact's cached status never changed, so the
+    // consumer effect that re-syncs from server state never re-ran either.
+    // Re-reading on failure is what puts the true value back.
+    //
+    onSettled: (data, _error, input) => {
       queryClient.invalidateQueries({
         queryKey: documentKeys.detail(input.id),
       });
+      // A rejected write has no response to read a slug from, so every by-slug
+      // entry is re-read: detail pages read the document through one, and a
+      // stale guard's 409 is resolved only by handing the field the value that
+      // won (ISS-11198).
       queryClient.invalidateQueries({
-        queryKey: documentKeys.bySlug(data.slug),
+        queryKey: data
+          ? documentKeys.bySlug(data.slug)
+          : documentKeys.bySlugs(),
       });
       invalidateArtifactCaches(queryClient, { artifactId: input.id });
     },
@@ -249,6 +232,12 @@ export function invalidateDocumentDetailCaches(
     queryKey: documentKeys.versions(documentId),
   });
   queryClient.invalidateQueries({ queryKey: documentKeys.lists() });
+  // ISS-8936: the summary band counts over the same population these lists show,
+  // and `updatedAt` — which an update bumps — is the anchor one of its four cards
+  // measures. `summaries()` is a SIBLING of `lists()`, so it does not come along
+  // for free; without this line an inline status edit on the Documents index
+  // refreshes the row and leaves the band's counts stated as current.
+  queryClient.invalidateQueries({ queryKey: documentKeys.summaries() });
   // The project page's table renders document rows from the tree query
   // (PLN-874), so a publish must refresh it too — org-wide, since the
   // document can appear in other projects' trees as an external parent.
@@ -303,25 +292,52 @@ export function useDocumentPullRequest(
   });
 }
 
-export function useBatchUpdateStatus() {
+export function useBatchUpdateStatus(options?: Readonly<MutationToastOptions>) {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: ({
-      documentIds,
-      status,
-    }: {
-      documentIds: string[];
-      status: ArtifactStatus;
-    }) =>
-      apiClient.post<string[]>("/documents/batch-update-status", {
-        documentIds,
-        status,
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: documentKeys.all });
-      invalidateArtifactCaches(queryClient, {});
+    meta: mutationToastMeta(options),
+    mutationFn: (input: BatchUpdateStatusInput) =>
+      apiClient.post<BatchMutationResponse>(
+        `${BatchMutationRoute.DocumentsUpdateStatus}/v2`,
+        withBatchExpectedStatusGuard(queryClient, input)
+      ),
+    // `allLinkViews` because the write unblocks dependents this receipt never
+    // names (ISS-9632): a cached lineage view for one of them would otherwise
+    // keep rendering its BLOCKED endpoint.
+    onSuccess: (response) => {
+      invalidateForBulkArtifactMutation(
+        queryClient,
+        bulkReceiptFromCommittedIds(appliedBatchIds(response)),
+        { allLinkViews: true }
+      );
+    },
+  });
+}
+
+export function useBatchUpdatePriority(
+  options?: Readonly<MutationToastOptions>
+) {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    // The bulk bar names the priority it failed to set, so it asks to silence
+    // the generic toast rather than stack two messages on one click. Left
+    // opt-in: on a surface with no message of its own the default toast is the
+    // only report a failure gets.
+    meta: mutationToastMeta(options),
+    mutationFn: (input: BatchUpdatePriorityInput) =>
+      apiClient.post<BatchMutationResponse>(
+        `${BatchMutationRoute.DocumentsUpdatePriority}/v2`,
+        withBatchExpectedPriorityGuard(queryClient, input)
+      ),
+    onSuccess: (response) => {
+      invalidateForBulkArtifactMutation(
+        queryClient,
+        bulkReceiptFromCommittedIds(appliedBatchIds(response))
+      );
     },
   });
 }
@@ -336,9 +352,16 @@ export function useBatchDeleteDocuments() {
         "/documents/batch-delete",
         { documentIds }
       ),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: documentKeys.all });
-      invalidateArtifactCaches(queryClient, {});
+    // A `failedId` on this route is an id the org no longer holds
+    // (`documentService.batchDelete` returns requested-minus-found), so it is
+    // itself evidence that the cached row is wrong — the case where the list
+    // is most stale, not least. It joins the committed ids rather than
+    // gating them out (ISS-9578 review).
+    onSuccess: ({ deletedIds, failedIds }) => {
+      invalidateForBulkArtifactMutation(
+        queryClient,
+        bulkReceiptFromCommittedIds([...deletedIds, ...failedIds])
+      );
     },
   });
 }
@@ -355,10 +378,22 @@ export function useMergeDocuments() {
       primaryDocumentId,
       secondaryDocumentId,
     }: MergeDocumentsInput) =>
-      apiClient.post<Document>("/documents/merge", {
-        primaryDocumentId,
-        secondaryDocumentId,
-      }),
+      // Long-running by design (ISS-6774): the route awaits a full Anthropic
+      // merge generation before it commits, so it declares `maxDuration = 300`
+      // and bounds that generation at `MERGE_REQUEST_TIMEOUT_MS`. Under the
+      // default 60s deadline the client would abandon a merge the server then
+      // goes on to commit — the version lands and the secondary artifact is
+      // deleted while the user is shown a failure. Wait for the ceiling the
+      // route actually runs under so the server's stated outcome is the one
+      // the surface reports.
+      apiClient.post<Document>(
+        "/documents/merge",
+        {
+          primaryDocumentId,
+          secondaryDocumentId,
+        },
+        { timeoutMs: LONG_RUNNING_API_TIMEOUT_MS }
+      ),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: documentKeys.all });
       invalidateArtifactCaches(queryClient, { artifactId: data.id });
@@ -388,6 +423,12 @@ export function invalidateArtifactCaches(
   { artifactId, projectId }: { artifactId?: string; projectId?: string | null }
 ): void {
   queryClient.invalidateQueries({ queryKey: documentKeys.lists() });
+  // ISS-8936: same reason as in `invalidateDocumentDetailCaches` — the summary
+  // band counts over the population these lists show, and `summaries()` is a
+  // SIBLING of `lists()`, so it does not come along for free. Without this an
+  // inline status edit on the Documents index refreshes the row and leaves the
+  // band's counts stated as current.
+  queryClient.invalidateQueries({ queryKey: documentKeys.summaries() });
   // Creating the first document or deleting the last one flips a project's
   // completion population between empty and non-empty (ISS-4679), and any
   // create/delete/update shifts its completionPercentage. The team project
@@ -399,12 +440,21 @@ export function invalidateArtifactCaches(
   if (artifactId) {
     // Also invalidates projectTreeKeys.all — see the doc comment above.
     invalidateArtifactLinkQueries(queryClient, artifactId);
+    queryClient.invalidateQueries({
+      queryKey: projectArtifactBoardPageKeys.all,
+    });
   } else if (projectId) {
     queryClient.invalidateQueries({
       queryKey: projectTreeKeys.detail(projectId),
     });
+    queryClient.invalidateQueries({
+      queryKey: projectArtifactBoardPageKeys.project(projectId),
+    });
   } else {
     queryClient.invalidateQueries({ queryKey: projectTreeKeys.all });
+    queryClient.invalidateQueries({
+      queryKey: projectArtifactBoardPageKeys.all,
+    });
   }
 }
 
@@ -426,7 +476,6 @@ export function useDocumentsPage(
   options?: Omit<UseQueryOptions<DocumentListPage>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
-  const pageParams = buildDocumentsPageParams(searchParams);
 
   return useQuery({
     queryKey: documentsPageQueryKey(searchParams),
@@ -437,12 +486,7 @@ export function useDocumentsPage(
     // queue; `normalizeDocumentListResponse` folds that array into an honest
     // one-page envelope (and a malformed body into a safe empty page) so the
     // old-server/new-client path degrades gracefully instead of blanking.
-    queryFn: async () => {
-      const response = await apiClient.get<unknown>(
-        `/documents?${buildDocumentListSearchParams(pageParams)}`
-      );
-      return normalizeDocumentListResponse(response);
-    },
+    queryFn: () => readDocumentPageWithSubtypeUnion(apiClient, searchParams),
     ...options,
   });
 }
@@ -473,4 +517,47 @@ function buildDocumentsPageParams(
  */
 export function documentsPageQueryKey(searchParams: FindDocumentsOptions) {
   return documentKeys.list(buildDocumentsPageParams(searchParams));
+}
+
+/**
+ * Returns a function that resolves once a {@link useDocumentBySlug} entry is in
+ * the cache, fetching it only when it is missing. A caller can then switch to
+ * that version without ever rendering a loading or failed state for it.
+ */
+export function useEnsureDocumentBySlug() {
+  const apiClient = useApiClient();
+  const queryClient = useQueryClient();
+  return (slug: string, version?: number) =>
+    queryClient.ensureQueryData(
+      documentBySlugQueryOptions(apiClient, slug, version)
+    );
+}
+
+function documentBySlugQueryOptions(
+  apiClient: ApiClient,
+  slug: string,
+  version?: number
+) {
+  return queryOptions<DocumentDetail>({
+    queryKey: version
+      ? [...documentKeys.bySlug(slug), version]
+      : documentKeys.bySlug(slug),
+    queryFn: () => {
+      const versionParam = version ? `?version=${version}` : "";
+      return apiClient.get<DocumentDetail>(
+        `/documents/by-slug/${slug}${versionParam}`
+      );
+    },
+  });
+}
+
+type UpdateDocumentMutationInput = UpdateDocumentInput & {
+  /** Whether the adjacent inline error can still render for this attempt. */
+  recoverableErrorOwner?: () => boolean;
+};
+
+function appliedBatchIds(response: BatchMutationResponse): string[] {
+  return response.results.flatMap((result) =>
+    result.status === BATCH_ITEM_APPLIED_STATUS ? [result.id] : []
+  );
 }

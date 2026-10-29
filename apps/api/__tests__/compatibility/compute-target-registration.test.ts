@@ -38,6 +38,10 @@ vi.mock("@/lib/desktop-command-store", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/desktop-command-dispatch-queries", () => ({
+  requeueUndeliveredCommands: vi.fn().mockResolvedValue(0),
+}));
+
 vi.mock("@repo/observability/telemetry/metrics", async (importOriginal) => {
   const original =
     await importOriginal<
@@ -63,7 +67,13 @@ vi.mock("@/lib/relay-event-bus", async (importOriginal) => {
 });
 
 vi.mock("@repo/observability/log", () => ({
-  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  log: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    debug: vi.fn(),
+    error: vi.fn(),
+    flush: vi.fn(async () => undefined),
+  },
 }));
 
 // --- Imports (after mocks) ---
@@ -75,6 +85,7 @@ import { emitQueueMetric } from "@repo/observability/telemetry/metrics";
 import { Origin } from "@repo/observability/telemetry/origin";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { POST } from "@/app/internal/relay/socket-event/route";
+import { requeueUndeliveredCommands } from "@/lib/desktop-command-dispatch-queries";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import { relayEventBus } from "@/lib/relay-event-bus";
 import {
@@ -122,6 +133,22 @@ beforeEach(() => {
   vi.mocked(emitQueueMetric).mockClear();
   vi.mocked(log.warn).mockClear();
 });
+
+/**
+ * `inFlight` is the `{Accepted, Running}` set counted in one statement, matching
+ * the production query — not two counts summed, which would let a command
+ * transitioning between them be counted twice or missed.
+ */
+function mockCommandCounts(counts: { queued: number; inFlight: number }): void {
+  vi.mocked(desktopCommandStore.countCommandsForTarget).mockImplementation(
+    (_targetId, statuses) =>
+      Promise.resolve(
+        statuses === DesktopCommandStatus.Queued
+          ? counts.queued
+          : counts.inFlight
+      )
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -201,17 +228,7 @@ describe("POST /internal/relay/socket-event — compute target registration", ()
   });
 
   it("emits queued_command_count metric with the queued count (AC-001)", async () => {
-    vi.mocked(desktopCommandStore.countCommandsForTarget).mockImplementation(
-      (_targetId, statuses) => {
-        if (statuses === DesktopCommandStatus.Queued) {
-          return Promise.resolve(2);
-        }
-        if (Array.isArray(statuses)) {
-          return Promise.resolve(1);
-        }
-        return Promise.resolve(0);
-      }
-    );
+    mockCommandCounts({ queued: 2, inFlight: 1 });
 
     const request = makeSocketEventRequest("desktop.hello", helloPayload);
     await POST(request);
@@ -228,17 +245,7 @@ describe("POST /internal/relay/socket-event — compute target registration", ()
   });
 
   it("emits in_flight_command_count metric with the in-flight count (AC-002)", async () => {
-    vi.mocked(desktopCommandStore.countCommandsForTarget).mockImplementation(
-      (_targetId, statuses) => {
-        if (statuses === DesktopCommandStatus.Queued) {
-          return Promise.resolve(2);
-        }
-        if (Array.isArray(statuses)) {
-          return Promise.resolve(1);
-        }
-        return Promise.resolve(0);
-      }
-    );
+    mockCommandCounts({ queued: 2, inFlight: 1 });
 
     const request = makeSocketEventRequest("desktop.hello", helloPayload);
     await POST(request);
@@ -254,86 +261,89 @@ describe("POST /internal/relay/socket-event — compute target registration", ()
     );
   });
 
-  it("emits executor_saturation=0 when 0 in-flight out of 3 max (AC-003)", async () => {
-    vi.mocked(desktopCommandStore.countCommandsForTarget).mockImplementation(
-      (_targetId, statuses) => {
-        if (statuses === DesktopCommandStatus.Queued) {
-          return Promise.resolve(0);
-        }
-        if (Array.isArray(statuses)) {
-          return Promise.resolve(0);
-        }
-        return Promise.resolve(0);
-      }
+  // ISS-8453 retired hello's executor_saturation. The three cases that stood
+  // here asserted it over `{Accepted + Running}` command rows, which is the
+  // count that read 53.0 against a ceiling of 2 in production. Saturation is now
+  // taken from the occupancy the desktop reports on presence, and a handshake
+  // reports none — so the honest hello contract is the queue gauges plus a
+  // skip. The arithmetic those cases covered is pinned on the presence path in
+  // service-presence-fleet-capacity.test.ts.
+  // ISS-8453 AC-001/AC-002. Production reconnected with 106 pending against a
+  // declared ceiling of 2 and shipped all 106 in one frame. `helloPayload`
+  // declares 3, written out below as an independent literal rather than read
+  // back off the payload — a fixture that derives its expectation from the
+  // value under test passes at any value.
+  it("releases only up to maxInFlightCommands on reconnect and requeues the rest (AC-001, AC-002)", async () => {
+    const DECLARED_CEILING = 3;
+    const PENDING_BACKLOG = 20;
+    const pending = Array.from({ length: PENDING_BACKLOG }, (_, index) => ({
+      commandId: `cmd-${index}`,
+      computeTargetId: COMPUTE_TARGET_ID,
+      operationId: "health_check",
+      status: DesktopCommandStatus.Queued,
+      lastSequenceAcked: 0,
+      method: "POST" as const,
+      path: "/api/gateway/health-check",
+      createdAt: new Date(Date.UTC(2026, 7, 28, 18, index)).toISOString(),
+    }));
+    vi.mocked(
+      desktopCommandStore.listNonTerminalDispatchCommands
+    ).mockResolvedValue(pending);
+
+    const request = makeSocketEventRequest("desktop.hello", helloPayload);
+    const response = await POST(request);
+    const result = await response.json();
+
+    const commandEmits = result.emit.filter(
+      (instruction: { event: string }) =>
+        instruction.event === "desktop.command"
     );
+    expect(commandEmits).toHaveLength(DECLARED_CEILING);
+    // FIFO: the ceiling is spent on the oldest work, not an arbitrary slice.
+    expect(
+      commandEmits.map(
+        (instruction: { payload: { commandId: string } }) =>
+          instruction.payload.commandId
+      )
+    ).toEqual(["cmd-0", "cmd-1", "cmd-2"]);
+
+    // The withheld remainder is returned to `queued` so the drain can find it —
+    // without this they would strand until the next reconnect.
+    expect(requeueUndeliveredCommands).toHaveBeenCalledWith(
+      COMPUTE_TARGET_ID,
+      pending.slice(DECLARED_CEILING).map((command) => command.commandId)
+    );
+  });
+
+  it("emits the queue gauges but skips executor_saturation on hello, which carries no occupancy (AC-003)", async () => {
+    mockCommandCounts({ queued: 2, inFlight: 3 });
 
     const request = makeSocketEventRequest("desktop.hello", helloPayload);
     await POST(request);
 
-    expect(emitQueueMetric).toHaveBeenCalledWith(
-      expect.objectContaining({
-        metric: "executor_saturation",
-        value: 0,
-        computeTargetId: COMPUTE_TARGET_ID,
-        origin: Origin.Api,
-      })
+    const metricNames = vi
+      .mocked(emitQueueMetric)
+      .mock.calls.map((call) => call[0].metric);
+    expect(metricNames).toEqual(
+      expect.arrayContaining([
+        "queued_command_count",
+        "in_flight_command_count",
+      ])
+    );
+    expect(metricNames).not.toContain("executor_saturation");
+    expect(vi.mocked(log.debug)).toHaveBeenCalledWith(
+      "executor_saturation_skipped",
+      expect.objectContaining({ reason: "activeCommands_absent" })
     );
   });
 
-  it("emits executor_saturation=1 when 3 in-flight out of 3 max (AC-003)", async () => {
-    vi.mocked(desktopCommandStore.countCommandsForTarget).mockImplementation(
-      (_targetId, statuses) => {
-        if (statuses === DesktopCommandStatus.Queued) {
-          return Promise.resolve(0);
-        }
-        if (Array.isArray(statuses)) {
-          return Promise.resolve(3);
-        }
-        return Promise.resolve(0);
-      }
-    );
-
-    const request = makeSocketEventRequest("desktop.hello", helloPayload);
-    await POST(request);
-
-    expect(emitQueueMetric).toHaveBeenCalledWith(
-      expect.objectContaining({
-        metric: "executor_saturation",
-        value: 1,
-        computeTargetId: COMPUTE_TARGET_ID,
-        origin: Origin.Api,
-      })
-    );
-  });
-
-  it("emits executor_saturation=0.5 when 2 in-flight out of 4 max (AC-003)", async () => {
-    vi.mocked(desktopCommandStore.countCommandsForTarget).mockImplementation(
-      (_targetId, statuses) => {
-        if (statuses === DesktopCommandStatus.Queued) {
-          return Promise.resolve(0);
-        }
-        if (Array.isArray(statuses)) {
-          return Promise.resolve(2);
-        }
-        return Promise.resolve(0);
-      }
-    );
-
-    const payloadWith4Max = { ...helloPayload, maxInFlightCommands: 4 };
-    const request = makeSocketEventRequest("desktop.hello", payloadWith4Max);
-    await POST(request);
-
-    expect(emitQueueMetric).toHaveBeenCalledWith(
-      expect.objectContaining({
-        metric: "executor_saturation",
-        value: 0.5,
-        computeTargetId: COMPUTE_TARGET_ID,
-        origin: Origin.Api,
-      })
-    );
-  });
-
-  it("skips executor_saturation and warns when maxInFlightCommands is 0 (AC-004)", async () => {
+  // ISS-8547 bounded the declared ceiling at the PARSE, so a declared 0 is
+  // floored to 1 before the saturation path ever sees it and can no longer reach
+  // that path's `maxInFlightCommands_invalid` branch. AC-004 is unchanged — a
+  // declared 0 must not publish a saturation ratio, and must not be throttled
+  // silently — but the row that says why moved to the clamp, and its declared /
+  // applied pair is pinned here because that pair IS the reason.
+  it("skips executor_saturation and reports the clamp when maxInFlightCommands is 0 (AC-004)", async () => {
     vi.mocked(desktopCommandStore.countCommandsForTarget).mockResolvedValue(0);
 
     const payloadWith0Max = { ...helloPayload, maxInFlightCommands: 0 };
@@ -346,12 +356,16 @@ describe("POST /internal/relay/socket-event — compute target registration", ()
     expect(metricNames).not.toContain("executor_saturation");
 
     expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
-      "executor_saturation_skipped",
-      expect.objectContaining({ event: "executor_saturation_skipped" })
+      "desktop.hello.maxInFlightCommands.clamped",
+      expect.objectContaining({ declared: 0, applied: 1 })
     );
   });
 
-  it("skips executor_saturation and warns when maxInFlightCommands is undefined (AC-004)", async () => {
+  // ISS-8171 demoted the absence case from warn to debug: an old desktop that
+  // predates the capability is expected version skew, so it belongs off the warn
+  // dashboards a real data defect should reach. The demotion changes the level
+  // only — it does not reduce the number of rows shipped.
+  it("skips executor_saturation and logs the absence at debug when maxInFlightCommands is undefined (AC-004)", async () => {
     vi.mocked(desktopCommandStore.countCommandsForTarget).mockResolvedValue(0);
 
     const { maxInFlightCommands: _omitted, ...payloadWithoutMax } =
@@ -367,13 +381,16 @@ describe("POST /internal/relay/socket-event — compute target registration", ()
       .mock.calls.map((call) => call[0].metric);
     expect(metricNames).not.toContain("executor_saturation");
 
-    expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
+    expect(vi.mocked(log.debug)).toHaveBeenCalledWith(
       "executor_saturation_skipped",
-      expect.objectContaining({ event: "executor_saturation_skipped" })
+      expect.objectContaining({ reason: "maxInFlightCommands_absent" })
     );
   });
 
-  it("skips executor_saturation and warns when maxInFlightCommands is a non-numeric string (AC-004)", async () => {
+  // A non-numeric value never reaches the emit as itself: the hello handler
+  // narrows anything non-numeric to `undefined` before persisting or emitting,
+  // so at this boundary it is indistinguishable from a field that was omitted.
+  it("skips executor_saturation and treats a non-numeric maxInFlightCommands as absent (AC-004)", async () => {
     vi.mocked(desktopCommandStore.countCommandsForTarget).mockResolvedValue(0);
 
     const payloadWithStringMax = {
@@ -391,9 +408,9 @@ describe("POST /internal/relay/socket-event — compute target registration", ()
       .mock.calls.map((call) => call[0].metric);
     expect(metricNames).not.toContain("executor_saturation");
 
-    expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
+    expect(vi.mocked(log.debug)).toHaveBeenCalledWith(
       "executor_saturation_skipped",
-      expect.objectContaining({ event: "executor_saturation_skipped" })
+      expect.objectContaining({ reason: "maxInFlightCommands_absent" })
     );
   });
 
@@ -438,17 +455,7 @@ describe("POST /internal/relay/socket-event — compute target registration", ()
   });
 
   it("fleet-capacity metric calls do NOT include a commandId property (AC-006)", async () => {
-    vi.mocked(desktopCommandStore.countCommandsForTarget).mockImplementation(
-      (_targetId, statuses) => {
-        if (statuses === DesktopCommandStatus.Queued) {
-          return Promise.resolve(2);
-        }
-        if (Array.isArray(statuses)) {
-          return Promise.resolve(1);
-        }
-        return Promise.resolve(0);
-      }
-    );
+    mockCommandCounts({ queued: 2, inFlight: 1 });
 
     const request = makeSocketEventRequest("desktop.hello", helloPayload);
     await POST(request);

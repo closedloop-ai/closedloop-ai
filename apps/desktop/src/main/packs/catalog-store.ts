@@ -66,8 +66,6 @@ interface CatalogRow extends Record<string, unknown> {
   install_notes: string | null;
   placeholder_reason: string | null;
   verified: boolean;
-  readme_excerpt: string | null;
-  readme_fetched_at: string | null;
   stars: number | null;
   forks: number | null;
   last_release: string | null;
@@ -85,7 +83,6 @@ interface CatalogRow extends Record<string, unknown> {
   // Derived via subquery joins:
   installed_harnesses: string | null;
   installed_skill_count: number | null;
-  uninstalled_at: string | null;
 }
 
 type PackUsage = {
@@ -132,11 +129,10 @@ type SeedDoc = {
  *
  * Returns Map<pack_id, { tool_calls, sessions, first_used_at, last_used_at }>.
  *
- * TODO: Wire up to the first-party pack-store's listPackUsage once ported.
+ * TODO: wire pack-store's `listPackUsage`, which is exported but not called
+ * here; until then `catalog.usage` is null for every pack. No ticket owns this.
  */
 async function loadUsageMap(): Promise<Map<string, PackUsage>> {
-  // pack-store with listPackUsage is not yet ported to the first-party app.
-  // Return an empty map until the dependency is available.
   return new Map();
 }
 
@@ -241,12 +237,34 @@ function catalogContentsOrNull(
   return { ...value, type: value.type };
 }
 
-function isCatalogContentItem(value: unknown): value is CatalogContentItem {
+function catalogContentItemOrNull(value: unknown): CatalogContentItem | null {
   if (typeof value !== "object" || value === null) {
-    return false;
+    return null;
   }
-  const item = value as { name?: unknown; type?: unknown };
-  return typeof item.name === "string" && typeof item.type === "string";
+  const item = value as {
+    content?: unknown;
+    description?: unknown;
+    name?: unknown;
+    path?: unknown;
+    type?: unknown;
+  };
+  if (typeof item.name !== "string" || typeof item.type !== "string") {
+    return null;
+  }
+  const normalized: CatalogContentItem = {
+    name: item.name,
+    type: item.type,
+  };
+  if (item.description === null || typeof item.description === "string") {
+    normalized.description = item.description;
+  }
+  if (typeof item.content === "string") {
+    normalized.content = item.content;
+  }
+  if (typeof item.path === "string") {
+    normalized.path = item.path;
+  }
+  return normalized;
 }
 
 function catalogContentItemsOrNull(
@@ -255,7 +273,10 @@ function catalogContentItemsOrNull(
   if (!Array.isArray(value)) {
     return null;
   }
-  return value.filter(isCatalogContentItem);
+  return value.flatMap((item) => {
+    const normalized = catalogContentItemOrNull(item);
+    return normalized ? [normalized] : [];
+  });
 }
 
 function splitInstalledHarnesses(value: string | null): string[] {
@@ -297,7 +318,6 @@ function toCatalogEntry(
     installNotes: row.install_notes,
     placeholderReason: row.placeholder_reason,
     verified: !!row.verified,
-    readmeExcerpt: row.readme_excerpt,
     stars: row.stars,
     forks: row.forks,
     lastRelease: row.last_release,
@@ -362,6 +382,7 @@ export async function upsertCatalogSeed(
   prisma: DesktopPrisma,
   seedDoc: SeedDoc | null | undefined
 ): Promise<{ inserted: number; updated: number; skipped: number }> {
+  await deleteRetiredCatalogPacks(prisma);
   if (!(seedDoc && Array.isArray(seedDoc.packs))) {
     return { inserted: 0, updated: 0, skipped: 0 };
   }
@@ -440,6 +461,13 @@ export async function upsertCatalogSeed(
  *
  * Installed status is decorated via subquery joins against `agent_packs` and
  * `skills`.
+ *
+ * ISS-11317: both statements also carried a `MAX(ap.uninstalled_at)` subquery, and
+ * nothing mapped it — `toCatalogEntry` never read `CatalogRow.uninstalled_at` and
+ * `CatalogEntry` has no such field, so the value never left the row. It was a
+ * byte-wise `MAX` over a TEXT column outside the FEA-3743 heal's `HEALED_COLUMNS`,
+ * so it could name the wrong install; ranking it by instant would have bought a
+ * value with no reader. Deleted instead. Do not re-add it without a consumer.
  */
 export async function listCatalog(
   prisma: DbHostPrisma
@@ -454,11 +482,7 @@ export async function listCatalog(
                 AND ap.uninstalled_at IS NULL))     AS installed_harnesses,
        (SELECT COUNT(*) FROM skills s
         WHERE s.pack_id = c.pack_id
-          AND s.uninstalled_at IS NULL)             AS installed_skill_count,
-       (SELECT MAX(ap.uninstalled_at)
-        FROM agent_packs ap
-        WHERE ap.pack_id = c.pack_id
-          AND ap.uninstalled_at IS NOT NULL)        AS uninstalled_at
+          AND s.uninstalled_at IS NULL)             AS installed_skill_count
      FROM pack_catalog c
      ORDER BY
        CASE WHEN c.pin_order IS NULL THEN 1 ELSE 0 END ASC,
@@ -494,11 +518,7 @@ export async function getCatalog(
                 AND ap.uninstalled_at IS NULL))     AS installed_harnesses,
        (SELECT COUNT(*) FROM skills s
         WHERE s.pack_id = c.pack_id
-          AND s.uninstalled_at IS NULL)             AS installed_skill_count,
-       (SELECT MAX(ap.uninstalled_at)
-        FROM agent_packs ap
-        WHERE ap.pack_id = c.pack_id
-          AND ap.uninstalled_at IS NOT NULL)        AS uninstalled_at
+          AND s.uninstalled_at IS NULL)             AS installed_skill_count
      FROM pack_catalog c
      WHERE c.pack_id = $1`,
     packId
@@ -727,4 +747,24 @@ export async function listInstallRuns(
     stdoutTail: row.stdoutTail,
     stderrTail: row.stderrTail,
   }));
+}
+
+/**
+ * Catalog rows this build no longer seeds. `upsertCatalogSeed` only inserts and
+ * updates, so a pack dropped from the seed keeps its stored row on every
+ * installed Desktop; the seed pass deletes these on every boot instead.
+ *
+ * `closedloop-web-command-pack`: the bundled Loops command pack, removed with
+ * Loops (ISS-12435, PRD-795; Q1 answered "drop").
+ */
+export const RETIRED_CATALOG_PACK_IDS: readonly string[] = [
+  "closedloop-web-command-pack",
+];
+
+async function deleteRetiredCatalogPacks(prisma: DesktopPrisma): Promise<void> {
+  await prisma.write((client) =>
+    client.packCatalog.deleteMany({
+      where: { packId: { in: [...RETIRED_CATALOG_PACK_IDS] } },
+    })
+  );
 }

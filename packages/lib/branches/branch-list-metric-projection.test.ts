@@ -31,7 +31,6 @@ describe("canonical Branch list metric projection", () => {
           identity: "org/repo#1",
           mergedAt: "2026-08-01T00:00:00.000Z",
           closedAt: "2026-08-01T00:00:00.000Z",
-          isDraft: false,
           additions: 30,
           deletions: 10,
         },

@@ -9,7 +9,6 @@
  * trim, an invalid ISO date, plus a valid minimal round-trip.
  */
 import {
-  SYNCED_COMPONENT_CONTENT_MAX_CHARS,
   SYNCED_COMPONENT_VARIANTS_MAX,
   SyncedComponentVariantsTruncatedReason,
 } from "@repo/api/src/types/synced-component-content";
@@ -103,18 +102,6 @@ describe("syncedComponentSchema", () => {
     }
   });
 
-  it("accepts content exactly at the cap and rejects one char over", () => {
-    const atCap = "x".repeat(SYNCED_COMPONENT_CONTENT_MAX_CHARS);
-    expect(
-      syncedComponentSchema.safeParse(validComponent({ content: atCap }))
-        .success
-    ).toBe(true);
-    expect(
-      syncedComponentSchema.safeParse(validComponent({ content: `${atCap}x` }))
-        .success
-    ).toBe(false);
-  });
-
   it("normalizes nullable trimmed string fields (empty → null)", () => {
     const result = syncedComponentSchema.safeParse(
       validComponent({ name: "  ", harness: "claude" })
@@ -174,17 +161,12 @@ describe("desktopAgentComponentsPayloadSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects a components array exceeding 200 entries", () => {
-    const tooMany = Array.from({ length: 201 }, (_, i) =>
-      validComponent({ externalId: `skill::c-${i}` })
-    );
-    const result = desktopAgentComponentsPayloadSchema.safeParse(
-      validPayload({ components: tooMany, componentCount: 201 })
-    );
-    expect(result.success).toBe(false);
-  });
-
-  it("accepts exactly 200 components (boundary)", () => {
+  // ISS-8051 deleted the companion "rejects a components array exceeding 200
+  // entries" case with the `.max(200)` it asserted — an over-length batch is now
+  // accepted whole rather than refused whole. The 201-component acceptance lives
+  // in `desktop-agent-sessions-array-cardinality-schema.test.ts`; this case keeps
+  // pinning that a batch at the old boundary still round-trips.
+  it("accepts exactly 200 components (the retired boundary)", () => {
     const exactly200 = Array.from({ length: 200 }, (_, i) =>
       validComponent({ externalId: `skill::c-${i}` })
     );
@@ -257,20 +239,6 @@ describe("syncedComponentSchema — ISS-4662 variants", () => {
   it("rejects a variant with no content hash", () => {
     const result = syncedComponentSchema.safeParse(
       validComponent({ variants: [{ contentHash: "  ", content: "BODY" }] })
-    );
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects a variant body over the content cap", () => {
-    const result = syncedComponentSchema.safeParse(
-      validComponent({
-        variants: [
-          {
-            contentHash: "abc123",
-            content: "x".repeat(SYNCED_COMPONENT_CONTENT_MAX_CHARS + 1),
-          },
-        ],
-      })
     );
     expect(result.success).toBe(false);
   });

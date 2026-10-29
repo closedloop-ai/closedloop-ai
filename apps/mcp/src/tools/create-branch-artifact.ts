@@ -2,6 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   BranchBaseBranchSource,
   BranchHeadShaSource,
+  CLIENT_ASSERTABLE_BASE_BRANCH_SOURCE_ERROR,
+  isClientAssertableBaseBranchSource,
 } from "@repo/api/src/types/artifact.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
@@ -45,6 +47,9 @@ export function registerCreateBranchArtifact(
           .describe("Known base branch"),
         baseBranchSource: z
           .enum(BranchBaseBranchSource)
+          .refine(isClientAssertableBaseBranchSource, {
+            message: CLIENT_ASSERTABLE_BASE_BRANCH_SOURCE_ERROR,
+          })
           .nullable()
           .optional()
           .describe("Base branch provenance"),

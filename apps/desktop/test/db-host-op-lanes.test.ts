@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { DEFAULT_READER_POOL_SIZE } from "../src/main/database/connection-pragmas.js";
 import {
   BOUNDED_READ_OPS,
@@ -474,7 +474,7 @@ describe("createDbHostOpLanes — the production routing decision", () => {
     assert.equal(tracker.active, 0);
   });
 
-  it("routes the heavy syncSource, dashboard AND named Branch reads, and nothing else", () => {
+  it("routes the heavy syncSource, dashboard, diagnostics AND named Branch reads, and nothing else", () => {
     // Pinned explicitly: the set is the contract, and silently widening it would
     // queue interactive reads behind heavy ones. `loadUsageSessions` is the
     // `canUseAggregateSessionFilters` fallback — leaving it out let every
@@ -491,6 +491,11 @@ describe("createDbHostOpLanes — the production routing decision", () => {
     // and the two NAMED Branch read facades. The raw `prisma.client.*` Branch
     // corpus reads are deliberately still absent — they are unreachable by op
     // name, which is the gap `db-host-op-lane-registry.ts` records.
+    //
+    // ISS-6758 adds `diagnostics.getData`: once the Diagnostics Coverage tab is
+    // selected it drives a full scan plus a temp B-tree over
+    // `session_activity_metrics` through the same reader pool, on that panel's
+    // 5-second poll — the ISS-6027 shape arriving through a fourth namespace.
     assert.deepEqual([...BOUNDED_READ_OPS].sort(), [
       "dashboard.getAnalytics",
       "dashboard.getCoreFeatures",
@@ -502,12 +507,19 @@ describe("createDbHostOpLanes — the production routing decision", () => {
       "dashboard.getTokenAnalytics",
       "dashboard.getTools",
       "dashboard.getWorkflowData",
+      "diagnostics.getData",
       "readBranchCanonicalActivityRows",
       "readBranchMetricEventEvidence",
       "syncSource.aggregateAnalytics",
       "syncSource.aggregateUsage",
+      // ISS-10717: the Claude Code telemetry lane's candidate sweep is a
+      // multi-table aggregate over the whole `claude_code_*` corpus, which is
+      // the reader-holding shape this lane exists to bound.
+      "syncSource.loadClaudeCodeTelemetryPendingSessions",
       "syncSource.loadSyncedSessions",
       "syncSource.loadUsageSessions",
+      "syncSource.projectSessionList",
+      "syncSource.resolveComponentSessionIds",
     ]);
   });
 

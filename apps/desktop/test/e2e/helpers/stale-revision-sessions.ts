@@ -15,6 +15,7 @@
  */
 
 import { createClient } from "@libsql/client";
+import { TERMINAL_SESSION_STATUSES } from "@repo/api/src/types/session-status.ts";
 import {
   applyDesktopSeedPragmas,
   branchesDbPath,
@@ -23,13 +24,19 @@ import {
 } from "./desktop-seed-core";
 
 /**
- * The statuses `groupTerminalStaleByHarness` treats as terminal
- * (`data-revision-rebuild.ts`). A non-terminal row is skipped into
- * `skippedActive` and never counted in the rebuild's denominator, so staling one
- * would make the population this helper reports disagree with the one the splash
- * renders.
+ * The canonical terminal statuses, as an array because the SQL below needs
+ * positional placeholders.
+ *
+ * This helper stales TERMINAL rows only, and that restriction is what keeps the
+ * count it returns equal to the denominator the splash renders. ISS-8601 sharpened
+ * the reason rather than removing it: a non-terminal row is no longer skipped
+ * unconditionally — one that has been silent past the staleness bound is now
+ * admitted and DOES count — so staling one here would ADD it to the rebuild's
+ * population and make the two numbers disagree. Freshly imported rows carry the
+ * current revision and are never selected at all, so the restriction below is the
+ * whole guarantee.
  */
-const TERMINAL_STATUSES = ["inactive", "error"];
+const TERMINAL_STATUSES = [...TERMINAL_SESSION_STATUSES];
 
 /** A revision no build has ever stamped, so every touched row reads as stale. */
 const STALE_REVISION = 0;

@@ -253,6 +253,7 @@ describe("resolveAnyAuthContext", () => {
 describe("resolveAnyAuthContext — org header behavior", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(verifyToken).mockRejectedValue(new Error("invalid bearer token"));
     mockIsFeatureEnabled.mockResolvedValue(true);
     vi.mocked(isDesktopSessionToken).mockReturnValue(false);
     vi.mocked(apiKeysService.touchLastUsedAt).mockResolvedValue(undefined);

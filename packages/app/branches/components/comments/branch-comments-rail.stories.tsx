@@ -8,8 +8,9 @@ const RESIZE_CONTROL_NAME = "Resize comments rail";
 
 /** Responsive shell matrix for the inline, right-sheet, and bottom-sheet rails. */
 const meta = {
-  title: "App Core/Branches/Comments Rail",
+  title: "Composites v1.0/Branches/Branch Comments Rail",
   component: BranchCommentsRail,
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "fullscreen" },
   args: {
     activeTab: BranchCommentsTab.Details,

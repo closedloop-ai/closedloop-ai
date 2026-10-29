@@ -27,6 +27,7 @@ import {
   readLaunchMetadata,
   readLaunchMetadataAsync,
 } from "../../server/operations/symphony-utils.js";
+import { isTccProtectedPath } from "../../shared/sandbox-policy.js";
 import type { SyncedAgentSessionAttribution } from "./agent-session-sync-contract.js";
 import {
   type AttributionRepoSource,
@@ -38,6 +39,15 @@ export type SessionAttributionResolverCache = {
   launchMetadataRootByCwd: Map<string, string | null>;
   repoFullNameByPath: Map<string, string | null>;
 };
+
+/** Creates one isolated attribution memo for a bounded read/hydration pass. */
+export function createSessionAttributionResolverCache(): SessionAttributionResolverCache {
+  return {
+    attributionByCwd: new Map(),
+    launchMetadataRootByCwd: new Map(),
+    repoFullNameByPath: new Map(),
+  };
+}
 
 export function resolveSessionAttribution(
   cwd: string | null,
@@ -54,7 +64,11 @@ export function resolveSessionAttribution(
 
   const worktreePath =
     findLaunchMetadataRoot(cwd, cache.launchMetadataRootByCwd) ?? cwd;
-  const launchMetadata = readLaunchMetadata(worktreePath);
+  // ISS-11914: the walk above only stats, which raises no TCC prompt; reading
+  // the metadata file would. The git lookup below guards itself.
+  const launchMetadata = isTccProtectedPath(worktreePath)
+    ? null
+    : readLaunchMetadata(worktreePath);
   const repoLookupPath = worktreePath;
   let repositoryFullName = cache.repoFullNameByPath.get(repoLookupPath);
   if (repositoryFullName === undefined) {
@@ -93,7 +107,6 @@ function buildAttribution(
     repositoryFullName,
     worktreePath,
     sourceArtifactId: launchMetadata?.artifactId ?? null,
-    sourceLoopId: launchMetadata?.loopId ?? null,
     baseBranch: launchMetadata?.baseBranch ?? null,
   };
 
@@ -204,7 +217,10 @@ export async function resolveSessionAttributionWithSourceAsync(
   const worktreePath =
     (await findLaunchMetadataRootAsync(cwd, cache.launchMetadataRootByCwd)) ??
     cwd;
-  const launchMetadata = await readLaunchMetadataAsync(worktreePath);
+  // ISS-11914: same TCC guard as the sync resolver.
+  const launchMetadata = isTccProtectedPath(worktreePath)
+    ? null
+    : await readLaunchMetadataAsync(worktreePath);
   const repoLookupPath = worktreePath;
   let repositoryFullName = cache.repoFullNameByPath.get(repoLookupPath);
   let repoSource: AttributionRepoSource | null = null;

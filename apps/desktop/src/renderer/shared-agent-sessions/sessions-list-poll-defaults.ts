@@ -1,4 +1,7 @@
-import { agentSessionKeys } from "@repo/app/agents/hooks/use-agent-sessions";
+import {
+  agentSessionKeys,
+  isSessionsOutsideWindowProbeKey,
+} from "@repo/app/agents/hooks/agent-session-keys";
 import type { Query, QueryClient } from "@tanstack/react-query";
 import {
   createServiceTimeTracker,
@@ -47,6 +50,19 @@ export const DESKTOP_SESSIONS_LIST_MAX_REFETCH_INTERVAL_MS = 30_000;
 export const DESKTOP_SESSIONS_DETAIL_REFETCH_INTERVAL_MS = 5000;
 
 /**
+ * Cadence for every Sessions fallback poll while the renderer reports
+ * `document.hidden`. Operator ruling, 2026-10-05: a hidden app does not need
+ * its visible-cadence re-poll and should poll much slower, keeping a minimal
+ * background footprint. The poll still runs, so a permanently-hidden renderer
+ * still heals (FEA-2187 / FEA-3481), just on this slower clock. React Query
+ * recomputes a function `refetchInterval` only after a fetch, so the polled
+ * keys also carry `refetchOnWindowFocus: "always"`: the hidden-to-visible
+ * `visibilitychange` refetches them, which re-arms the visible cadence
+ * (review cid 4185860589).
+ */
+export const DESKTOP_SESSIONS_HIDDEN_REFETCH_INTERVAL_MS = 60_000;
+
+/**
  * Apply the desktop Sessions poll fallbacks as QueryClient defaults scoped to
  * the `agentSessionKeys.lists()`, `agentSessionKeys.pageDataRoot()`, and
  * `agentSessionKeys.details()` key prefixes — so they ride on every
@@ -65,7 +81,8 @@ export const DESKTOP_SESSIONS_DETAIL_REFETCH_INTERVAL_MS = 5000;
  *
  * `refetchIntervalInBackground: true` is LOAD-BEARING on all: without it React
  * Query pauses the poll exactly when the window is hidden — the case we must
- * cover (a permanently-hidden renderer never fires `visibilitychange`).
+ * cover (a permanently-hidden renderer never fires `visibilitychange`). While
+ * hidden, every interval drops to `DESKTOP_SESSIONS_HIDDEN_REFETCH_INTERVAL_MS`.
  *
  * ISS-4772: the detail defaults ALSO carry `refetchOnMount: "always"`. The
  * detail query runs `staleTime: Infinity` with push-driven freshness, so a
@@ -87,25 +104,37 @@ export function applyDesktopSessionsListPollDefaults(
   // the interval from the measured cost pins it at ~50% instead (see
   // `sessions-poll-service-time.ts`, which also records what this does NOT fix).
   // The detail key keeps its constant — it is a single-row read.
-  const listInterval = () =>
+  const listInterval = slowedWhenHidden(() =>
     nextPollIntervalMs({
       observedServiceMs: tracker.observedMs(),
       floorMs: DESKTOP_SESSIONS_LIST_REFETCH_INTERVAL_MS,
       ceilingMs: DESKTOP_SESSIONS_LIST_MAX_REFETCH_INTERVAL_MS,
-    });
+    })
+  );
 
   client.setQueryDefaults(agentSessionKeys.lists(), {
-    refetchInterval: listInterval,
+    // ISS-11913: the outside-window probe heals on the slow clock, visible or
+    // not: `false` while visible would leave no timer to re-arm it once the
+    // renderer hides.
+    refetchInterval: (query) =>
+      isSessionsOutsideWindowProbeKey(query.queryKey)
+        ? DESKTOP_SESSIONS_HIDDEN_REFETCH_INTERVAL_MS
+        : listInterval(),
     refetchIntervalInBackground: true,
+    refetchOnWindowFocus: "always",
   });
   client.setQueryDefaults(agentSessionKeys.pageDataRoot(), {
     refetchInterval: listInterval,
     refetchIntervalInBackground: true,
+    refetchOnWindowFocus: "always",
   });
   client.setQueryDefaults(agentSessionKeys.details(), {
-    refetchInterval: DESKTOP_SESSIONS_DETAIL_REFETCH_INTERVAL_MS,
+    refetchInterval: slowedWhenHidden(
+      () => DESKTOP_SESSIONS_DETAIL_REFETCH_INTERVAL_MS
+    ),
     refetchIntervalInBackground: true,
     refetchOnMount: "always",
+    refetchOnWindowFocus: "always",
   });
 }
 
@@ -120,9 +149,15 @@ function hasKeyPrefix(
   );
 }
 
-/** The two polled, corpus-scale key families whose cost drives the cadence. */
+/**
+ * The two polled, corpus-scale key families whose cost drives the cadence. The
+ * outside-window probe is a one-row count under `lists()`, so it is left out.
+ */
 function isServiceTimedSessionsQuery(query: Query): boolean {
   const key = query.queryKey;
+  if (isSessionsOutsideWindowProbeKey(key)) {
+    return false;
+  }
   return (
     hasKeyPrefix(key, agentSessionKeys.lists()) ||
     hasKeyPrefix(key, agentSessionKeys.pageDataRoot())
@@ -173,4 +208,18 @@ function observeSessionsReadServiceTime(
       tracker.record(Date.now() - startedAt);
     }
   });
+}
+
+/** Wrap a visible-cadence interval so a hidden renderer polls on the slow clock. */
+function slowedWhenHidden(visibleIntervalMs: () => number): () => number {
+  return () =>
+    isRendererHidden()
+      ? DESKTOP_SESSIONS_HIDDEN_REFETCH_INTERVAL_MS
+      : visibleIntervalMs();
+}
+
+function isRendererHidden(): boolean {
+  return (
+    globalThis.document !== undefined && globalThis.document.hidden === true
+  );
 }

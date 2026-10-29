@@ -108,12 +108,27 @@ function SidebarProvider({
     }
     const handleKeyDown = (event: KeyboardEvent) => {
       if (
-        event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
-        (event.metaKey || event.ctrlKey)
+        event.key !== SIDEBAR_KEYBOARD_SHORTCUT ||
+        !(event.metaKey || event.ctrlKey)
       ) {
-        event.preventDefault()
-        toggleSidebar()
+        return
       }
+      // ISS-11621: text-editing shortcuts must not also toggle navigation.
+      if (
+        event.defaultPrevented ||
+        (event.target instanceof globalThis.HTMLInputElement &&
+          ["text", "search", "email", "tel", "url", "password", "number"].includes(
+            event.target.type
+          )) ||
+        (event.target instanceof globalThis.HTMLElement &&
+          event.target.closest(
+            'textarea, [contenteditable]:not([contenteditable="false"])'
+          ))
+      ) {
+        return
+      }
+      event.preventDefault()
+      toggleSidebar()
     }
 
     globalThis.window.addEventListener("keydown", handleKeyDown)

@@ -15,13 +15,25 @@ export function mergeTokensByModel(
   source: Record<string, NormalizedTokenCounts>
 ): void {
   for (const [model, counts] of Object.entries(source)) {
-    const existing = target[model];
-    target[model] = {
-      input: (existing?.input ?? 0) + counts.input,
-      output: (existing?.output ?? 0) + counts.output,
-      cacheRead: (existing?.cacheRead ?? 0) + counts.cacheRead,
-      cacheWrite: (existing?.cacheWrite ?? 0) + counts.cacheWrite,
-      ...(existing?.inferred || counts.inferred ? { inferred: true } : {}),
-    };
+    // ISS-8565: `target` is caller-owned, so there is no container to swap to a
+    // null prototype here — one caller hands us a plain `{}` built two modules
+    // away. `hasOwn` is the only presence check that cannot mistake an
+    // inherited member for a real bucket, and `defineProperty` DEFINES the key
+    // instead of invoking `Object.prototype`'s `__proto__` setter (which would
+    // create no own key and discard that model's whole spend). The descriptor
+    // matches what a plain assignment creates, so a normal model is unaffected.
+    const existing = Object.hasOwn(target, model) ? target[model] : undefined;
+    Object.defineProperty(target, model, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: {
+        input: (existing?.input ?? 0) + counts.input,
+        output: (existing?.output ?? 0) + counts.output,
+        cacheRead: (existing?.cacheRead ?? 0) + counts.cacheRead,
+        cacheWrite: (existing?.cacheWrite ?? 0) + counts.cacheWrite,
+        ...(existing?.inferred || counts.inferred ? { inferred: true } : {}),
+      },
+    });
   }
 }

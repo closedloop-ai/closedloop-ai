@@ -1,4 +1,7 @@
-import { DocumentType } from "@repo/api/src/types/document";
+import {
+  DOCUMENT_ROUTE_PREFIX,
+  DocumentType,
+} from "@repo/api/src/types/document";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveRoomMetadata } from "../server/room-metadata";
 
@@ -71,17 +74,17 @@ describe("resolveRoomMetadata", () => {
       {
         name: "PRD-1",
         roomId: "org:artifact:PRD-1",
-        url: "/acme/prds/PRD-1",
+        url: `/acme/${DOCUMENT_ROUTE_PREFIX}/PRD-1`,
       },
       {
         name: "ISS-2",
         roomId: "org:artifact:ISS-2",
-        url: "/acme/issues/ISS-2",
+        url: `/acme/${DOCUMENT_ROUTE_PREFIX}/ISS-2`,
       },
       {
         name: "PLN-3",
         roomId: "org:document:PLN-3",
-        url: "/acme/implementation-plans/PLN-3",
+        url: `/acme/${DOCUMENT_ROUTE_PREFIX}/PLN-3`,
       },
       { name: "TPL-4", roomId: "org:artifact:TPL-4", url: null },
       { name: "DOC-5", roomId: "org:artifact:DOC-5", url: null },
@@ -89,6 +92,18 @@ describe("resolveRoomMetadata", () => {
       { name: "malformed-room", roomId: "malformed-room", url: null },
     ]);
     expect(mockGetRoom).toHaveBeenCalledTimes(6);
+  });
+
+  it("returns a null url for a stored document type with no route", async () => {
+    mockGetRoom.mockResolvedValueOnce({
+      metadata: { documentType: UNROUTED_DOCUMENT_TYPE },
+    });
+
+    await expect(
+      resolveRoomMetadata(["org:artifact:DOC-7"], "acme")
+    ).resolves.toEqual([
+      { name: "DOC-7", roomId: "org:artifact:DOC-7", url: null },
+    ]);
   });
 
   it("falls back to parsed slugs without making API calls when unconfigured", async () => {
@@ -141,3 +156,6 @@ function deferredRoom() {
   );
   return { promise, resolve };
 }
+
+/** A metadata value this repo does not route, as an old room could store it. */
+const UNROUTED_DOCUMENT_TYPE = "RETIRED_KIND";

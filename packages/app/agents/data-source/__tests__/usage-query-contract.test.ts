@@ -2,6 +2,7 @@ import { SESSION_QUALITY_VALUES } from "@repo/api/src/agent-session-filters";
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { AgentSessionComparisonMode } from "@repo/api/src/types/agent-session-usage-comparison";
 import { describe, expect, it } from "vitest";
+import { ApiError } from "../../../shared/api/api-error";
 import {
   type AgentSessionUsageQueryFilters,
   createHttpAgentSessionsDataSource,
@@ -41,6 +42,7 @@ import {
  * by one of those would read as "stripped" no matter what the builder did.
  */
 const RECOGNIZED_FILTERS: Required<AgentSessionUsageQueryFilters> = {
+  componentSlug: "skill::review",
   autonomyTiers: ["high"],
   changePresence: ["has_changes"],
   comparison: AgentSessionComparisonMode.Prior,
@@ -51,6 +53,7 @@ const RECOGNIZED_FILTERS: Required<AgentSessionUsageQueryFilters> = {
   harness: "claude",
   harnesses: ["claude"],
   limit: 25,
+  listSearch: "deploy",
   models: ["opus"],
   offset: 50,
   prAssociation: ["has_pr"],
@@ -61,6 +64,9 @@ const RECOGNIZED_FILTERS: Required<AgentSessionUsageQueryFilters> = {
   search: "deploy",
   sortBy: "cost",
   sortDir: "asc",
+  // ISS-8335: the multi-rule sort. Non-empty, like every value here, so the loop
+  // can tell a key the builder STRIPPED from one it merely serialized to nothing.
+  sorts: ["cost:asc", "status:desc"],
   startDate: "2026-07-14T00:00:00.000Z",
   status: "active",
   statuses: ["active"],
@@ -71,12 +77,75 @@ const RECOGNIZED_FILTERS: Required<AgentSessionUsageQueryFilters> = {
 };
 
 describe("USAGE_STRIPPED_FILTER_KEYS", () => {
+  it("retries the legacy schema without attribution when comparison is absent", async () => {
+    const paths: string[] = [];
+    const source = createHttpAgentSessionsDataSource({
+      get: <T>(path: string): Promise<T> => {
+        paths.push(path);
+        return path.includes("attribution=")
+          ? Promise.reject(new ApiError("Unknown attribution option", 400))
+          : Promise.resolve({ totalSessions: 7 } as T);
+      },
+    });
+    expect((await source.usage({})).totalSessions).toBe(7);
+    expect(paths).toEqual([
+      "/agent-sessions/usage?attribution=omit",
+      "/agent-sessions/usage",
+    ]);
+  });
+
+  it.each([401, 403, 429, 500, 503])(
+    "does not repeat a %i failure",
+    async (status) => {
+      const paths: string[] = [];
+      const source = createHttpAgentSessionsDataSource({
+        get: <T>(path: string): Promise<T> => {
+          paths.push(path);
+          return Promise.reject(new ApiError("Request failed", status));
+        },
+      });
+      await expect(source.usage({})).rejects.toThrow("Request failed");
+      expect(paths).toHaveLength(1);
+    }
+  );
+
+  it("surfaces the ORIGINAL 400 when the legacy retry is rejected too", async () => {
+    // whitlockk review: a 400 does not name which part of the request the API
+    // rejected, so this fallback also fires for a request that is simply bad.
+    // The caller must then see the complaint about the request it MADE, not the
+    // second one about a shape it never asked for.
+    const paths: string[] = [];
+    const source = createHttpAgentSessionsDataSource({
+      get: <T>(path: string): Promise<T> => {
+        paths.push(path);
+        return Promise.reject(
+          new ApiError(
+            path.includes("attribution=")
+              ? "endDate must be after startDate"
+              : "Unknown legacy shape",
+            400
+          )
+        ) as Promise<T>;
+      },
+    });
+
+    await expect(source.usage({})).rejects.toThrow(
+      "endDate must be after startDate"
+    );
+    // Still exactly the one retry — the fallback is attempted, not skipped.
+    expect(paths).toEqual([
+      "/agent-sessions/usage?attribution=omit",
+      "/agent-sessions/usage",
+    ]);
+  });
+
   it("names every field the usage URL drops, and only those", async () => {
     const requestedPaths: string[] = [];
     const source = createHttpAgentSessionsDataSource({
       get: <T>(path: string): Promise<T> => {
         requestedPaths.push(path);
         return Promise.resolve({
+          componentScope: RECOGNIZED_FILTERS.componentSlug,
           items: [],
           total: 0,
           viewerScope: AgentSessionViewerScope.Self,

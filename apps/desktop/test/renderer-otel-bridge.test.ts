@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
 import {
   SpanKind,
   SpanStatusCode,
 } from "@closedloop-ai/telemetry-contract/span";
-import { vi } from "vitest";
+import { test, vi } from "vitest";
 import { createRendererOtelExportHandler } from "../src/main/ipc/renderer-otel-ipc.js";
 import { parseRendererOtelBridgePayload } from "../src/shared/renderer-otel-bridge.js";
 import {
@@ -929,9 +928,22 @@ function makeRuntime() {
     // DesktopOtelRuntime contract rather than a convenient slice of it.
     emitAppLifecycleEvent() {},
     emitAppExceptionEvent() {},
+    emitSanitizedAppExceptionEvent() {},
     emitIpcPerfEvent() {},
     emitSyncBatchEvent() {},
     emitImportHealthEvent() {},
+    emitAuthFailureEvent() {
+      return false;
+    },
+    emitDeadEndEvent() {
+      return true;
+    },
+    emitOnboardingEvent() {},
+    emitOnboardingDiscardEvent() {},
+    emitGenAiRequestEvent() {},
+    emitUpdateEvent() {
+      return true;
+    },
     exportExternalRecords() {
       this.exportCalls += 1;
       return {

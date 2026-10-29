@@ -66,3 +66,25 @@ export function expectPartialMetric<Value>(
   }
   return metric;
 }
+
+/** The one coverage arm that carries BOTH a `reason` and a `subtotalUsd`. */
+type PartialCoverage = Extract<
+  BranchPhaseAttributionCoverage,
+  { completeness: typeof BranchPhaseAttributionCompleteness.Partial }
+>;
+
+/**
+ * Assert the coverage is `Partial` and return it narrowed, so `.subtotalUsd` is
+ * readable alongside `.reason`. `expectIncompleteCoverage` is not enough for
+ * that: the `Unavailable` arm it also admits carries no `subtotalUsd`.
+ */
+export function expectPartialCoverage(
+  coverage: BranchPhaseAttributionCoverage
+): PartialCoverage {
+  if (coverage.completeness !== BranchPhaseAttributionCompleteness.Partial) {
+    throw new Error(
+      `expected Partial coverage (which carries \`subtotalUsd\`), got ${coverage.completeness}`
+    );
+  }
+  return coverage;
+}

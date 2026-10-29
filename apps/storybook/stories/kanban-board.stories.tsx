@@ -88,7 +88,6 @@ const agents: SessionAgent[] = [
     name: "Main Agent",
     type: "main",
     status: "working",
-    task: "Compose the shared monitoring dashboard from workflow primitives.",
     currentTool: "Edit",
     model: "gpt-5.5",
     cost: 1.82,
@@ -103,7 +102,6 @@ const agents: SessionAgent[] = [
     type: "subagent",
     subagentType: "code:review-worker",
     status: "waiting",
-    task: "Validate menu parity between the app shell and the design system.",
     currentTool: "Read",
     model: "claude-sonnet-4.6",
     cost: 0.41,
@@ -118,7 +116,6 @@ const agents: SessionAgent[] = [
     type: "subagent",
     subagentType: "code:verification-subagent",
     status: "completed",
-    task: "Backfill Storybook coverage for layout and document blocks.",
     currentTool: "Test",
     model: "gpt-5.5-mini",
     cost: 0.27,
@@ -522,10 +519,15 @@ function KanbanBoardCanvas() {
   );
 }
 
+/**
+ * No controls: `KanbanBoardCanvas` takes no props. It composes the shared board
+ * layout over a fixed fixture and owns the drag state itself, so the payload is
+ * the subject here, not a prop surface.
+ */
 const meta = {
-  title: "Design System/Layout/Kanban Board",
+  title: "Composites v1.0/Layout/Kanban Board",
   component: KanbanBoardCanvas,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof KanbanBoardCanvas>;
 

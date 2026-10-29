@@ -1,3 +1,4 @@
+import { GitHubCredentialKind } from "@repo/api/src/types/github";
 import type {
   GitHubFetchCredentialType,
   GitHubFetchMechanism,
@@ -32,11 +33,28 @@ export function githubAppWebhookFetchProvenance(
   };
 }
 
-export function githubAppBackfillFetchProvenance(
-  observedAt = new Date()
-): GitHubFetchProvenance {
+/**
+ * Provenance for a row the bounded backfill sweep wrote.
+ *
+ * `credentialType` is a parameter and not a constant because ISS-7721 runs this
+ * same sweep on a POOLED USER TOKEN for an org with no App installation: a
+ * `github_app` stamp there names a credential the org does not have, and
+ * `credentialOwnerId` is what says whose grant actually fetched it. The owner
+ * key stays omitted rather than null when there is no owner, so an
+ * installation-lane stamp is byte-identical to the one this lane wrote before.
+ */
+export function backfillFetchProvenance({
+  credentialType = GitHubFetchCredentialTypeValue.GitHubApp,
+  credentialOwnerId = null,
+  observedAt = new Date(),
+}: {
+  credentialType?: GitHubFetchCredentialType;
+  credentialOwnerId?: string | null;
+  observedAt?: Date;
+} = {}): GitHubFetchProvenance {
   return {
-    credentialType: GitHubFetchCredentialTypeValue.GitHubApp,
+    credentialType,
+    ...(credentialOwnerId ? { credentialOwnerId } : {}),
     mechanism: GitHubFetchMechanismValue.Backfill,
     trigger: GitHubFetchTriggerValue.Backfill,
     observedAt,
@@ -44,17 +62,23 @@ export function githubAppBackfillFetchProvenance(
   };
 }
 
-export function githubAppGraphqlFetchProvenance({
+/** GraphQL-lane provenance. Credential-parameterized for the same reason as `backfillFetchProvenance`. */
+export function graphqlFetchProvenance({
+  credentialType = GitHubFetchCredentialTypeValue.GitHubApp,
+  credentialOwnerId = null,
   observedAt = new Date(),
   resultReason = GitHubSyncResultReasonValue.Success,
   trigger,
 }: {
+  credentialType?: GitHubFetchCredentialType;
+  credentialOwnerId?: string | null;
   observedAt?: Date;
   resultReason?: GitHubSyncResultReason;
   trigger: GitHubFetchTrigger;
 }): GitHubFetchProvenance {
   return {
-    credentialType: GitHubFetchCredentialTypeValue.GitHubApp,
+    credentialType,
+    ...(credentialOwnerId ? { credentialOwnerId } : {}),
     mechanism: GitHubFetchMechanismValue.Graphql,
     trigger,
     observedAt,
@@ -149,4 +173,34 @@ export function gitHubFetchProvenanceData(
     fetchObservedAt: provenance.observedAt ?? new Date(),
     fetchResultReason: provenance.resultReason,
   };
+}
+
+/**
+ * Which fetch-credential lane a resolved credential kind belongs to.
+ *
+ * A `Record` and not a ternary: four producers had independently written
+ * `kind === Installation ? github_app : user_oauth`, so a fifth credential kind
+ * would have been silently stamped `user_oauth` at every one of them. The map
+ * cannot be written without naming every member, so a new kind fails `tsc`
+ * here instead of mislabelling a persisted row.
+ */
+const FETCH_CREDENTIAL_TYPE_BY_KIND: Record<
+  GitHubCredentialKind,
+  GitHubFetchCredentialType
+> = {
+  [GitHubCredentialKind.Installation]: GitHubFetchCredentialTypeValue.GitHubApp,
+  [GitHubCredentialKind.OauthUser]: GitHubFetchCredentialTypeValue.UserOAuth,
+  [GitHubCredentialKind.GithubAppUser]:
+    GitHubFetchCredentialTypeValue.UserOAuth,
+  // Unreachable through either resolver — both deny rather than hand back a
+  // `none` client — but `unauthenticated` is the only honest stamp for a read
+  // no credential performed, and mapping it to `user_oauth` would name a grant
+  // that does not exist.
+  [GitHubCredentialKind.None]: GitHubFetchCredentialTypeValue.Unauthenticated,
+};
+
+export function fetchCredentialTypeFromKind(
+  kind: GitHubCredentialKind
+): GitHubFetchCredentialType {
+  return FETCH_CREDENTIAL_TYPE_BY_KIND[kind];
 }

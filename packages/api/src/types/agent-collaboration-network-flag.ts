@@ -16,13 +16,14 @@
  *  - web (`apps/app`) reads it as a PostHog flag via
  *    `AGENT_COLLABORATION_NETWORK_FEATURE_FLAG_KEY`
  *    (`packages/app/shared/lib/feature-flags.ts`).
- *  - the desktop main process registers it as a Labs toggle via
- *    `DESKTOP_AGENT_COLLABORATION_NETWORK_FEATURE_FLAG_KEY`
- *    (`apps/desktop/src/shared/feature-flags.ts`).
+ *  - the desktop renderer resolves the byte-for-byte-equal key from the
+ *    signed-in account's PostHog assignment, delivered over the IPC bridge,
+ *    under the alias `DESKTOP_AGENT_COLLABORATION_NETWORK_FEATURE_FLAG_KEY`
+ *    (`apps/desktop/src/shared/feature-flags-labs-detail.ts`).
  *
  * The overview dashboard is shared through `packages/app`, so both shells draw
  * the same row: one constant on both sides means a rename touches a single
- * definition and cannot silently split PostHog from the desktop Labs toggle.
+ * definition and cannot silently split the two surfaces' reads of it.
  */
 export const AGENT_COLLABORATION_NETWORK_FLAG_KEY =
   "agent-collaboration-network" as const;

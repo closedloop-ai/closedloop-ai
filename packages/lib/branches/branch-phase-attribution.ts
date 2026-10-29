@@ -162,7 +162,7 @@ type MergedSession = {
   participation?: BranchParticipationKind;
   branchCount: number | null;
   estimatedCostUsd: number | null;
-  activitySegments: BranchActivitySegment[] | undefined;
+  activitySegments: readonly BranchActivitySegment[] | undefined;
   lifecycleEvents: BranchPhaseLifecycleEvent[];
 };
 
@@ -182,6 +182,8 @@ const reasonPrecedence: readonly BranchPhaseAttributionCompletenessReason[] = [
   CompletenessReason.MalformedEvidence,
   CompletenessReason.CoverageCapped,
   CompletenessReason.AmbiguousEvidence,
+  CompletenessReason.MissingBranchDivisor,
+  CompletenessReason.CohortIncomplete,
   CompletenessReason.LifecycleIncomplete,
   CompletenessReason.PricingIncomplete,
   CompletenessReason.MissingActivitySegments,
@@ -254,10 +256,7 @@ function mergeSessions(
         participation: input.participation,
         branchCount,
         estimatedCostUsd: validOptionalCost(input.estimatedCostUsd, reasons),
-        activitySegments:
-          input.activitySegments === undefined
-            ? undefined
-            : [...input.activitySegments],
+        activitySegments: input.activitySegments,
         lifecycleEvents: [...(input.lifecycleEvents ?? [])],
       });
       continue;
@@ -305,7 +304,8 @@ function validBranchCount(
   reasons: Set<BranchPhaseAttributionCompletenessReason>
 ): number | null {
   if (value === undefined) {
-    return 1;
+    reasons.add(CompletenessReason.MissingBranchDivisor);
+    return null;
   }
   if (!(Number.isInteger(value) && value > 0)) {
     reasons.add(CompletenessReason.MalformedEvidence);
@@ -343,11 +343,16 @@ function mergeEstimatedCost(
   return existing;
 }
 
+/**
+ * The same array arriving again is the same evidence, which the de-duplication
+ * would drop anyway; keeping the reference is what lets `distinctSegments` reuse
+ * its answer. A different array is merged into a new one, never into the input.
+ */
 function mergeOptionalSegments(
-  existing: BranchActivitySegment[] | undefined,
+  existing: readonly BranchActivitySegment[] | undefined,
   next: readonly BranchActivitySegment[] | undefined
-): BranchActivitySegment[] | undefined {
-  if (next === undefined) {
+): readonly BranchActivitySegment[] | undefined {
+  if (next === undefined || next === existing) {
     return existing;
   }
   return [...(existing ?? []), ...next];
@@ -373,13 +378,26 @@ function projectSessionSegments(
     return;
   }
   const events = normalizeEvents(session.lifecycleEvents, reasons);
+  // distinctSegments must run BEFORE the Reviewed drop below: it owns segment
+  // validation, so returning ahead of it would let a malformed or conflicting
+  // segment leave no reason at all and report Complete.
+  const segments = distinctSegments(session.activitySegments, reasons);
   if (
     session.participation === ParticipationKind.Reviewed &&
     !events.some((event) => event.kind === LifecycleBoundaryKind.ReviewFeedback)
   ) {
+    // Dropping the whole session here hides whatever projectSegment would have
+    // recorded for the segments that survived validation, so record it in its
+    // place. The reason class has to match what projectSegment would have
+    // chosen: priced evidence could not be placed in a phase,
+    // unpriced-but-evidenced evidence could not be priced.
+    if (segments.some((segment) => segment.costUsd !== null)) {
+      reasons.add(CompletenessReason.LifecycleIncomplete);
+    } else if (segments.some(segmentHasSpendEvidence)) {
+      reasons.add(CompletenessReason.PricingIncomplete);
+    }
     return;
   }
-  const segments = distinctSegments(session.activitySegments, reasons);
   if (
     segments.some((segment) => segment.costUsd !== null) &&
     events.length === 0
@@ -435,7 +453,49 @@ function normalizeEvents(
   );
 }
 
+type DistinctSegments = {
+  length: number;
+  segments: readonly BranchActivitySegment[];
+  reasons: ReadonlySet<BranchPhaseAttributionCompletenessReason>;
+};
+
+/**
+ * ISS-11589: the answer depends only on the segments, and the cloud read passes
+ * every Branch a Session touches the same array, so it is worked out once per
+ * array. The recorded reasons are replayed into each caller's set, and the
+ * cached list is never mutated by callers. The length guards an array extended
+ * in place between calls.
+ */
+const distinctSegmentsByInput = new WeakMap<
+  readonly BranchActivitySegment[],
+  DistinctSegments
+>();
+
 function distinctSegments(
+  segments: readonly BranchActivitySegment[],
+  reasons: Set<BranchPhaseAttributionCompletenessReason>
+): readonly BranchActivitySegment[] {
+  const cached = distinctSegmentsByInput.get(segments);
+  if (cached && cached.length === segments.length) {
+    for (const reason of cached.reasons) {
+      reasons.add(reason);
+    }
+    return cached.segments;
+  }
+  const found = new Set<BranchPhaseAttributionCompletenessReason>();
+  const distinct = computeDistinctSegments(segments, found);
+  distinctSegmentsByInput.set(segments, {
+    length: segments.length,
+    segments: distinct,
+    reasons: found,
+  });
+  for (const reason of found) {
+    reasons.add(reason);
+  }
+  return distinct;
+}
+
+function computeDistinctSegments(
   segments: readonly BranchActivitySegment[],
   reasons: Set<BranchPhaseAttributionCompletenessReason>
 ): BranchActivitySegment[] {
@@ -632,9 +692,13 @@ function phaseForSegment(
   const writeEvents = events.filter(
     (event) => event.kind === LifecycleBoundaryKind.BranchWrite
   );
-  return writeEvents.length > 0
-    ? phaseForWrites(writeEvents, cycles, ambiguousWriteAfter, reasons)
-    : null;
+  if (writeEvents.length === 0) {
+    // projectSegment already proved this segment priced, so an unplaceable
+    // segment is lost evidence, not an absence of spend.
+    reasons.add(CompletenessReason.LifecycleIncomplete);
+    return null;
+  }
+  return phaseForWrites(writeEvents, cycles, ambiguousWriteAfter, reasons);
 }
 
 function phaseForWrites(

@@ -7,7 +7,6 @@ import type { ReactNode } from "react";
 // the web shell's liveblocks.config.ts side-effect).
 import "../shared/config";
 import type { AuthEndpoint } from "./collaboration-provider";
-import { LiveblocksErrorBoundary } from "./liveblocks-error-boundary";
 import {
   createResolveMentionSuggestions,
   createResolveUsers,
@@ -29,8 +28,11 @@ export type TopLevelCollaborationProviderProps = {
  * Top-level Liveblocks provider for global collaboration features (inbox, notifications).
  * Wraps only LiveblocksProvider without RoomProvider - individual rooms are handled separately.
  * Uses dual-mode auth endpoint that issues global tokens for accessing inbox data.
- * LiveblocksErrorBoundary wraps children so that useLiveblocksAvailability() reflects
- * actual Liveblocks errors (auth failures, network issues) instead of always returning true.
+ * Mounts no error boundary of its own: children here are the whole authenticated
+ * shell, and a boundary at that height swallows every render failure under it
+ * (ISS-10202). Each Liveblocks-dependent surface brings its own
+ * `LiveblocksErrorBoundary`, so `useLiveblocksAvailability()` reflects a real
+ * Liveblocks failure without hiding anything else.
  */
 export function TopLevelCollaborationProvider({
   children,
@@ -45,7 +47,7 @@ export function TopLevelCollaborationProvider({
       resolveRoomsInfo={resolveRoomsInfo}
       resolveUsers={createResolveUsers(users)}
     >
-      <LiveblocksErrorBoundary>{children}</LiveblocksErrorBoundary>
+      {children}
     </LiveblocksProvider>
   );
 }

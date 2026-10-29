@@ -2,7 +2,10 @@ import {
   AGENT_SESSION_SYNC_SCHEMA_VERSION,
   AgentSessionSyncMode,
 } from "@repo/api/src/types/agent-session";
-import { ArtifactRefTargetKind } from "@repo/api/src/types/session-artifact-link";
+import {
+  ArtifactRefTargetKind,
+  SessionArtifactLinkKind,
+} from "@repo/api/src/types/session-artifact-link";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildDefaultAgentSessionEventMocks,
@@ -11,6 +14,10 @@ import {
   buildSyncedSession,
   installDb,
 } from "@/__tests__/support/agent-sessions/service.test-harness";
+import {
+  SessionPrLinkAudience,
+  sessionPrLinkKindWhere,
+} from "@/lib/session-pr-links";
 import { agentSessionsService } from "../../service";
 
 vi.mock("@repo/database", async () => {
@@ -32,7 +39,7 @@ describe("agentSessionsService", () => {
     vi.clearAllMocks();
   });
 
-  it("persistArtifactLinks deleteMany guard excludes session_pr links", async () => {
+  it("artifactRefs-only replacement protects single- and multi-PR links", async () => {
     const artifactLinkDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
     const artifactLinkCreate = vi.fn().mockResolvedValue({});
     installDb({
@@ -52,6 +59,8 @@ describe("agentSessionsService", () => {
         findFirst: vi.fn().mockResolvedValue(null),
         create: artifactLinkCreate,
         upsert: vi.fn().mockResolvedValue({}),
+        // ISS-7669: the guarded monotonic advance that follows every upsert.
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       agentSessionEvent: buildDefaultAgentSessionEventMocks(),
       agentSessionTokenUsage: {
@@ -84,7 +93,6 @@ describe("agentSessionsService", () => {
                 method: "mcp_tool_call",
               },
             ],
-            prRefs: [],
           }),
         ],
       }
@@ -101,10 +109,24 @@ describe("agentSessionsService", () => {
       .where;
     // FEA-2729: the slug-path replacement now spares BOTH the session_pr and
     // session_branch lanes so it never clobbers a branch/PR link.
+    // ISS-5823: the spare-list runs at the Evidence audience, so the weak
+    // prose tier is spared alongside the strong one.
     expect(where.NOT).toEqual({
       OR: [
-        { metadata: { path: ["linkKind"], equals: "session_pr" } },
-        { metadata: { path: ["linkKind"], equals: "session_branch" } },
+        sessionPrLinkKindWhere(SessionPrLinkAudience.Evidence),
+        {
+          metadata: {
+            path: ["linkKind"],
+            equals: SessionArtifactLinkKind.SessionBranch,
+          },
+        },
+        // ISS-12552: evidence-lane links are spared too.
+        {
+          metadata: {
+            path: ["linkKind"],
+            equals: SessionArtifactLinkKind.SessionEvidence,
+          },
+        },
       ],
     });
   });

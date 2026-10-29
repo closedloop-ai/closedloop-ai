@@ -8,30 +8,23 @@
 // scalars, five of which are computed here in three queries.
 //
 // What this module reads, and nothing else:
-//   1. the core `sessionDetail.aggregate` — session count + input/output tokens
-//   2. the `sourceLoopId`/`billingMode` cost snapshot, read AND classified by the
+//   1. the core `sessionDetail.aggregate` — session count + all four token
+//      counters (input, output, cache read, cache write; ISS-7175)
+//   2. the `legacyLoopCostLedger`/`billingMode` cost snapshot, read AND classified by the
 //      SHARED `computeSessionCostSplit` so the prior cost basis is derived by the
 //      same rule as the current one (a second, drifting copy of either the query
 //      shape or the classification is what the shared reader exists to prevent)
-//   3. whatever `buildUsageSummaryWhereParts` itself needs to resolve the cohort
+//   3. whatever `buildUsageSummaryWhere` itself needs to resolve the cohort
 //
 // The sixth figure — the prior `mergedPrCount` — is NOT read here. It costs zero
 // additional DB work because the delivery scope is date-window-stripped and
 // therefore identical for both periods, so `delivery-metrics.ts` collects the
 // merged-PR set once and evaluates it against two windows. See
-// `computeDeliverySummaryMetricsWithPrior`.
+// `foldDeliverySummaryMetricsWithPrior`.
 //
-// COST-SENSITIVE QUERIES (deviation from PLN-1683 M1.2, recorded deliberately).
-// The plan instructed reusing the CURRENT period's resolved cost-matched session
-// ids for the prior read rather than re-running the candidate scan. That would be
-// incorrect: `resolveCostBucketMatchedSessionIds` scans a candidate set already
-// bounded by the current window's `lastActivityAt` predicate, so those ids ARE the
-// current period's population. Scoping the prior aggregates to them would compare
-// the current window against itself, filtered — a fabricated movement, and exactly
-// the class of like-for-like violation the comparison contract exists to prevent.
-// A cost-bucket-filtered query therefore resolves its own prior cohort. That is
-// strictly no worse than the two-request status quo (which resolved two cohorts
-// anyway) and the common, non-cost-sensitive path resolves none at all.
+// A COST-BUCKET FILTER NEEDS NOTHING SPECIAL HERE. The whole-session cost is
+// `session_detail.estimated_cost`, so a bucket is an ordinary `where` conjunct
+// that composes for the prior window exactly like every other facet.
 
 import { pctDelta } from "@closedloop-ai/loops-api/insights";
 import type {
@@ -39,11 +32,24 @@ import type {
   AgentSessionUsageComparisonDeltas,
 } from "@repo/api/src/types/agent-session-usage-comparison";
 import { AgentSessionComparisonMetric } from "@repo/api/src/types/agent-session-usage-comparison";
+import { sumSessionTokenCounters } from "@repo/api/src/utils/session-token-total";
 import { withDb } from "@repo/database";
+import { parseError } from "@repo/observability/error";
+import { log } from "@repo/observability/log";
+import { emitTelemetryMetric } from "@repo/observability/telemetry/metrics";
+import {
+  EmissionRollupCause,
+  FixedWindowEmissionThrottle,
+} from "@/lib/observability/fixed-window-emission-throttle";
 import { toNumber } from "@/lib/prisma-number";
+import { toViewerScope } from "./project-resolution";
 import type { SessionUsageInput } from "./records";
+import {
+  SESSIONS_USAGE_COMPARISON_LATENCY_BUDGET_MS,
+  SESSIONS_USAGE_COMPARISON_LATENCY_METRIC,
+} from "./session-read-metrics";
 import { computeSessionCostSplit } from "./usage-cost-split";
-import { buildUsageSummaryWhereParts } from "./usage-summary-where";
+import { buildUsageSummaryWhere } from "./usage-summary-where";
 
 /** ISO bounds of a usage window. */
 export type UsageComparisonWindow = {
@@ -60,6 +66,8 @@ export type UsageComparisonCurrentFigures = {
   totalTokens: number;
   meteredEstimatedCost: number;
   apiEstimatedCost: number;
+  /** ISS-4748 — the subscription-INCLUSIVE grand total this period. */
+  totalEstimatedCost: number;
   mergedPrCount: number | null;
 };
 
@@ -160,71 +168,141 @@ export function withUsageWindow(
 }
 
 /**
- * Reads the prior window's comparable figures and returns the percent movement
- * for each card that has an honest one.
+ * The prior window's own comparable figures — everything the comparison needs
+ * from the database, and nothing it needs from the current period.
  *
- * `priorMergedPrCount` comes from the delivery pass (one merged-PR collection,
- * two windows), so this issues no delivery read of its own.
+ * ISS-7422: this type exists so the read can be SEPARATED from the arithmetic.
+ * The prior read depends on the request's filters alone, but it used to run as a
+ * fourth serial stage after the current aggregates, the cost split and the
+ * delivery pager had all settled — so its round trips were added to the request
+ * rather than overlapped with it, on exactly the endpoint the reporter called
+ * slow. Splitting it lets `buildUsageSummary` start it alongside the other
+ * independent reads and finish with the pure fold below.
  */
-export async function computeUsageComparison({
+export type PriorUsageFigures = {
+  totalSessions: number;
+  totalTokens: number;
+  meteredEstimatedCost: number;
+  apiEstimatedCost: number;
+  /** ISS-4748 — the subscription-INCLUSIVE grand total for the prior window. */
+  totalEstimatedCost: number;
+};
+
+/**
+ * Reads the prior window's comparable figures.
+ *
+ * The prior `mergedPrCount` is deliberately not among them: it costs zero
+ * additional DB work (see this module's header) and reaches the fold from the
+ * delivery pass instead.
+ */
+export async function readPriorUsageFigures({
   input,
   priorWindow,
-  current,
-  priorMergedPrCount,
 }: {
   input: SessionUsageInput;
   priorWindow: UsageComparisonWindow;
-  current: UsageComparisonCurrentFigures;
-  priorMergedPrCount: number | null;
-}): Promise<AgentSessionUsageComparison> {
+}): Promise<PriorUsageFigures> {
+  const startedAtMs = Date.now();
   const priorInput = withUsageWindow(input, priorWindow);
-  const { where } = await buildUsageSummaryWhereParts(priorInput);
+  const where = await buildUsageSummaryWhere(priorInput);
   const [aggregate, priorCostSplit] = await Promise.all([
     withDb((db) =>
       db.sessionDetail.aggregate({
         where,
         _count: { _all: true },
+        // ISS-7175: the cache columns are SELECTED, not just summed below. The
+        // tile's basis moved to all four counters, and reading only the uncached
+        // pair here would leave every cache token out of the baseline alone —
+        // `_sum.cacheReadTokens` would be undefined, `toNumber` would floor it to
+        // 0, and the chip would report a huge fabricated rise on a flat period.
         _sum: {
           inputTokens: true,
           outputTokens: true,
+          cacheReadTokens: true,
+          cacheWriteTokens: true,
         },
       })
     ),
     // Through the SHARED reader, never a second copy of its groupBy shape: the
-    // knowledge of what the classifier needs (grouped by sourceLoopId+billingMode,
+    // knowledge of what the classifier needs (grouped by legacyLoopCostLedger+billingMode,
     // summing estimatedCost) lives in `usage-cost-split` alone, so a change to it
     // cannot leave this module reading the current period's cost by one rule and
     // the prior period's by another. The delivery denominator reads it the same way.
-    computeSessionCostSplit(input.organizationId, where),
+    computeSessionCostSplit(where),
   ]);
-  const priorTokens =
-    toNumber(aggregate._sum.inputTokens) +
-    toNumber(aggregate._sum.outputTokens);
+  const priorTokens = sumSessionTokenCounters({
+    input: toNumber(aggregate._sum.inputTokens),
+    output: toNumber(aggregate._sum.outputTokens),
+    cacheRead: toNumber(aggregate._sum.cacheReadTokens),
+    cacheWrite: toNumber(aggregate._sum.cacheWriteTokens),
+  });
 
+  reportComparisonLatency(
+    {
+      organizationId: input.organizationId,
+      viewerScope: toViewerScope(input.filters),
+    },
+    Date.now() - startedAtMs
+  );
+
+  return {
+    totalSessions: aggregate._count._all,
+    totalTokens: priorTokens,
+    meteredEstimatedCost: priorCostSplit.meteredEstimatedCost,
+    apiEstimatedCost: priorCostSplit.apiEstimatedCost,
+    // Read from the split, never re-summed here — `SessionCostSplit` owns this
+    // total, summed once over all three ledgers. Costs no extra query: the
+    // split is already read above.
+    totalEstimatedCost: priorCostSplit.totalEstimatedCost,
+  };
+}
+
+/**
+ * The percent movement for each card that has an honest one — pure arithmetic
+ * over two already-read periods, so it can run after the current figures land
+ * without holding a database round trip open behind them.
+ */
+export function foldUsageComparison({
+  priorWindow,
+  current,
+  prior,
+  priorMergedPrCount,
+}: {
+  priorWindow: UsageComparisonWindow;
+  current: UsageComparisonCurrentFigures;
+  prior: PriorUsageFigures;
+  priorMergedPrCount: number | null;
+}): AgentSessionUsageComparison {
   const deltas: AgentSessionUsageComparisonDeltas = {};
   assignDelta(
     deltas,
     AgentSessionComparisonMetric.Sessions,
     current.totalSessions,
-    aggregate._count._all
+    prior.totalSessions
   );
   assignDelta(
     deltas,
     AgentSessionComparisonMetric.Tokens,
     current.totalTokens,
-    priorTokens
+    prior.totalTokens
   );
   assignDelta(
     deltas,
     AgentSessionComparisonMetric.MeteredCost,
     current.meteredEstimatedCost,
-    priorCostSplit.meteredEstimatedCost
+    prior.meteredEstimatedCost
   );
   assignDelta(
     deltas,
     AgentSessionComparisonMetric.ApiCost,
     current.apiEstimatedCost,
-    priorCostSplit.apiEstimatedCost
+    prior.apiEstimatedCost
+  );
+  assignDelta(
+    deltas,
+    AgentSessionComparisonMetric.TotalCost,
+    current.totalEstimatedCost,
+    prior.totalEstimatedCost
   );
   assignDelta(
     deltas,
@@ -275,3 +353,105 @@ function isRepresentableEpoch(epochMs: number): boolean {
 
 /** ECMA-262's time-value limit: ±100,000,000 days from the epoch. */
 const MAX_EPOCH_MS = 8_640_000_000_000_000;
+
+/** The principal one comparison-latency sample is attributed to. */
+type ComparisonLatencyScope = {
+  organizationId: string;
+  viewerScope: string;
+};
+
+/**
+ * WHY THIS IS THROTTLED (#5852 review).
+ *
+ * `GET /agent-sessions/usage?comparison=prior` is an ordinary authenticated read
+ * that the dashboard itself polls, so every refresh — or a caller replaying the
+ * route directly — drives one emission per request, without limit. That is the
+ * amplification vector `apps/api/AGENTS.md` ("Emission and Abuse Control")
+ * forbids: bound emission per org/reason at the choke point and keep a bounded
+ * suppressed count. {@link FixedWindowEmissionThrottle} supplies both bounds —
+ * one sample per (org, viewer scope) per window plus one aggregate rollup, and a
+ * hard max-entry LRU cap on a keyspace derived from caller-reachable input.
+ *
+ * WHAT THIS COSTS THE METRIC, stated because it is not free. A latency sample
+ * that is suppressed is GONE — the rollup carries how many reads it stood for,
+ * never their durations, so `agent_sessions.dashboard.comparison_latency` is a
+ * once-per-window-per-org SAMPLE of the distribution rather than a census of it.
+ * That is enough for what AC5 asks (is the comparison breaching its budget, and
+ * for whom) because a breach that only ever lands on suppressed reads would have
+ * to miss every window's first read; it is NOT enough to compute an exact
+ * request-weighted mean, and a monitor must not be written as if it were.
+ *
+ * Process-local and best-effort per serverless instance, and the suppressed
+ * count is materialised by an event rather than a clock — see the throttle's own
+ * module docstring. Exported so tests can reset it between cases; production
+ * code must not reach into it.
+ */
+export const usageComparisonLatencyThrottle =
+  new FixedWindowEmissionThrottle<ComparisonLatencyScope>({
+    onFlush: (scope, suppressedCount, cause) =>
+      emitComparisonLatencyRollup(scope, suppressedCount, cause),
+  });
+
+/**
+ * The comparison's own latency, which the whole-read metric cannot isolate.
+ * `budgetMs` rides every sample so the threshold is versioned beside the code
+ * rather than only in the out-of-repo monitor.
+ *
+ * NEVER THROWS. A failure to REPORT the read's duration must not fail the read
+ * that already succeeded — same guard, and the same reason, as
+ * `reportStrippedTilings` in `activity-tiling-strip.ts`.
+ */
+function reportComparisonLatency(
+  scope: ComparisonLatencyScope,
+  durationMs: number
+): void {
+  try {
+    const decision = usageComparisonLatencyThrottle.record(
+      `${scope.organizationId}|${scope.viewerScope}`,
+      scope,
+      Date.now()
+    );
+    if (decision.flushedSuppressedCount > 0) {
+      emitComparisonLatencyRollup(
+        scope,
+        decision.flushedSuppressedCount,
+        EmissionRollupCause.Window
+      );
+    }
+    if (decision.emit) {
+      emitTelemetryMetric({
+        metric: SESSIONS_USAGE_COMPARISON_LATENCY_METRIC,
+        ...scope,
+        value: durationMs,
+        budgetMs: SESSIONS_USAGE_COMPARISON_LATENCY_BUDGET_MS,
+      });
+    }
+  } catch (error) {
+    log.warn("[agent-sessions] Failed to report comparison latency", {
+      event: SESSIONS_USAGE_COMPARISON_LATENCY_METRIC,
+      organizationId: scope.organizationId,
+      error: parseError(error),
+    });
+  }
+}
+
+/**
+ * The suppressed reads one closed window stood for. Deliberately carries NO
+ * `value`: there is no single duration these reads shared, and publishing one
+ * would put a fabricated latency on the same metric name the samples use.
+ * `aggregated` is what lets a monitor exclude these rows from a latency
+ * distribution while still summing `occurrences` for true request volume.
+ */
+function emitComparisonLatencyRollup(
+  scope: ComparisonLatencyScope,
+  occurrences: number,
+  flushedBy: EmissionRollupCause
+): void {
+  emitTelemetryMetric({
+    metric: SESSIONS_USAGE_COMPARISON_LATENCY_METRIC,
+    ...scope,
+    occurrences,
+    aggregated: true,
+    flushedBy,
+  });
+}

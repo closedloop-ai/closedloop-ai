@@ -238,8 +238,18 @@ describe("LOC/$ on the narrow card carries its unit (ISS-5475)", () => {
     expect(screen.queryByText(LOC_PER_DOLLAR_LABEL)).not.toBeInTheDocument();
     // …and it leaves no unlabelled dash behind in the header either. Body rows
     // may legitimately render `—` (an empty Authors cell does), but those sit in
-    // a `<dd>` beside their own `<dt>` label, so they are never anonymous. A
-    // metric dash stranded in the header would fail this: it has no `<dd>`.
+    // a `<dd>` beside their own `<dt>` label, so they are never anonymous.
+    //
+    // ISS-5532 correction: this loop used to justify itself with "a metric dash
+    // stranded in the header would fail this: it has no `<dd>`". That mechanism
+    // is gone — the header's own pairs are `<dd>`s now, so a stranded header
+    // dash under `agents-card-attribute-labels` would satisfy it. This suite
+    // runs with that gate at its shipped OFF, where the mechanism still holds
+    // and this is still the flag-OFF render's guard; the assertion above is what
+    // carries the case on the ON path, and the ON path has its own coverage in
+    // `agents-card-attribute-labels.test.tsx`. Stated rather than deleted so the
+    // day the gate retires to enabled, whoever reads this knows this loop stops
+    // policing and the header check has to move.
     for (const dash of screen.queryAllByText(EMPTY_VALUE_GLYPH)) {
       expect(dash.closest("dd")).not.toBeNull();
     }

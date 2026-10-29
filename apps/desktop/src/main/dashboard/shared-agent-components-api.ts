@@ -25,11 +25,13 @@
  * plugin's `pack_id` — the association `component-scanner.ts` back-fills.
  */
 
-// ISS-4403 (whitlockk): the SSOT definition-fingerprint used to WRITE
-// `agent_component_session_usage.component_version_hash` at invocation time (via
-// `agent_component_invocations.definition_hash`). A pure, dependency-free hash
-// leaf — safe to import into the DB-host process. See `definitionUsageHash`.
-import { computeDefinitionHash } from "@repo/api/src/definition-fingerprint";
+// Cross-surface Properties builder (SSOT) — another pure leaf, kept out of the
+// barrel import for the same pglite-boot reason as the slug codec above.
+import {
+  KNOWN_AGENT_COMPONENT_KINDS as KNOWN_KINDS,
+  toAgentComponentKind as toKind,
+  usageScopeHashForContent,
+} from "@repo/api/src/agent-component-usage-scope";
 // Types AND runtime values from one module. The values are imported as values,
 // not types, so `KNOWN_KINDS` / `KNOWN_HARNESSES` derive from the const-object
 // enums via `Object.values` and can never drift when a kind/harness is added.
@@ -45,7 +47,6 @@ import {
   type AgentComponentQueryFilters,
   ComponentResolvedState,
   Harness,
-  isLocPerDollarVerifiableKind,
   SourceType,
 } from "@repo/api/src/types/agent-component";
 // Cross-surface org-identity slug codec (SSOT). This is a pure-string leaf with
@@ -61,8 +62,6 @@ import {
   shortFingerprint,
   usageVersionIdentityKey,
 } from "@repo/api/src/types/agent-component-analytics";
-// Cross-surface Properties builder (SSOT) — another pure leaf, kept out of the
-// barrel import for the same pglite-boot reason as the slug codec above.
 import { buildComponentProperties } from "@repo/api/src/types/agent-component-properties";
 // Canonical empty cohort-metrics constant (SSOT next to the `CohortDeliveryMetrics`
 // type it satisfies) — the desktop-LOCAL detail has no org baseline, so these
@@ -78,22 +77,14 @@ import { foldResolvedState } from "@repo/api/src/types/component-resolution";
 // read). Another pure types/const + pure-function leaf, so the runtime import
 // stays out of the pglite boot path — do NOT widen to a barrel `@repo/api`.
 import { unionComponentSourceProvenance } from "@repo/api/src/types/component-source";
-import { locPerDollarFromLines } from "@repo/api/src/utils/loc-per-dollar";
-// FEA-3633: shared per-branch LOC-dedup helper (SSOT with the cloud aggregations)
-// — a pure-function leaf, so the runtime import stays out of the pglite boot path.
-import {
-  type SessionLocEntry,
-  sumSessionLocDedupedByBranch,
-} from "@repo/api/src/utils/session-loc";
+import type { LocPerDollarFold } from "@repo/api/src/utils/agent-component-summary-aggregate";
 import type { AgentSessionSyncSource } from "../agent-sync/agent-session-sync-source.js";
-import type { BranchDefaultEligibilitySource } from "../branch/shared-branches-default-eligibility.js";
 // ISS-6094: the kind LIST is the cross-surface contract in `@repo/api`, but
 // rendering it into SQLite text is persistence, so it lives with the other SQL
 // helpers. The three rollups below and `packs/component-scanner.ts` read it.
 import {
   maxIso,
   minIso,
-  PLUGIN_CHILD_KINDS_SQL_LIST,
   numberOrZero as toNumber,
 } from "../database/db-helpers.js";
 import type { DbHostPrisma } from "../database/prisma-client.js";
@@ -124,13 +115,37 @@ import {
 // the desktop twin of the cloud's `detail-version-history.ts`.
 import { readComponentVersions } from "./agent-component-versions-read.js";
 import { collapseLocalFamilies } from "./agent-components-family-collapse.js";
+// ISS-7663: every SQL statement over `agent_component_session_usage` lives in
+// one sibling module, because that table's TEXT recency columns carry mixed
+// timestamp forms and each read has to rank them through the SAME ranked source
+// rather than aggregating the raw bytes.
 import {
-  rawKeyInClause,
-  unresolvedUsagePredicate,
-  versionHashScopeClause,
-} from "./hash-scope-predicates.js";
+  BETWEEN_GROUP_RANKING_WINDOW_SQL,
+  BOTH_INVOKED_BOUNDS,
+  FIRST_INVOKED_SORT,
+  hasUsageWindow,
+  LAST_INVOKED_SORT,
+  PLUGIN_USAGE_SESSIONS_SQL,
+  type PluginUsageRow,
+  type PluginUsageSessionIdRow,
+  pluginUsageSessionIdsSql,
+  pluginUsageSql,
+  toUsageWindow,
+  type UsageAggregateRow,
+  unresolvedUsageAggregateSql,
+  usageAggregateSql,
+  usageRecencyRankedSource,
+  usageSessionIdsSql,
+} from "./agent-components-usage-sql.js";
+import { rawKeyInClause } from "./hash-scope-predicates.js";
 import { localDetailSessionTabs } from "./local-detail-session-tabs";
+import { loadLocalDetailUsageRows } from "./local-detail-usage-reads.js";
 import { readAgentComponentInvocationPage } from "./local-invocation-read.js";
+import {
+  applyDesktopLocPerDollar,
+  emitDesktopLocPerDollar,
+  foldPopulationLocPerDollar,
+} from "./shared-agent-components-loc-per-dollar.js";
 
 /** Minimal Prisma surface these readers need (clone-safe `client` reads only). */
 export type AgentComponentsReadPrisma = Pick<DbHostPrisma, "client">;
@@ -161,28 +176,6 @@ type ComponentInventoryRow = {
   last_seen_at: string | null;
 };
 
-type UsageAggregateRow = {
-  component_kind: string;
-  component_key: string;
-  // FEA-3982 (whitlockk decision): the version hash this usage bucket ran against, so
-  // usage attributes to the MATCHING fingerprint bucket rather than being applied
-  // to every same-named version. NULL for a hash-less (version-agnostic) row,
-  // which stays on the name-level bucket (skew-safe). The desktop store has no
-  // `definition_version_id`, so it attributes on `component_version_hash` alone —
-  // the same fallback the cloud takes for a still-unlinked usage row.
-  component_version_hash: string | null;
-  invocations: bigint | number | null;
-  session_count: bigint | number | null;
-  last_invoked_at: string | null;
-};
-
-type PluginUsageRow = {
-  pack_id: string;
-  invocations: bigint | number | null;
-  session_count: bigint | number | null;
-  last_invoked_at: string | null;
-};
-
 /**
  * Per-identity usage totals joined onto a component. `lastInvokedAt` is the max
  * usage `last_invoked_at` across the folded rows — the real usage-recency signal
@@ -196,29 +189,12 @@ type UsageTotals = {
   lastInvokedAt: string | null;
 };
 
-// Derived from the canonical `AgentComponentKind` const object (SSOT) so a new
-// kind added there is recognized on desktop automatically — never a separately
-// maintained mirror that silently drifts, coercing an unlisted kind to `config`
-// in `toKind()`. This intentionally includes the observable-only kinds `tool`
-// (FEA-3048) and `orchestration` (FEA-2642): without them `toKind()` would
-// collapse those rows to `config` (the "Memory & config" bucket). They remain
-// observable, not distributable — keep them OUT of any promote/catalog list.
-const KNOWN_KINDS: ReadonlySet<string> = new Set(
-  Object.values(AgentComponentKind)
-);
-
 // The set of harness values a caller may FILTER the inventory by — derived from
 // the canonical display `Harness` const object (SSOT) so a new display harness
 // is accepted automatically. This gates the `harness` query param only (see
 // below); it deliberately does NOT gate `toHarness()`, which passes any stored
 // harness through so a real value is never coerced to `claude` (FEA-4028).
 const KNOWN_HARNESSES: ReadonlySet<string> = new Set(Object.values(Harness));
-
-function toKind(value: string): AgentComponentKind {
-  return (
-    KNOWN_KINDS.has(value) ? value : AgentComponentKind.Config
-  ) as AgentComponentKind;
-}
 
 // Coerce a stored `agent_components.harness` / usage-rollup harness string to
 // the display `Harness` union. Only a NULL / blank value defaults to `claude`
@@ -234,74 +210,6 @@ function toKind(value: string): AgentComponentKind {
 function toHarness(value: string | null): Harness {
   const trimmed = value?.trim();
   return (trimmed ? trimmed : Harness.Claude) as Harness;
-}
-
-/**
- * LOC/$ for one component = (authored local-git lines produced by the sessions
- * that invoked it) / (their summed estimated cost) — ISS-4667: raw lines per
- * dollar, no divide-by-1000. Sessions are deduped by id (a component can carry
- * multiple usage rows per session, so each session's LOC + cost must count
- * exactly once). Returns null when the summed cost is 0 or the sessions produced
- * no measurable lines (never a fabricated or divide-by-zero number).
- *
- * Ported from the cloud reader (`computeLocPerDollar` in
- * apps/api/app/agent-components/loc-per-dollar.ts) and sharing its SSOT ratio,
- * so the desktop "LOC / $" column agrees with the web column (FEA-3090).
- */
-function computeLocPerDollar(
-  sessionIds: Iterable<string>,
-  locCostBySession: Map<string, SharedAgentSessionLocCost>
-): number | null {
-  // FEA-3633: LOC is deduped PER BRANCH (mirrors the cloud twin in
-  // apps/api/app/agent-components/service.ts) — a branch whose LOC came from the
-  // branch/PR-total fallback contributes its total once, not once per authoring
-  // session. Commit-sourced LOC sums per-session; cost always sums per-session.
-  const locEntries: SessionLocEntry[] = [];
-  let totalCost = 0;
-  const seen = new Set<string>();
-  for (const sessionId of sessionIds) {
-    // Dedup by session id first (a component can carry multiple usage rows per
-    // session, but each session's LOC + cost must count at most once here).
-    if (seen.has(sessionId)) {
-      continue;
-    }
-    seen.add(sessionId);
-    const entry = locCostBySession.get(sessionId);
-    if (!entry) {
-      continue;
-    }
-    locEntries.push({
-      loc: entry.loc,
-      locSource: entry.locSource,
-      repositoryFullName: entry.repositoryFullName,
-      branch: entry.branch,
-    });
-    totalCost += entry.cost;
-  }
-  const totalLoc = sumSessionLocDedupedByBranch(locEntries);
-  // ISS-4667: raw lines per dollar via the shared SSOT — NO divide-by-1000, and
-  // its guards return null (never a fabricated 0) for zero cost / zero lines.
-  return locPerDollarFromLines(totalLoc, totalCost);
-}
-
-/**
- * FEA-4052: LOC/$ for one component GATED on its kind's per-component
- * attribution reliability ({@link isLocPerDollarVerifiableKind}) — the desktop-local
- * twin of the cloud `locPerDollarForKind` in
- * apps/api/app/agent-components/loc-per-dollar.ts. A non-verifiable kind returns
- * null so the desktop surface hides LOC/$ exactly as the web does. Only `subagent` is
- * verifiable today; skill/command are excluded until a session can be
- * partitioned across its co-invoked components (whitlockk, PR #3720).
- */
-function locPerDollarForKind(
-  kind: string,
-  sessionIds: Iterable<string>,
-  locCostBySession: Map<string, SharedAgentSessionLocCost>
-): number | null {
-  if (!isLocPerDollarVerifiableKind(kind as AgentComponentKind)) {
-    return null;
-  }
-  return computeLocPerDollar(sessionIds, locCostBySession);
 }
 
 /** Coerce untrusted IPC input into a normalized query-filter object. */
@@ -335,11 +243,11 @@ export function coerceAgentComponentFilters(
     filters.search = raw.search;
   }
   if (typeof raw.limit === "number" && raw.limit > 0) {
-    // Clamp to the shared org-inventory cap (not a smaller local literal) so the
-    // shared Agents workspace's single full-inventory fetch
-    // (`AGENT_INVENTORY_FETCH_LIMIT`, the same value) is not silently truncated
-    // on desktop — a local workspace with more than the old 1000-row clamp would
-    // otherwise lose later pages and undercount the summary cards.
+    // Clamp to the shared PAGE bound (not a smaller local literal) so the shared
+    // Agents workspace's page request (`AGENT_INVENTORY_FETCH_LIMIT`, the same
+    // value) is honored rather than silently shrunk on desktop. ISS-6891: this
+    // bounds one page, and `hasMore`/`total` below describe the whole local
+    // population, so a workspace larger than a page is reached by paging.
     filters.limit = Math.min(
       Math.floor(raw.limit),
       AGENT_COMPONENT_INVENTORY_CAP
@@ -569,7 +477,13 @@ function usageBySlug(rows: UsageAggregateRow[]): Map<string, UsageTotals> {
  * whose name already has a live inventory bucket is synthesized here; a name with
  * NO inventory at all stays the unresolved lane's job. The borrowed representative
  * (from the same name's first inventory bucket) carries honest name/source/kind;
- * only the fingerprint differs. Bounded by the inventory cap.
+ * only the fingerprint differs.
+ *
+ * ISS-6891: no longer bounded by the inventory cap. That bound was applied to a
+ * map already narrowed by the request's `?kinds=`/`?search=` facets, so a
+ * narrower filter — whose map starts far emptier — synthesized version buckets a
+ * broader read had no room left for, and the local list contradicted itself the
+ * same way the cloud one did.
  */
 function synthesizeUsageVersionBuckets(
   merged: Map<string, MergedComponent>,
@@ -601,7 +515,7 @@ function synthesizeUsageVersionBuckets(
     // Only synthesize for a name that already has live inventory; a name with no
     // inventory at all is the unresolved lane's responsibility (name-only).
     const base = representativeBySlug.get(slug);
-    if (!base || merged.size >= AGENT_COMPONENT_INVENTORY_CAP) {
+    if (!base) {
       continue;
     }
     merged.set(identityKey, {
@@ -647,7 +561,7 @@ function addSessionId(
  * buckets (FEA-3982 — whitlockk), and the `byName` map is keyed name-only
  * (`${kind}::${normalized key}`) for the unresolved-source lane and
  * {@link foldUnresolvedUsage}. Both feed the per-session dedup in
- * {@link computeLocPerDollar}.
+ * {@link computeLocPerDollarTerms}.
  */
 function usageSessionIdsBySlug(rows: UsageSessionIdRow[]): {
   byVersion: Map<string, Set<string>>;
@@ -821,191 +735,6 @@ const INVENTORY_SELECT = `SELECT
 // at the slug level (and `SUM(invocations)` an exact total), so the merged
 // value can no longer overstate sessions — mirroring the cloud producer, which
 // unions session ids per identity via a `Set` (apps/api/app/agent-components).
-/**
- * FEA-3196: the USAGE time window (the Agents workspace's All/30/60/90-day
- * control). Bounds are canonical `toISOString()` strings — see
- * {@link coerceIsoBound}. Both absent ⇒ the all-time view: every lane then
- * renders with no window predicate and no bindings, leaving the default surface
- * behaviorally unchanged. Mirrors the cloud `UsageWindow`
- * (apps/api/app/agent-components/service.ts).
- */
-type UsageWindow = { start?: string; end?: string };
-
-/** One raw SQL query plus its positional bindings. */
-type UsageQuery = { sql: string; params: string[] };
-
-function toUsageWindow(filters: AgentComponentQueryFilters): UsageWindow {
-  return { start: filters.startDate, end: filters.endDate };
-}
-
-function hasUsageWindow(window: UsageWindow): boolean {
-  return Boolean(window.start || window.end);
-}
-
-/**
- * `last_invoked_at` is TEXT (`String?` in the desktop schema) and is not
- * schema-enforced ISO: it is written as `MAX(events.created_at)` (and friends),
- * which is NULL when a row has no timestamped invocation, and whose string form
- * is passed through un-normalized by `isoTs`. A row that fails this date-prefix
- * guard therefore has NO comparable invocation instant, so it belongs to no
- * window at all.
- *
- * Requiring the guard (rather than routing failures to an epoch sentinel, as
- * `SESSION_STARTED_AT_TS_EXPR` in database/sync-source.ts does) is deliberate
- * and is what keeps parity with the cloud: an epoch sentinel is `<= endDate`,
- * so it would SURVIVE an upper-bounded window, while the cloud's Prisma
- * `lastInvokedAt: { lte }` drops NULL. sync-source's sentinel exists to mirror
- * its own hydrate path, which is a different requirement from this one.
- */
-const USAGE_LAST_INVOKED_AT_IS_COMPARABLE = `acsu.last_invoked_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'`;
-
-/**
- * FEA-3196: the `last_invoked_at` bound(s) for a usage lane, as SQL conditions
- * plus their bindings. Lexicographic comparison against canonical ISO bounds —
- * the desktop convention for ISO text columns (see sync-source.ts); NOT
- * `julianday()`, which sync-source.ts documents as drifting.
- *
- * Every usage lane feeding the list must apply this, or the windowed and
- * all-time reads disagree with each other within a single response.
- */
-function usageWindowClause(window: UsageWindow): {
-  conditions: string[];
-  params: string[];
-} {
-  const conditions: string[] = [];
-  const params: string[] = [];
-  if (!hasUsageWindow(window)) {
-    return { conditions, params };
-  }
-  // Any bound implies the row must carry a comparable instant — see above.
-  conditions.push(USAGE_LAST_INVOKED_AT_IS_COMPARABLE);
-  if (window.start) {
-    conditions.push("acsu.last_invoked_at >= ?");
-    params.push(window.start);
-  }
-  if (window.end) {
-    conditions.push("acsu.last_invoked_at <= ?");
-    params.push(window.end);
-  }
-  return { conditions, params };
-}
-
-/** Render `conditions` as a leading `WHERE …`, or nothing when unbounded. */
-function whereClause(conditions: string[]): string {
-  return conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-}
-
-/** Render `conditions` as trailing `AND …`s appended to an existing `WHERE`. */
-function andClause(conditions: string[]): string {
-  return conditions.map((condition) => `AND ${condition}`).join("\n    ");
-}
-
-function usageAggregateSql(window: UsageWindow): UsageQuery {
-  const { conditions, params } = usageWindowClause(window);
-  return {
-    sql: `SELECT
-    acsu.component_kind AS component_kind,
-    lower(trim(COALESCE(acsu.component_key, ''))) AS component_key,
-    -- FEA-3982 (whitlockk decision): group usage by the version hash it ran against
-    -- so it attributes to the MATCHING fingerprint bucket, not every same-named
-    -- version. The natural key pins one hash per (session, kind, key, branch), so
-    -- this only splits groups that carried different hashes — the summed
-    -- invocation totals and distinct-session counts are unchanged.
-    acsu.component_version_hash AS component_version_hash,
-    COALESCE(SUM(acsu.invocations), 0) AS invocations,
-    COUNT(DISTINCT acsu.session_id) AS session_count,
-    -- FEA-3310: real usage-recency for the "recently active" indicator, as its
-    -- OWN column (never folded into last_seen_at). Mirrors the cloud reader's
-    -- max usage lastInvokedAt (apps/api/app/agent-components/service.ts).
-    MAX(acsu.last_invoked_at) AS last_invoked_at
-  FROM agent_component_session_usage acsu
-  ${whereClause(conditions)}
-  GROUP BY acsu.component_kind, lower(trim(COALESCE(acsu.component_key, ''))), acsu.component_version_hash`,
-    params,
-  };
-}
-
-// FEA-3090: the DISTINCT (identity, version hash, session id) pairs behind the
-// LOC/$ metric. Grouped by the NORMALIZED key (matching `USAGE_AGGREGATE_SQL`
-// and the slug normalization) so a session that logged usage under colliding raw
-// variants (e.g. `Reviewer`/`reviewer`) contributes its id to the identity
-// exactly once. FEA-3982 (whitlockk): `component_version_hash` joins the key so the
-// resolved lane can dedup sessions per version too; the name-level roll-up (for
-// the unresolved lane) is re-derived in application code by `usageSessionIdsBySlug`.
-function usageSessionIdsSql(window: UsageWindow): UsageQuery {
-  const { conditions, params } = usageWindowClause(window);
-  return {
-    sql: `SELECT
-    acsu.component_kind AS component_kind,
-    lower(trim(COALESCE(acsu.component_key, ''))) AS component_key,
-    acsu.component_version_hash AS component_version_hash,
-    acsu.session_id AS session_id
-  FROM agent_component_session_usage acsu
-  ${whereClause(conditions)}
-  GROUP BY acsu.component_kind, lower(trim(COALESCE(acsu.component_key, ''))), acsu.component_version_hash, acsu.session_id`,
-    params,
-  };
-}
-
-/**
- * FEA-3121: usage aggregates for invocations whose SOURCE never resolved to a
- * LIVE `agent_components` inventory row. Source resolution fails when the
- * invoked component was local/discovered (never collected as installed
- * inventory), its usage landed before/without the inventory upsert, or its
- * inventory row was later tombstoned (`uninstalled_at`). The list/detail
- * readers otherwise fold ONLY `foldInventory` rows, so such invocations were
- * silently dropped from the desktop Agents workspace — undercounting the exact
- * "why is this session efficient" signal PRD-525 P4 requires. This mirrors the
- * cloud's orphan-usage fold (`foldOrphanUsageIntoMerged` /
- * `buildOrphanOnlyDetail` in `apps/api/app/agent-components/service.ts`) so both
- * surfaces surface the same components with the same counts.
- *
- * FEA-3205: this aggregate NO LONGER anti-joins in SQL. SQLite `lower()` is
- * ASCII-only (no ICU collation is loaded), so for a non-ASCII key (`CAFÉ`) it
- * diverges from the JS `normalizeComponentKey`/`encodeComponentSlug` codec the
- * inventory + resolved folds use — `lower("CAFÉ")` leaves `É` uppercase while JS
- * folds `CAFÉ`→`café`. That mismatch let the same identity attach to inventory
- * as RESOLVED *and* survive a SQL `NOT EXISTS` anti-join as UNRESOLVED, so it
- * was counted twice in the list + total (and, inversely, a listed component
- * could 404 on detail). We now group unresolved-candidate usage by the ASCII
- * SQL normalization ONLY to shrink the row count, then re-fold and anti-join in
- * application code against the JS-normalized inventory slug set
- * ({@link foldUnresolvedUsage}) so exactly one Unicode fold governs resolved
- * fold, unresolved anti-join, and detail.
- *
- * `plugin` usage never lands in this table (plugins have no direct usage rows —
- * their totals are a pack_id child rollup), so a plugin can never appear here as
- * an unresolved identity.
- */
-function unresolvedUsageAggregateSql(window: UsageWindow): UsageQuery {
-  const { conditions, params } = usageWindowClause(window);
-  return {
-    sql: `SELECT
-    acsu.component_kind AS component_kind,
-    lower(trim(COALESCE(acsu.component_key, ''))) AS component_key,
-    COALESCE(SUM(acsu.invocations), 0) AS invocations,
-    COUNT(DISTINCT acsu.session_id) AS session_count,
-    MIN(acsu.first_invoked_at) AS first_seen_at,
-    MAX(acsu.last_invoked_at) AS last_seen_at,
-    -- Collapse the identity's harness the same way the cloud orphan-only path
-    -- does (deriveOrphanHarness in apps/api/app/agent-components/service.ts):
-    -- a mixed claude+codex identity is the contract value 'both', never a
-    -- lexicographic MAX (which would return 'codex' and hide the claude usage
-    -- from a harness filter). NULL only when every row left the harness unset,
-    -- which toHarness then coerces to the 'claude' default. When two ASCII-SQL
-    -- groups re-fold to one JS slug (non-ASCII case variants), the JS fold
-    -- re-derives 'both' across them (see foldUnresolvedUsage).
-    CASE
-      WHEN COUNT(DISTINCT acsu.harness)
-        FILTER (WHERE acsu.harness IS NOT NULL) > 1 THEN 'both'
-      ELSE MAX(acsu.harness)
-    END AS harness
-  FROM agent_component_session_usage acsu
-  ${whereClause(conditions)}
-  GROUP BY acsu.component_kind, lower(trim(COALESCE(acsu.component_key, '')))`,
-    params,
-  };
-}
 
 /** One unresolved-source usage identity (no live inventory row). */
 type UnresolvedUsageRow = {
@@ -1156,149 +885,6 @@ function foldUnresolvedUsage(
   return [...bySlug.values()];
 }
 
-/**
- * Plugin usage rollup: SUM of child usage (join usage → child agent_components
- * on (kind, key), attribute to the child's pack_id). Keyed by pack_id so a
- * plugin whose `pack_id` matches gets its children's totals.
- *
- * FEA-3239: the child-usage join normalizes `component_key` with
- * `lower(trim(COALESCE(...,'')))` on BOTH sides — the same fold every sibling
- * usage lane applies (`USAGE_AGGREGATE_SQL` et al.) and the org-identity slug
- * uses. A raw `ac.component_key = acsu.component_key` join is case/whitespace
- * sensitive, so a child whose usage-row key differs only in case from its
- * pack-manifest inventory key (`Reviewer` vs `reviewer`) was silently dropped,
- * undercounting the plugin's invocations/sessions/KLOC-$ below the cloud reader
- * (apps/api/app/agent-components/service.ts), which rolls up via the true FK.
- *
- * `ac.component_key IS NOT NULL` is retained (inventory `component_key` is
- * nullable) so the fold does NOT introduce a new over-match: `COALESCE(NULL,'')`
- * would otherwise collapse a null-key inventory child to `''` and join it to any
- * usage row whose key trims to empty — a match the raw `NULL = key` join never
- * made. Keeping the guard preserves the raw NULL-no-match semantics and lets the
- * partial index `idx_agent_components_kind_key` (WHERE component_key IS NOT NULL)
- * stay eligible.
- */
-function pluginUsageSql(window: UsageWindow): UsageQuery {
-  const { conditions, params } = usageWindowClause(window);
-  return {
-    sql: `SELECT
-    ac.pack_id AS pack_id,
-    COALESCE(SUM(acsu.invocations), 0) AS invocations,
-    COUNT(DISTINCT acsu.session_id) AS session_count,
-    -- FEA-3310: max child-usage recency, rolled up so a plugin's real
-    -- last-invocation time reflects its most recently used child.
-    MAX(acsu.last_invoked_at) AS last_invoked_at
-  FROM agent_component_session_usage acsu
-  INNER JOIN agent_components ac
-    ON ac.component_kind = acsu.component_kind
-    AND lower(trim(COALESCE(ac.component_key, ''))) = lower(trim(COALESCE(acsu.component_key, '')))
-  WHERE ac.pack_id IS NOT NULL
-    AND ac.component_key IS NOT NULL
-    -- ISS-6180: roll up only LIVE inventory children — the same
-    -- uninstalled_at IS NULL scope INVENTORY_SELECT and every sibling inventory
-    -- read apply. Scanners TOMBSTONE rather than delete (mcp-discovery.ts stamps
-    -- uninstalled_at on mcp rows, a plugin child kind since ISS-6094) and
-    -- nothing clears the child's pack_id, so without this an uninstalled child's
-    -- invocations keep rolling into its plugin's total while the SAME usage also
-    -- surfaces as a standalone "unresolved" row (that lane anti-joins the LIVE
-    -- inventory slug set, which a tombstoned row has left) — one invocation
-    -- rendered twice in one response, which ISS-5534's sumDedupedInvocations
-    -- cannot suppress because an unresolved row carries no packIds for its
-    -- exact-intersection test to match. Mirrors the cloud twin's
-    -- uninstalledAt: null child-inventory scope
-    -- (apps/api/app/agent-components/plugin-child-usage.ts).
-    AND ac.uninstalled_at IS NULL
-    -- ISS-6180 (whitlockk review): the natural-key join is the FALLBACK, not the
-    -- authority. acsu.agent_component_id names the exact inventory row the writer
-    -- linked, so when a usage row carries one, that row is its only legal match —
-    -- otherwise a STALE link joins whatever now shares its (kind, key). The link
-    -- goes stale because relinkInvocationRows only re-runs for RE-DERIVED
-    -- sessions: a child linked while it was the identity's only install keeps
-    -- that FK after the install is uninstalled (tombstoned) or joined by a second
-    -- install, and the fold would then credit the plugin through a row the writer
-    -- never pointed at. Restricting the fallback to null-FK rows leaves the
-    -- FEA-3239 case-fold intact for exactly the rows that need it (usage that was
-    -- never linked), and is a WHERE guard rather than an OR join condition so
-    -- idx_acsu_kind_key stays eligible.
-    --
-    -- NOT fixed here, and not in ISS-6180's scope: relinkInvocationRows writes a
-    -- NULL local_component_id whenever a (kind, key) matches more than one
-    -- inventory row (match_count <> 1 => ELSE NULL), and that column is what the
-    -- rebuild copies into agent_component_id. So a FRESHLY re-derived session
-    -- whose child is installed at two scopes still takes the fallback arm, still
-    -- joins both live rows, and still doubles SUM(acsu.invocations). That
-    -- duplicate-install multiplication predates this change and needs its own
-    -- ticket -- a distinct-install join, not an FK guard.
-    AND (acsu.agent_component_id IS NULL OR ac.id = acsu.agent_component_id)
-    AND ac.component_kind IN (${PLUGIN_CHILD_KINDS_SQL_LIST})
-    ${andClause(conditions)}
-  GROUP BY ac.pack_id`,
-    params,
-  };
-}
-
-// FEA-3090: the DISTINCT (pack id, session id) pairs the plugin LOC/$ rolls up
-// over. Same child-usage join as `PLUGIN_USAGE_SQL`, grouped down to distinct
-// session ids so `computeLocPerDollar` sees each child session once per plugin.
-function pluginUsageSessionIdsSql(window: UsageWindow): UsageQuery {
-  const { conditions, params } = usageWindowClause(window);
-  return {
-    sql: `SELECT
-    ac.pack_id AS pack_id,
-    acsu.session_id AS session_id
-  FROM agent_component_session_usage acsu
-  INNER JOIN agent_components ac
-    ON ac.component_kind = acsu.component_kind
-    AND lower(trim(COALESCE(ac.component_key, ''))) = lower(trim(COALESCE(acsu.component_key, '')))
-  WHERE ac.pack_id IS NOT NULL
-    AND ac.component_key IS NOT NULL
-    -- Live-inventory scope, for the reason spelled out in pluginUsageSql: a
-    -- tombstoned child must not contribute the sessions its plugin's LOC/$ is
-    -- computed over either, or the metric disagrees with the rollup it divides.
-    AND ac.uninstalled_at IS NULL
-    -- Authoritative-FK guard, for the reason spelled out in pluginUsageSql. The
-    -- session set must come from the same matches the invocation total did.
-    AND (acsu.agent_component_id IS NULL OR ac.id = acsu.agent_component_id)
-    AND ac.component_kind IN (${PLUGIN_CHILD_KINDS_SQL_LIST})
-    ${andClause(conditions)}
-  GROUP BY ac.pack_id, acsu.session_id`,
-    params,
-  };
-}
-
-/** One distinct (pack id, session id) child-usage pair for a plugin rollup. */
-type PluginUsageSessionIdRow = {
-  pack_id: string;
-  session_id: string;
-};
-
-/**
- * Plugin per-session usage: the same child-usage rollup as `PLUGIN_USAGE_SQL`
- * but grouped by (pack_id, session_id) so a plugin's `usageSessions` breakdown
- * is built from the identical source as its rolled-up `invocations` total —
- * plugins have no direct usage rows, so reading their own rows would yield an
- * empty breakdown that contradicts the nonzero rollup.
- */
-const PLUGIN_USAGE_SESSIONS_SQL = `SELECT
-    acsu.session_id AS session_id,
-    COALESCE(SUM(acsu.invocations), 0) AS invocation_count
-  FROM agent_component_session_usage acsu
-  INNER JOIN agent_components ac
-    ON ac.component_kind = acsu.component_kind
-    AND lower(trim(COALESCE(ac.component_key, ''))) = lower(trim(COALESCE(acsu.component_key, '')))
-  WHERE ac.pack_id = ?
-    AND ac.component_key IS NOT NULL
-    -- Live-inventory scope, for the reason spelled out in pluginUsageSql: the
-    -- detail's per-session breakdown must come from the SAME children the list's
-    -- rolled-up total did, or detail and list contradict each other.
-    AND ac.uninstalled_at IS NULL
-    -- Authoritative-FK guard, for the reason spelled out in pluginUsageSql. The
-    -- per-session breakdown must be built from the same matches the total was.
-    AND (acsu.agent_component_id IS NULL OR ac.id = acsu.agent_component_id)
-    AND ac.component_kind IN (${PLUGIN_CHILD_KINDS_SQL_LIST})
-  GROUP BY acsu.session_id
-  ORDER BY MAX(acsu.last_invoked_at) DESC`;
-
 function pluginUsageByPackId(rows: PluginUsageRow[]): Map<string, UsageTotals> {
   const byPack = new Map<string, UsageTotals>();
   for (const row of rows) {
@@ -1422,12 +1008,23 @@ async function resolvePluginUsageSessions(
  * invoking sessions' local-git LOC + cost; without it the column stays null (the
  * honest fallback for callers that cannot resolve local sessions).
  */
-export async function listAgentComponentsLocal(
+/**
+ * ISS-6409: the inventory read PLUS the population LOC/$ fold.
+ *
+ * NOT the IPC reader. {@link listAgentComponentsLocal} is, and its response
+ * crosses `ipcMain.handle` as a structured clone — a function on that object
+ * throws `DataCloneError` and takes down every Agents read, which is what this
+ * split exists to prevent. Only the in-process page-data reducer calls this.
+ * Mirrors the cloud pair, `listForOrgWithLocPerDollarFold` / `listForOrg`.
+ */
+export async function listAgentComponentsLocalWithLocPerDollarFold(
   prisma: AgentComponentsReadPrisma,
   filters: AgentComponentQueryFilters,
   computeTargetId: string | null = null,
   sessionSource?: AgentSessionSyncSource | null
-): Promise<AgentComponentListResponse> {
+): Promise<
+  AgentComponentListResponse & { foldLocPerDollar: LocPerDollarFold }
+> {
   // FEA-3196: every usage lane below is scoped to the same window, so a
   // component's invocations, sessions, plugin rollup and LOC/$ all describe the
   // SAME period. The inventory lane is deliberately NOT windowed — the window is
@@ -1650,28 +1247,81 @@ export async function listAgentComponentsLocal(
 
   // FEA-3090: compute LOC/$ for the returned page only — load the page's
   // invoking-session LOC/cost once and fill each row's `locPerDollar`.
-  await attachLocPerDollar(sessionSource, items, sessionIdsByComponentId);
+  const locCost = await attachLocPerDollar(
+    sessionSource,
+    items,
+    sessionIdsByComponentId
+  );
+
+  // ISS-6409: on desktop a row's `id` IS its slug (see AgentComponent.id), so
+  // the fold's slug lookup and this map agree by construction.
+  //
+  // PRECONDITION: this map covers `items`, i.e. the PAGE, not the population.
+  // Hand this path a real page and the fold silently drops the components off
+  // it, understating the card with no error. ISS-6891 removed the cap that used
+  // to make page and population the same thing here, so the fold's only caller
+  // (`agentComponentsPageDataLocal`) upholds it deliberately: its follower
+  // re-asks for the whole remainder in ONE request from offset 0, keeps only
+  // that read's rows, and THROWS on a population it could not exhaust. The cloud
+  // twin builds its map from the full population read, so the twins differ here.
+  const sessionIdsBySlug = new Map<string, Iterable<string>>(
+    items.map((item) => [item.slug, sessionIdsByComponentId.get(item.id) ?? []])
+  );
 
   return {
     items,
     total,
     hasMore: offset + items.length < total,
+    foldLocPerDollar: (components) =>
+      foldPopulationLocPerDollar(components, sessionIdsBySlug, locCost),
   };
+}
+
+/**
+ * The IPC inventory reader. Returns the response ALONE: this object is
+ * structured-cloned across `ipcMain.handle`, so it must carry no functions.
+ */
+export async function listAgentComponentsLocal(
+  prisma: AgentComponentsReadPrisma,
+  filters: AgentComponentQueryFilters,
+  computeTargetId: string | null = null,
+  sessionSource?: AgentSessionSyncSource | null
+): Promise<AgentComponentListResponse> {
+  const { foldLocPerDollar: _fold, ...response } =
+    await listAgentComponentsLocalWithLocPerDollarFold(
+      prisma,
+      filters,
+      computeTargetId,
+      sessionSource
+    );
+  return response;
 }
 
 /**
  * FEA-3090: fill the LOC/$ column for the returned page. Gathers the page's
  * invoking-session ids, loads their local-git LOC + cost in one bounded call,
- * and sets each row's `locPerDollar` via {@link computeLocPerDollar}. A no-op
- * (rows keep the built-in null) when no sessions source is wired.
+ * and sets each row's LOC/$ pair via {@link emitDesktopLocPerDollar}.
+ *
+ * ISS-10730 (#7718 review): the no-data paths still go through the emitter, with
+ * an EMPTY cost map, rather than returning early and leaving the rows with the
+ * bare `locPerDollar: null` their builder stamped. Skipping it made the same
+ * component say "lines uncovered" on its detail page and say NOTHING in the
+ * list, because the detail path always emits a reason — and a null with no
+ * reason is exactly the silently-absent slot this ticket exists to remove. An
+ * empty map carries no terms, so a verifiable kind resolves to `Both`
+ * uncovered, which is the honest answer when no session LOC/cost is loadable.
  */
 async function attachLocPerDollar(
   sessionSource: AgentSessionSyncSource | null | undefined,
   items: AgentComponent[],
   sessionIdsByComponentId: Map<string, Set<string>>
-): Promise<void> {
+): Promise<Map<string, SharedAgentSessionLocCost>> {
+  // ISS-6409: an empty map, so the population fold folds nothing and reports
+  // LOC/$ unavailable — the same answer the rows carry here.
+  const noLocCost = new Map<string, SharedAgentSessionLocCost>();
   if (!sessionSource || items.length === 0) {
-    return;
+    applyDesktopLocPerDollar(items, sessionIdsByComponentId, noLocCost);
+    return noLocCost;
   }
   const pageSessionIds = new Set<string>();
   for (const item of items) {
@@ -1680,18 +1330,14 @@ async function attachLocPerDollar(
     }
   }
   if (pageSessionIds.size === 0) {
-    return;
+    applyDesktopLocPerDollar(items, sessionIdsByComponentId, noLocCost);
+    return noLocCost;
   }
   const locCost = await getSharedAgentSessionLocCostByIds(sessionSource, [
     ...pageSessionIds,
   ]);
-  for (const item of items) {
-    item.locPerDollar = locPerDollarForKind(
-      item.kind,
-      sessionIdsByComponentId.get(item.id) ?? [],
-      locCost
-    );
-  }
+  applyDesktopLocPerDollar(items, sessionIdsByComponentId, locCost);
+  return locCost;
 }
 
 function buildProperties(row: ComponentInventoryRow): AgentComponentProperties {
@@ -1786,14 +1432,10 @@ function resolvedUsageScopeHash(
   content: string | null | undefined,
   kind: string
 ): string | null {
-  if (!(resolvedByHash && content)) {
+  if (!resolvedByHash) {
     return null;
   }
-  return computeDefinitionHash({
-    frontmatter: "",
-    body: content,
-    kind: toKind(kind),
-  }).definitionHash;
+  return usageScopeHashForContent(content, kind);
 }
 
 /**
@@ -1810,31 +1452,34 @@ async function buildUnresolvedOnlyDetail(
   prisma: AgentComponentsReadPrisma,
   kind: string,
   key: string,
-  sessionSource?: AgentSessionSyncSource | null,
-  branchEligibilitySource?: BranchDefaultEligibilitySource,
-  // FEA-4335: content-hash orphan scope; null preserves legacy name scope.
-  fingerprint: string | null = null
+  sessionSource?: AgentSessionSyncSource | null
 ): Promise<AgentComponentDetail | null> {
   if (kind === AgentComponentKind.Plugin) {
     return null;
   }
   // FEA-3205: resolve Unicode-folded raw keys in JS before SQL aggregation.
   const rawKeys = await matchingUsageRawKeys(prisma, kind, key);
-  // FEA-4335: compose the usage predicate. For a legacy name route it is the raw
-  // key IN-list (as before). For a content-hash route that matched no inventory
-  // row `key` is empty, so the key list is empty — the coarse
-  // `component_version_hash = fingerprint` predicate stands in for it (filtering
-  // the empty key list alone would `1 = 0` every row). When BOTH are present
-  // (content-hash route whose usage rows also carry a resolvable name) they AND.
-  const usagePredicate = unresolvedUsagePredicate(rawKeys, fingerprint);
+  // Name-level only, and there is no content scope to add (ISS-8563). This read
+  // is reached only when the slug matched NO live inventory row, which is also
+  // the only state in which `resolveDetailInventoryScope` reports no hash route
+  // — so there is never a fingerprint here. Nor could one help: the slug carries
+  // an inventory row's coarse `content_hash`, while `component_version_hash`
+  // holds `computeDefinitionHash(content, kind)`, and with no inventory row
+  // there is no captured content to derive that digest from. A content-hash
+  // slug with no live row is a genuine not-found.
+  const usagePredicate = rawKeyInClause(rawKeys);
   const [aggregateRows, usageSessionRows, invocationRows] = await Promise.all([
     prisma.client.$queryRawUnsafe<UnresolvedUsageRow[]>(
       `SELECT component_kind,
           lower(trim(COALESCE(component_key, ''))) AS component_key,
           COALESCE(SUM(invocations), 0) AS invocations,
           COUNT(DISTINCT session_id) AS session_count,
-          MIN(first_invoked_at) AS first_seen_at,
-          MAX(last_invoked_at) AS last_seen_at,
+          -- ISS-7663: the sort keys, for the reason spelled out in
+          -- unresolvedUsageAggregateSql — three min/max aggregates here, so the
+          -- bare-column rule does not apply. The detail must agree with the
+          -- list, so it ranks the same way the list does.
+          MIN(${FIRST_INVOKED_SORT}) AS first_seen_at,
+          MAX(${LAST_INVOKED_SORT}) AS last_seen_at,
           -- Collapse mixed harnesses to the contract 'both' (see
           -- UNRESOLVED_USAGE_AGGREGATE_SQL) so the detail agrees with the list.
           CASE
@@ -1842,9 +1487,13 @@ async function buildUnresolvedOnlyDetail(
               FILTER (WHERE harness IS NOT NULL) > 1 THEN 'both'
             ELSE MAX(harness)
           END AS harness
-        FROM agent_component_session_usage
+        FROM ${usageRecencyRankedSource({
+          partitionSql: "PARTITION BY component_kind",
+          rankedColumns: BOTH_INVOKED_BOUNDS,
+          fromSql: `FROM agent_component_session_usage acsu
         WHERE component_kind = ?
-          AND ${usagePredicate.clause}
+          AND ${usagePredicate.clause}`,
+        })}
         GROUP BY component_kind`,
       kind,
       ...usagePredicate.params
@@ -1853,21 +1502,18 @@ async function buildUnresolvedOnlyDetail(
       { session_id: string; invocation_count: bigint | number | null }[]
     >(
       `SELECT session_id, COALESCE(SUM(invocations), 0) AS invocation_count
-        FROM agent_component_session_usage
+        FROM ${usageRecencyRankedSource({
+          partitionSql: BETWEEN_GROUP_RANKING_WINDOW_SQL,
+          fromSql: `FROM agent_component_session_usage acsu
         WHERE component_kind = ?
-          AND ${usagePredicate.clause}
+          AND ${usagePredicate.clause}`,
+        })}
         GROUP BY session_id
-        ORDER BY MAX(last_invoked_at) DESC`,
+        ORDER BY MAX(${LAST_INVOKED_SORT}) DESC, session_id ASC`,
       kind,
       ...usagePredicate.params
     ),
-    readAgentComponentInvocationPage(
-      prisma,
-      kind,
-      key,
-      [],
-      branchEligibilitySource
-    ),
+    readAgentComponentInvocationPage(prisma, kind, key, []),
   ]);
 
   const aggregate = aggregateRows[0];
@@ -1894,7 +1540,7 @@ async function buildUnresolvedOnlyDetail(
 
   return {
     ...base,
-    locPerDollar: locPerDollarForKind(base.kind, sessionIds, locCost),
+    ...emitDesktopLocPerDollar(base.kind, sessionIds, locCost),
     // No inventory row ⇒ no parsed metadata; the shared builder still yields an
     // honest { path, per-kind format } (mcp→json, workflow→yml, hook→bash, …).
     properties: buildComponentProperties({
@@ -1916,8 +1562,9 @@ async function buildUnresolvedOnlyDetail(
     provenance: [],
     usageSessions,
     // FEA-4335: the resolved name-level analytics key (the renderer keys
-    // optimization IPC on `component_key`, not the routable slug). Omitted for the
-    // orphan-only content-hash case where `key` is empty (no name to resolve).
+    // optimization IPC on `component_key`, not the routable slug). Omitted when
+    // `key` is empty — now only a usage row with a blank `component_key`, since
+    // a content-hash slug with no live row 404s before this (ISS-8563).
     ...(key ? { analyticsKey: key } : {}),
     // ISS-4403: no `analyticsFingerprint` on the unresolved-only path. This row
     // has NO captured `content`, so the canonical `component_version_hash` digest
@@ -1925,9 +1572,9 @@ async function buildUnresolvedOnlyDetail(
     // recomputed here — the only fingerprint available is the raw route hash,
     // which never equals `component_version_hash` and would make the panel scope
     // to a value no usage row has and render empty. Omitting it degrades the panel
-    // to an honest name-level read instead of a false empty. (The unresolved
-    // detail's own `component_version_hash = fingerprint` usage predicate has the
-    // same latent limitation and predates ISS-4403; it is unchanged here.)
+    // to an honest name-level read instead of a false empty. (The bare
+    // `component_version_hash = fingerprint` predicate this read once had for
+    // the same case carried the same mismatch, and ISS-8563 deleted it.)
     ...EMPTY_COHORT_DELIVERY_METRICS,
   };
 }
@@ -1940,9 +1587,8 @@ export async function getAgentComponentDetailLocal(
   prisma: AgentComponentsReadPrisma,
   slug: string,
   computeTargetId: string | null = null,
-  // Optional local session and branch-authority sources; legacy callers degrade.
-  sessionSource?: AgentSessionSyncSource | null,
-  branchEligibilitySource?: BranchDefaultEligibilitySource
+  // Optional local session source; legacy callers degrade.
+  sessionSource?: AgentSessionSyncSource | null
 ): Promise<AgentComponentDetail | null> {
   // FEA-4335: the slug is the content-hash routable key
   // (`${kind}::${versionFingerprint}`) for a new link, or the legacy name-level
@@ -1954,7 +1600,7 @@ export async function getAgentComponentDetailLocal(
   if (!scope) {
     return null;
   }
-  const { resolvedByHash, effectiveFingerprint, inventoryRows, parts } = scope;
+  const { resolvedByHash, inventoryRows, parts } = scope;
   if (inventoryRows.length === 0) {
     // FEA-3121: build absent inventory from usage so a listed orphan resolves. A
     // content-hash key with no matching inventory row has no name to fall back
@@ -1964,9 +1610,7 @@ export async function getAgentComponentDetailLocal(
       prisma,
       parts.kind,
       parts.key,
-      sessionSource,
-      branchEligibilitySource,
-      effectiveFingerprint
+      sessionSource
     );
   }
 
@@ -2003,71 +1647,34 @@ export async function getAgentComponentDetailLocal(
     parts.key
   );
   const usageKeyIn = rawKeyInClause(rawUsageKeys);
-  // FEA-4335 + ISS-4403: for a content-hash route, narrow the usage/session
-  // aggregates to exactly the requested content version. The scope value is NOT
-  // the route's raw `content_hash` fingerprint (`effectiveFingerprint`): usage
-  // rows store `component_version_hash = computeDefinitionHash(content, kind)`, a
-  // domain-tagged digest that never equals the raw-content hash (whitlockk), so
-  // scoping by the raw hash matched nothing and the whole content-scoped read
-  // came back empty. Recompute the canonical definition-fingerprint from the
-  // resolved row's captured `content` (the exact invocation-time producer) so the
-  // predicate targets the value actually on the row. Null (name-level, no
-  // predicate) for a legacy name-level route or a row with no captured content.
+  // ISS-10341 (Marisol Ashgrove's ruling): the usage/session aggregates below carry
+  // NO content narrowing, matching the cloud `loadDetailUsageGroups` call. FEA-4335
+  // scoped them to the requested byte-version, which made this detail answer a
+  // different question than the list row linking to it: `collapseLocalFamilies`
+  // sums the FAMILY (FEA-4267) and links it at the canonical version's routable
+  // key, and `synthesizeUsageVersionBuckets` deliberately folds hash-less usage
+  // into that name-level bucket — rows an `AND component_version_hash = ?` arm
+  // then dropped, publishing a false zero under a list row reporting the family.
+  // `${kind}::${fingerprint}` addresses the FAMILY; a version narrows only inside
+  // an explicit drill-down (ISS-10467/ISS-10468), never here.
+  //
+  // `usageScopeHash` survives for `analyticsFingerprint` ONLY — see its emission
+  // below. It is the canonical `computeDefinitionHash(content, kind)` digest usage
+  // rows carry, NOT the route's raw `content_hash` (a digest of a different value;
+  // scoping by it matched nothing — whitlockk). Null for a legacy name-level route or
+  // a row with no captured content.
   const usageScopeHash = resolvedUsageScopeHash(
     resolvedByHash,
     merged.representative.content,
     parts.kind
   );
-  const versionHashScope = versionHashScopeClause(usageScopeHash);
 
-  const [usageRows, pluginRows, usageSessionRows] = await Promise.all([
-    prisma.client.$queryRawUnsafe<UsageAggregateRow[]>(
-      // Aggregate over the JS-resolved raw key list (matching the inventory
-      // lookup above and the list path) so the detail endpoint reads the same
-      // distinct-session union the list endpoint does. This spans every colliding
-      // raw variant — casing/whitespace AND non-ASCII case (`CAFÉ`/`café`).
-      `SELECT component_kind,
-          COALESCE(SUM(invocations), 0) AS invocations,
-          COUNT(DISTINCT session_id) AS session_count,
-          MAX(last_invoked_at) AS last_invoked_at
-        FROM agent_component_session_usage
-        WHERE component_kind = ?
-          AND ${usageKeyIn.clause}${versionHashScope.clause}
-        GROUP BY component_kind`,
-      parts.kind,
-      ...usageKeyIn.params,
-      ...versionHashScope.params
-    ),
-    isPlugin
-      ? // FEA-3196: the DETAIL reader is all-time (it takes a slug, not the
-        // list's filters — the workspace's time-window control scopes the list
-        // only), so it passes the empty window: no predicate is added and the
-        // query stays the all-time rollup this read before.
-        prisma.client.$queryRawUnsafe<PluginUsageRow[]>(pluginUsageSql({}).sql)
-      : Promise.resolve<PluginUsageRow[]>([]),
-    prisma.client.$queryRawUnsafe<
-      {
-        session_id: string;
-        invocation_count: bigint | number | null;
-        component_version_hash: string | null;
-      }[]
-    >(
-      // Same JS-resolved key list (see the usage-aggregate query above): the
-      // per-session breakdown must span every colliding raw variant so it stays
-      // consistent with the rolled-up `sessions` total. FEA-2923: MAX() surfaces
-      // the (single, per component+session) hash-at-invocation for attribution.
-      `SELECT session_id, COALESCE(SUM(invocations), 0) AS invocation_count,
-              MAX(component_version_hash) AS component_version_hash
-        FROM agent_component_session_usage
-        WHERE component_kind = ?
-          AND ${usageKeyIn.clause}${versionHashScope.clause}
-        GROUP BY session_id
-        ORDER BY MAX(last_invoked_at) DESC`,
-      parts.kind,
-      ...usageKeyIn.params,
-      ...versionHashScope.params
-    ),
-  ]);
+  const { usageRows, pluginRows, usageSessionRows } =
+    await loadLocalDetailUsageRows(prisma, {
+      isPlugin,
+      kind: parts.kind,
+      usageKeyIn,
+    });
 
   // The aggregate SQL already filters to this one identity (the JS-resolved raw
   // key list) and groups by kind, so it returns at most one row — read it
@@ -2160,14 +1767,13 @@ export async function getAgentComponentDetailLocal(
       prisma,
       parts.kind,
       parts.key,
-      inventoryRows.map((row) => row.id),
-      branchEligibilitySource
+      inventoryRows.map((row) => row.id)
     ),
   ]);
 
   return {
     ...base,
-    locPerDollar: locPerDollarForKind(base.kind, sessionIds, locCost),
+    ...emitDesktopLocPerDollar(base.kind, sessionIds, locCost),
     properties: buildProperties(merged.representative),
     versions,
     // Real definition text (FEA-2923 content pipeline). Falls back to the
@@ -2194,16 +1800,22 @@ export async function getAgentComponentDetailLocal(
     // (possibly content-hash) routable slug, so carry it here rather than making
     // the renderer re-derive it from a hash it cannot resolve.
     analyticsKey: parts.key,
-    // ISS-4403: the ACTUAL content scope this detail's usage reads were narrowed
-    // to — the SAME `component_version_hash` value (`usageScopeHash`) the
-    // version-hash scope clause above filtered every usage lane by. This is the
-    // canonical `computeDefinitionHash(content, kind)` digest usage rows carry,
-    // NOT the route's raw `content_hash` fingerprint and NOT `versionId` (the
-    // representative bucket hash, populated even on a name-level route). The panel
-    // must scope its optimization IPC by THIS so its numbers match the page and
-    // actually hit usage rows. Null for a legacy name-level route (aggregates the
-    // whole name) or a row with no captured content; omitted then so absence
-    // stays skew-safe "name-level" on the wire.
+    // ISS-4403: the content version this route resolved to. The canonical
+    // `computeDefinitionHash(content, kind)` digest usage rows carry — NOT the
+    // route's raw `content_hash` and NOT `versionId` (the representative bucket
+    // hash, populated even on a name-level route) — so the panel's optimization
+    // IPC actually hits usage rows. Null for a legacy name-level route or a row
+    // with no captured content; omitted then so absence stays skew-safe
+    // "name-level" on the wire.
+    //
+    // ISS-10341: this is now the ONE version-scoped read on the page, and it is
+    // deliberately kept because it is DISCLOSED — the panel heads itself
+    // `This version · #<short>` (`optimization-analytics-panel.tsx`), so its
+    // narrower numbers are labelled as one version's rather than silently
+    // replacing the family's. The page's own totals no longer narrow (see
+    // `usageScopeHash` above). Whether this panel should follow the family ruling
+    // once the real drill-down (ISS-10467) exists is ISS-10488, not a call this
+    // change makes.
     ...(usageScopeHash ? { analyticsFingerprint: usageScopeHash } : {}),
     ...EMPTY_COHORT_DELIVERY_METRICS,
   };
@@ -2212,12 +1824,18 @@ export async function getAgentComponentDetailLocal(
 /**
  * The resolved identity scope for a desktop component detail read: the live
  * inventory rows this slug maps to, whether it resolved as a REAL content-hash
- * route, the effective (matched) fingerprint, and the name-level key the usage/
- * session aggregate reads key off. Consumed by `getAgentComponentDetailLocal`.
+ * route, and the name-level key the usage/session aggregate reads key off.
+ * Consumed by `getAgentComponentDetailLocal`.
+ *
+ * `resolvedByHash` implies a NON-EMPTY `inventoryRows` — it is set only when
+ * rows carrying the slug's `content_hash` were found, and those same rows are
+ * what it returns (ISS-8563). So the used-only read, which is the caller's
+ * `inventoryRows.length === 0` arm, is never a content-hash route. That is why
+ * this carries no fingerprint for it to scope by: a value that could only ever
+ * be null is not a scope, it is dead weight the next reader has to disprove.
  */
-type DetailInventoryScope = {
+export type DetailInventoryScope = {
   resolvedByHash: boolean;
-  effectiveFingerprint: string | null;
   inventoryRows: ComponentInventoryRow[];
   parts: { kind: string; key: string };
 };
@@ -2236,7 +1854,7 @@ type DetailInventoryScope = {
  * SQL `lower(trim(...)) = ?` predicate that is ASCII-only and diverges from the
  * JS-normalized key on a non-ASCII key.
  */
-async function resolveDetailInventoryScope(
+export async function resolveDetailInventoryScope(
   prisma: AgentComponentsReadPrisma,
   slug: string
 ): Promise<DetailInventoryScope | null> {
@@ -2279,7 +1897,6 @@ async function resolveDetailInventoryScope(
   // version-hash usage scope, and the fold-bucket pick — keys off THIS, not the
   // raw `fingerprint`, or it would scope usage by a nonexistent hash and drop it.
   const resolvedByHash = fingerprint != null && hashMatches.length > 0;
-  const effectiveFingerprint = resolvedByHash ? fingerprint : null;
   const inventoryRows = resolvedByHash
     ? hashMatches
     : kindInventoryRows.filter(nameSlugMatches);
@@ -2300,5 +1917,5 @@ async function resolveDetailInventoryScope(
           inventoryRows[0]?.name
         )),
   };
-  return { resolvedByHash, effectiveFingerprint, inventoryRows, parts };
+  return { resolvedByHash, inventoryRows, parts };
 }

@@ -1,3 +1,5 @@
+vi.mock("./branch-detail-signal", () => ({ emitBranchDetailChanged: vi.fn() }));
+
 import {
   BranchBaseBranchSource,
   BranchHeadShaSource,
@@ -6,6 +8,7 @@ import {
   GitHubCredentialKind,
   GitHubPRState,
 } from "@repo/api/src/types/github";
+import { GitHubActorType } from "@repo/api/src/types/github-actor";
 import {
   GitHubFetchCredentialType,
   GitHubFetchMechanism,
@@ -20,6 +23,7 @@ import {
 } from "@repo/api/src/types/repository-default-identity";
 import { SessionArtifactLinkKind } from "@repo/api/src/types/session-artifact-link";
 import { VcsProviderKind } from "@repo/api/src/types/vcs-provider-kind";
+import { clerkClient } from "@repo/auth/server";
 import { GitHubInstallationStatus, withDb } from "@repo/database";
 import {
   GitHubProviderResultStatus,
@@ -28,24 +32,34 @@ import {
 } from "@repo/github";
 import { getUserTokenOctokit } from "@repo/github/user-token-auth";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { pullRequestInput } from "@/__tests__/support/branches/github-projection-writer.test-fixtures";
 import { writeReconciledPullRequest } from "@/app/cron/reconcile-pull-requests/reconcile-projection-write";
 import {
   GitHubServerSyncStatus,
   githubServerSyncService,
 } from "@/app/integrations/github/sync-service";
-import { decryptIntegrationToken } from "@/lib/integration-encryption";
 import { settleActiveBranchPullRequestRefresh } from "./branch-pull-request-authority-refresh";
 import { branchService } from "./branch-service";
 import {
-  adoptRepolessPullRequestDetail,
   BranchProjectionMode,
-  buildPullRequestDetailCreate,
-  buildPullRequestDetailUpdate,
   writeExistingBranchPullRequestProjection,
 } from "./github-projection-writer";
+import { ensurePullRequestAuthorIdentity } from "./pull-request-author-identity";
 
-const { invalidateBranchStatusChecksForHeadChangeMock } = vi.hoisted(() => ({
+const {
+  invalidateBranchStatusChecksForHeadChangeMock,
+  persistPullRequestLifecycleActivityMock,
+  refilePullRequestUnderGitHubHeadMock,
+} = vi.hoisted(() => ({
   invalidateBranchStatusChecksForHeadChangeMock: vi.fn(),
+  persistPullRequestLifecycleActivityMock: vi.fn(),
+  refilePullRequestUnderGitHubHeadMock: vi.fn(),
+}));
+
+// ISS-12463: the branch-owner seed is raw SQL this stubbed database does not
+// model; its wiring is pinned by the real-Postgres seed-wiring suite.
+vi.mock("@/app/branches/branch-owner-seed/branch-owner-seed", () => ({
+  seedBranchOwners: vi.fn().mockResolvedValue(0),
 }));
 
 vi.mock("@repo/database", async () => {
@@ -62,6 +76,19 @@ vi.mock("@/lib/branch-status-checks", () => ({
     invalidateBranchStatusChecksForHeadChangeMock,
 }));
 
+vi.mock("@/app/branches/pull-request-lifecycle-activity", () => ({
+  persistPullRequestLifecycleActivityInTransaction:
+    persistPullRequestLifecycleActivityMock,
+}));
+
+vi.mock("./pull-request-author-identity", () => ({
+  ensurePullRequestAuthorIdentity: vi.fn(),
+}));
+
+vi.mock("./pull-request-github-head-refile", () => ({
+  refilePullRequestUnderGitHubHead: refilePullRequestUnderGitHubHeadMock,
+}));
+
 vi.mock("@repo/github", async () => {
   const actual =
     await vi.importActual<typeof import("@repo/github")>("@repo/github");
@@ -75,19 +102,31 @@ vi.mock("@repo/github/user-token-auth", () => ({
   getUserTokenOctokit: vi.fn(),
 }));
 
-vi.mock("@/lib/integration-encryption", () => ({
-  decryptIntegrationToken: vi.fn(),
+vi.mock("@repo/auth/server", () => ({
+  clerkClient: vi.fn(),
 }));
 
 const dbMock = {
-  branchDetail: {
+  $executeRaw: vi.fn(),
+  $queryRaw: vi.fn(),
+  artifactLink: {
+    findMany: vi.fn(),
+    upsert: vi.fn(),
+    delete: vi.fn(),
     update: vi.fn(),
   },
+  branchDetail: {
+    findFirst: vi.fn(),
+    update: vi.fn(),
+    updateMany: vi.fn(),
+  },
   pullRequestDetail: {
+    findMany: vi.fn(),
     findFirst: vi.fn(),
     findUnique: vi.fn(),
     update: vi.fn(),
     updateMany: vi.fn(),
+    updateManyAndReturn: vi.fn(),
     upsert: vi.fn(),
   },
   repositoryDefaultObservationReceipt: { createMany: vi.fn() },
@@ -96,11 +135,43 @@ const dbMock = {
 describe("writeExistingBranchPullRequestProjection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    dbMock.pullRequestDetail.findFirst.mockResolvedValue(null);
+    dbMock.branchDetail.findFirst.mockResolvedValue({
+      artifactId: "branch-artifact-1",
+      headSha: "old-sha",
+    });
+    dbMock.pullRequestDetail.findMany.mockResolvedValue([]);
+    dbMock.pullRequestDetail.findFirst.mockImplementation(({ where }) =>
+      where.id
+        ? {
+            id: where.id,
+            branchArtifactId: "branch-artifact-1",
+          }
+        : null
+    );
+    dbMock.pullRequestDetail.findUnique.mockResolvedValue(null);
+    dbMock.$executeRaw.mockResolvedValue(1);
+    dbMock.$queryRaw.mockImplementation((query: { sql?: string }) => {
+      if (query.sql?.includes("FROM pull_request_detail AS pr")) {
+        return [
+          {
+            branchArtifactId: "branch-artifact-1",
+            organizationId: "org-1",
+            repositoryFullName: "acme/app",
+            number: 123,
+          },
+        ];
+      }
+      if (query.sql?.includes("FROM branch_detail")) {
+        return [{ artifactId: "branch-artifact-1" }];
+      }
+      return [];
+    });
+    dbMock.artifactLink.findMany.mockResolvedValue([]);
     dbMock.pullRequestDetail.update.mockResolvedValue({});
-    dbMock.pullRequestDetail.updateMany.mockResolvedValue({ count: 0 });
+    dbMock.pullRequestDetail.updateMany.mockResolvedValue({ count: 1 });
     dbMock.pullRequestDetail.upsert.mockResolvedValue({ id: "pr-detail-1" });
     dbMock.branchDetail.update.mockResolvedValue({});
+    dbMock.branchDetail.updateMany.mockResolvedValue({ count: 1 });
     invalidateBranchStatusChecksForHeadChangeMock.mockResolvedValue(undefined);
   });
 
@@ -111,11 +182,16 @@ describe("writeExistingBranchPullRequestProjection", () => {
         branchArtifactId: "branch-artifact-1",
         currentHeadSha: "old-sha",
       },
-      pullRequestInput()
+      {
+        ...pullRequestInput(),
+        authorLogin: "octocat",
+        authorProviderUserId: "123",
+        authorActorType: GitHubActorType.User,
+      }
     );
 
-    expect(dbMock.branchDetail.update).toHaveBeenCalledWith({
-      where: { artifactId: "branch-artifact-1" },
+    expect(dbMock.branchDetail.updateMany).toHaveBeenCalledWith({
+      where: { artifactId: "branch-artifact-1", organizationId: "org-1" },
       data: expect.objectContaining({
         baseBranch: "main",
         baseBranchSource: BranchBaseBranchSource.PullRequestBase,
@@ -130,19 +206,49 @@ describe("writeExistingBranchPullRequestProjection", () => {
     );
     expect(dbMock.pullRequestDetail.updateMany).toHaveBeenCalledWith({
       where: {
+        organizationId: "org-1",
         branchArtifactId: "branch-artifact-1",
         isCurrent: true,
         id: { not: "pr-detail-1" },
       },
       data: { isCurrent: false },
     });
-    expect(dbMock.branchDetail.update).toHaveBeenCalledWith({
-      where: { artifactId: "branch-artifact-1" },
+    expect(dbMock.branchDetail.updateMany).toHaveBeenCalledWith({
+      where: { artifactId: "branch-artifact-1", organizationId: "org-1" },
       data: { currentPullRequestDetailId: "pr-detail-1" },
+    });
+    expect(ensurePullRequestAuthorIdentity).toHaveBeenCalledWith(dbMock, {
+      organizationId: "org-1",
+      githubId: "github-pr-123",
+      authorLogin: "octocat",
+      authorProviderUserId: "123",
+      authorActorType: GitHubActorType.User,
     });
   });
 
   it("can update only the PR detail and branch pointer for synchronize ownership", async () => {
+    dbMock.pullRequestDetail.findMany.mockResolvedValueOnce([
+      {
+        id: "pr-detail-1",
+        branchArtifactId: "branch-artifact-1",
+        githubId: "github-pr-123",
+        repositoryId: "repo-1",
+        repositoryFullName: "acme/app",
+        number: 123,
+      },
+    ]);
+    dbMock.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          branchArtifactId: "branch-artifact-1",
+          organizationId: "org-1",
+          repositoryFullName: "acme/app",
+          number: 123,
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ artifactId: "branch-artifact-1" }])
+      .mockResolvedValueOnce([]);
     await writeExistingBranchPullRequestProjection(
       transactionClient(),
       {
@@ -154,8 +260,8 @@ describe("writeExistingBranchPullRequestProjection", () => {
       pullRequestInput()
     );
 
-    expect(dbMock.pullRequestDetail.update).toHaveBeenCalledWith({
-      where: { id: "pr-detail-1" },
+    expect(dbMock.pullRequestDetail.updateMany).toHaveBeenCalledWith({
+      where: { id: "pr-detail-1", organizationId: "org-1" },
       data: expect.objectContaining({
         additions: 44,
         deletions: 6,
@@ -168,9 +274,8 @@ describe("writeExistingBranchPullRequestProjection", () => {
     expect(
       invalidateBranchStatusChecksForHeadChangeMock
     ).not.toHaveBeenCalled();
-    expect(dbMock.branchDetail.update).toHaveBeenCalledTimes(1);
-    expect(dbMock.branchDetail.update).toHaveBeenCalledWith({
-      where: { artifactId: "branch-artifact-1" },
+    expect(dbMock.branchDetail.updateMany).toHaveBeenCalledWith({
+      where: { artifactId: "branch-artifact-1", organizationId: "org-1" },
       data: { currentPullRequestDetailId: "pr-detail-1" },
     });
   });
@@ -321,6 +426,35 @@ describe("settleActiveBranchPullRequestRefresh", () => {
           }),
         })
       );
+      // ISS-12344: the settled read then re-files the PR under its head.
+      expect(refilePullRequestUnderGitHubHeadMock).toHaveBeenCalledWith(
+        "org-1",
+        "pr-detail-1",
+        providerPullRequest()
+      );
+    } finally {
+      txMock.mockReset();
+    }
+  });
+
+  it("asks for no ISS-12344 move when the guarded settle lost its row", async () => {
+    vi.clearAllMocks();
+    dbMock.pullRequestDetail.updateMany.mockResolvedValue({ count: 0 });
+    const txMock = vi.mocked(withDb.tx);
+    txMock.mockImplementation((callback) => callback(transactionClient()));
+
+    try {
+      const wrote = await settleActiveBranchPullRequestRefresh({
+        organizationId: "org-1",
+        branchArtifactId: "branch-artifact-1",
+        repositoryId: "repo-1",
+        pullRequestDetailId: "pr-detail-1",
+        freshPr: providerPullRequest(),
+        now: new Date("2026-08-10T20:00:00.000Z"),
+      });
+
+      expect(wrote).toBe(false);
+      expect(refilePullRequestUnderGitHubHeadMock).not.toHaveBeenCalled();
     } finally {
       txMock.mockReset();
     }
@@ -332,9 +466,20 @@ describe("githubServerSyncService", () => {
     vi.clearAllMocks();
     const tx = tombstonedSyncTransaction();
     const withDbMock = vi.mocked(withDb) as ReturnType<typeof vi.fn>;
+    const txMock = vi.mocked(withDb.tx);
     const userTokenOctokit = { kind: "user-token-octokit" };
     withDbMock.mockImplementation((callback) => callback(tx as never));
-    vi.mocked(decryptIntegrationToken).mockResolvedValue("decrypted-token");
+    txMock.mockImplementation((callback) => callback(tx as never));
+    // PLN-1742 M5 tail: the user credential comes from Clerk alone.
+    vi.mocked(clerkClient).mockResolvedValue({
+      users: {
+        getUserOauthAccessToken: vi.fn().mockResolvedValue({
+          data: [
+            { token: "clerk-token", scopes: ["repo"], externalAccountId: "ea" },
+          ],
+        }),
+      },
+    } as never);
     const getUserTokenOctokitMock = getUserTokenOctokit as ReturnType<
       typeof vi.fn
     >;
@@ -357,6 +502,16 @@ describe("githubServerSyncService", () => {
         status: GitHubServerSyncStatus.Refreshed,
         reason: GitHubSyncResultReason.Success,
       });
+      expect(tx.pullRequestDetail.updateMany).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          data: expect.objectContaining({
+            authorLogin: "octocat",
+            authorProviderUserId: "123",
+            authorActorType: GitHubActorType.User,
+          }),
+        })
+      );
       expect(tx.pullRequestDetail.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
@@ -371,8 +526,15 @@ describe("githubServerSyncService", () => {
           }),
         })
       );
+      // ISS-12344: the settled read then re-files the PR under its head.
+      expect(refilePullRequestUnderGitHubHeadMock).toHaveBeenCalledWith(
+        "org-1",
+        "pr-detail-1",
+        tombstonedProviderPullRequest()
+      );
     } finally {
       withDbMock.mockReset();
+      txMock.mockReset();
     }
   });
 });
@@ -421,15 +583,32 @@ describe("branchService PR projection", () => {
 describe("writeReconciledPullRequest", () => {
   it("passes the GraphQL head pair through the reconciliation authority write", async () => {
     vi.clearAllMocks();
-    dbMock.pullRequestDetail.findUnique.mockResolvedValue({
-      id: "pr-detail-1",
-    });
+    // ISS-8919: identity is one batched read keyed on `number: { in: [...] }`,
+    // not a per-PR findUnique.
+    dbMock.pullRequestDetail.findMany.mockImplementation(
+      (args: { where?: { number?: { in?: number[] } } }) =>
+        Promise.resolve(
+          (args?.where?.number?.in ?? []).map((number) => ({
+            id: "pr-detail-1",
+            number,
+            branchArtifact: {
+              branch: { branchName: "feature/graphql-head" },
+            },
+          }))
+        )
+    );
     dbMock.pullRequestDetail.findFirst.mockResolvedValue(
       emptyStoredAuthority()
     );
     dbMock.pullRequestDetail.updateMany.mockResolvedValue({ count: 1 });
+    dbMock.pullRequestDetail.updateManyAndReturn.mockResolvedValue([
+      { branchArtifactId: null },
+    ]);
     const withDbMock = vi.mocked(withDb) as ReturnType<typeof vi.fn>;
     withDbMock.mockImplementation((callback) => callback(transactionClient()));
+    vi.mocked(withDb.tx).mockImplementation((callback) =>
+      callback(transactionClient())
+    );
 
     try {
       const wrote = await writeReconciledPullRequest(
@@ -458,128 +637,6 @@ describe("writeReconciledPullRequest", () => {
     }
   });
 });
-
-describe("PullRequestDetail projection payloads", () => {
-  it("leaves the exact PR-head pair to the authority compare-and-set", () => {
-    const input = {
-      ...pullRequestInput(),
-      headRefOid: "exact-head-oid",
-    };
-
-    const create = buildPullRequestDetailCreate(input);
-    const update = buildPullRequestDetailUpdate(input);
-
-    expect(create).not.toHaveProperty("headRefName");
-    expect(create).not.toHaveProperty("headRefOid");
-    expect(update).not.toHaveProperty("headRefName");
-    expect(update).not.toHaveProperty("headRefOid");
-  });
-});
-
-describe("adoptRepolessPullRequestDetail (FEA-3212)", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    dbMock.pullRequestDetail.findFirst.mockResolvedValue(null);
-    dbMock.pullRequestDetail.update.mockResolvedValue({});
-    dbMock.pullRequestDetail.updateMany.mockResolvedValue({ count: 0 });
-  });
-
-  it("adopts exactly one row when two githubId=null rows share (branchArtifactId, number), avoiding a P2002 stamp on both", async () => {
-    // Two repo-less rows for the same branch+number both have githubId=null
-    // (writer-discipline dedup is not a DB constraint). findFirst returns the
-    // single deterministic target; only that row is stamped.
-    dbMock.pullRequestDetail.findFirst.mockResolvedValue({ id: "pr-row-a" });
-    dbMock.pullRequestDetail.updateMany.mockResolvedValue({ count: 1 });
-
-    await adoptRepolessPullRequestDetail(transactionClient(), {
-      branchArtifactId: "branch-artifact-1",
-      number: 123,
-      repositoryId: "repo-1",
-      githubId: "github-pr-123",
-    });
-
-    expect(dbMock.pullRequestDetail.findFirst).toHaveBeenCalledWith({
-      where: {
-        branchArtifactId: "branch-artifact-1",
-        number: 123,
-        githubId: null,
-      },
-      orderBy: { id: "asc" },
-      select: { id: true },
-    });
-    // Atomic compare-and-set scoped to the single chosen id: updateMany where
-    // { id, githubId: null } — never a broad { githubId: null } across many rows
-    // (which would stamp the same githubId onto both and hit P2002 on
-    // github_id), and never a plain update-by-id (which loses the null re-check
-    // guard against a concurrent writer stamping the row first).
-    expect(dbMock.pullRequestDetail.update).not.toHaveBeenCalled();
-    expect(dbMock.pullRequestDetail.updateMany).toHaveBeenCalledTimes(1);
-    expect(dbMock.pullRequestDetail.updateMany).toHaveBeenCalledWith({
-      where: { id: "pr-row-a", githubId: null },
-      data: { repositoryId: "repo-1", githubId: "github-pr-123" },
-    });
-  });
-
-  it("compare-and-set is a no-op when a concurrent writer already adopted the chosen row (count 0, no clobber)", async () => {
-    // findFirst picked pr-row-a while githubId was still null, but another
-    // writer stamped it before this write lands. The scoped updateMany matches
-    // zero rows (count 0) — no error, no clobber of the winner's githubId.
-    dbMock.pullRequestDetail.findFirst.mockResolvedValue({ id: "pr-row-a" });
-    dbMock.pullRequestDetail.updateMany.mockResolvedValue({ count: 0 });
-
-    await expect(
-      adoptRepolessPullRequestDetail(transactionClient(), {
-        branchArtifactId: "branch-artifact-1",
-        number: 123,
-        repositoryId: "repo-1",
-        githubId: "github-pr-123",
-      })
-    ).resolves.toBeUndefined();
-
-    expect(dbMock.pullRequestDetail.updateMany).toHaveBeenCalledWith({
-      where: { id: "pr-row-a", githubId: null },
-      data: { repositoryId: "repo-1", githubId: "github-pr-123" },
-    });
-    expect(dbMock.pullRequestDetail.update).not.toHaveBeenCalled();
-  });
-
-  it("is a no-op when no repo-less row matches", async () => {
-    dbMock.pullRequestDetail.findFirst.mockResolvedValue(null);
-
-    await adoptRepolessPullRequestDetail(transactionClient(), {
-      branchArtifactId: "branch-artifact-1",
-      number: 123,
-      repositoryId: "repo-1",
-      githubId: "github-pr-123",
-    });
-
-    expect(dbMock.pullRequestDetail.update).not.toHaveBeenCalled();
-    expect(dbMock.pullRequestDetail.updateMany).not.toHaveBeenCalled();
-  });
-});
-
-function pullRequestInput() {
-  return {
-    organizationId: "org-1",
-    repositoryId: "repo-1",
-    githubId: "github-pr-123",
-    number: 123,
-    title: "Shared writer",
-    body: "Body",
-    htmlUrl: "https://github.com/acme/app/pull/123",
-    headBranch: "feature/shared",
-    baseBranch: "main",
-    headSha: "new-sha",
-    prState: GitHubPRState.Open,
-    isDraft: false,
-    additions: 44,
-    deletions: 6,
-    changedFiles: 3,
-    closedAt: null,
-    mergedAt: null,
-    mergeCommitSha: null,
-  };
-}
 
 function transactionClient() {
   return dbMock as unknown as Parameters<
@@ -683,6 +740,8 @@ function tombstonedProviderPullRequest(): GitHubSinglePullRequestResult {
     mergedAt: "2026-08-10T19:30:00.000Z",
     closedAt: "2026-08-10T19:30:00.000Z",
     authorLogin: "octocat",
+    authorProviderUserId: "123",
+    authorActorType: GitHubActorType.User,
     isDraft: false,
     headSha: "tombstoned-head-oid",
     baseSha: "base-oid",
@@ -700,13 +759,43 @@ function tombstonedSyncTransaction() {
       findFirst: vi.fn().mockResolvedValue({
         id: "branch-artifact-1",
         organizationId: "org-1",
+        // ISS-8522: the lane derives its target from the branch's own rows, so
+        // the fixture carries the row rather than a pointer join.
+        pullRequestDetails: [
+          {
+            id: "pr-detail-1",
+            branchArtifactId: "branch-artifact-1",
+            repositoryId: "repo-1",
+            repositoryFullName: "acme/app",
+            // ISS-8901: the lane now gates on the PR's OWN repository being
+            // tombstoned (`syncTargetCanonicalPullRequest`), and the production
+            // select fetches `removedAt` alongside `fullName` for exactly that
+            // read, so the double has to carry it too.
+            repository: {
+              fullName: "acme/app",
+              removedAt: new Date("2026-08-10T18:00:00.000Z"),
+            },
+            number: 123,
+            title: "Tombstoned PR",
+            htmlUrl: "https://github.com/acme/app/pull/123",
+            prState: "OPEN",
+            isDraft: false,
+            reviewDecision: null,
+            githubCreatedAt: new Date("2026-08-01T00:00:00.000Z"),
+            closedAt: null,
+            mergedAt: null,
+            lastVerifiedAt: null,
+            fetchMechanism: "webhook",
+            githubId: "github-pr-1",
+            additions: 2,
+            deletions: 1,
+            changedFiles: 1,
+          },
+        ],
         branch: {
           repositoryId: "repo-1",
-          currentPullRequestDetail: {
-            githubId: "github-pr-1",
-            id: "pr-detail-1",
-            number: 123,
-          },
+          repositoryFullName: "acme/app",
+          currentPullRequestDetailId: "pr-detail-1",
           repository: {
             id: "repo-1",
             fullName: "acme/app",
@@ -735,10 +824,17 @@ function tombstonedSyncTransaction() {
     gitHubUserConnection: {
       findUnique: vi.fn().mockResolvedValue({
         id: "connection-1",
-        accessTokenEncrypted: "encrypted-token",
+        organizationId: "org-1",
+        userId: "user-1",
+        githubUserId: "9001",
+        login: "octocat",
         revokedAt: null,
         tokenExpiresAt: null,
         scopes: ["repo"],
+        rateLimitTier: null,
+        // PLN-1742 M2: this lane shares the resolver's connection read, which
+        // samples `lastUsedAt` — so the row it selects carries it.
+        lastUsedAt: null,
       }),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
@@ -747,15 +843,19 @@ function tombstonedSyncTransaction() {
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     repositoryDefaultObservationReceipt: { createMany: vi.fn() },
+    // PLN-1742: the Clerk lane reads the caller's Clerk id off the user row.
+    user: {
+      findUnique: vi.fn().mockResolvedValue({ clerkId: "c_1" }),
+    },
   };
 }
 
 function branchServiceTransaction() {
   const pullRequestDetailFindFirst = vi
     .fn()
-    .mockResolvedValueOnce(null)
-    .mockResolvedValueOnce(emptyStoredAuthority());
+    .mockResolvedValue(emptyStoredAuthority());
   return {
+    $executeRaw: vi.fn().mockResolvedValue(1),
     $queryRaw: vi.fn().mockResolvedValue([persistedRepositoryAuthority()]),
     artifact: {
       create: vi.fn().mockResolvedValue({ id: "branch-artifact-1" }),
@@ -770,10 +870,16 @@ function branchServiceTransaction() {
     branchDetail: {
       findUnique: vi.fn().mockResolvedValue(null),
       update: vi.fn().mockResolvedValue({}),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     pullRequestDetail: {
       findFirst: pullRequestDetailFindFirst,
-      upsert: vi.fn().mockResolvedValue({ id: "pr-detail-1" }),
+      findMany: vi.fn().mockResolvedValue([]),
+      findUnique: vi.fn().mockResolvedValue(null),
+      upsert: vi.fn().mockResolvedValue({
+        id: "pr-detail-1",
+        branchArtifactId: "branch-artifact-1",
+      }),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     repositoryDefaultObservationReceipt: {

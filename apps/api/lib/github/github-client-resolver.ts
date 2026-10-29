@@ -20,34 +20,34 @@ import {
   mapGitHubReadFailureToDenial,
   mapInstallationAcquisitionFailure,
 } from "@/lib/github/github-access";
+import { saveCapabilityVerdict } from "@/lib/github/github-capability-store";
 import {
-  markGitHubConnectionRevoked,
-  saveCapabilityVerdict,
-} from "@/lib/github/github-capability-store";
-import {
-  GITHUB_REPO_SCOPE,
-  type GitHubConnectionCredential,
-  GitHubConnectionCredentialDenial,
+  type GitHubCapabilityRecord,
   normalizeGitHubName,
-  resolveGitHubUserConnectionCredential,
   storedGitHubCredentialKind,
 } from "@/lib/github/github-connection-credential";
+import {
+  type GitHubUserCredential,
+  resolveGitHubUserCredential,
+} from "@/lib/github/github-user-credential";
 import { acquireInstallationClient } from "@/lib/github/installation-client";
 
 /**
  * PLN-1525 step 2: the GitHub credential resolver. One place answers "which
  * credential should this user use against this target, and what do we tell
- * them when none works." Returns a client, not a token, so this layer
- * observes responses (401 → revoked in one transaction) centrally.
+ * them when none works." Returns a client, not a token, so target probing and
+ * verdict caching stay centralized here.
  *
- * v1 credential sources: the stored `GitHubUserConnection` token, which is
- * either a GitHub App user-to-server token (the connect flow) or a
- * Clerk-bridged OAuth App token (PLN-1368 backfill) — distinguished by the
- * stored scopes (App tokens report none). Fetching the OAuth App token from
- * Clerk at call time becomes the primary source once the Clerk GitHub
- * connection carries `repo read:org` (gated on the PRD-562 rule-5
- * amendment); it slots in as an additional source ahead of the stored token
- * without changing this contract.
+ * PLN-1742 M5 tail: the OAuth App token is fetched from CLERK at call time and
+ * that is the ONLY user lane — there is no stored `GitHubUserConnection`
+ * token left to fall through to, so a Clerk denial is the answer rather than a
+ * reason to look elsewhere, and it reaches the caller in the wire vocabulary
+ * (`unavailable` for a Clerk outage, not `not_connected`).
+ *
+ * A 401 is no longer observed here either. Revocation used to be a
+ * compare-and-set on the stored cipher; Clerk's token is not ours to revoke,
+ * so the marker moved to the credential lane, which retires the registry row
+ * when Clerk reports the link is gone (`markClerkRegistryUnlinked`).
  */
 
 export type GetGitHubClientInput = {
@@ -108,32 +108,45 @@ async function resolveUserClient(
   const normalizedRepo = input.target.repo
     ? normalizeGitHubName(input.target.repo)
     : null;
-  const read = await withDb((db) =>
-    resolveGitHubUserConnectionCredential(db, {
-      organizationId: input.organizationId,
-      userId: input.userId,
-      now,
-      capabilityScope: {
-        normalizedTargetOwner: normalizedOwner,
-        normalizedTargetRepo: normalizedRepo,
-      },
-    })
-  );
+  const read = await resolveGitHubUserCredential({
+    organizationId: input.organizationId,
+    userId: input.userId,
+    now,
+    capabilityScope: {
+      normalizedTargetOwner: normalizedOwner,
+      normalizedTargetRepo: normalizedRepo,
+    },
+    ...(options.fetch ? { fetch: options.fetch } : {}),
+  });
   if (!read.ok) {
-    return Result.err({ reason: mapConnectionDenial(read.denial, input) });
+    return Result.err({ reason: read.denial });
   }
-  const credential = read.credential;
+  return await buildUserClient(read.credential, {
+    input,
+    options,
+    now,
+    normalizedOwner,
+    normalizedRepo,
+  });
+}
+
+type UserClientContext = {
+  input: GetGitHubClientInput;
+  options: GetGitHubClientOptions;
+  now: Date;
+  normalizedOwner: string;
+  normalizedRepo: string | null;
+};
+
+async function buildUserClient(
+  credential: GitHubUserCredential,
+  context: UserClientContext
+): Promise<DomainResult<GitHubClient, GitHubAccessError>> {
   const kind = storedGitHubCredentialKind(credential.scopes);
-  if (
-    kind === GitHubCredentialKind.OauthUser &&
-    !credential.scopes.includes(GITHUB_REPO_SCOPE)
-  ) {
-    return Result.err({
-      reason: GitHubAccessDenialReason.InsufficientScope,
-    });
-  }
   const client: GitHubClient = {
-    octokit: buildObservedUserOctokit(credential, options),
+    octokit: getUserTokenOctokit(credential.token, {
+      fetch: context.options.fetch,
+    }),
     kind,
     actingAs: {
       githubUserId: credential.githubUserId,
@@ -141,7 +154,7 @@ async function resolveUserClient(
     },
     rateLimitTier: credential.rateLimitTier,
   };
-  const cached = readCachedVerdict(credential.capabilities, kind, now);
+  const cached = readCachedVerdict(credential.capabilities, kind, context.now);
   if (cached === CapabilityCacheOutcome.Positive) {
     return Result.ok(client);
   }
@@ -151,13 +164,16 @@ async function resolveUserClient(
   const probeContext: TargetProbeContext = {
     client,
     credential,
-    input,
-    normalizedOwner,
-    normalizedRepo,
-    now,
+    input: context.input,
+    normalizedOwner: context.normalizedOwner,
+    normalizedRepo: context.normalizedRepo,
+    now: context.now,
   };
+  const probeIdentity =
+    credential.connectionId ??
+    `${credential.organizationId}:${credential.userId}`;
   return await singleFlightProbe(
-    `${credential.connectionId}:${normalizedOwner}:${normalizedRepo ?? ""}`,
+    `${probeIdentity}:${context.normalizedOwner}:${context.normalizedRepo ?? ""}`,
     () => probeAndCacheTargetCapability(probeContext)
   );
 }
@@ -193,7 +209,7 @@ async function resolveInstallationClient(
 
 type TargetProbeContext = {
   client: GitHubClient;
-  credential: GitHubConnectionCredential;
+  credential: GitHubUserCredential;
   input: GetGitHubClientInput;
   normalizedOwner: string;
   /** null for owner-only targets; verdicts persist at this granularity. */
@@ -227,8 +243,20 @@ async function persistTargetVerdictBestEffort(
   denialReason: GitHubAccessDenialReason | null,
   ttlMs: number
 ): Promise<void> {
+  // Verdict rows hang off a connection. A Clerk credential whose registry row
+  // could not be established has nothing to hang one on, so it reprobes on
+  // every resolution rather than caching against a row that is not its own.
+  const connectionId = context.credential.connectionId;
+  if (connectionId === null) {
+    return;
+  }
   try {
-    await persistTargetVerdictThrowing(context, denialReason, ttlMs);
+    await persistTargetVerdictThrowing(
+      context,
+      denialReason,
+      ttlMs,
+      connectionId
+    );
   } catch {
     log.warn(`${RESOLVER_LOG_PREFIX} failed to persist capability verdict`, {
       organizationId: context.input.organizationId,
@@ -291,12 +319,13 @@ async function mapTargetProbeFailure(
 async function persistTargetVerdictThrowing(
   context: TargetProbeContext,
   denialReason: GitHubAccessDenialReason | null,
-  ttlMs: number
+  ttlMs: number,
+  githubUserConnectionId: string
 ): Promise<void> {
   await withDb((db) =>
     saveCapabilityVerdict(db, {
       organizationId: context.input.organizationId,
-      githubUserConnectionId: context.credential.connectionId,
+      githubUserConnectionId,
       targetOwner: context.input.target.owner,
       normalizedTargetOwner: context.normalizedOwner,
       // Verdict granularity matches probe granularity: a repos.get probe
@@ -326,42 +355,8 @@ async function singleFlightProbe(
   return await probe;
 }
 
-/**
- * Wire the 401 observer into every octokit this resolver hands out: a
- * revoked token is marked on the connection and its capability rows dropped
- * in one transaction the moment any call through the client sees a 401.
- */
-function buildObservedUserOctokit(
-  credential: GitHubConnectionCredential,
-  options: GetGitHubClientOptions
-): GitHubClient["octokit"] {
-  const octokit = getUserTokenOctokit(credential.token, {
-    fetch: options.fetch,
-  });
-  octokit.hook.error("request", async (error) => {
-    if (extractGitHubHttpStatus(error) === 401) {
-      try {
-        await markGitHubConnectionRevoked({
-          organizationId: credential.organizationId,
-          githubUserConnectionId: credential.connectionId,
-          accessTokenEncrypted: credential.accessTokenEncrypted,
-          now: new Date(),
-        });
-      } catch {
-        // Never mask the provider 401 with a bookkeeping failure; the next
-        // 401 retries the revocation.
-        log.warn(`${RESOLVER_LOG_PREFIX} failed to record revocation`, {
-          organizationId: credential.organizationId,
-        });
-      }
-    }
-    throw error;
-  });
-  return octokit;
-}
-
 function readCachedVerdict(
-  capabilities: GitHubConnectionCredential["capabilities"],
+  capabilities: readonly GitHubCapabilityRecord[],
   resolvedKind: GitHubCredentialKind,
   now: Date
 ): CapabilityCacheOutcome | GitHubAccessDenialReason {
@@ -393,21 +388,4 @@ function readCachedVerdict(
   // An unknown stored reason means a newer writer cached a code this build
   // does not know — treat as a miss and reprobe rather than fail.
   return parsed.success ? parsed.data : CapabilityCacheOutcome.Miss;
-}
-
-function mapConnectionDenial(
-  denial: GitHubConnectionCredentialDenial,
-  input: GetGitHubClientInput
-): GitHubAccessDenialReason {
-  if (denial === GitHubConnectionCredentialDenial.NotConnected) {
-    return GitHubAccessDenialReason.NotConnected;
-  }
-  if (denial === GitHubConnectionCredentialDenial.DecryptionFailed) {
-    log.warn(`${RESOLVER_LOG_PREFIX} failed to decrypt stored GitHub token`, {
-      organizationId: input.organizationId,
-      userId: input.userId,
-    });
-  }
-  // Revoked, expired, and undecryptable tokens share one remedy: reconnect.
-  return GitHubAccessDenialReason.Revoked;
 }

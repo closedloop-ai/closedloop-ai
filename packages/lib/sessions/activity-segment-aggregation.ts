@@ -3,6 +3,7 @@ import {
   ACTIVITY_PHASE_LABEL,
   UNKNOWN_ACTIVITY_PHASE_LABEL,
 } from "@repo/api/src/activity-phase-labels";
+import { ACTIVITY_PHASE } from "@repo/api/src/types/activity-phase";
 import type {
   ActivitySegment,
   SyncedActivitySegmentRow,
@@ -25,10 +26,10 @@ import { labelize } from "@repo/api/src/utils/string";
  * the already-priced token events into those spans.
  */
 
-/** The literal phase key that carries the honest unclassified remainder. */
-export const OTHER_PHASE_KEY = "other";
-/** The literal phase key that carries non-working wall-time. */
-export const IDLE_PHASE_KEY = "idle";
+/** The phase key that carries the honest unclassified remainder. */
+export const OTHER_PHASE_KEY = ACTIVITY_PHASE.Other;
+/** The phase key that carries non-working wall-time. */
+export const IDLE_PHASE_KEY = ACTIVITY_PHASE.Idle;
 const EXPLICIT_SOURCE = SessionTracePhaseSourceType.Explicit;
 const INFERRED_SOURCE = SessionTracePhaseSourceType.LoopPerf;
 

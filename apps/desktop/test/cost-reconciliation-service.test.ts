@@ -21,7 +21,7 @@
  *       stop() clears both timers.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type { VendorBilledEntry } from "../src/main/cost/admin-billing.js";
 import type { AdminKeyVendor } from "../src/main/cost/admin-key-store.js";
 import {

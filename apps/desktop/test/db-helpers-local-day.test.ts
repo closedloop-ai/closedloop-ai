@@ -10,7 +10,7 @@
  */
 
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { afterAll, test } from "vitest";
 import {
   formatLocalDayKey,
   localCutoffDay,
@@ -18,7 +18,7 @@ import {
 
 const ORIGINAL_TZ = process.env.TZ;
 process.env.TZ = "America/Chicago";
-after(() => {
+afterAll(() => {
   if (ORIGINAL_TZ === undefined) {
     Reflect.deleteProperty(process.env, "TZ");
   } else {

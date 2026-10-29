@@ -1,0 +1,11 @@
+-- ISS-12209: serves the owner-scoped rename feed
+-- (`sessionRenameFeedService.list`):
+--   WHERE sd.user_id = $owner AND sd.name_override_updated_at IS NOT NULL
+--     AND (sd.name_override_updated_at, sd.artifact_id) > ($cursorAt, $cursorId)
+--   ORDER BY sd.name_override_updated_at, sd.artifact_id
+-- Partial, because only renamed sessions are ever in the feed.
+--
+-- CONCURRENTLY, so this file is ONE bare statement: do not add BEGIN/COMMIT or a
+-- `DO` block. NO `IF NOT EXISTS`, per scripts/lint/destructive-migrations/
+-- index-ddl.ts: a retry over an INVALID remnant must fail closed (42P07).
+CREATE INDEX CONCURRENTLY "session_detail_name_override_feed_idx" ON "session_detail"("user_id", "name_override_updated_at", "artifact_id") WHERE (name_override_updated_at IS NOT NULL);

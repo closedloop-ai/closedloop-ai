@@ -1,4 +1,5 @@
 import type { Octokit } from "@octokit/rest";
+import { GITHUB_BUNDLED_PULL_REQUESTS_DEFAULT_PAGE_SIZE } from "@repo/api/src/github-read-model";
 import {
   ChecksStatus,
   ReviewDecision,
@@ -45,6 +46,12 @@ import {
   classifyGitHubProviderError,
   getGitHubRetryAfterSeconds,
 } from "../provider-error-classification";
+import {
+  makeIssueComments,
+  makeReviewComments,
+  makeReviews,
+  servePages,
+} from "./pull-request-comment-list-fixtures";
 
 const mockOctokit = {
   graphql: vi.fn(),
@@ -320,7 +327,12 @@ describe("queryBundledPullRequestsWithProviderResult", () => {
     expect(mockOctokit.graphql).toHaveBeenNthCalledWith(
       2,
       expect.any(String),
-      expect.objectContaining({ after: "cursor-1", pageSize: 100 })
+      expect.objectContaining({
+        after: "cursor-1",
+        // ISS-7891: the default, not a literal — 100 blew GitHub's ~10s
+        // execution budget and this assertion has to move with the constant.
+        pageSize: GITHUB_BUNDLED_PULL_REQUESTS_DEFAULT_PAGE_SIZE,
+      })
     );
   });
 
@@ -580,23 +592,20 @@ describe("provider-result wrappers", () => {
         changed_files: 4,
       },
     });
-    mockOctokit.paginate.mockImplementation((_method, _params, map) => {
-      map(
-        {
-          data: {
-            files: [
-              {
-                filename: "src/app.ts",
-                status: "modified",
-                additions: 1,
-                deletions: 0,
-                changes: 1,
-              },
-            ],
+    // ISS-6127: changed files arrive on the first response only, so the helper
+    // makes one direct call instead of a paginated walk.
+    mockOctokit.rest.repos.compareCommitsWithBasehead.mockResolvedValue({
+      data: {
+        files: [
+          {
+            filename: "src/app.ts",
+            status: "modified",
+            additions: 1,
+            deletions: 0,
+            changes: 1,
           },
-        },
-        vi.fn()
-      );
+        ],
+      },
     });
     mockOctokit.graphql.mockResolvedValue({
       repository: {
@@ -637,7 +646,10 @@ describe("provider-result wrappers", () => {
       )
     ).resolves.toMatchObject({
       status: GitHubProviderResultStatus.Success,
-      value: [expect.objectContaining({ filename: "src/app.ts" })],
+      value: {
+        files: [expect.objectContaining({ filename: "src/app.ts" })],
+        capped: false,
+      },
     });
     await expect(
       queryStatusCheckRollupWithProviderResult(octokit, OWNER, REPO, COMMIT_SHA)
@@ -720,7 +732,9 @@ describe("provider-result wrappers", () => {
       retryAfterSeconds: 33,
     });
 
-    mockOctokit.paginate.mockRejectedValueOnce(rateLimitError);
+    mockOctokit.rest.repos.compareCommitsWithBasehead.mockRejectedValueOnce(
+      rateLimitError
+    );
     await expect(
       compareBranchFileChangesWithProviderResult(
         octokit,
@@ -783,6 +797,9 @@ describe("provider-result wrappers", () => {
     });
     mockOctokit.rest.pulls.get.mockRejectedValue(providerError);
     mockOctokit.paginate.mockRejectedValue(providerError);
+    mockOctokit.rest.repos.compareCommitsWithBasehead.mockRejectedValue(
+      providerError
+    );
     mockOctokit.pulls.listReviewComments.mockRejectedValue(providerError);
     mockOctokit.issues.listComments.mockRejectedValue(providerError);
     mockOctokit.pulls.listReviews.mockRejectedValue(providerError);
@@ -830,12 +847,12 @@ describe("provider-result wrappers", () => {
     expect(JSON.stringify(mockLogWarn.mock.calls)).not.toContain("ghp_secret");
   });
 
-  it("bounds review-comment provider page sizes by the remaining limit", async () => {
+  // PLN-2122 Step 1: the last page used to shrink `per_page` to the remaining
+  // limit while `page` kept counting, so GitHub returned rows from the wrong
+  // offset (page 3 of size 1 is row 3, not row 101).
+  it("returns the first `limit` review comments with a fixed page size", async () => {
     mockOctokit.pulls.listReviewComments.mockImplementation(
-      ({ per_page: perPage }: { per_page: number }) =>
-        Promise.resolve({
-          data: makeReviewComments(perPage),
-        })
+      servePages(makeReviewComments(150))
     );
 
     await expect(
@@ -846,25 +863,19 @@ describe("provider-result wrappers", () => {
         PULL_NUMBER,
         { limit: 101, pageSize: 50, includeReviewThreadMetadata: false }
       )
-    ).resolves.toMatchObject({
-      status: GitHubProviderResultStatus.Success,
-      value: expect.arrayContaining([expect.objectContaining({ id: 1 })]),
-    });
+    ).resolves.toEqual(successWithIdsThrough(101));
 
     expect(
       mockOctokit.pulls.listReviewComments.mock.calls.map(
         ([params]) => params.per_page
       )
-    ).toEqual([50, 50, 1]);
+    ).toEqual([50, 50, 50]);
     expect(mockFetchReviewThreadMetadataByCommentId).not.toHaveBeenCalled();
   });
 
-  it("bounds issue-comment provider page sizes by the remaining limit", async () => {
+  it("returns the first `limit` issue comments with a fixed page size", async () => {
     mockOctokit.issues.listComments.mockImplementation(
-      ({ per_page: perPage }: { per_page: number }) =>
-        Promise.resolve({
-          data: makeIssueComments(perPage),
-        })
+      servePages(makeIssueComments(150))
     );
 
     await expect(
@@ -875,24 +886,18 @@ describe("provider-result wrappers", () => {
         PULL_NUMBER,
         { limit: 101, pageSize: 50 }
       )
-    ).resolves.toMatchObject({
-      status: GitHubProviderResultStatus.Success,
-      value: expect.arrayContaining([expect.objectContaining({ id: 1 })]),
-    });
+    ).resolves.toEqual(successWithIdsThrough(101));
 
     expect(
       mockOctokit.issues.listComments.mock.calls.map(
         ([params]) => params.per_page
       )
-    ).toEqual([50, 50, 1]);
+    ).toEqual([50, 50, 50]);
   });
 
-  it("bounds review-body provider page sizes by the remaining limit", async () => {
+  it("returns the first `limit` reviews with a fixed page size", async () => {
     mockOctokit.pulls.listReviews.mockImplementation(
-      ({ per_page: perPage }: { per_page: number }) =>
-        Promise.resolve({
-          data: makeReviews(perPage),
-        })
+      servePages(makeReviews(150))
     );
 
     await expect(
@@ -903,62 +908,21 @@ describe("provider-result wrappers", () => {
         PULL_NUMBER,
         { limit: 101, pageSize: 50 }
       )
-    ).resolves.toMatchObject({
-      status: GitHubProviderResultStatus.Success,
-      value: expect.arrayContaining([expect.objectContaining({ id: 1 })]),
-    });
+    ).resolves.toEqual(successWithIdsThrough(101));
 
     expect(
       mockOctokit.pulls.listReviews.mock.calls.map(
         ([params]) => params.per_page
       )
-    ).toEqual([50, 50, 1]);
+    ).toEqual([50, 50, 50]);
   });
 });
 
-function makeIssueComments(count: number) {
-  return Array.from({ length: count }, (_, index) => ({
-    id: index + 1,
-    node_id: `IC_${index + 1}`,
-    user: null,
-    body: "issue body",
-    author_association: "CONTRIBUTOR",
-    created_at: "2026-01-01T00:00:00Z",
-    updated_at: "2026-01-01T00:00:00Z",
-    html_url: `https://github.com/acme/repo/pull/42#issuecomment-${index + 1}`,
-  }));
-}
-
-function makeReviewComments(count: number) {
-  return Array.from({ length: count }, (_, index) => ({
-    id: index + 1,
-    node_id: `PRRC_${index + 1}`,
-    path: "src/index.ts",
-    line: 20,
-    side: "RIGHT",
-    start_line: null,
-    start_side: null,
-    original_line: 20,
-    original_start_line: null,
-    body: "review body",
-    user: null,
-    author_association: "MEMBER",
-    created_at: "2026-01-01T00:00:00Z",
-    updated_at: "2026-01-01T00:00:00Z",
-    html_url: `https://github.com/acme/repo/pull/42#discussion_r${index + 1}`,
-    commit_id: "abc123",
-    pull_request_review_id: 456,
-    in_reply_to_id: null,
-  }));
-}
-
-function makeReviews(count: number) {
-  return Array.from({ length: count }, (_, index) => ({
-    id: index + 1,
-    user: null,
-    state: "COMMENTED",
-    body: "review body",
-    submitted_at: "2026-01-01T00:00:00Z",
-    html_url: `https://github.com/acme/repo/pull/42#pullrequestreview-${index + 1}`,
-  }));
+function successWithIdsThrough(count: number) {
+  return {
+    status: GitHubProviderResultStatus.Success,
+    value: Array.from({ length: count }, (_, index) =>
+      expect.objectContaining({ id: index + 1 })
+    ),
+  };
 }

@@ -10,12 +10,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { backfillArtifactLinksFromTranscripts } from "../src/main/collectors/parsing/artifact-link-backfill.js";
-import {
-  EXTRACTOR_VERSION,
-  LAUNCH_METADATA_REF_METHOD,
-} from "../src/main/collectors/parsing/artifact-ref-extractor.js";
+import { LAUNCH_METADATA_REF_METHOD } from "../src/main/collectors/parsing/artifact-ref-extractor.js";
+import { EXTRACTOR_VERSION } from "../src/main/collectors/parsing/artifact-ref-extractor-version.js";
 import {
   Harness,
   type NormalizedSession,
@@ -136,7 +134,7 @@ test("artifact-link backfill re-enqueues the session when a reviewed-PR link met
         artifacts: {
           prs: [],
           issues: [],
-          repo: "closedloop-ai/example-repo",
+          repo: "closedloop-ai/closedloop-ai",
         },
         toolUses: [
           {
@@ -209,6 +207,69 @@ test("artifact-link backfill re-enqueues the session when a reviewed-PR link met
       await db.close();
     }
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("artifact-link backfill isolates malformed monitored evidence from valid siblings", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "artifact-backfill-json-guard-"));
+  const transcriptPath = join(dir, "json-guard.jsonl");
+  writeFileSync(transcriptPath, "{}\n");
+  const db = await openTestDb(dir);
+  try {
+    const session = makeSession("json-guard", {
+      artifacts: {
+        prs: [],
+        issues: [],
+        repo: "closedloop-ai/closedloop-ai",
+      },
+      toolUses: [
+        {
+          name: "Bash",
+          timestamp: "2026-06-07T12:01:00.000Z",
+          input: { command: "gh pr review 4242 --approve" },
+        },
+        {
+          name: "Bash",
+          timestamp: "2026-06-07T12:01:01.000Z",
+          input: { command: "gh pr review 4243 --approve" },
+        },
+      ],
+    });
+    await db.importer.importSession(session, Harness.Claude);
+    const before = await db.prisma.client.$queryRawUnsafe<
+      { id: string; evidence: string }[]
+    >(
+      "SELECT id, evidence FROM session_artifact_links WHERE session_id = $1 ORDER BY id",
+      "json-guard"
+    );
+    assert.equal(before.length, 2);
+    await db.run(
+      "UPDATE session_artifact_links SET evidence = $1 WHERE id = $2",
+      "{malformed-json",
+      before[0]?.id
+    );
+
+    const result = await backfillArtifactLinksFromTranscripts(db.prisma, {
+      listTranscriptFiles: () => [transcriptPath],
+      sessionIdFromPath: () => "json-guard",
+      parseSessionFile: () => Promise.resolve(session),
+    });
+
+    assert.equal(result.errors, 0);
+    const after = await db.prisma.client.$queryRawUnsafe<
+      { evidence: string }[]
+    >(
+      "SELECT evidence FROM session_artifact_links WHERE session_id = $1 ORDER BY id",
+      "json-guard"
+    );
+    assert.equal(after.length, 2);
+    assert.equal(
+      after.every((row) => JSON.parse(row.evidence)),
+      true
+    );
+  } finally {
+    await db.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -441,9 +502,9 @@ test("artifact-link backfill refreshes the repo resolver mid-sweep so repos capt
     (_, i) => `repo-refresh-${i}`
   );
   const transcriptPaths = sessionIds.map((id) => join(dir, `${id}.jsonl`));
-  const capturedRepo = "closedloop-ai/example-repo";
-  // `git_dir` basename ("example-repo") is what resolves the bare ref below.
-  const capturedGitDir = "/home/dev/Workspace/example-repo/.git";
+  const capturedRepo = "closedloop-ai/closedloop-ai";
+  // `git_dir` basename ("closedloop-ai") is what resolves the bare ref below.
+  const capturedGitDir = "/home/dev/Workspace/closedloop-ai/.git";
   // artifacts INSERT params: [artifactId, identityKey, kind, repoFullName, gitDir, ...].
   const insertedRepoNames: Array<string | null> = [];
   try {
@@ -471,10 +532,10 @@ test("artifact-link backfill refreshes the repo resolver mid-sweep so repos capt
         id,
         makeSession(id, {
           // A bare repo name + a (non-default) branch produces a `start_branch`
-          // branch ref whose repoFullName is the bare "example-repo", which the
+          // branch ref whose repoFullName is the bare "closedloop-ai", which the
           // resolver canonicalizes once the repo row exists.
           gitBranch: "feat/repo-refresh",
-          artifacts: { prs: [], issues: [], repo: "example-repo" },
+          artifacts: { prs: [], issues: [], repo: "closedloop-ai" },
         }),
       ])
     );
@@ -492,7 +553,7 @@ test("artifact-link backfill refreshes the repo resolver mid-sweep so repos capt
     assert.equal(result.scanned, transcriptCount);
     assert.equal(result.errors, 0);
     // Once the mid-sweep refresh lands the repo, later sessions resolve the bare
-    // "example-repo" ref to its canonical owner/repo. A once-at-start snapshot
+    // "closedloop-ai" ref to its canonical owner/repo. A once-at-start snapshot
     // would leave EVERY row bare, so the canonical name never appearing is the
     // regression this guards.
     assert.ok(
@@ -512,7 +573,7 @@ test("artifact-link backfill leaves a session unseen when its bare repo can't be
     writeFileSync(transcriptPath, "{}\n");
     const db = fakeBackfillDb({
       existingSessionIds: ["unresolved"],
-      // `repos` never contains the bare "example-repo", so it stays unresolved
+      // `repos` never contains the bare "closedloop-ai", so it stays unresolved
       // for every resolver build and the write path null-drops it (FEA-2866).
       reposForBuild: () => [],
       onQuery: (query, params) => {
@@ -529,7 +590,7 @@ test("artifact-link backfill leaves a session unseen when its bare repo can't be
         Promise.resolve(
           makeSession("unresolved", {
             gitBranch: "feat/unresolved",
-            artifacts: { prs: [], issues: [], repo: "example-repo" },
+            artifacts: { prs: [], issues: [], repo: "closedloop-ai" },
           })
         ),
     });
@@ -561,12 +622,12 @@ test("artifact-link backfill still marks a session seen once its bare repo resol
     writeFileSync(transcriptPath, "{}\n");
     const db = fakeBackfillDb({
       existingSessionIds: ["resolved"],
-      // The repo is already in `repos`, so the bare "example-repo" resolves to
+      // The repo is already in `repos`, so the bare "closedloop-ai" resolves to
       // its canonical owner/repo and nothing is dropped.
       reposForBuild: () => [
         {
-          repo_full_name: "closedloop-ai/example-repo",
-          git_dir: "/home/dev/Workspace/example-repo/.git",
+          repo_full_name: "closedloop-ai/closedloop-ai",
+          git_dir: "/home/dev/Workspace/closedloop-ai/.git",
         },
       ],
       onQuery: (query, params) => {
@@ -583,7 +644,7 @@ test("artifact-link backfill still marks a session seen once its bare repo resol
         Promise.resolve(
           makeSession("resolved", {
             gitBranch: "feat/resolved",
-            artifacts: { prs: [], issues: [], repo: "example-repo" },
+            artifacts: { prs: [], issues: [], repo: "closedloop-ai" },
           })
         ),
     });
@@ -596,6 +657,83 @@ test("artifact-link backfill still marks a session seen once its bare repo resol
       seenSessionIds.includes("resolved"),
       "a session whose bare repo resolves must be marked seen"
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ISS-8175. The `EXTRACTOR_VERSION` bump exists so already-imported sessions
+// recover a base from gh's create output; this pins that the backfill actually
+// does it. The number is deliberately not repeated here — it moves on every
+// version carry from `main` and `artifact-ref-extractor.ts` owns it.
+//
+// It does NOT pin the sibling half — that `readRederivedLinkProjections` now
+// reads `artifacts.base_ref` so a base-only recovery still re-enqueues the
+// session for sync. No case here can: `pr-link-maintenance` bumps this same
+// session's `updated_at` in the same backfill run, so the bump is observable
+// either way. That projection change is argued statically (the base fill leaves
+// every `session_artifact_links` column byte-identical, so without it the
+// fingerprint compares equal and the recovered value never leaves the machine)
+// and is deliberately left unpinned rather than pinned vacuously.
+test("artifact-link backfill re-derives artifacts.base_ref for an already-imported session (ISS-8175)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "artifact-backfill-base-ref-"));
+  const transcriptPath = join(dir, "base-requeue.jsonl");
+  try {
+    writeFileSync(transcriptPath, "{}\n");
+    const db = await openTestDb(dir);
+    try {
+      const session = makeSession("base-requeue", {
+        artifacts: {
+          prs: [],
+          issues: [],
+          repo: "closedloop-ai/closedloop-ai",
+        },
+        toolUses: [
+          {
+            name: "Bash",
+            timestamp: "2026-06-07T12:01:00.000Z",
+            gitBranch: "feat/x",
+            input: { command: "gh pr create --title x --body y" },
+            output:
+              "Creating pull request for feat/x into release/2026-08 in closedloop-ai/closedloop-ai\nhttps://github.com/closedloop-ai/closedloop-ai/pull/4242\n",
+          },
+        ],
+      });
+      await db.importer.importSession(session, Harness.Claude);
+
+      const readBaseRef = async () => {
+        const rows = await db.prisma.client.$queryRawUnsafe<
+          { base_ref: string | null }[]
+        >(
+          "SELECT base_ref FROM artifacts WHERE kind = 'pull_request' AND pr_number = 4242"
+        );
+        return rows[0]?.base_ref ?? null;
+      };
+      assert.equal(await readBaseRef(), "release/2026-08");
+
+      // A store written by a desktop that predates this field: the links are
+      // identical, only the base is missing.
+      await db.prisma.write((client) =>
+        client.$executeRawUnsafe(
+          "UPDATE artifacts SET base_ref = NULL WHERE kind = 'pull_request' AND pr_number = 4242"
+        )
+      );
+      assert.equal(await readBaseRef(), null);
+
+      await backfillArtifactLinksFromTranscripts(db.prisma, {
+        listTranscriptFiles: () => [transcriptPath],
+        sessionIdFromPath: () => "base-requeue",
+        parseSessionFile: () => Promise.resolve(session),
+      });
+
+      assert.equal(
+        await readBaseRef(),
+        "release/2026-08",
+        "the backfill re-derives the base from gh's create output"
+      );
+    } finally {
+      await db.close();
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

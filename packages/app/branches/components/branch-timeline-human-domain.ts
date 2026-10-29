@@ -1,21 +1,21 @@
-import type { BranchPageDetail } from "@repo/api/src/types/branch";
 import {
   BranchTraceSessionHydrationState,
   type BranchTraceState,
 } from "@repo/api/src/types/branch-trace";
+import type { SessionTimelineDetail } from "@repo/api/src/types/document-sessions";
 import {
-  CHART_COLOR_TOKENS,
-  type ChartColorPair,
-  chartColorPairForTokenIndex,
-} from "@repo/design-system/components/ui/chart-colors";
+  actorColorForTurn,
+  actorColorPairForSlot,
+  UNKNOWN_ACTOR_COLOR_PAIR,
+} from "@repo/app/shared/lib/actor-color-domain";
+import type { ChartColorPair } from "@repo/design-system/components/ui/chart-colors";
 import {
   type BranchActorColorDomain,
-  BranchActorTurnSide,
   UNATTRIBUTED_ACTOR_KEY,
   UNATTRIBUTED_ACTOR_LABEL,
 } from "../lib/branch-actor-domain";
 
-type HumanTimelineSession = BranchPageDetail["sessions"][number] & {
+type HumanTimelineSession = SessionTimelineDetail["sessions"][number] & {
   /** Stable persisted user identity. Optional for legacy and local producers. */
   ownerUserId?: string | null;
 };
@@ -35,7 +35,7 @@ type HumanActorCandidate = {
  * a separate fallback and never consumes a human palette position.
  */
 export function buildTimelineHumanActorDomain(
-  detail: BranchPageDetail,
+  detail: SessionTimelineDetail,
   traceState?: BranchTraceState | null
 ): BranchActorColorDomain {
   const sessions: readonly HumanTimelineSession[] = detail.sessions;
@@ -73,7 +73,7 @@ export function buildTimelineHumanActorDomain(
 }
 
 function earliestHumanTraceTimeBySession(
-  detail: BranchPageDetail
+  detail: SessionTimelineDetail
 ): Map<string, number> {
   const earliest = new Map<string, number>();
   for (const item of detail.mergedTrace) {
@@ -110,14 +110,14 @@ function createHumanActorDomain(
   const pairByIdentity = new Map<string, ChartColorPair>();
   const identityByLabel = new Map<string, string>();
   for (const [index, candidate] of candidates.entries()) {
-    pairByIdentity.set(candidate.canonicalIdentity, actorColorPair(index));
+    pairByIdentity.set(
+      candidate.canonicalIdentity,
+      actorColorPairForSlot(index)
+    );
     if (!identityByLabel.has(candidate.label)) {
       identityByLabel.set(candidate.label, candidate.canonicalIdentity);
     }
   }
-  const unattributedPair = chartColorPairForTokenIndex(
-    CHART_COLOR_TOKENS.length - 1
-  );
   const pairFor = (
     owner: string | null,
     canonicalIdentity?: string | null
@@ -126,7 +126,9 @@ function createHumanActorDomain(
     const identity =
       normalizeCanonicalIdentity(canonicalIdentity) ??
       (label ? identityByLabel.get(label) : null);
-    return (identity && pairByIdentity.get(identity)) || unattributedPair;
+    return (
+      (identity && pairByIdentity.get(identity)) || UNKNOWN_ACTOR_COLOR_PAIR
+    );
   };
 
   return {
@@ -138,8 +140,7 @@ function createHumanActorDomain(
       return pairFor(owner, canonicalIdentity);
     },
     colorForTurn(owner, side, canonicalIdentity) {
-      const pair = pairFor(owner, canonicalIdentity);
-      return side === BranchActorTurnSide.Human ? pair.soft : pair.strong;
+      return actorColorForTurn(pairFor(owner, canonicalIdentity), side);
     },
     labelFor(owner) {
       return normalizeDisplayLabel(owner) ?? UNATTRIBUTED_ACTOR_LABEL;
@@ -148,17 +149,6 @@ function createHumanActorDomain(
       return normalizeDisplayLabel(owner) == null;
     },
   };
-}
-
-function actorColorPair(index: number): ChartColorPair {
-  const conversationBlueIndex = 1;
-  let rawIndex = index;
-  if (index === 0) {
-    rawIndex = conversationBlueIndex;
-  } else if (index <= conversationBlueIndex) {
-    rawIndex = index - 1;
-  }
-  return chartColorPairForTokenIndex(rawIndex % CHART_COLOR_TOKENS.length);
 }
 
 function compareCandidates(

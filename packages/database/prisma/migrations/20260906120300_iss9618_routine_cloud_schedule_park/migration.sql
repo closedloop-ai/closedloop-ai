@@ -1,0 +1,24 @@
+-- ISS-9618: the parked stamp that stops an unschedulable routine from
+-- monopolising the cloud sweep's seed queue.
+--
+-- WHAT ASKS FOR IT. `listUnscheduledCloudRoutines`
+-- (apps/api/app/routines/cloud-execution-service.ts) reads the cloud-schedulable
+-- routines whose `next_run_at` is NULL — the "never scheduled" queue — and seeds
+-- each one a watermark. A routine whose stored cron cannot be evaluated has no
+-- computable next run, so it stays NULL: it comes back in that bounded page on
+-- every tick, fails evaluation again, and a valid unscheduled routine behind it
+-- is never reached at all.
+--
+-- WHY A SEPARATE COLUMN RATHER THAN A SENTINEL WATERMARK. Parking the routine by
+-- writing a far-future `next_run_at` would take it out of the queue, but
+-- `next_run_at` is read by the Routines surface as the routine's next run, and
+-- there is no next run — a corrupt cron produces no fire time. NULL stays the
+-- honest value there; this column carries the separate fact the sweep needs,
+-- which is when to LOOK AGAIN. In the future it means skip; once it passes the
+-- routine is re-evaluated exactly once and either seeded (the operator fixed the
+-- expression) or re-parked, so recovery needs no other write path.
+--
+-- Nullable with no default and no backfill: NULL means "not parked", which is
+-- what every existing row is. Additive, so an API build that predates it keeps
+-- reading and writing `routines` unchanged.
+ALTER TABLE "routines" ADD COLUMN "cloud_schedule_parked_until" TIMESTAMP(3);

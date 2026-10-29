@@ -65,6 +65,8 @@ import { TagColor } from "@repo/api/src/types/tag";
 const observedAt = "2026-07-31T12:00:00.000Z";
 const baseSha = "a".repeat(40);
 const headSha = "b".repeat(40);
+export const BRANCH_OWNER_AVATAR_URL =
+  "https://img.clerk.com/branch-owner-avatar.png" as const;
 
 /**
  * Complete canonical projection fixture shared by web-adapter and Desktop IPC
@@ -78,8 +80,9 @@ export const canonicalBranchProjectionFixture: CanonicalBranchProjectionV1 = {
     identity: {
       artifactId: "branch-artifact-1",
       projectId: "project-1",
+      projectName: "Canonical Parity Project",
       branchName: "feature/canonical-parity",
-      repositoryFullName: "closedloop-ai/example-repo",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
     },
     membership: {
       sessionIds: ["session-loaded", "session-unavailable"],
@@ -109,7 +112,7 @@ export const canonicalBranchProjectionFixture: CanonicalBranchProjectionV1 = {
           userId: "user-1",
           login: "octocat",
           displayName: "Octo Cat",
-          avatarUrl: "https://avatars.example/octocat",
+          avatarUrl: BRANCH_OWNER_AVATAR_URL,
           profileUrl: "https://github.com/octocat",
           actorType: GitHubActorType.User,
         },
@@ -125,6 +128,10 @@ export const canonicalBranchProjectionFixture: CanonicalBranchProjectionV1 = {
           },
         ],
         sources: {
+          [BranchCollaboratorSource.PullRequestAuthors]:
+            BranchIdentityAvailability.Unavailable,
+          [BranchCollaboratorSource.Pushes]:
+            BranchIdentityAvailability.Unavailable,
           [BranchCollaboratorSource.PullRequestComments]:
             BranchIdentityAvailability.Complete,
           [BranchCollaboratorSource.BranchComments]:
@@ -142,11 +149,11 @@ export const canonicalBranchProjectionFixture: CanonicalBranchProjectionV1 = {
     pullRequests: {
       associatedCount: 2,
       selected: {
-        id: "closedloop-ai/example-repo#4406",
-        repositoryFullName: "closedloop-ai/example-repo",
+        id: "closedloop-ai/closedloop-ai#4406",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         number: 4406,
         title: "Land canonical Branch projection",
-        url: "https://github.com/closedloop-ai/example-repo/pull/4406",
+        url: "https://github.com/closedloop-ai/closedloop-ai/pull/4406",
         state: GitHubPRState.Merged,
         isDraft: false,
         reviewDecision: ReviewDecision.Approved,
@@ -191,7 +198,7 @@ export const canonicalBranchProjectionFixture: CanonicalBranchProjectionV1 = {
           stale: true,
           mixedProjection: false,
           prNumber: 4406,
-          prUrl: "https://github.com/closedloop-ai/example-repo/pull/4406",
+          prUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/4406",
         },
       },
       checks: {
@@ -254,7 +261,7 @@ export const canonicalBranchProjectionFixture: CanonicalBranchProjectionV1 = {
     status: BranchStatus.Merged,
     dataState: BranchDataState.Ready,
     selectedPullRequest: {
-      id: "closedloop-ai/example-repo#4406",
+      id: "closedloop-ai/closedloop-ai#4406",
       checksStatus: ChecksStatus.Unknown,
       checksPassed: null,
       checksTotal: null,
@@ -339,13 +346,13 @@ export const canonicalBranchListResponseFixture: BranchListResponse = {
       tagPermissions: { canApply: true, canRemove: false },
       branchName: "feature/canonical-parity",
       baseBranch: "main",
-      repoFullName: "closedloop-ai/example-repo",
+      repoFullName: "closedloop-ai/closedloop-ai",
       owner: "octocat",
       status: BranchStatus.Merged,
       prNumber: 4406,
       prTitle: "Land canonical Branch projection",
       prState: GitHubPRState.Merged,
-      prUrl: "https://github.com/closedloop-ai/example-repo/pull/4406",
+      prUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/4406",
       multiPrWarning: true,
       checksStatus: ChecksStatus.Unknown,
       checksPassed: null,
@@ -388,6 +395,10 @@ export const canonicalBranchProjectionVariants = [
           availability: BranchIdentityAvailability.Unavailable,
           people: [],
           sources: {
+            [BranchCollaboratorSource.PullRequestAuthors]:
+              BranchIdentityAvailability.Unavailable,
+            [BranchCollaboratorSource.Pushes]:
+              BranchIdentityAvailability.Unavailable,
             [BranchCollaboratorSource.PullRequestComments]:
               BranchIdentityAvailability.Unavailable,
             [BranchCollaboratorSource.BranchComments]:
@@ -559,8 +570,8 @@ function availableChecksSummary() {
 function selectedPullRequestIdentity() {
   return {
     githubId: "PR_kwDOcanonical",
-    repositoryFullName: "closedloop-ai/example-repo",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
     number: 4406,
-    url: "https://github.com/closedloop-ai/example-repo/pull/4406",
+    url: "https://github.com/closedloop-ai/closedloop-ai/pull/4406",
   } as const;
 }

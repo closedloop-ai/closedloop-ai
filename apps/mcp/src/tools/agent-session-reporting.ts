@@ -130,7 +130,7 @@ export function registerGetAgentSessionUsage(
     "get-agent-session-usage",
     {
       description:
-        "Get aggregated agent-session usage for the organization: total sessions, token counts, estimated cost (subscription vs. API), and breakdowns by user, model, harness, and repository. Read-only reporting. Note: the API additionally requires agent-session monitoring to be enabled for your account; without it this tool returns a 403 (this is a permissions gate, not a bug).",
+        "Get aggregated agent-session usage for the organization: total sessions, token counts, estimated cost (subscription vs. API), and breakdowns by Owner (the session's assignee), model, harness, and repository. Read-only reporting. Note: the API additionally requires agent-session monitoring to be enabled for your account; without it this tool returns a 403 (this is a permissions gate, not a bug).",
       inputSchema: buildAgentSessionReportingInputSchema(
         usageStartDateDescription,
         usageEndDateDescription

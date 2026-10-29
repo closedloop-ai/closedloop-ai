@@ -77,9 +77,10 @@ export type TableFilterCurrentUser = {
 export type TableFilterOption<TValue extends string = string> = {
   id: TValue;
   label: string;
+  /** Atomic option presentation when a mark and its word share one renderer. */
+  content?: ReactNode;
   sectionLabel?: string;
   count?: number;
-  icon?: ReactNode;
   avatarUrl?: string;
   color?: string;
   searchText?: string;
@@ -104,11 +105,11 @@ export type FilterFacetGroup<TValue extends string = string> = {
   kind?: "options";
   id: string;
   label: string;
-  icon?: ReactNode;
   options: TableFilterOption<TValue>[];
   selectedValues: TValue[];
   onToggle: (value: TValue) => void;
   submenuClassName?: string;
+  onSearchChange?: (search: string) => void;
   /**
    * Message shown as a disabled row when `options` is empty (e.g. "No models in
    * range"). Without it an empty options facet renders as a bare search box with
@@ -128,7 +129,6 @@ export type FilterRangeGroup = {
   kind: "range";
   id: string;
   label: string;
-  icon?: ReactNode;
   min?: number;
   max?: number;
   onChange: (next: { min?: number; max?: number }) => void;
@@ -199,6 +199,7 @@ export type TableFiltersViewModel<
   priorityOptions: TableFilterOption<TPriority>[];
   tagOptions?: TableFilterOption[];
   hideAssignee?: boolean;
+  hidePriority?: boolean;
   showTags?: boolean;
   datePresets?: TableFilterDatePresetOption[];
   labels?: TableFilterLabels;
@@ -207,6 +208,16 @@ export type TableFiltersViewModel<
    * at the top of the menu. Used by surfaces that only want facet submenus.
    */
   hideQuickToggles?: boolean;
+  /** Hide only the "Hide completed" quick toggle while preserving the others. */
+  hideCompletedToggle?: boolean;
+  /**
+   * Hide only the "My Favorites" quick toggle while preserving the others
+   * (ISS-9346). The symmetric partner of {@link hideCompletedToggle}, and for
+   * the same reason: a surface with no favourite axis would otherwise have to
+   * choose between rendering a control that narrows nothing and dropping
+   * "Assigned to me" with `hideQuickToggles`.
+   */
+  hideFavoritesToggle?: boolean;
   /**
    * When provided, render these generic facet submenus instead of the built-in
    * assignee/status/priority/dates/tags set. The host owns the filter state and
@@ -214,4 +225,9 @@ export type TableFiltersViewModel<
    * (`FilterFacetGroup`) or a numeric range facet (`FilterRangeGroup`).
    */
   facetGroups?: FilterMenuGroup[];
+  /**
+   * Extra host-defined facets appended after the built-in filters. Unlike
+   * `facetGroups`, these preserve assignee/status/priority/date/tag controls.
+   */
+  additionalFacetGroups?: FilterMenuGroup[];
 };

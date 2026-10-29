@@ -1,10 +1,21 @@
+import type { JsonObject } from "@repo/api/src/types/common";
+import type { ComputeTarget } from "@repo/api/src/types/compute-target";
 import {
   MEMBER_PACK_INSTALL_OPERATION_ID,
   MEMBER_PACK_INSTALL_PATH,
   MemberPackInstallDispatchReason,
   MemberPackInstallDispatchState,
 } from "@repo/api/src/types/member-pack-install";
+import {
+  RelayDispatchDiagnosticReason,
+  type RelayDispatchResult,
+} from "@repo/api/src/types/relay-dispatch";
+import { log } from "@repo/observability/log";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  makeComputeTarget,
+  makeStoredCommand,
+} from "@/__tests__/support/compute-targets/compute-target.test-fixtures";
 import { POST as memberInstallPOST } from "@/app/compute-targets/[id]/member-installs/route";
 import { dispatchRelayCommandToRelay } from "@/app/compute-targets/relay-command-helpers";
 import { computeTargetsService } from "@/app/compute-targets/service";
@@ -23,8 +34,10 @@ import {
 let mockAuthContext: AuthContext;
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any) => (request: any, context: any) =>
-    handler(mockAuthContext, request, context.params),
+  withAnyAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context.params),
 }));
 
 vi.mock("@/app/compute-targets/service", async (importOriginal) => {
@@ -82,6 +95,15 @@ vi.mock("@/lib/compute-target-signing-eligibility", async (importOriginal) => {
   };
 });
 
+vi.mock("@repo/observability/log", () => ({
+  log: {
+    error: vi.fn(),
+    flush: vi.fn(async () => undefined),
+    info: vi.fn(),
+    warn: vi.fn(),
+  },
+}));
+
 const OWNED_TARGET_ID = "01890000-0000-7000-8000-000000000001";
 const OTHER_TARGET_ID = "01890000-0000-7000-8000-000000000002";
 const PACK_ID = "gstack";
@@ -93,10 +115,10 @@ function ownedTargetStub(
   id: string,
   overrides?: {
     supportedOperations?: string[];
-    capabilities?: Record<string, unknown>;
+    capabilities?: JsonObject;
   }
-) {
-  return {
+): ComputeTarget {
+  return makeComputeTarget({
     id,
     organizationId: mockAuthContext.user.organizationId,
     userId: mockAuthContext.user.id,
@@ -104,19 +126,13 @@ function ownedTargetStub(
     // the exact identity threaded into isComputeTargetSigningEligible.
     gatewayId: TARGET_GATEWAY_ID,
     machineName: "test-machine",
-    platform: "darwin",
     capabilities: overrides?.capabilities ?? {},
     // A current desktop build advertises the pack-install route. Tests that
     // exercise the version-skew gate override this to omit it.
     supportedOperations: overrides?.supportedOperations ?? [
       MEMBER_PACK_INSTALL_OPERATION_ID,
     ],
-    lastSeenAt: new Date(),
-    isOnline: true,
-    isSharedWithOrg: false,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  } as any;
+  });
 }
 
 async function invokeInstall(targetId: string, body: unknown) {
@@ -131,7 +147,7 @@ async function invokeInstall(targetId: string, body: unknown) {
   return { status: response.status, json };
 }
 
-function mockRelayResult(result: { delivered: boolean; reason?: string }) {
+function mockRelayResult(result: RelayDispatchResult) {
   vi.mocked(dispatchRelayCommandToRelay).mockResolvedValue(result);
 }
 
@@ -139,9 +155,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockAuthContext = createTestAuthContext();
   vi.mocked(desktopCommandStore.createCommand).mockResolvedValue({
-    command: { commandId: "cmd-1", status: "queued" },
+    command: makeStoredCommand({ computeTargetId: OWNED_TARGET_ID }),
     deduped: false,
-  } as any);
+  });
   // Default: signing is not required, so the unsigned server-initiated dispatch
   // proceeds. Signing-enforcement tests override this to Required/Unknown.
   vi.mocked(resolveCommandSigningRequirement).mockResolvedValue({
@@ -257,17 +273,19 @@ describe("POST /compute-targets/:id/member-installs (FEA-4082)", () => {
     );
   });
 
-  it("keeps the relay's AMBIGUOUS target_not_connected non-terminal as Pending (the relay collapses cross-instance peer timeouts into it, so it is NOT proof the node never got the command)", async () => {
+  it("keeps the relay's AMBIGUOUS target_not_connected non-terminal as Pending while logging the fine diagnostic", async () => {
     vi.mocked(computeTargetsService.findOwnedById).mockResolvedValue(
       ownedTargetStub(OWNED_TARGET_ID)
     );
-    // The relay returns `target_not_connected` both for a genuinely absent
-    // worker AND when a cross-instance peer proxy times out or returns a
-    // non-JSON body after the peer may already have emitted. From the cloud's
-    // vantage it is ambiguous, so it must NOT terminalize.
+    // `target_not_connected` stays the coarse member-facing reason during
+    // rolling deploys, while newer relays attach operator diagnostics for the
+    // collapsed condition.
     mockRelayResult({
       delivered: false,
       reason: MemberPackInstallDispatchReason.TargetNotConnected,
+      diagnosticReason: RelayDispatchDiagnosticReason.PeerHttpNotOk,
+      peerStatusCode: 503,
+      peerErrorCode: "ECONNRESET",
     });
 
     const { status, json } = await invokeInstall(OWNED_TARGET_ID, {
@@ -282,6 +300,19 @@ describe("POST /compute-targets/:id/member-installs (FEA-4082)", () => {
     );
     expect(json.data.reason).toBe(
       MemberPackInstallDispatchReason.TargetNotConnected
+    );
+    expect(json.data.diagnosticReason).toBeUndefined();
+    expect(log.info).toHaveBeenCalledWith(
+      "Member pack install dispatched",
+      expect.objectContaining({
+        commandId: "cmd-1",
+        computeTargetId: OWNED_TARGET_ID,
+        diagnosticReason: RelayDispatchDiagnosticReason.PeerHttpNotOk,
+        peerErrorCode: "ECONNRESET",
+        peerStatusCode: 503,
+        reason: MemberPackInstallDispatchReason.TargetNotConnected,
+        state: MemberPackInstallDispatchState.Pending,
+      })
     );
     // Non-terminal: the queued command is left intact for reconnect replay.
     expect(desktopCommandStore.markCommandExpired).not.toHaveBeenCalled();

@@ -16,7 +16,7 @@
  * pinned with fake timers — no wall-clock waits.
  */
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, test } from "node:test";
+import { afterEach, beforeEach, test } from "vitest";
 import {
   HISTORICAL_PARSE_ENQUEUE_CEILING_FACTOR,
   parseSourceBounded,

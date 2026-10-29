@@ -20,9 +20,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript6";
+import { describe, test } from "vitest";
 
 import { DESKTOP_RUNTIME_CLOSURE } from "../scripts/packaging-workspace-deps.mjs";
 import {
@@ -46,7 +46,7 @@ const PACKED_TARBALL = "file:/tmp/stage/workspace-tarballs/telemetry.tgz";
 // an alias both use the `workspace:` protocol; `link:` is the third. All three are
 // unresolvable once the staged manifest leaves the source workspace.
 const PLAIN_RANGE_SPEC = "workspace:*";
-const ALIASED_SPEC = "workspace:@closedloop-ai/shared-platform@*";
+const ALIASED_SPEC = "workspace:@repo/shared-platform@*";
 const LINK_SPEC = "link:../shared-platform";
 
 const UNRESOLVED_PLAIN_RANGE_ERROR =
@@ -159,7 +159,7 @@ describe("ISS-5303 resolveStageDependencySpec", () => {
     const declared = {
       "@repo/lib": PLAIN_RANGE_SPEC,
       "@repo/shared-platform": ALIASED_SPEC,
-      "@repo/crewd": LINK_SPEC,
+      "@repo/cost": LINK_SPEC,
     };
 
     for (const [dependencyName, declaredSpec] of Object.entries(declared)) {
@@ -301,7 +301,7 @@ describe("ISS-5303 isBundledWorkspaceDependency", () => {
     }
     assert.ok(
       bundled.includes("@repo/api"),
-      "@repo/api is inlined from source by electron-vite and must be dropped from the staged closure"
+      "@repo/api is inlined from source by the main build and must be dropped from the staged closure"
     );
     assert.ok(
       external.includes("electron-updater"),

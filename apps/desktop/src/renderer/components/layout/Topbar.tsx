@@ -11,10 +11,15 @@ import { useSidebar } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { Skeleton } from "@closedloop-ai/design-system/components/ui/skeleton";
 import { cn } from "@closedloop-ai/design-system/lib/utils";
 import { Link } from "@repo/navigation/link";
-import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { PanelLeftIcon } from "lucide-react";
 import { Fragment, type ReactNode } from "react";
 import type { DocsAnchor } from "../../navigation/docs-anchor";
 import { isMacOS, macStoplightClearance } from "../../platform";
+import {
+  DESKTOP_LOCAL_READ_REASON_COPY,
+  DesktopLocalReadReason,
+} from "../../shared-agent-sessions/desktop-app-core-mode";
+import { useDesktopLocalReadReason } from "../../shared-agent-sessions/desktop-app-core-provider";
 import { HelpOnThisButton } from "../help/help-on-this-button";
 import {
   InviteSpotlightAnchor,
@@ -65,6 +70,8 @@ export function Topbar({
   const spotlightHighlight = useInviteSpotlightHighlight(
     InviteSpotlightAnchor.Topbar
   );
+  const localReadReason = useDesktopLocalReadReason();
+  const isOffline = localReadReason === DesktopLocalReadReason.Offline;
 
   // On macOS the title bar is hidden and the window drags from app-region:drag
   // surfaces — the header doubles as a drag handle (interactive children opt
@@ -96,11 +103,9 @@ export function Topbar({
           type="button"
           variant="ghost"
         >
-          {collapsed ? (
-            <PanelLeftOpen className="size-4" />
-          ) : (
-            <PanelLeftClose className="size-4" />
-          )}
+          {/* ISS-12300 D4: the mirror of the comments button's PanelRightIcon,
+              at the same size: no size class, so `icon-sm` sizes both. */}
+          <PanelLeftIcon />
         </Button>
       </InviteSpotlightPopover>
 
@@ -135,6 +140,18 @@ export function Topbar({
           {actions}
         </div>
       ) : null}
+
+      <span
+        aria-atomic="true"
+        aria-live="polite"
+        className={cn(
+          "app-region-no-drag whitespace-nowrap text-[var(--muted-foreground)] text-sm",
+          !isOffline && "sr-only"
+        )}
+        role={isOffline ? "status" : undefined}
+      >
+        {isOffline ? DESKTOP_LOCAL_READ_REASON_COPY[localReadReason] : null}
+      </span>
 
       {/* FEA-3846 / PRD-555 M4: contextual "Help on this" — deep-links the Help
           view to the docs page/section the active screen declared. Self-gates on

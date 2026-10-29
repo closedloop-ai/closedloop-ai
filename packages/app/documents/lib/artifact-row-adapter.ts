@@ -3,7 +3,6 @@ import {
   ArtifactSubtype,
   ArtifactType,
 } from "@repo/api/src/types/artifact";
-import { Priority } from "@repo/api/src/types/common";
 import {
   type ArtifactStatus,
   type Document,
@@ -11,7 +10,6 @@ import {
   DocumentType,
   type DocumentWithProject,
   IssueStatus,
-  isActiveGenerationStatus,
   SnapshotSource,
 } from "@repo/api/src/types/document";
 import type {
@@ -42,10 +40,19 @@ export type DocumentRowData = Pick<
   | "updatedAt"
   | "projectId"
   | "sortOrder"
-  | "generationStatus"
+  | "statusMutation"
   | "tags"
   | "project"
->;
+> & {
+  /** Raw wire evidence retained for the universal-status fold. */
+  rawStatus?: string | null;
+};
+
+/** Linked-artifact row shape retaining producer evidence beside its safe fold. */
+export type ArtifactRowDocument = Document & {
+  rawStatus?: string | null;
+  statusMutation?: DocumentWithProject["statusMutation"];
+};
 
 const SUBTYPE_TO_DOCUMENT_TYPE: Record<ArtifactSubtype, DocumentType> = {
   [ArtifactSubtype.Prd]: DocumentType.Prd,
@@ -54,6 +61,13 @@ const SUBTYPE_TO_DOCUMENT_TYPE: Record<ArtifactSubtype, DocumentType> = {
   [ArtifactSubtype.Template]: DocumentType.Template,
   [ArtifactSubtype.Doc]: DocumentType.Doc,
 };
+
+/** Canonical persisted-artifact subtype to document-domain type mapping. */
+export function documentTypeFromSubtype(
+  subtype: ArtifactSubtype
+): DocumentType {
+  return SUBTYPE_TO_DOCUMENT_TYPE[subtype];
+}
 
 const documentStatusSchema = z.enum(DocumentStatus);
 const issueStatusSchema = z.enum(IssueStatus);
@@ -80,32 +94,43 @@ function parseStatusForSubtype(
 /**
  * Adapt an `ArtifactLinkEndpoint` (the minimal artifact projection returned by
  * `/artifact-links/resolved`) to the legacy `Document` shape that `ArtifactRow`
- * still expects. The endpoint omits fields `ArtifactRow` doesn't use for
- * navigation (assignee object, approver, repository snapshot, …) so this lossy
- * adapter fills them with empty defaults. `subtype`/`status` are mapped through
- * the same SSOT (`SUBTYPE_TO_DOCUMENT_TYPE`, `parseStatusForSubtype`) used for
+ * still expects. The endpoint carries a hydrated `assignee` (ISS-7732) but
+ * still omits fields `ArtifactRow` doesn't use for navigation (approver,
+ * repository snapshot, …), so this lossy adapter fills those with empty
+ * defaults. `assignee` is optional on the wire — an API build from before
+ * ISS-7732 omits the key — so a MISSING one is normalized to `null` here, at
+ * the adapter, rather than widening `Document.assignee` to accept `undefined`.
+ * `subtype`/`status` are mapped through
+ * the same SSOT (`documentTypeFromSubtype`, `parseStatusForSubtype`) used for
  * tree artifacts. A null subtype defaults to Feature to satisfy the shape.
  */
-export function endpointToDocument(endpoint: ArtifactLinkEndpoint): Document {
+export function endpointToDocument(
+  endpoint: ArtifactLinkEndpoint
+): ArtifactRowDocument {
   const subtype = endpoint.subtype ?? ArtifactSubtype.Feature;
   return {
     id: endpoint.id,
     organizationId: endpoint.organizationId,
     projectId: endpoint.projectId,
-    type: SUBTYPE_TO_DOCUMENT_TYPE[subtype],
+    type: documentTypeFromSubtype(subtype),
     title: endpoint.name,
     slug: endpoint.slug ?? "",
     fileName: null,
+    rawStatus: endpoint.status,
     status: parseStatusForSubtype(subtype, endpoint.status),
-    priority: endpoint.priority ?? Priority.Medium,
+    ...(endpoint.statusMutation && { statusMutation: endpoint.statusMutation }),
+    // ISS-9665: the endpoint already reports `null` for an artifact with no
+    // priority; folding it to Medium here re-created the same lie `toDocument`
+    // was telling on the other side of the wire.
+    priority: endpoint.priority,
     latestVersion: 1,
     createdById: endpoint.createdById ?? "",
     assigneeId: endpoint.assigneeId,
-    assignee: null,
+    assignee: endpoint.assignee ?? null,
     approverId: null,
     approver: null,
     // The endpoint projection from artifact-link lineage doesn't carry the
-    // immutable repository snapshot — surface an empty `source: 'none'`
+    // repository snapshot — surface an empty `source: 'none'`
     // snapshot so the navigation-only adapter still satisfies the type.
     repositorySnapshot: { repositories: [], source: SnapshotSource.None },
     templateForType: null,
@@ -134,23 +159,31 @@ export function documentRowFromArtifact(
     // for other artifact types.
     slug: artifact.slug ?? "",
     title: artifact.name,
-    type: SUBTYPE_TO_DOCUMENT_TYPE[artifact.subtype],
+    type: documentTypeFromSubtype(artifact.subtype),
     status: parseStatusForSubtype(artifact.subtype, artifact.status),
-    // Documents are always created with a priority; Medium mirrors that
-    // creation default for any legacy null.
-    priority: artifact.priority ?? Priority.Medium,
+    rawStatus: artifact.status,
+    // ISS-9665: NOT folded to Medium. The premise this fallback rested on —
+    // "documents are always created with a priority" — was never true: the
+    // create validator makes `priority` optional and the column has no default,
+    // so an omitted priority persists as NULL.
+    priority: artifact.priority,
     assigneeId: artifact.assigneeId,
     assignee: artifact.assignee,
     createdAt: artifact.createdAt,
     updatedAt: artifact.updatedAt,
     projectId: artifact.projectId,
     sortOrder: artifact.sortOrder,
-    ...(artifact.generationStatus && {
-      generationStatus: artifact.generationStatus,
-    }),
+    ...(artifact.statusMutation && { statusMutation: artifact.statusMutation }),
     ...(artifact.tags && { tags: artifact.tags }),
     project,
   };
+}
+
+/** Preserves explicit null evidence while keeping legacy omitted-field fallback. */
+export function documentRowStatusEvidence(
+  row: Pick<DocumentRowData, "rawStatus" | "status">
+): string | null {
+  return row.rawStatus === undefined ? row.status : row.rawStatus;
 }
 
 /**
@@ -183,23 +216,4 @@ export function collectDocumentRowsFromTree(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
   return rows;
-}
-
-/**
- * Whether any document artifact in the tree has an active generation run —
- * drives the project page's polling interval.
- */
-export function treeHasActiveGeneration(
-  tree: ProjectTreeDetailsResponse | undefined
-): boolean {
-  if (!tree) {
-    return false;
-  }
-  return tree.nodes.some((node) =>
-    [node.root, ...node.children].some(
-      (artifact) =>
-        artifact.generationStatus &&
-        isActiveGenerationStatus(artifact.generationStatus.status)
-    )
-  );
 }

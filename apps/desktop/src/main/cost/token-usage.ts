@@ -1,6 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { LoopSessionOrigin } from "@closedloop-ai/loops-api/events";
 
 /** Per-model token breakdown. */
 export type ModelTokenUsage = {
@@ -140,9 +139,7 @@ type ScanJsonlResult =
  * Return `true` from `onEntry` to stop iteration early.
  *
  * Centralizes the `resolveClaudeOutputPath → readFileSync → split → JSON.parse`
- * pattern shared by {@link parseTokenUsage}, {@link detectSuccessFromOutput},
- * and {@link parseApiKeySource}, so fallback-resolution and read-error semantics
- * stay aligned across callers.
+ * pattern used by {@link parseHarnessResult}.
  */
 function scanJsonlLines(
   claudeWorkDir: string,
@@ -177,132 +174,6 @@ function scanJsonlLines(
   return { outcome: "completed" };
 }
 
-/** Parse token usage from Claude JSONL stream output. */
-export function parseTokenUsage(claudeWorkDir: string): {
-  inputTokens: number;
-  outputTokens: number;
-  cacheCreationInputTokens: number;
-  cacheReadInputTokens: number;
-  turns: number;
-  models: string[];
-  tokensByModel: Record<string, ModelTokenUsage>;
-} {
-  const totals = {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheCreationInputTokens: 0,
-    cacheReadInputTokens: 0,
-    turns: 0,
-    models: [] as string[],
-    tokensByModel: {} as Record<string, ModelTokenUsage>,
-  };
-  const modelSet = new Set<string>();
-  const perModel = new Map<string, ModelTokenUsage>();
-  scanJsonlLines(claudeWorkDir, (entry) => {
-    if (entry.type !== "assistant") {
-      return;
-    }
-    totals.turns += 1;
-    const message = entry.message as Record<string, unknown> | undefined;
-    const model =
-      typeof message?.model === "string" && message.model.length > 0
-        ? message.model
-        : undefined;
-    if (model) {
-      modelSet.add(model);
-    }
-    const usage = message?.usage as Record<string, number> | undefined;
-    if (!usage) {
-      return;
-    }
-    const inputTk = usage.input_tokens ?? 0;
-    const outputTk = usage.output_tokens ?? 0;
-    const cacheCreationTk = usage.cache_creation_input_tokens ?? 0;
-    const cacheReadTk = usage.cache_read_input_tokens ?? 0;
-    totals.inputTokens += inputTk;
-    totals.outputTokens += outputTk;
-    totals.cacheCreationInputTokens += cacheCreationTk;
-    totals.cacheReadInputTokens += cacheReadTk;
-    if (!model) {
-      return;
-    }
-    const existing = perModel.get(model);
-    if (existing) {
-      existing.input += inputTk;
-      existing.output += outputTk;
-      existing.cacheCreation += cacheCreationTk;
-      existing.cacheRead += cacheReadTk;
-    } else {
-      perModel.set(model, {
-        input: inputTk,
-        output: outputTk,
-        cacheCreation: cacheCreationTk,
-        cacheRead: cacheReadTk,
-      });
-    }
-  });
-  totals.models = [...modelSet];
-  totals.tokensByModel = Object.fromEntries(perModel);
-  return totals;
-}
-
-/**
- * Outcome of a JSONL success-record scan.
- *
- * - `"success"` — a `{"type":"result","subtype":"success"}` record was found.
- * - `"missing"` — the JSONL output file could not be resolved (not yet written,
- *   or worktree was cleaned up).
- * - `"unreadable"` — the file exists but could not be read or parsed at the
- *   file level; `error` carries the underlying message.
- * - `"no-success"` — the file was read successfully but contained no success
- *   record.
- */
-export type DetectSuccessOutcome =
-  | { outcome: "success" }
-  | { outcome: "missing" }
-  | { outcome: "unreadable"; error: string }
-  | { outcome: "no-success" };
-
-/**
- * Scan the Claude JSONL output for a run and return a structured outcome
- * indicating whether a `{"type":"result","subtype":"success"}` record was
- * found, or why the check could not be completed.
- *
- * The JSONL file is read once synchronously; no retry or polling is performed
- * because the file is guaranteed to be flushed before the Claude Code process
- * exits.
- */
-export function detectSuccessFromOutput(
-  claudeWorkDir: string
-): DetectSuccessOutcome {
-  let success = false;
-  const result = scanJsonlLines(claudeWorkDir, (entry) => {
-    if (entry.type === "result" && entry.subtype === "success") {
-      success = true;
-      return true;
-    }
-  });
-  if (result.outcome === "missing") {
-    return { outcome: "missing" };
-  }
-  if (result.outcome === "unreadable") {
-    return { outcome: "unreadable", error: result.error };
-  }
-  return success ? { outcome: "success" } : { outcome: "no-success" };
-}
-
-/**
- * Claude Code's authoritative per-session accounting, emitted as the final
- * `{"type":"result"}` record on stdout under `--output-format stream-json`
- * (see the leaked CLI `src/cli/print.ts`). This is Claude Code's OWN number —
- * the same total `/cost` reports — computed live from every API response, so it
- * already accounts for web-search requests and fast-mode pricing that a
- * transcript-derived reconstruction can miss.
- *
- * Present ONLY for non-interactive `-p` stdout captures. Persistent transcripts
- * (`~/.claude/projects/**.jsonl`) never carry a `result` record, so its presence
- * is also a deterministic provenance signal (see {@link SessionOrigin}).
- */
 /**
  * One entry of the result envelope's `permission_denials` — a tool call Claude
  * Code refused to run under the run's permission mode.
@@ -319,6 +190,18 @@ export type HarnessPermissionDenial = {
   toolUseId: string | null;
 };
 
+/**
+ * Claude Code's authoritative per-session accounting, emitted as the final
+ * `{"type":"result"}` record on stdout under `--output-format stream-json`
+ * (see the leaked CLI `src/cli/print.ts`). This is Claude Code's OWN number —
+ * the same total `/cost` reports — computed live from every API response, so it
+ * already accounts for web-search requests and fast-mode pricing that a
+ * transcript-derived reconstruction can miss.
+ *
+ * Present ONLY for non-interactive `-p` stdout captures. Persistent transcripts
+ * (`~/.claude/projects/**.jsonl`) never carry a `result` record, so its presence
+ * is also a deterministic provenance signal.
+ */
 export type HarnessResult = {
   /** `success` | `error_during_execution` | `error_max_turns` … */
   subtype: string | null;
@@ -349,21 +232,6 @@ export type HarnessResult = {
    */
   permissionDenials: HarnessPermissionDenial[] | null;
 };
-
-/**
- * Provenance of a parsed session, derived deterministically from whether the
- * stream-json `result` envelope was present:
- * - `harness_stdout` — captured stdout of a non-interactive `-p` run; Claude
- *   Code's authoritative {@link HarnessResult} is available.
- * - `persistent_transcript` — an interactive or imported
- *   `~/.claude/projects/**.jsonl` transcript; derived reconstruction only.
- */
-export const SessionOrigin = LoopSessionOrigin;
-export type SessionOrigin = LoopSessionOrigin;
-
-function numberOrNull(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
 
 /**
  * A COUNT reported by the result envelope (tokens, turns): a non-negative
@@ -481,9 +349,12 @@ function parseHarnessUsage(value: unknown): HarnessResult["usage"] {
  * valid token counts survive.
  */
 function parseHarnessModelUsage(value: unknown): HarnessResult["modelUsage"] {
-  const modelUsage: HarnessResult["modelUsage"] = {};
+  // ISS-8565: null-prototype container so a key literally named `__proto__`
+  // becomes an own property instead of hitting the inherited `__proto__`
+  // setter, which creates no own key and silently drops the entry.
+  const modelUsage: HarnessResult["modelUsage"] = Object.create(null);
   if (typeof value !== "object" || value === null) {
-    return modelUsage;
+    return { ...modelUsage };
   }
   for (const [model, row] of Object.entries(value)) {
     if (typeof row !== "object" || row === null) {
@@ -510,7 +381,9 @@ function parseHarnessModelUsage(value: unknown): HarnessResult["modelUsage"] {
       costUsd: nonNegativeOrNull(m.costUSD),
     };
   }
-  return modelUsage;
+  // Spread restores a normal prototype for downstream consumers (object
+  // spread defines rather than assigns, so an own `__proto__` key survives).
+  return { ...modelUsage };
 }
 
 /**
@@ -549,172 +422,4 @@ export function parseHarnessResult(
     };
   });
   return parsed;
-}
-
-/**
- * Deterministic session provenance: `harness_stdout` when the stream-json
- * `result` envelope is present (authoritative cost available), else
- * `persistent_transcript`. Cheap — reuses the single result scan.
- */
-export function detectSessionOrigin(
-  harnessResult: HarnessResult | null
-): SessionOrigin {
-  return harnessResult
-    ? SessionOrigin.HarnessStdout
-    : SessionOrigin.PersistentTranscript;
-}
-
-/**
- * Status of a subscription rate-limit window as reported by a
- * `rate_limit_event`:
- * - `allowed` — within limits.
- * - `allowed_warning` — approaching a threshold (event-driven; the CLI only
- *   emits `utilization` at these warning points).
- * - `rejected` — the window is exhausted and requests are being blocked.
- */
-export const RateLimitEventStatus = {
-  Allowed: "allowed",
-  AllowedWarning: "allowed_warning",
-  Rejected: "rejected",
-} as const;
-export type RateLimitEventStatus =
-  (typeof RateLimitEventStatus)[keyof typeof RateLimitEventStatus];
-
-/**
- * Which subscription rate-limit window a `rate_limit_event` refers to. Mirrors
- * the CLI's `rateLimitType` (`SDKRateLimitInfo`): the 5-hour session window, the
- * rolling weekly window (all models + per-model Opus/Sonnet splits + the
- * overage-included weekly variant), or pay-as-you-go overage. Kept in sync with
- * the CLI union — a value we don't recognize narrows to `null` rather than
- * dropping the snapshot (see {@link parseRateLimitEvent}).
- */
-export const RateLimitWindowType = {
-  FiveHour: "five_hour",
-  SevenDay: "seven_day",
-  SevenDayOpus: "seven_day_opus",
-  SevenDaySonnet: "seven_day_sonnet",
-  SevenDayOverageIncluded: "seven_day_overage_included",
-  Overage: "overage",
-} as const;
-export type RateLimitWindowType =
-  (typeof RateLimitWindowType)[keyof typeof RateLimitWindowType];
-
-/**
- * A point-in-time subscription session-limit snapshot extracted from the LATEST
- * `{"type":"rate_limit_event"}` record on a run's stdout capture.
- *
- * Coarser than the interactive statusline (event/threshold-driven, so
- * `utilization` is populated only at warning thresholds) — but it covers every
- * `--output-format stream-json` harness run with zero new infrastructure, using
- * the same stdout seam that {@link parseHarnessResult} scans. This is the raw,
- * boundary-safe extraction: it carries nothing credential-derived, and a
- * downstream store maps it into the renderer's window shape.
- */
-export type RateLimitEventSnapshot = {
-  status: RateLimitEventStatus;
-  /**
-   * Which window the snapshot refers to, or null. `rateLimitType` is optional on
-   * the CLI's `SDKRateLimitInfo` (documented as requiring a newer Claude Code
-   * build), so a valid event can arrive with only `status` (+ `utilization`).
-   * We keep such an event with a null window rather than dropping it — a
-   * downstream store maps a null window to its "unknown/current" slot.
-   */
-  rateLimitType: RateLimitWindowType | null;
-  /** ISO-8601 reset time, or null when the event carried no valid reset. */
-  resetsAt: string | null;
-  /** Server-computed utilization when present (warning thresholds only). */
-  utilization: number | null;
-};
-
-const RATE_LIMIT_STATUSES: readonly RateLimitEventStatus[] =
-  Object.values(RateLimitEventStatus);
-const RATE_LIMIT_WINDOW_TYPES: readonly RateLimitWindowType[] =
-  Object.values(RateLimitWindowType);
-
-/**
- * Narrow an unknown value to a member of a const-object enum's value list, or
- * null. `find` returns the matching literal, so the result narrows to `T`
- * without an assertion.
- */
-function memberOrNull<T extends string>(
-  members: readonly T[],
-  value: unknown
-): T | null {
-  return members.find((member) => member === value) ?? null;
-}
-
-/**
- * Convert a Unix epoch (seconds) into an ISO-8601 string. Guards against the
- * `0` sentinel (which would otherwise render as 1970), non-finite values, and
- * out-of-range numbers that produce an invalid `Date`. Returns null on any of
- * these so a bad reset never fabricates a plausible-looking timestamp.
- */
-function epochSecondsToIso(value: unknown): string | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return null;
-  }
-  const date = new Date(value * 1000);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
-}
-
-/**
- * Extract the LATEST subscription session-limit snapshot from a run's stdout
- * capture by scanning `{"type":"rate_limit_event"}` records at the same seam as
- * {@link parseHarnessResult}. Every stream-json run (our Engineer harness and
- * any `-p` run) emits these on the output stream we already persist.
- *
- * Returns null when the capture holds no usable event — either none was emitted
- * (persistent transcripts and interactive runs never carry one), or every
- * `rate_limit_event` lacked a recognized `status`. `status` is the only field
- * the CLI marks required on `SDKRateLimitInfo`; `rateLimitType` is optional
- * (documented as version-gated) and is preserved as null when absent or
- * unrecognized rather than causing the snapshot to be dropped — a status-only
- * event still carries usable limit state. Never throws: records missing a valid
- * `status` are skipped, and the last usable event wins so the result reflects
- * the run's most recent limit state.
- */
-export function parseRateLimitEvent(
-  claudeWorkDir: string
-): RateLimitEventSnapshot | null {
-  let latest: RateLimitEventSnapshot | null = null;
-  scanJsonlLines(claudeWorkDir, (entry) => {
-    if (entry.type !== "rate_limit_event") {
-      return;
-    }
-    const info = entry.rate_limit_info as Record<string, unknown> | undefined;
-    if (!info) {
-      return;
-    }
-    const status = memberOrNull(RATE_LIMIT_STATUSES, info.status);
-    // `status` is the only required field; without a recognized one the record
-    // carries no usable state, so skip it and keep the last usable event.
-    if (status === null) {
-      return;
-    }
-    latest = {
-      status,
-      // Optional on the CLI union: null (absent/unrecognized) is preserved, not
-      // a reason to drop the snapshot.
-      rateLimitType: memberOrNull(RATE_LIMIT_WINDOW_TYPES, info.rateLimitType),
-      resetsAt: epochSecondsToIso(info.resetsAt),
-      utilization: numberOrNull(info.utilization),
-    };
-  });
-  return latest;
-}
-
-/** Extract apiKeySource from the init record in Claude JSONL stream output. */
-export function parseApiKeySource(claudeWorkDir: string): string | null {
-  let apiKeySource: string | null = null;
-  scanJsonlLines(claudeWorkDir, (entry) => {
-    if (
-      entry.type === "system" &&
-      entry.subtype === "init" &&
-      typeof entry.apiKeySource === "string"
-    ) {
-      apiKeySource = entry.apiKeySource;
-      return true;
-    }
-  });
-  return apiKeySource;
 }

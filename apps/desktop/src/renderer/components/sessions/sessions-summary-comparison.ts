@@ -31,7 +31,7 @@ import { useEffect, useRef } from "react";
 /**
  * Does the desktop Sessions surface compare periods at all?
  *
- * Two axes, and both are load-bearing:
+ * One axis since ISS-8909:
  *
  *  1. **The producer.** Cloud mode reads the HTTP source, which serves the same
  *     comparison the web page renders. Local mode reads the SQLite source, whose
@@ -39,30 +39,19 @@ import { useEffect, useRef } from "react";
  *     so asking would earn a permanent "No prior period" under figures that are
  *     never going to be graded. That, and only that, is what the original
  *     deferral covered.
- *  2. **The rollout.** The chips are a perceivable addition to this strip, so
- *     they ride the shared Grid Parity gate (`grid-table-v2` — PostHog on web,
- *     the Labs toggle here), closed by default per the ISS-4779 UI policy. The
- *     key is the shared one so a viewer who has turned Grid Parity on gets the
- *     same strip on both surfaces.
- *
- *     Be precise about what that does NOT say: web is not gated the same way.
- *     It requests `comparison=prior` unconditionally and renders the ISS-5315
- *     chips (Sessions / Total Tokens / Cost) with the flag OFF, gating only the
- *     FEA-4202 additions (cadence captions, `PRs Shipped`) behind it. So with the
- *     flag off desktop still shows no chips while web shows three — the reported
- *     asymmetry closes at flag-ON, not at flag-off. Shipping the desktop chips
- *     ungated to close it everywhere is not this change's call to make: the
- *     closed-by-default policy requires the gate, and ungating a surface is a
- *     rollout decision for whoever owns the Grid Parity flag.
+ * ISS-8909 retired the second axis. The chips used to ride the shared Grid
+ * Parity gate (`grid-table-v2`), closed by default, which is why desktop showed
+ * none while web showed three with that flag off. Retiring the v1 desktop stack
+ * settled that rollout: the gate no longer exists on this surface, so the
+ * producer axis below is the whole decision and the reported asymmetry is
+ * closed rather than deferred.
  */
 export function isSessionComparisonEnabled({
   isCloudMode,
-  comparisonV2Enabled,
 }: {
   isCloudMode: boolean;
-  comparisonV2Enabled: boolean;
 }): boolean {
-  return isCloudMode && comparisonV2Enabled;
+  return isCloudMode;
 }
 
 /**
@@ -86,6 +75,11 @@ export function sessionComparisonQuery(enabled: boolean): {
  * it is also what {@link useSessionComparisonSuppressed} narrows.
  */
 type SessionComparisonRead = {
+  // ISS-6382: the GATED pending flag. A read held closed by the restore gate on
+  // a warm cache trips none of the other four, so without this the snapshot
+  // below would be stamped for a scope this mount never fetched, and the chips
+  // would grade the previous view's figures.
+  isPending: boolean;
   isLoading: boolean;
   isError: boolean;
   isPlaceholderData: boolean;
@@ -126,9 +120,17 @@ type SessionComparisonRead = {
 export function useSessionComparisonSuppressed({
   read,
   summaryScopeKey,
+  honestLoadingEnabled = false,
 }: {
   read: SessionComparisonRead;
   summaryScopeKey: string;
+  /**
+   * ISS-7422: forwarded to the shared rule, which flag-on stops treating a
+   * background revalidation as grounds to withhold a comparison. The narrowing
+   * below still runs — it covers the PLACEHOLDER arm, which desktop reaches on
+   * every page turn and re-sort and the shared rule never relaxes.
+   */
+  honestLoadingEnabled?: boolean;
 }): boolean {
   // The scope of the snapshot currently in hand. Written only on a render where
   // the data belongs to the CURRENT key (settled, not placeholder), so a
@@ -136,15 +138,19 @@ export function useSessionComparisonSuppressed({
   // the figures beside it.
   const settledScopeRef = useRef<string | null>(null);
   const holdsCurrentScopeData =
-    !(read.isLoading || read.isError || read.isPlaceholderData) &&
-    read.isFetching === false;
+    !(
+      read.isPending ||
+      read.isLoading ||
+      read.isError ||
+      read.isPlaceholderData
+    ) && read.isFetching === false;
   useEffect(() => {
     if (holdsCurrentScopeData) {
       settledScopeRef.current = summaryScopeKey;
     }
   }, [holdsCurrentScopeData, summaryScopeKey]);
 
-  if (!shouldSuppressSessionComparison(read)) {
+  if (!shouldSuppressSessionComparison(read, honestLoadingEnabled)) {
     return false;
   }
   // The shared rule says suppress. Reconsider ONLY when the sole reason is that
@@ -152,7 +158,7 @@ export function useSessionComparisonSuppressed({
   // in-flight refetch. Anything else — including an arm this file does not know
   // about — keeps the shared verdict.
   const keyChurnOnly =
-    !(read.isLoading || read.isError) &&
+    !(read.isPending || read.isLoading || read.isError) &&
     (read.isPlaceholderData || read.isFetching);
   if (!keyChurnOnly) {
     return true;
@@ -214,11 +220,28 @@ export function resolveSessionSummaryDeltas({
   dateRange,
   usage,
   suppressed,
+  pending = false,
+  customWindowDays,
 }: {
   enabled: boolean;
   dateRange: DateRange;
   usage: AgentSessionUsageSummary | undefined;
   suppressed: boolean;
+  /**
+   * FEA-4201 — the inclusive day count of the explicit `?from=`/`?to=` window,
+   * when one decides the rows. Present ⇒ the caption names THAT span, because
+   * the producer derived the prior period from those bounds and a preset caption
+   * would name a period the figures were never compared over.
+   */
+  customWindowDays?: number;
+  /**
+   * ISS-7422: whether a comparison is genuinely in flight, which is NOT what
+   * `suppressed` answers — this view's cards stay settled while a failed read
+   * holds last-good usage (`resolveSummaryCardsErrored` requires the usage to be
+   * absent), so an errored refetch marked pending would shimmer a fetch that has
+   * already stopped.
+   */
+  pending?: boolean;
 }): SessionSummaryDeltas | undefined {
   if (!enabled) {
     return;
@@ -226,7 +249,9 @@ export function resolveSessionSummaryDeltas({
   return buildSessionSummaryDeltas({
     comparisonV2Enabled: true,
     current: usage,
+    customWindowDays,
     dateRange,
+    pending,
     suppressed,
   });
 }

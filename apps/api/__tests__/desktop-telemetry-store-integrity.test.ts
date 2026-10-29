@@ -5,7 +5,7 @@
  * structured fields (failing check name + affected object) reach the emitted log.
  */
 import { log } from "@repo/observability/log";
-import { TelemetryCategory } from "@repo/observability/telemetry/schema";
+import { TelemetryCategory } from "@repo/observability/telemetry/telemetry-category";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   handleTelemetryEvent,

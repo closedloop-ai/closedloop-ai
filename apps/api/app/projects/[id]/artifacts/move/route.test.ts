@@ -5,8 +5,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 let mockAuthContext: import("@/lib/auth/with-auth").AuthContext;
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context?.params),
+  withAnyAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    (request: unknown, context?: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context?.params),
 }));
 
 vi.mock("@/lib/identifier-utils", async () => {
@@ -51,7 +53,7 @@ vi.mock("@repo/observability/log", () => ({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    flush: vi.fn().mockResolvedValue(undefined),
+    flush: vi.fn(async () => undefined),
   },
 }));
 
@@ -61,7 +63,11 @@ vi.mock("@vercel/functions", () => ({
 
 // --- Imports (after mocks) ---
 
-import { MovePosition } from "@repo/api/src/types/project-artifact-move";
+import {
+  MOVE_ARTIFACT_CONFLICT,
+  MOVE_ARTIFACT_EXPECTED_ORDER_LIMIT,
+  MovePosition,
+} from "@repo/api/src/types/project-artifact-move";
 import { Result, Status } from "@repo/api/src/types/result";
 import { documentService } from "@/app/documents/document-service";
 import { projectsService } from "@/app/projects/service";
@@ -117,7 +123,8 @@ describe("POST /projects/[id]/artifacts/move", () => {
     expect(moveArtifact).toHaveBeenCalledWith(
       PROJECT_ID,
       mockAuthContext.user.organizationId,
-      { artifactId: ARTIFACT_ID, position: MovePosition.Top }
+      { artifactId: ARTIFACT_ID, position: MovePosition.Top },
+      undefined
     );
   });
 
@@ -143,7 +150,8 @@ describe("POST /projects/[id]/artifacts/move", () => {
     expect(moveArtifact).toHaveBeenCalledWith(
       PROJECT_ID,
       mockAuthContext.user.organizationId,
-      { artifactId: ARTIFACT_ID, position: MovePosition.Top }
+      { artifactId: ARTIFACT_ID, position: MovePosition.Top },
+      undefined
     );
   });
 
@@ -180,7 +188,8 @@ describe("POST /projects/[id]/artifacts/move", () => {
         artifactId: ARTIFACT_ID,
         position: MovePosition.Before,
         referenceArtifactId: REFERENCE_ID,
-      }
+      },
+      undefined
     );
   });
 
@@ -220,7 +229,8 @@ describe("POST /projects/[id]/artifacts/move", () => {
         artifactId: ARTIFACT_ID,
         position: MovePosition.Before,
         referenceArtifactId: REFERENCE_ID,
-      }
+      },
+      undefined
     );
   });
 
@@ -343,5 +353,144 @@ describe("POST /projects/[id]/artifacts/move", () => {
     );
 
     expect(response.status).toBe(500);
+  });
+
+  // ISS-8728 — the optional expected-order precondition.
+  it("forwards an expectedOrder precondition to the service unchanged", async () => {
+    moveArtifact.mockResolvedValue(Result.ok({ newSortOrder: 0 }));
+    const expectedOrder = [ARTIFACT_ID, REFERENCE_ID];
+
+    const response = await POST(
+      moveRequest({
+        artifactId: ARTIFACT_ID,
+        position: MovePosition.Top,
+        expectedOrder,
+      }),
+      createMockRouteContext({ id: PROJECT_ID })
+    );
+
+    expect(response.status).toBe(200);
+    // The service decides the precondition inside its transaction, so the
+    // route's whole job is to carry it there intact — a dropped field would
+    // silently restore last-write-wins while the caller believed it was
+    // protected, and the 200 above would look identical.
+    expect(moveArtifact).toHaveBeenCalledWith(
+      PROJECT_ID,
+      mockAuthContext.user.organizationId,
+      {
+        artifactId: ARTIFACT_ID,
+        position: MovePosition.Top,
+        expectedOrder,
+      },
+      undefined
+    );
+  });
+
+  it("carries the precondition on a before/after move too", async () => {
+    moveArtifact.mockResolvedValue(Result.ok({ newSortOrder: 1500 }));
+    const expectedOrder = [ARTIFACT_ID, REFERENCE_ID];
+
+    const response = await POST(
+      moveRequest({
+        artifactId: ARTIFACT_ID,
+        position: MovePosition.Before,
+        referenceArtifactId: REFERENCE_ID,
+        expectedOrder,
+      }),
+      createMockRouteContext({ id: PROJECT_ID })
+    );
+
+    expect(response.status).toBe(200);
+    // The reference branch rebuilds the body rather than mutating it, so it is
+    // the one that can drop the field while the Top branch keeps it.
+    expect(moveArtifact).toHaveBeenCalledWith(
+      PROJECT_ID,
+      mockAuthContext.user.organizationId,
+      {
+        artifactId: ARTIFACT_ID,
+        position: MovePosition.Before,
+        referenceArtifactId: REFERENCE_ID,
+        expectedOrder,
+      },
+      undefined
+    );
+  });
+
+  it("omits expectedOrder entirely when the caller sent none", async () => {
+    moveArtifact.mockResolvedValue(Result.ok({ newSortOrder: 0 }));
+
+    await POST(
+      moveRequest({ artifactId: ARTIFACT_ID, position: MovePosition.Top }),
+      createMockRouteContext({ id: PROJECT_ID })
+    );
+
+    // OMITTED, not `undefined`: the service reads `input.expectedOrder ===
+    // undefined` as "no precondition", and both spellings satisfy that today —
+    // but this is a cross-process payload shape, and the repo's compatibility
+    // rule is that an absent optional field stays absent rather than being
+    // serialized as a null-ish placeholder.
+    const [, , body] = moveArtifact.mock.calls.at(-1) as [
+      string,
+      string,
+      Record<string, unknown>,
+    ];
+    expect("expectedOrder" in body).toBe(false);
+  });
+
+  it("maps a stale-precondition conflict to 409", async () => {
+    moveArtifact.mockResolvedValue(
+      Result.err({
+        status: Status.Conflict,
+        message: `${MOVE_ARTIFACT_CONFLICT}: re-read the project and retry.`,
+      })
+    );
+
+    const response = await POST(
+      moveRequest({
+        artifactId: ARTIFACT_ID,
+        position: MovePosition.Top,
+        expectedOrder: [ARTIFACT_ID],
+      }),
+      createMockRouteContext({ id: PROJECT_ID })
+    );
+    const json = await response.json();
+
+    // 409, not the 400 every non-404 service error used to collapse into: a
+    // caller retrying a conflict is doing something different from a caller
+    // fixing a malformed request, and only the status tells them apart.
+    expect(response.status).toBe(409);
+    expect(json.error).toContain(MOVE_ARTIFACT_CONFLICT);
+  });
+
+  it("rejects a non-UUID expectedOrder entry with 400 before reaching the service", async () => {
+    const response = await POST(
+      moveRequest({
+        artifactId: ARTIFACT_ID,
+        position: MovePosition.Top,
+        expectedOrder: ["PLN-12"],
+      }),
+      createMockRouteContext({ id: PROJECT_ID })
+    );
+
+    // Slugs are deliberately not accepted here — see the validator's docstring.
+    expect(response.status).toBe(400);
+    expect(moveArtifact).not.toHaveBeenCalled();
+  });
+
+  it("rejects an expectedOrder past the shared cap with 400", async () => {
+    const response = await POST(
+      moveRequest({
+        artifactId: ARTIFACT_ID,
+        position: MovePosition.Top,
+        expectedOrder: Array.from(
+          { length: MOVE_ARTIFACT_EXPECTED_ORDER_LIMIT + 1 },
+          () => ARTIFACT_ID
+        ),
+      }),
+      createMockRouteContext({ id: PROJECT_ID })
+    );
+
+    expect(response.status).toBe(400);
+    expect(moveArtifact).not.toHaveBeenCalled();
   });
 });

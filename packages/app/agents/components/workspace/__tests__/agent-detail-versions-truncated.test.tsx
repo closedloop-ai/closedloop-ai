@@ -95,6 +95,7 @@ function testDetailSource(
 ): AgentComponentsDataSource {
   return {
     scope: "test-detail-versions-truncated",
+    honorsDateWindow: false,
     list: () => Promise.reject(new Error("list unused in these tests")),
     detail: () => Promise.resolve(detail),
   };

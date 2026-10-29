@@ -4,9 +4,10 @@
  * Makes the member-vs-admin pack-management boundary legible: which pack
  * capabilities an org role holds. This is NOT a new permissions system — it
  * reads the SAME role model the rest of the app already uses (`isAdminRole`,
- * mirroring the backend `ADMIN_ROLES`), so the boundary the UI shows is exactly
- * the boundary the API enforces. Pack admin capability is derived from the org
- * role, not stored or edited independently.
+ * over the canonical `OrgAdminRole` set that the backend admin gate reads too),
+ * so the boundary the UI shows is exactly the boundary the API enforces. Pack
+ * admin capability is derived from the org role, not stored or edited
+ * independently.
  *
  * The three capabilities mirror the real pack surfaces:
  *  - author the catalog (create / upload / edit / archive catalog items),

@@ -37,6 +37,41 @@ describe("branchPhaseLifecycleFromAssociatedPullRequests", () => {
       ambiguousWriteAfter: [],
     });
   });
+
+  // ISS-8422: an unobserved row carries the OPEN its column default produced
+  // and no timestamp at either end, so it built a cycle bounded at neither — an
+  // open cycle that never closes, pulling sessions into a phase no pull request
+  // was measured to be in. A pull request nobody observed has no cycle.
+  it("builds no cycle for a pull request nobody observed", () => {
+    const unobserved = collection({
+      closedAt: null,
+      openedAt: null,
+      state: GitHubPRState.Open,
+    });
+    unobserved.items = unobserved.items.map((item) => ({
+      ...item,
+      lifecycleObserved: false,
+    }));
+
+    expect(branchPhaseLifecycleFromAssociatedPullRequests(unobserved)).toEqual({
+      pullRequestCycles: [],
+      ambiguousWriteAfter: [],
+    });
+  });
+
+  it("still builds a cycle for a row that never declares observation", () => {
+    // Absent means observed — every producer written before the flag existed
+    // keeps its cycle, which is what makes the field safe to add.
+    expect(
+      branchPhaseLifecycleFromAssociatedPullRequests(
+        collection({
+          closedAt: null,
+          openedAt: "2026-08-01T00:00:00.000Z",
+          state: GitHubPRState.Open,
+        })
+      ).pullRequestCycles
+    ).toHaveLength(1);
+  });
 });
 
 function collection(

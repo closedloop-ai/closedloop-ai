@@ -6,6 +6,7 @@
  * owns. The realized treatments are stubbed here — this proves the spine, not
  * the sibling views (FEA-4088/4089).
  */
+
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -16,6 +17,7 @@ import {
   API_TIMEOUT_ERROR_MESSAGE,
 } from "../../../shared/api/api-timeout";
 import { createPacksContext, PacksMode } from "../../lib/packs-context";
+import { YOUR_PACKS_EMPTY_TITLE } from "../member-view";
 import { PacksPage } from "../packs-page";
 
 const adminView = <div data-testid="admin-view" />;
@@ -140,7 +142,7 @@ describe("PacksPage spine", () => {
       />
     );
 
-    expect(screen.getByText("No packs yet")).toBeInTheDocument();
+    expect(screen.getByText(YOUR_PACKS_EMPTY_TITLE)).toBeInTheDocument();
     expect(screen.queryByTestId("member-view")).toBeNull();
   });
 });

@@ -1,7 +1,10 @@
 import type pg from "pg";
 import { describe, expect, it, vi } from "vitest";
 import {
+  CLONE_BEGIN_SQL,
+  CloneFailedError,
   cloneDataFromPublic,
+  cloneFailureCodeOf,
   DEFAULT_CLONE_CONNECT_TIMEOUT_MS,
   DEFAULT_CLONE_LOCK_TIMEOUT_MS,
   DEFAULT_CLONE_STATEMENT_TIMEOUT_MS,
@@ -15,6 +18,8 @@ const DATABASE_URL =
 const TABLES_CATALOG_QUERY = /c\.relkind = 'r'/;
 const PER_TABLE_TIMING_LOG = /document: 3 rows \(\d+ms\)/;
 const CLONE_SUMMARY_TIMING_LOG = /Cloned 1 tables .*\(\d+ms\)/;
+const RESTORE_NOT_DEFERRABLE = / NOT DEFERRABLE$/;
+const INSERT_STATEMENT = /^INSERT INTO/;
 
 type ColumnRow = {
   column_name: string;
@@ -50,6 +55,7 @@ function makeClient(opts: {
   sourceColumnNames?: Record<string, string[]>;
   fkEdges?: { child: string; parent: string }[];
   targetFkConstraints?: { table_name: string; constraint_name: string }[];
+  userTriggers?: { tableName: string; triggerName: string; enabled: string }[];
   requireDeferredBeforeInsert?: boolean;
   failOnConnect?: Error;
   failOnStatement?: { match: RegExp; error: Error };
@@ -67,7 +73,7 @@ function makeClient(opts: {
     end: vi.fn(() => Promise.resolve()),
     query: vi.fn((sql: string, params?: unknown[]) => {
       issued.push(sql);
-      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+      if (sql === CLONE_BEGIN_SQL || sql === "COMMIT" || sql === "ROLLBACK") {
         constraintsDeferred = false;
         return Promise.resolve({ rowCount: null, rows: [] });
       }
@@ -98,7 +104,10 @@ function makeClient(opts: {
         }
         return Promise.resolve({ rows: all });
       }
-      if (sql.includes("c.relkind = 'r'")) {
+      if (
+        sql.includes("c.relkind = 'r'") &&
+        !sql.includes("pg_catalog.pg_trigger")
+      ) {
         return Promise.resolve({
           rows: tables.map((table_name) => ({ table_name })),
         });
@@ -108,6 +117,9 @@ function makeClient(opts: {
       }
       if (sql.includes("con.contype = 'f'")) {
         return Promise.resolve({ rows: opts.fkEdges ?? [] });
+      }
+      if (sql.includes("pg_catalog.pg_trigger")) {
+        return Promise.resolve({ rows: opts.userTriggers ?? [] });
       }
       // INSERT ... SELECT
       return Promise.resolve({ rowCount: 3 });
@@ -196,7 +208,7 @@ describe("cloneDataFromPublic — statement bounds (ISS-5285)", () => {
     ).toBe(true);
   });
 
-  it("swallows a statement timeout, returns false, and still ends the client", async () => {
+  it("fails with a CloneFailedError on a statement timeout and still ends the client", async () => {
     const { client, spies } = makeClient({
       tables: ["document"],
       failOnStatement: {
@@ -206,13 +218,13 @@ describe("cloneDataFromPublic — statement bounds (ISS-5285)", () => {
     });
     const logger = makeLogger();
 
-    const result = await cloneDataFromPublic(DATABASE_URL, PREVIEW_SCHEMA, {
-      createClient: () => client,
-      logger,
-      env: {},
-    });
-
-    expect(result).toBe(false);
+    await expect(
+      cloneDataFromPublic(DATABASE_URL, PREVIEW_SCHEMA, {
+        createClient: () => client,
+        logger,
+        env: {},
+      })
+    ).rejects.toThrow(CloneFailedError);
     expect(spies.end).toHaveBeenCalledTimes(1);
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining("statement timeout")
@@ -237,7 +249,7 @@ describe("cloneDataFromPublic — statement bounds (ISS-5285)", () => {
     );
   });
 
-  it("swallows a CONNECT failure and still ends the client (regression: connect was outside the try)", async () => {
+  it("fails with a CloneFailedError on a CONNECT failure and still ends the client (regression: connect was outside the try)", async () => {
     const { client, spies } = makeClient({
       failOnConnect: new Error(
         'PAM authentication failed for user "vercel_iam"'
@@ -245,13 +257,13 @@ describe("cloneDataFromPublic — statement bounds (ISS-5285)", () => {
     });
     const logger = makeLogger();
 
-    const result = await cloneDataFromPublic(DATABASE_URL, PREVIEW_SCHEMA, {
-      createClient: () => client,
-      logger,
-      env: {},
-    });
-
-    expect(result).toBe(false);
+    await expect(
+      cloneDataFromPublic(DATABASE_URL, PREVIEW_SCHEMA, {
+        createClient: () => client,
+        logger,
+        env: {},
+      })
+    ).rejects.toThrow(CloneFailedError);
     expect(spies.end).toHaveBeenCalledTimes(1);
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining("PAM authentication failed")
@@ -308,13 +320,13 @@ describe("cloneDataFromPublic — FK cycles (ISS-5344)", () => {
       requireDeferredBeforeInsert: true,
     });
 
-    const result = await cloneDataFromPublic(DATABASE_URL, PREVIEW_SCHEMA, {
+    await cloneDataFromPublic(DATABASE_URL, PREVIEW_SCHEMA, {
       createClient: () => client,
       logger: makeLogger(),
       env: {},
     });
 
-    const beginIndex = issued.indexOf("BEGIN");
+    const beginIndex = issued.indexOf(CLONE_BEGIN_SQL);
     const alphaAlterIndex = issued.indexOf(alphaAlter);
     const betaAlterIndex = issued.indexOf(betaAlter);
     const setDeferredIndex = issued.indexOf("SET CONSTRAINTS ALL DEFERRED");
@@ -329,7 +341,6 @@ describe("cloneDataFromPublic — FK cycles (ISS-5344)", () => {
       -1
     );
 
-    expect(result).toBe(true);
     expect(beginIndex).toBeGreaterThanOrEqual(0);
     expect(alphaAlterIndex).toBeGreaterThan(beginIndex);
     expect(betaAlterIndex).toBeGreaterThan(alphaAlterIndex);
@@ -340,6 +351,133 @@ describe("cloneDataFromPublic — FK cycles (ISS-5344)", () => {
     expect(betaRestoreIndex).toBeGreaterThan(alphaRestoreIndex);
     expect(issued.indexOf("COMMIT")).toBeGreaterThan(betaRestoreIndex);
     expect(issued).not.toContain("ROLLBACK");
+  });
+});
+
+describe("cloneDataFromPublic — bounded FK validation (ISS-6424)", () => {
+  it("drains each deferred FK in its own statement, not one whole-schema check", async () => {
+    const { client, issued } = makeClient({
+      tables: ["organization", "document", "document_version"],
+      fkEdges: [
+        { child: "document", parent: "organization" },
+        { child: "document_version", parent: "document" },
+        { child: "document_version", parent: "organization" },
+      ],
+      // document_version carries TWO FKs: real Postgres rejects `ALTER TABLE`
+      // on a relation that still has pending trigger events, so a drain
+      // interleaved with the restores would fail on the second one.
+      targetFkConstraints: [
+        {
+          table_name: "document",
+          constraint_name: "document_organization_id_fkey",
+        },
+        {
+          table_name: "document_version",
+          constraint_name: "document_version_document_id_fkey",
+        },
+        {
+          table_name: "document_version",
+          constraint_name: "document_version_organization_id_fkey",
+        },
+      ],
+      tableColumns: {
+        organization: [col({ column_name: "id" })],
+        document: [col({ column_name: "id" }), col({ column_name: "org_id" })],
+        document_version: [
+          col({ column_name: "id" }),
+          col({ column_name: "document_id" }),
+          col({ column_name: "org_id" }),
+        ],
+      },
+    });
+
+    await cloneDataFromPublic(DATABASE_URL, PREVIEW_SCHEMA, {
+      createClient: () => client,
+      logger: makeLogger(),
+      env: {},
+    });
+
+    // Positive control: all three tables were really copied, so the drain below
+    // ran against a populated constraint set rather than an empty one.
+    expect(issued.filter((sql) => sql.startsWith("INSERT INTO"))).toHaveLength(
+      3
+    );
+    expect(perConstraintDrains(issued)).toEqual([
+      `SET CONSTRAINTS "${PREVIEW_SCHEMA}"."document_organization_id_fkey" IMMEDIATE`,
+      `SET CONSTRAINTS "${PREVIEW_SCHEMA}"."document_version_document_id_fkey" IMMEDIATE`,
+      `SET CONSTRAINTS "${PREVIEW_SCHEMA}"."document_version_organization_id_fkey" IMMEDIATE`,
+    ]);
+
+    const drainIndexes = issued
+      .map((sql, index) => (isPerConstraintDrain(sql) ? index : -1))
+      .filter((index) => index >= 0);
+    const lastInsertIndex = issued.reduce(
+      (latest, sql, index) => (sql.startsWith("INSERT INTO") ? index : latest),
+      -1
+    );
+    const firstRestoreIndex = issued.findIndex((sql) =>
+      RESTORE_NOT_DEFERRABLE.test(sql)
+    );
+    // Hoisting the blanket sweep above the drains would fire the whole schema's
+    // pending events from one statement again — the drains behind it are then
+    // no-ops, and every other assertion here still holds. Pin it last.
+    const sweepIndex = issued.indexOf("SET CONSTRAINTS ALL IMMEDIATE");
+
+    expect(Math.min(...drainIndexes)).toBeGreaterThan(lastInsertIndex);
+    expect(Math.max(...drainIndexes)).toBeLessThan(sweepIndex);
+    expect(sweepIndex).toBeLessThan(firstRestoreIndex);
+    expect(issued).not.toContain("ROLLBACK");
+  });
+
+  it("keeps every FK deferred through the copy, cyclic or not (ISS-5344 not narrowed)", async () => {
+    const { client, issued } = makeClient({
+      // alpha <-> beta is a cycle; gamma -> alpha is ordinary and acyclic.
+      tables: ["alpha", "beta", "gamma"],
+      fkEdges: [
+        { child: "alpha", parent: "beta" },
+        { child: "beta", parent: "alpha" },
+        { child: "gamma", parent: "alpha" },
+      ],
+      targetFkConstraints: [
+        { table_name: "alpha", constraint_name: "alpha_beta_fkey" },
+        { table_name: "beta", constraint_name: "beta_alpha_fkey" },
+        { table_name: "gamma", constraint_name: "gamma_alpha_fkey" },
+      ],
+      tableColumns: {
+        alpha: [col({ column_name: "id" }), col({ column_name: "beta_id" })],
+        beta: [col({ column_name: "id" }), col({ column_name: "alpha_id" })],
+        gamma: [col({ column_name: "id" }), col({ column_name: "alpha_id" })],
+      },
+      requireDeferredBeforeInsert: true,
+    });
+
+    await cloneDataFromPublic(DATABASE_URL, PREVIEW_SCHEMA, {
+      createClient: () => client,
+      logger: makeLogger(),
+      env: {},
+    });
+
+    expect(issued.filter((sql) => sql.startsWith("INSERT INTO"))).toHaveLength(
+      3
+    );
+    expect(perConstraintDrains(issued)).toEqual([
+      `SET CONSTRAINTS "${PREVIEW_SCHEMA}"."alpha_beta_fkey" IMMEDIATE`,
+      `SET CONSTRAINTS "${PREVIEW_SCHEMA}"."beta_alpha_fkey" IMMEDIATE`,
+      `SET CONSTRAINTS "${PREVIEW_SCHEMA}"."gamma_alpha_fkey" IMMEDIATE`,
+    ]);
+    // `SET CONSTRAINTS ALL DEFERRED` only reaches a constraint that was granted
+    // DEFERRABLE first, so gamma — the acyclic table — has to be granted it too.
+    // Without this, narrowing the grant loop to the cycle would leave gamma's FK
+    // validating inside its own INSERT, sharing one budget with the row copy.
+    const gammaGrantIndex = issued.indexOf(
+      `ALTER TABLE "${PREVIEW_SCHEMA}"."gamma" ALTER CONSTRAINT "gamma_alpha_fkey" DEFERRABLE INITIALLY IMMEDIATE`
+    );
+    const firstInsertIndex = issued.findIndex((sql) =>
+      sql.startsWith("INSERT INTO")
+    );
+
+    expect(gammaGrantIndex).toBeGreaterThanOrEqual(0);
+    expect(gammaGrantIndex).toBeLessThan(firstInsertIndex);
   });
 });
 
@@ -454,3 +592,99 @@ describe("cloneDataFromPublic — generated columns (ISS-5285)", () => {
     );
   });
 });
+
+describe("cloneDataFromPublic — user triggers (ISS-11867)", () => {
+  it("copies with each enabled user trigger off and restores its mode after the FK drain", async () => {
+    const { client, issued } = makeClient({
+      tables: ["organization", "document"],
+      fkEdges: [{ child: "document", parent: "organization" }],
+      targetFkConstraints: [
+        {
+          table_name: "document",
+          constraint_name: "document_organization_id_fkey",
+        },
+      ],
+      userTriggers: [
+        { tableName: "document", triggerName: "doc_bridge", enabled: "O" },
+        { tableName: "organization", triggerName: "org_always", enabled: "A" },
+      ],
+      tableColumns: {
+        organization: [col({ column_name: "id" })],
+        document: [col({ column_name: "id" }), col({ column_name: "org_id" })],
+      },
+    });
+
+    await cloneDataFromPublic(DATABASE_URL, PREVIEW_SCHEMA, {
+      createClient: () => client,
+      logger: makeLogger(),
+      env: {},
+    });
+
+    const disables = [
+      `ALTER TABLE "${PREVIEW_SCHEMA}"."document" DISABLE TRIGGER "doc_bridge"`,
+      `ALTER TABLE "${PREVIEW_SCHEMA}"."organization" DISABLE TRIGGER "org_always"`,
+    ];
+    const restores = [
+      `ALTER TABLE "${PREVIEW_SCHEMA}"."document" ENABLE TRIGGER "doc_bridge"`,
+      `ALTER TABLE "${PREVIEW_SCHEMA}"."organization" ENABLE ALWAYS TRIGGER "org_always"`,
+    ];
+    const firstInsertIndex = issued.findIndex((sql) =>
+      sql.startsWith("INSERT INTO")
+    );
+    const sweepIndex = issued.indexOf("SET CONSTRAINTS ALL IMMEDIATE");
+    const commitIndex = issued.indexOf("COMMIT");
+
+    expect(firstInsertIndex).toBeGreaterThanOrEqual(0);
+    for (const sql of disables) {
+      expect(issued.indexOf(sql)).toBeGreaterThan(
+        issued.indexOf(CLONE_BEGIN_SQL)
+      );
+      expect(issued.indexOf(sql)).toBeLessThan(firstInsertIndex);
+    }
+    for (const sql of restores) {
+      expect(issued.indexOf(sql)).toBeGreaterThan(sweepIndex);
+      expect(issued.indexOf(sql)).toBeLessThan(commitIndex);
+    }
+  });
+});
+
+describe("cloneDataFromPublic — failure cause (ISS-11867)", () => {
+  it("throws the cause's message and code, which cloneFailureCodeOf reads back", async () => {
+    const cause = Object.assign(
+      new Error("function iss11212_github_thread_anchor(text) does not exist"),
+      { code: "42883" }
+    );
+    const { client } = makeClient({
+      tables: ["document"],
+      tableColumns: { document: [col({ column_name: "id" })] },
+      failOnStatement: { match: INSERT_STATEMENT, error: cause },
+    });
+
+    const error = await cloneDataFromPublic(DATABASE_URL, PREVIEW_SCHEMA, {
+      createClient: () => client,
+      logger: makeLogger(),
+      env: {},
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloneFailedError);
+    expect(error).toMatchObject({
+      code: "42883",
+      cause,
+      message: `The data clone from public into ${PREVIEW_SCHEMA} failed (ISS-11785): function iss11212_github_thread_anchor(text) does not exist`,
+    });
+    expect(cloneFailureCodeOf(error)).toBe("42883");
+    expect(cloneFailureCodeOf(cause)).toBeNull();
+  });
+});
+
+/** A drain that names ONE constraint, as opposed to `SET CONSTRAINTS ALL …`. */
+function isPerConstraintDrain(sql: string): boolean {
+  return (
+    sql.startsWith("SET CONSTRAINTS ") &&
+    !sql.startsWith("SET CONSTRAINTS ALL ")
+  );
+}
+
+function perConstraintDrains(issued: string[]): string[] {
+  return issued.filter(isPerConstraintDrain);
+}

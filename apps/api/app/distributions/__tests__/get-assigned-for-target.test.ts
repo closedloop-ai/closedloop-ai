@@ -16,7 +16,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  isOrgAdmin: vi.fn(),
+  getOrgAdminStatus: vi.fn(),
   computeTargetsService: {
     findOwnedById: vi.fn(),
   },
@@ -34,7 +34,7 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
-vi.mock("@repo/aws", () => ({
+vi.mock("@repo/aws/catalog-assets", () => ({
   getCatalogAssetDownloadUrl: mocks.getCatalogAssetDownloadUrl,
 }));
 
@@ -43,7 +43,7 @@ vi.mock("@repo/aws/keys", () => ({
 }));
 
 vi.mock("@/lib/auth/org-admin", () => ({
-  isOrgAdmin: mocks.isOrgAdmin,
+  getOrgAdminStatus: mocks.getOrgAdminStatus,
 }));
 
 vi.mock("@/app/compute-targets/service", () => ({

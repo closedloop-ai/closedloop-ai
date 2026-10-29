@@ -1,5 +1,6 @@
 "use client";
 
+import { AGENTS_NAV_FLAG_KEY } from "@repo/api/src/types/agents-nav-flag";
 import { useSidebar } from "@repo/design-system/components/ui/sidebar";
 import { cn } from "@repo/design-system/lib/utils";
 import { Link } from "@repo/navigation/link";
@@ -7,7 +8,10 @@ import { useOrgPath } from "@repo/navigation/use-org-path";
 import { usePath } from "@repo/navigation/use-path";
 import { MenuIcon } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useFeatureFlagEnabled } from "../feature-flags/use-feature-flag-enabled";
+import {
+  useFeatureFlagEnabled,
+  useFeatureFlagGate,
+} from "../feature-flags/use-feature-flag-enabled";
 import { ArtifactFlag } from "../lib/artifact-flags";
 import {
   MOBILE_NAV_MAX_DESTINATIONS,
@@ -41,25 +45,41 @@ export function MobileBottomNav() {
 
   // Resolve every flag a phone destination could gate on up front with one
   // fixed top-level hook call per distinct key (rules-of-hooks: the call order
-  // never varies across renders). The current phone set is all always-on; the
-  // Issues flag is resolved so a future gated phone destination stays covered
-  // without moving hook calls.
+  // never varies across renders).
+  //
+  // `flagState` below is hand-maintained and read with a plain lookup, so a key
+  // that is MISSING resolves `undefined` and filters its destination out for
+  // everyone — a gated phone destination with no entry here is hidden, not
+  // gated. Issues is resolved for that reason even though it is not currently
+  // on the bar.
   const issuesEnabled = useFeatureFlagEnabled(ArtifactFlag.Issues);
+  // ISS-5041/ISS-7835: Agents IS a phone destination and is now gated — the
+  // first gated member this bar has ever had. `useFeatureFlagGate` rather than
+  // the plain read because an unresolved flag reads `false`, which here means a
+  // cell count, not just a hidden row: an entitled user would get a four-cell
+  // bar and then a five-cell one when PostHog lands, re-centering every icon
+  // and label under their thumb. `isReady` latches on resolution OR the shared
+  // deadline, so a flag-service outage still opens the bar on the closed
+  // default rather than leaving it blank.
+  const { enabled: agentsEnabled, isReady: agentsFlagReady } =
+    useFeatureFlagGate(AGENTS_NAV_FLAG_KEY);
 
-  // Feature-flag visibility resolves client-side, so gate the bar until mount
-  // to keep the server and first client render identical (no hydration
-  // mismatch, no items popping in). SSR-stable default: render nothing.
+  // Feature-flag visibility resolves client-side, so hold the bar until mount
+  // AND until its gated members have settled: the server and first client
+  // render stay identical (no hydration mismatch), and the bar renders its
+  // final shape once instead of reflowing. SSR-stable default: render nothing.
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  if (!mounted) {
+  if (!(mounted && agentsFlagReady)) {
     return null;
   }
 
   const flagState: Record<string, boolean> = {
     [ArtifactFlag.Issues]: issuesEnabled,
+    [AGENTS_NAV_FLAG_KEY]: agentsEnabled,
   };
 
   const visibleDestinations = resolveMobileNavDestinations(flagState);

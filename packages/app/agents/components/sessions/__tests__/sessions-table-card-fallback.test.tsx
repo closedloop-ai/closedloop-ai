@@ -1,9 +1,20 @@
+import { TOTAL_ESTIMATED_COST_LABEL } from "@repo/api/src/types/total-estimated-cost-copy";
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
 import { SessionRepositoryDisplayKind } from "@repo/app/agents/lib/session-repository-label";
+import {
+  SESSIONS_BRANCHES_COLUMN_ID,
+  SESSIONS_MODEL_COLUMN_ID,
+  SESSIONS_REPO_COLUMN_ID,
+} from "@repo/app/agents/lib/sessions-table-columns";
+import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
+import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
+import { GRIDVIEW_ADOPTION_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { SessionsTable } from "../session-detail-table";
 import { createSessionTableRowFixture } from "../session-list-fixtures";
-import { SessionsTable, type SessionTableRow } from "../sessions-table";
+import { sessionsColumnLabel } from "./sessions-column-label.test-helpers";
 
 vi.mock("@repo/design-system/components/ui/tooltip", () => tooltipMockModule);
 
@@ -12,6 +23,10 @@ vi.mock("@repo/design-system/components/ui/tooltip", () => tooltipMockModule);
 // selection is testable in jsdom without a real container-width measurement.
 // `auto` (the default) measures the container and picks one layout at runtime —
 // covered by the 360px Playwright spec, not here.
+
+// ISS-10636: the cost column is the one id whose rendered label is NOT its spec
+// label — the table resolves it to the canonical dollar phrase — so
+// `sessionsColumnLabel` locates every other column here and this one does not.
 
 // ISS-4586: the fixture's canonical session status is "active" → "Active" badge.
 // ("working" is an AGENT status; as a session value it now folds to Inactive.)
@@ -46,11 +61,27 @@ describe("SessionsTable card fallback (FEA-3865)", () => {
     // label. The `<dt>`/`<dd>` pairing is what a screen reader announces.
     const repoLabel = screen.getByText("Repository");
     expect(repoLabel.tagName).toBe("DT");
-    const costLabel = screen.getByText("Cost");
+    const costLabel = screen.getByText(TOTAL_ESTIMATED_COST_LABEL);
     expect(costLabel.tagName).toBe("DT");
     const costValue = costLabel.nextElementSibling as HTMLElement;
     expect(costValue.tagName).toBe("DD");
     expect(within(costValue).getByText("$4.12")).toBeInTheDocument();
+  });
+
+  it("preserves detail cards when the list narrow-grid rollout is enabled", () => {
+    render(
+      <FeatureFlagAdapterProvider
+        adapter={createStaticFeatureFlagAdapter({
+          enabledFlags: [GRIDVIEW_ADOPTION_FEATURE_FLAG_KEY],
+        })}
+      >
+        <SessionsTable items={[ROW]} mode="compact" renderName={renderName} />
+      </FeatureFlagAdapterProvider>
+    );
+
+    expect(screen.queryByRole("grid")).toBeNull();
+    expect(screen.getByText("Repository").tagName).toBe("DT");
+    expect(screen.getByText("Active")).toBeVisible();
   });
 
   it("renders the grid, not cards, in expanded mode", () => {
@@ -62,7 +93,7 @@ describe("SessionsTable card fallback (FEA-3865)", () => {
     // does not exist.
     expect(screen.getByText("Repository")).toBeInTheDocument();
     expect(
-      screen.queryByRole("term", { name: "Cost" })
+      screen.queryByRole("term", { name: TOTAL_ESTIMATED_COST_LABEL })
     ).not.toBeInTheDocument();
   });
 
@@ -91,11 +122,15 @@ describe("SessionsTable card fallback (FEA-3865)", () => {
     );
 
     // Columns with real values still render as `<dt>` labels…
-    expect(screen.getByText("Cost")).toBeInTheDocument();
+    expect(screen.getByText(TOTAL_ESTIMATED_COST_LABEL)).toBeInTheDocument();
     expect(screen.getByText("Duration")).toBeInTheDocument();
     // …but the em-dash empty-rendering columns are omitted entirely, no dash line.
-    expect(screen.queryByText("Linked branches")).not.toBeInTheDocument();
-    expect(screen.queryByText("Model")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(sessionsColumnLabel(SESSIONS_BRANCHES_COLUMN_ID))
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(sessionsColumnLabel(SESSIONS_MODEL_COLUMN_ID))
+    ).not.toBeInTheDocument();
   });
 
   it("drops the Repository row from the card when no remote was ever resolved (ISS-4996)", () => {
@@ -119,7 +154,9 @@ describe("SessionsTable card fallback (FEA-3865)", () => {
       />
     );
 
-    expect(screen.queryByText("Repository")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(sessionsColumnLabel(SESSIONS_REPO_COLUMN_ID))
+    ).not.toBeInTheDocument();
   });
 
   it("keeps the Repository row in the card body rendering Unknown when the stored value is malformed (ISS-4996)", () => {
@@ -164,7 +201,7 @@ describe("SessionsTable card fallback (FEA-3865)", () => {
       />
     );
 
-    const costLabel = screen.getByText("Cost");
+    const costLabel = screen.getByText(TOTAL_ESTIMATED_COST_LABEL);
     expect(costLabel.tagName).toBe("DT");
     const costValue = costLabel.nextElementSibling as HTMLElement;
     expect(within(costValue).getByText("$3.50")).toBeInTheDocument();
@@ -185,7 +222,9 @@ describe("SessionsTable card fallback (FEA-3865)", () => {
       />
     );
 
-    expect(screen.queryByText("Cost")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(TOTAL_ESTIMATED_COST_LABEL)
+    ).not.toBeInTheDocument();
   });
 
   it("renders the host-supplied extra column in the card body", () => {

@@ -21,8 +21,8 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
+import { test } from "vitest";
 import {
   advanceIncrementalPassCount,
   type DrainSelectionInput,

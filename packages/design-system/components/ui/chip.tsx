@@ -9,7 +9,7 @@ import { cn } from "@closedloop-ai/design-system/lib/utils";
 // Insights "No comparison" delta chip is one), and a focus ring copied by hand
 // drifts the first time this one changes. Import it rather than retyping it.
 const CHIP_FOCUS_RING_CLASS =
-  "focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none"
+  "focus-visible:border-ring focus-visible:ring-ring focus-visible:ring-[3px] outline-none"
 
 const chipVariants = cva(
   "inline-flex max-w-full items-center justify-center gap-1 rounded-full border font-medium whitespace-nowrap shrink-0 transition-[color,box-shadow,background-color] overflow-hidden [&>svg]:shrink-0 [&>svg]:pointer-events-none",

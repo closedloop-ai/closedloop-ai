@@ -4,20 +4,25 @@
  * 3 & 5, AC7): fingerprint every local transcript file so anything created or
  * grown while the app was closed is enqueued, then drain.
  *
- * Split out of `transcript-sync-service.ts`. It owns the three once-per-episode
- * latches the sweep sequences against — boot recovery, the FEA-3932 dead-letter
- * redrive, and the FEA-3463 consent-tier suppression log — because the ORDER
- * those fire in relative to the tier gate is the load-bearing part of this pass
- * and keeping them beside it is what makes that order reviewable.
+ * Split out of `transcript-sync-service.ts`. It owns the once-per-episode latches
+ * the sweep sequences against — the FEA-3932 dead-letter redrive and the FEA-3463
+ * consent-tier suppression log — plus the two RECURRING recoveries (ISS-4647's
+ * stranded blobs, ISS-7097's expired upload leases), because the ORDER those fire
+ * in relative to the tier gate is the load-bearing part of this pass and keeping
+ * them beside it is what makes that order reviewable.
  */
 import { TranscriptSyncClass } from "../../shared/transcript-sync-status-contract.js";
 import type { TranscriptSyncStore } from "../database/transcript-sync-store.js";
+import { importHealthEventForMaterializeRejection } from "./opencode-materialize-outcome.js";
 import {
   observeTranscriptRef,
   type TranscriptObserveDeps,
 } from "./transcript-observe.js";
 import type { TranscriptSyncServiceOptions } from "./transcript-sync-options.js";
-import type { TranscriptFileRef } from "./transcript-sync-types.js";
+import {
+  TRANSCRIPT_UPLOAD_LEASE_MS,
+  type TranscriptFileRef,
+} from "./transcript-sync-types.js";
 
 export type TranscriptDiscoverySweeperDeps = {
   opts: TranscriptSyncServiceOptions;
@@ -31,8 +36,6 @@ export type TranscriptDiscoverySweeperDeps = {
 };
 
 export class TranscriptDiscoverySweeper {
-  /** Boot recovery (requeue stale `uploading` rows) runs once per start. */
-  private staleRequeued = false;
   /** FEA-3932: one-shot dead-letter redrive runs once per service lifetime. */
   private redriven = false;
   /**
@@ -41,21 +44,27 @@ export class TranscriptDiscoverySweeper {
    * a later re-closure logs again.
    */
   private tierSuppressedLogged = false;
+  /**
+   * ISS-11449 (whitlockk review): a sweep that found no store yet. The startup sweep
+   * and the sign-in kick can both land before the dashboard DB is ready, and
+   * nothing else re-kicks discovery for 30 minutes, so the sweep stays owed
+   * until a drain tick finds the store (see {@link isAwaitingStore}).
+   */
+  private awaitingStore = false;
 
   private readonly deps: TranscriptDiscoverySweeperDeps;
 
+  /**
+   * ISS-7097: the instant this lane began taking upload claims. Any
+   * `uploadingSince` older than it was stamped by a process that is gone, so the
+   * reclaim can re-arm it without waiting out the lease — which is what keeps
+   * crash recovery immediate on relaunch instead of trailing by up to an hour.
+   */
+  private readonly claimableFrom: string;
+
   constructor(deps: TranscriptDiscoverySweeperDeps) {
     this.deps = deps;
-  }
-
-  /**
-   * A fresh start re-runs crash recovery — a stop mid-upload can itself leave an
-   * `uploading` row behind. The redrive latch is deliberately NOT reset: it is
-   * one-shot for the whole process lifetime. The stranded-blob re-arm needs no
-   * reset at all — ISS-4647 made it recurring (see {@link rearmStrandedBlobs}).
-   */
-  resetForRestart(): void {
-    this.staleRequeued = false;
+    this.claimableFrom = deps.now();
   }
 
   /**
@@ -70,15 +79,17 @@ export class TranscriptDiscoverySweeper {
     }
     const store = opts.getStore();
     if (!store) {
+      this.awaitingStore = true;
       return;
     }
-    await this.recoverStaleUploads(store);
+    this.awaitingStore = false;
+    await this.reclaimExpiredUploadLeases(store);
     await this.rearmStrandedBlobs(store);
     // FEA-3463: honor the consent tier before growing the queue. The drain
     // (`shouldRun`) early-returns while the tier is closed, so any rows observed
     // here would sit `queued` forever and the queue would grow every 30-min
     // sweep. Skip the discovery write entirely and log once so the DB state
-    // stays honest. Boot recovery above is bounded and still runs; the next
+    // stays honest. The recoveries above are bounded and still run; the next
     // sweep after the tier is set re-discovers and enqueues these files.
     if (!this.deps.tierAllowsSync()) {
       if (!this.tierSuppressedLogged) {
@@ -102,31 +113,49 @@ export class TranscriptDiscoverySweeper {
     await this.deps.drainOnce();
   }
 
+  /** Whether a sweep is owed to a store that was not ready when it ran. */
+  isAwaitingStore(): boolean {
+    return this.awaitingStore;
+  }
+
   /**
-   * Boot recovery: revive rows a crash/force-quit stranded in `uploading` (ready
-   * queries exclude them and observe won't re-queue them). Runs on the first
-   * sweep the store is available for, before the drain — and ABOVE the consent
-   * tier gate, because it only settles rows that already exist rather than
-   * growing the queue.
+   * ISS-7097: revive rows whose durable `uploading` claim expired — an upload
+   * whose settle never landed. Ready queries exclude `uploading` and observe
+   * deliberately won't re-queue it, so such a row is reachable by nothing else.
+   * Runs before the drain and ABOVE the consent tier gate, because it only
+   * settles rows that already exist rather than growing the queue.
+   *
+   * RECURRING, and that is the fix. Its predecessor `recoverStaleUploads` was
+   * latched to the first successful sweep per process, so a settle lost at
+   * minute 31 waited for the next app START — 21+ hours on the install that
+   * raised this. Losing a settle is not a boot-only condition, exactly as ISS-4647
+   * found for stranded blobs (see {@link rearmStrandedBlobs}, whose docblock makes
+   * the same argument). What the old one could NOT do is run on a tick: it matched
+   * every `uploading` row unconditionally, so it would have reset the claim of an
+   * upload running concurrently in this very process. The lease is what removes
+   * that hazard — a claim younger than {@link TRANSCRIPT_UPLOAD_LEASE_MS} does not
+   * match — so no latch is needed and none is kept.
+   *
+   * A claim older than {@link claimableFrom} skips the lease wait entirely: it
+   * belongs to a process that no longer exists, so a crash two minutes into an
+   * upload still recovers on the next sweep after relaunch rather than sitting
+   * out the remaining 58 minutes of a lease nobody holds.
    */
-  private async recoverStaleUploads(store: TranscriptSyncStore): Promise<void> {
-    if (this.staleRequeued) {
-      return;
-    }
-    // ISS-4647: the latch is burned only AFTER the mutation succeeded. Setting
-    // it first meant one transient db-host rejection disabled crash recovery for
-    // the whole process lifetime — a rejected sweep must be re-attempted by the
-    // next one, not silently written off.
-    const revived = await this.runRecovery("stale-upload recovery", () =>
-      store.requeueStale(this.deps.now())
+  private async reclaimExpiredUploadLeases(
+    store: TranscriptSyncStore
+  ): Promise<void> {
+    const revived = await this.runRecovery(
+      "expired upload-lease recovery",
+      () =>
+        store.requeueExpiredUploadLeases({
+          now: this.deps.now(),
+          leaseMs: TRANSCRIPT_UPLOAD_LEASE_MS,
+          claimableFrom: this.claimableFrom,
+        })
     );
-    if (revived === null) {
-      return;
-    }
-    this.staleRequeued = true;
-    if (revived > 0) {
+    if (revived !== null && revived > 0) {
       this.deps.log(
-        `transcript sync requeued ${revived} stale uploading row(s)`
+        `transcript sync reclaimed ${revived} expired upload lease(s)`
       );
     }
   }
@@ -240,6 +269,20 @@ export class TranscriptDiscoverySweeper {
       this.deps.log(
         `transcript materialize failed: ${error instanceof Error ? error.message : String(error)}`
       );
+      // ISS-8600: a deliberate `stop()` settles through this same catch on the
+      // ISS-4903 shutdown path, so the classifier returns nothing for it and
+      // the seam is not called at all — reporting one would put a materialize
+      // failure on every clean quit with a pass in flight. Swallowed on its own
+      // because the sweep's best-effort posture covers the report too: a
+      // throwing sink must not abort discovery any more than a failed pass does.
+      const kind = importHealthEventForMaterializeRejection(error);
+      if (kind) {
+        try {
+          this.deps.opts.noteMaterializeOutcome?.(kind);
+        } catch {
+          /* best-effort by contract — see above */
+        }
+      }
     }
   }
 

@@ -20,11 +20,6 @@
 import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
 import {
-  autoRollbackTransaction,
-  createTestOrganization,
-  createTestUser,
-} from "@/__tests__/utils/db-helpers";
-import {
   buildEventIds,
   buildSessionChunk,
   type ChunkMeta,
@@ -32,7 +27,12 @@ import {
   createComputeTarget,
   ingestChunk,
   readPersistedChunkState,
-} from "@/app/agent-sessions/chunked-sync-test-helpers";
+} from "@/__tests__/utils/chunked-sync-test-helpers";
+import {
+  createTestOrganization,
+  createTestUser,
+  joinAmbientTransactionForSessionSyncWrites,
+} from "@/__tests__/utils/db-helpers";
 
 const hasDatabase = Boolean(keys().DATABASE_URL);
 const describeIfDb = hasDatabase ? describe : describe.skip;
@@ -90,7 +90,7 @@ async function setup(): Promise<ChunkSyncContext> {
 
 describeIfDb("chunked-session sync repair (FEA-3788, PRD-536 D3)", () => {
   it("repairs a half-committed chunked session on a subsequent full resync", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const context = await setup();
 
       const allEventIds = buildEventIds(6);
@@ -124,7 +124,7 @@ describeIfDb("chunked-session sync repair (FEA-3788, PRD-536 D3)", () => {
   });
 
   it("does not lose or double-write events when a complete chunk sequence lands in one pass", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const context = await setup();
 
       const allEventIds = buildEventIds(6);
@@ -149,7 +149,7 @@ describeIfDb("chunked-session sync repair (FEA-3788, PRD-536 D3)", () => {
   });
 
   it("re-fires the delete-replace when a NEW revision arrives chunked over a fully-synced older revision", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const context = await setup();
 
       // Fully sync an OLD revision (unchunked) with its own event set.

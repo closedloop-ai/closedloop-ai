@@ -1,14 +1,14 @@
 "use client";
 
-import { SummaryCardRow } from "@repo/app/shared/components/summary-card-row";
-import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
-import { Skeleton } from "@repo/design-system/components/ui/skeleton";
-import { SESSIONS_COST_METRIC_CARD_LABEL } from "./cost-metric-card";
+import { TOTAL_ESTIMATED_COST_ALIAS_LABEL } from "@repo/api/src/types/total-estimated-cost-copy";
+import { SummaryMetricsLoadingRow } from "@repo/app/shared/components/summary-metrics-loading-row";
 import {
-  PRS_SHIPPED_METRIC_CARD_LABEL,
-  SESSIONS_METRIC_CARD_LABEL,
-  TOTAL_TOKENS_METRIC_CARD_LABEL,
-} from "./sessions-summary-card-labels";
+  isSummaryCardVisible,
+  SESSIONS_SUMMARY_CARD_IDS,
+  SessionsSummaryCardId,
+} from "./sessions-summary-card-visibility";
+import { SUMMARY_COMPARISON_SHELL_SHIMMER } from "./sessions-summary-delta-slots";
+import { useSessionsSummaryCardLabels } from "./use-sessions-summary-card-labels";
 
 /**
  * The Sessions summary strip while the parent's usage read is still pending.
@@ -33,6 +33,11 @@ import {
  * the delta slot (below) reserves with a skeleton rather than a claim. The one
  * thing the shell states as fact is the LABEL, which is known before the read
  * and is the reason the reader can already tell which five metrics are coming.
+ *
+ * ISS-9887: that strip is now `SummaryMetricsLoadingRow`, shared with the
+ * Branches summary row, which had reached the same shape independently and then
+ * diverged from it on reload. What is left here is Sessions' own vocabulary —
+ * which cards are visible, and what the fifth one is called.
  */
 export function SessionsSummaryCardsLoading({
   className,
@@ -41,6 +46,7 @@ export function SessionsSummaryCardsLoading({
   locPerDollarLabel,
   reservesDeltaSlot,
   wrapBelow = false,
+  hiddenCardIds,
 }: {
   className?: string;
   /** Per-card sizing, resolved by the caller from its layout mode. */
@@ -48,10 +54,17 @@ export function SessionsSummaryCardsLoading({
   /** The caption every shell carries, shared with the settled cards' own wait state. */
   loadingDetail: string;
   /**
-   * The LOC/$ card's label, resolved by the caller. It is picked from a feature
-   * flag, and the flag is read once in the settled component rather than a
-   * second time here, so the two renders cannot disagree about which label the
-   * fifth card carries.
+   * The LOC/$ card's label, resolved by the caller.
+   *
+   * ISS-9978: this is no longer flag-picked, and the two renders CAN now
+   * disagree. The settled card resolves its label from the response's
+   * `mergedLocPerDollarBasis`, which does not exist until the read lands — so
+   * the shell necessarily states the shipped label and the settled card
+   * repaints a coarser one on the single arm where the server names a basis
+   * this build cannot. That is reachable only from a server newer than this
+   * client; against every deployed server the two agree. The shell cannot know
+   * the basis in advance, so this is a stated limitation rather than a gap to
+   * plumb.
    */
   locPerDollarLabel: string;
   /**
@@ -64,33 +77,73 @@ export function SessionsSummaryCardsLoading({
    */
   reservesDeltaSlot: boolean;
   wrapBelow?: boolean;
+  /**
+   * FEA-4217 — the cards switched off in the toolbar's Options menu. The shell
+   * has to honour the same set as the settled strip: a shell that reserved five
+   * slots for a strip that settles into three would reintroduce exactly the
+   * layout jump this component exists to remove.
+   */
+  hiddenCardIds?: ReadonlySet<string>;
 }) {
+  // ISS-9971 / ISS-10667: the menu-row vocabulary, which is what three of the
+  // five cards settle into. The other two are resolved below.
+  const summaryCardLabels = useSessionsSummaryCardLabels();
   return (
-    <SummaryCardRow busy className={className} wrapBelow={wrapBelow}>
-      {[
-        SESSIONS_METRIC_CARD_LABEL,
-        TOTAL_TOKENS_METRIC_CARD_LABEL,
-        SESSIONS_COST_METRIC_CARD_LABEL,
-        PRS_SHIPPED_METRIC_CARD_LABEL,
-        locPerDollarLabel,
-      ].map((label) => (
-        <MetricCard
-          className={cardClassName}
-          // A skeleton, NOT the "No prior period" placeholder the settled card
-          // uses. The row genuinely does not know yet whether a prior period
-          // exists, and printing that line here would be a claim the read has
-          // not returned — the same reason the value slot shimmers instead of
-          // rendering a zero.
-          deltaPlaceholder={
-            reservesDeltaSlot ? <Skeleton className="h-4 w-24 rounded" /> : null
-          }
-          detail={loadingDetail}
-          key={label}
-          label={label}
-          loading
-          value={null}
-        />
-      ))}
-    </SummaryCardRow>
+    <SummaryMetricsLoadingRow
+      cardClassName={cardClassName}
+      cards={SESSIONS_SUMMARY_CARD_IDS.filter((id) =>
+        isSummaryCardVisible(id, hiddenCardIds)
+      ).map((id) => {
+        // The LOC/$ label is resolved by the caller, so it is read from the
+        // prop rather than the static map. ISS-9978 made the settled card
+        // resolve it from the payload's basis, which no loading render can
+        // know — see the prop's own doc for why the shell states the shipped
+        // label and what that costs on the one unreachable-today arm.
+        //
+        // Cost is off the map for a different reason: the map spells the metric
+        // out for the Options MENU, which cannot take the alias the card
+        // renders. A shell on the menu row's word would rewrite the label
+        // the instant the read landed — the settle ISS-5366 exists to remove.
+        const label = resolveLoadingCardLabel(
+          id,
+          locPerDollarLabel,
+          summaryCardLabels
+        );
+        return { key: label, label };
+      })}
+      className={className}
+      // A skeleton, NOT the "No prior period" placeholder the settled card
+      // uses. The row genuinely does not know yet whether a prior period
+      // exists, and printing that line here would be a claim the read has
+      // not returned — the same reason the value slot shimmers instead of
+      // rendering a zero.
+      //
+      // ISS-7422 gave the SETTLED strip the same pending state, so the
+      // shimmer's geometry is now one shared constant rather than a shape
+      // this file owned alone. The shell keeps the BARE variant: it renders
+      // ungated, so it must stay byte-identical, and the row's own
+      // `aria-busy` already announces the wait that the settled strip has to
+      // announce per card.
+      deltaPlaceholder={
+        reservesDeltaSlot ? SUMMARY_COMPARISON_SHELL_SHIMMER : null
+      }
+      loadingDetail={loadingDetail}
+      wrapBelow={wrapBelow}
+    />
   );
+}
+
+/** The word each shell states — the two cards whose settled label is not the menu row's. */
+function resolveLoadingCardLabel(
+  id: SessionsSummaryCardId,
+  locPerDollarLabel: string,
+  summaryCardLabels: Readonly<Record<SessionsSummaryCardId, string>>
+): string {
+  if (id === SessionsSummaryCardId.LocPerDollar) {
+    return locPerDollarLabel;
+  }
+  if (id === SessionsSummaryCardId.Cost) {
+    return TOTAL_ESTIMATED_COST_ALIAS_LABEL;
+  }
+  return summaryCardLabels[id];
 }

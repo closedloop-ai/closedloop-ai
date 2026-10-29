@@ -17,11 +17,8 @@ import {
 import { GitHubPRState } from "@repo/api/src/types/github-status";
 import { withDb } from "@repo/database";
 import { describe, expect, it } from "vitest";
-import {
-  adoptRepolessPullRequestByRepoIdentity,
-  adoptRepolessPullRequestDetail,
-} from "@/app/branches/github-projection-writer";
-import { autoRollbackTransaction } from "../utils/db-helpers";
+import { reconcilePullRequestProviderIdentityInTransaction } from "@/app/branches/pull-request-provider-identity";
+import { joinAmbientTransactionForSessionSyncWrites } from "../utils/db-helpers";
 import {
   baseFixture,
   branchRef,
@@ -40,7 +37,7 @@ const describeIfDb = hasDatabase ? describe : describe.skip;
 
 describeIfDb("desktop PR sync -> PullRequestDetail (FEA-2732)", () => {
   it("creates a repo-less PullRequestDetail nested under the D2 branch and sets it current (non-App, OPEN)", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const fx = await baseFixture();
       const repo = "acme/widgets";
       const normalized = normalizeRepoFullName(repo);
@@ -98,7 +95,7 @@ describeIfDb("desktop PR sync -> PullRequestDetail (FEA-2732)", () => {
   });
 
   it("advances the branch lifecycle to MERGED and stamps session push evidence", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const fx = await baseFixture();
       const repo = "acme/widgets";
       const branchName = "feature/merged";
@@ -139,7 +136,7 @@ describeIfDb("desktop PR sync -> PullRequestDetail (FEA-2732)", () => {
   });
 
   it("converges on a single row across idempotent re-sync, refreshing facts", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const fx = await baseFixture();
       const repo = "acme/widgets";
       const branchName = "feature/idempotent";
@@ -189,7 +186,7 @@ describeIfDb("desktop PR sync -> PullRequestDetail (FEA-2732)", () => {
   });
 
   it("isolates PRs with the same (repo, number) across organizations", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const repo = "acme/widgets";
       const normalized = normalizeRepoFullName(repo);
       const branchName = "feature/shared-number";
@@ -231,7 +228,7 @@ describeIfDb("desktop PR sync -> PullRequestDetail (FEA-2732)", () => {
   });
 
   it("adopts a desktop repo-less row when the App installs later (no duplicate)", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const fx = await baseFixture();
       const repo = "acme/widgets";
       const branchName = "feature/adopt";
@@ -259,8 +256,9 @@ describeIfDb("desktop PR sync -> PullRequestDetail (FEA-2732)", () => {
 
       const seeded = await seedRepo(fx.organizationId, "acme/widgets");
       await withDb((db) =>
-        adoptRepolessPullRequestDetail(db, {
-          branchArtifactId: branch!.artifactId,
+        reconcilePullRequestProviderIdentityInTransaction(db, {
+          organizationId: fx.organizationId,
+          repositoryFullName: normalizeRepoFullName(repo),
           number: 5,
           repositoryId: seeded.repositoryId,
           githubId: "PR_kwDO_adopt_5",
@@ -280,7 +278,7 @@ describeIfDb("desktop PR sync -> PullRequestDetail (FEA-2732)", () => {
   });
 
   it("adopts a desktop App-repo row (repositoryId set, githubId null) in place, stamping githubId (FEA-2732 HIGH #1)", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const fx = await baseFixture();
       const repo = "acme/widgets";
       const branchName = "feature/app-repo-adopt";
@@ -317,8 +315,9 @@ describeIfDb("desktop PR sync -> PullRequestDetail (FEA-2732)", () => {
       // App-repo row was skipped and its githubId stayed null — the githubId-
       // keyed upsert then CREATE-collided (P2002) on repositoryId_number.
       await withDb((db) =>
-        adoptRepolessPullRequestDetail(db, {
-          branchArtifactId: branch!.artifactId,
+        reconcilePullRequestProviderIdentityInTransaction(db, {
+          organizationId: fx.organizationId,
+          repositoryFullName: normalizeRepoFullName(repo),
           number: 9,
           repositoryId: seeded.repositoryId,
           githubId: "PR_kwDO_high1_9",
@@ -339,7 +338,7 @@ describeIfDb("desktop PR sync -> PullRequestDetail (FEA-2732)", () => {
   });
 
   it("webhook-wins: desktop sync only gap-fills a webhook-owned row and does not advance status", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const fx = await baseFixture();
       const repo = "acme/widgets";
       const normalized = normalizeRepoFullName(repo);
@@ -428,7 +427,7 @@ describeIfDb("desktop PR sync -> PullRequestDetail (FEA-2732)", () => {
   });
 
   it("skips an out-of-order (older) desktop sync so PR/branch state cannot regress", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const fx = await baseFixture();
       const repo = "acme/widgets";
       const branchName = "feature/monotonic";
@@ -483,7 +482,7 @@ describeIfDb("desktop PR sync -> PullRequestDetail (FEA-2732)", () => {
   });
 
   it("adopts a repo-less row + its branch by D2 identity when the App installs (webhook path)", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const fx = await baseFixture();
       const repo = "acme/widgets";
       const normalized = normalizeRepoFullName(repo);
@@ -513,7 +512,7 @@ describeIfDb("desktop PR sync -> PullRequestDetail (FEA-2732)", () => {
 
       const seeded = await seedRepo(fx.organizationId, repo);
       const adopted = await withDb((db) =>
-        adoptRepolessPullRequestByRepoIdentity(db, {
+        reconcilePullRequestProviderIdentityInTransaction(db, {
           organizationId: fx.organizationId,
           repositoryFullName: normalized,
           number: 12,
@@ -521,7 +520,7 @@ describeIfDb("desktop PR sync -> PullRequestDetail (FEA-2732)", () => {
           githubId: "PR_kwDO_wh_12",
         })
       );
-      expect(adopted).toBe(true);
+      expect(adopted).toBe(before?.id);
 
       const rows = await withDb((db) =>
         db.pullRequestDetail.findMany({
@@ -545,7 +544,7 @@ describeIfDb("desktop PR sync -> PullRequestDetail (FEA-2732)", () => {
 
       // Idempotent: no repo-less row remains, so a re-run adopts nothing.
       const again = await withDb((db) =>
-        adoptRepolessPullRequestByRepoIdentity(db, {
+        reconcilePullRequestProviderIdentityInTransaction(db, {
           organizationId: fx.organizationId,
           repositoryFullName: normalized,
           number: 12,
@@ -553,12 +552,12 @@ describeIfDb("desktop PR sync -> PullRequestDetail (FEA-2732)", () => {
           githubId: "PR_kwDO_wh_12",
         })
       );
-      expect(again).toBe(false);
+      expect(again).toBe(before?.id);
     });
   });
 
   it("never downgrades a terminal MERGED branch status (desktop cannot un-merge)", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransactionForSessionSyncWrites(async () => {
       const fx = await baseFixture();
       const repo = "acme/widgets";
       const branchName = "feature/no-downgrade";

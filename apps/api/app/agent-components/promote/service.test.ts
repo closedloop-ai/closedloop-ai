@@ -381,6 +381,136 @@ describe("promoteAgentComponent", () => {
     });
   });
 
+  it("recovers the race on the envelope adapter-pg actually raises (ISS-8804)", async () => {
+    // `meta.target` is unset on this adapter, so before the both-shapes read
+    // this recovery never ran and a promote race surfaced as a 500.
+    const { catalogItemFindFirst } = installDb(makeComponent());
+    catalogItemFindFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({
+      id: "raced-item-3",
+      distributions: [{ id: "raced-dist-3" }],
+    });
+    const p2002 = Object.assign(new Error("Unique constraint failed"), {
+      code: "P2002",
+      meta: {
+        driverAdapterError: {
+          name: "DriverAdapterError",
+          cause: {
+            originalCode: "23505",
+            kind: "UniqueConstraintViolation",
+            constraint: {
+              index:
+                "catalog_items_organization_id_source_agent_component_id_key",
+            },
+          },
+        },
+      },
+    });
+    mocks.withDb.tx.mockRejectedValueOnce(p2002);
+
+    const result = await promoteAgentComponent({
+      organizationId: ORG,
+      userId: USER,
+      agentComponentId: COMPONENT_ID,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      response: {
+        catalogItemId: "raced-item-3",
+        distributionId: "raced-dist-3",
+      },
+    });
+  });
+
+  it("does not match an index that merely contains the source-component column", async () => {
+    // Exactness matters here for the same reason it does on teams: the previous
+    // containment test would have accepted any future index whose name embeds
+    // `source_agent_component_id`.
+    // THE RACED ITEM IS LOAD-BEARING, not scenery. With `existingPromotion`
+    // null the recovery lookup returns null too, so a FALSE-POSITIVE match falls
+    // through to `throw error` — the same observable outcome as no match at all,
+    // and `.rejects.toBe(p2002)` holds either way. Reverting the exactness
+    // narrowing left both of these green: the delete-the-fix false green this
+    // ticket exists to remove, reintroduced by the test written to prevent it.
+    // With a raced item present a wrong match resolves `{ok:true}` instead, so
+    // the assertion bites, and the call-count assertion pins the stronger
+    // property — the recovery lookup is never consulted at all.
+    const { catalogItemFindFirst } = installDb(makeComponent());
+    // First call is the up-front idempotency check and MUST be null, or the
+    // promote short-circuits to the idempotent path and never reaches the
+    // create that raises. Second call is the recovery lookup.
+    catalogItemFindFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({
+      id: "raced-item-negative-1",
+      distributions: [{ id: "raced-dist-negative-1" }],
+    });
+    const p2002 = Object.assign(new Error("Unique constraint failed"), {
+      code: "P2002",
+      meta: {
+        driverAdapterError: {
+          cause: {
+            constraint: {
+              index: "catalog_items_source_agent_component_id_history_idx",
+            },
+          },
+        },
+      },
+    });
+    mocks.withDb.tx.mockRejectedValueOnce(p2002);
+
+    await expect(
+      promoteAgentComponent({
+        organizationId: ORG,
+        userId: USER,
+        agentComponentId: COMPONENT_ID,
+      })
+    ).rejects.toBe(p2002);
+    expect(catalogItemFindFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it("rethrows a sibling catalog_items unique on that envelope", async () => {
+    // `catalog_items` also carries (organizationId, agentSlug, agent); it is
+    // not the promotion-source conflict and must still propagate.
+    // THE RACED ITEM IS LOAD-BEARING, not scenery. With `existingPromotion`
+    // null the recovery lookup returns null too, so a FALSE-POSITIVE match falls
+    // through to `throw error` — the same observable outcome as no match at all,
+    // and `.rejects.toBe(p2002)` holds either way. Reverting the exactness
+    // narrowing left both of these green: the delete-the-fix false green this
+    // ticket exists to remove, reintroduced by the test written to prevent it.
+    // With a raced item present a wrong match resolves `{ok:true}` instead, so
+    // the assertion bites, and the call-count assertion pins the stronger
+    // property — the recovery lookup is never consulted at all.
+    const { catalogItemFindFirst } = installDb(makeComponent());
+    // First call is the up-front idempotency check and MUST be null, or the
+    // promote short-circuits to the idempotent path and never reaches the
+    // create that raises. Second call is the recovery lookup.
+    catalogItemFindFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({
+      id: "raced-item-negative-2",
+      distributions: [{ id: "raced-dist-negative-2" }],
+    });
+    const p2002 = Object.assign(new Error("Unique constraint failed"), {
+      code: "P2002",
+      meta: {
+        driverAdapterError: {
+          cause: {
+            constraint: {
+              index: "catalog_items_organization_id_agent_slug_agent_key",
+            },
+          },
+        },
+      },
+    });
+    mocks.withDb.tx.mockRejectedValueOnce(p2002);
+
+    await expect(
+      promoteAgentComponent({
+        organizationId: ORG,
+        userId: USER,
+        agentComponentId: COMPONENT_ID,
+      })
+    ).rejects.toBe(p2002);
+    expect(catalogItemFindFirst).toHaveBeenCalledTimes(1);
+  });
+
   it("recovers the race when the P2002 target is reported as a constraint-name string (FEA-3050)", async () => {
     const { catalogItemFindFirst } = installDb(makeComponent());
     catalogItemFindFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({

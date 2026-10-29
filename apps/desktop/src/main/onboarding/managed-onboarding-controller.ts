@@ -1,5 +1,6 @@
 import { DesktopDeviceSessionStatus } from "@repo/api/src/types/onboarding";
 import type { MessageBoxOptions } from "electron";
+import { DesktopRendererEventChannel } from "../../shared/desktop-renderer-event-channel.js";
 import {
   isRiskyAllowedDirectory,
   normalizeScopePath,
@@ -11,10 +12,9 @@ import type {
 import { provisionManagedKey } from "../auth/managed-key-provision.js";
 import type { GatewaySigningKeyStore } from "../command-signing/gateway-signing-key-store.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
-import type {
-  DesktopDeviceDescriptor,
-  DesktopSessionManager,
-} from "../session/desktop-session-manager.js";
+import type { DesktopAccountAdmission } from "../session/desktop-account-admission.js";
+import type { DesktopSessionManager } from "../session/desktop-session-manager.js";
+import type { DesktopDeviceDescriptor } from "../session/desktop-session-manager-types.js";
 import type { ApiKeyStore } from "../settings/api-key-store.js";
 import { isAllowedDesktopVerificationUrl } from "../settings/external-url-allowlist.js";
 import {
@@ -70,6 +70,9 @@ export type ManagedOnboardingControllerDeps = {
   settingsStore: SettingsStore;
   apiKeyStore: ApiKeyStore;
   desktopSessionManager: DesktopSessionManager;
+  getAccountAdmission?: () => DesktopAccountAdmission | null;
+  mayCommitManagedKey?: (captured: DesktopAccountAdmission) => boolean;
+  isCredentialMutationAllowed?: () => boolean;
   gatewaySigningKeyStore: GatewaySigningKeyStore;
   telemetryOrgProvider: TelemetryOrgProvider;
   desktopWindow: DesktopWindow;
@@ -189,7 +192,11 @@ export class ManagedOnboardingController {
   async processCanonicalOnboardingHandoff(
     entryPath: "open-file" | "cold-start" | "activate"
   ): Promise<void> {
-    if (this.processingOnboardingHandoff || this.deps.isShuttingDown()) {
+    if (
+      this.processingOnboardingHandoff ||
+      this.deps.isShuttingDown() ||
+      !this.isCredentialMutationAllowed()
+    ) {
       return;
     }
     this.processingOnboardingHandoff = true;
@@ -284,7 +291,13 @@ export class ManagedOnboardingController {
    * skips work if the active key is already DESKTOP_MANAGED.
    */
   async maybeAutoProvisionManagedKey(): Promise<void> {
-    if (this.autoProvisioningManagedKey || this.deps.isShuttingDown()) {
+    const admission = this.deps.getAccountAdmission?.();
+    if (
+      this.autoProvisioningManagedKey ||
+      this.deps.isShuttingDown() ||
+      (this.deps.getAccountAdmission && !admission) ||
+      !mayCommitManagedKey(this.deps, admission)
+    ) {
       return;
     }
     // Already holding a device-managed key for this profile — nothing to do.
@@ -300,7 +313,7 @@ export class ManagedOnboardingController {
     try {
       const accessToken =
         await this.deps.desktopSessionManager.getAccessToken();
-      if (!accessToken) {
+      if (!(accessToken && mayCommitManagedKey(this.deps, admission))) {
         return;
       }
       const gatewayId = this.deps.getActiveGatewayId();
@@ -326,6 +339,9 @@ export class ManagedOnboardingController {
           "managed-key-provision",
           `Auto-provision did not complete (${result.kind}); manual setup remains available.`
         );
+        return;
+      }
+      if (!mayCommitManagedKey(this.deps, admission)) {
         return;
       }
       // Store main-process only, tagged DESKTOP_MANAGED so PoP signing applies.
@@ -363,8 +379,7 @@ export class ManagedOnboardingController {
         fetchTrustedDesktopConfig({ webAppOrigin: payload.webAppOrigin }),
       shouldRetry: isRetryableTrustedConfigFailure,
       delayMs: MANAGED_ONBOARDING_RETRY_DELAY_MS,
-      isCancelled: () =>
-        this.managedOnboardingRuns.isCancelled(run, this.deps.isShuttingDown()),
+      isCancelled: () => this.isManagedOnboardingCancelled(run),
     });
     if (this.shouldStopManagedOnboardingRun(run, "trusted config result")) {
       return;
@@ -402,8 +417,7 @@ export class ManagedOnboardingController {
         }),
       shouldRetry: isRetryableBootstrapClaimFailure,
       delayMs: MANAGED_ONBOARDING_RETRY_DELAY_MS,
-      isCancelled: () =>
-        this.managedOnboardingRuns.isCancelled(run, this.deps.isShuttingDown()),
+      isCancelled: () => this.isManagedOnboardingCancelled(run),
     });
 
     if (this.shouldStopManagedOnboardingRun(run, "claim result")) {
@@ -483,11 +497,7 @@ export class ManagedOnboardingController {
         return;
       }
       await seedReposConfig(safeSandboxBaseDirectory, {
-        isCancelled: () =>
-          this.managedOnboardingRuns.isCancelled(
-            run,
-            this.deps.isShuttingDown()
-          ),
+        isCancelled: () => this.isManagedOnboardingCancelled(run),
       });
       if (this.shouldStopManagedOnboardingRun(run, "completion state update")) {
         return;
@@ -515,6 +525,11 @@ export class ManagedOnboardingController {
   async startDesktopFirstDeviceOnboarding(
     webAppOriginInput?: string
   ): Promise<{ status: "approved" | "pending"; verificationUrl?: string }> {
+    if (!this.isCredentialMutationAllowed()) {
+      throw new Error(
+        "Managed onboarding is unavailable during sign-out cleanup"
+      );
+    }
     const webAppOrigin = normalizeWebAppOrigin(
       webAppOriginInput || this.deps.settingsStore.getWebAppOrigin()
     );
@@ -564,10 +579,7 @@ export class ManagedOnboardingController {
     const pollIntervalMs = Math.max(1000, start.pollIntervalSeconds * 1000);
     const expiresAtMs = Date.parse(start.expiresAt);
     while (
-      !this.managedOnboardingRuns.isCancelled(
-        run,
-        this.deps.isShuttingDown()
-      ) &&
+      !this.isManagedOnboardingCancelled(run) &&
       expiresAtMs > Date.now()
     ) {
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
@@ -639,9 +651,7 @@ export class ManagedOnboardingController {
     run: ManagedOnboardingRunToken,
     stage: string
   ): boolean {
-    if (
-      !this.managedOnboardingRuns.isCancelled(run, this.deps.isShuttingDown())
-    ) {
+    if (!this.isManagedOnboardingCancelled(run)) {
       return false;
     }
     gatewayLog.debug(
@@ -649,6 +659,19 @@ export class ManagedOnboardingController {
       `Skipping stale managed onboarding continuation at ${stage}.`
     );
     return true;
+  }
+
+  private isManagedOnboardingCancelled(
+    run: ManagedOnboardingRunToken
+  ): boolean {
+    return (
+      !this.isCredentialMutationAllowed() ||
+      this.managedOnboardingRuns.isCancelled(run, this.deps.isShuttingDown())
+    );
+  }
+
+  private isCredentialMutationAllowed(): boolean {
+    return this.deps.isCredentialMutationAllowed?.() !== false;
   }
 
   cancelManagedOnboardingForUserChange(reason: string): void {
@@ -680,7 +703,9 @@ export class ManagedOnboardingController {
   }
 
   private notifyOnboardingStateChanged(): void {
-    this.deps.desktopWindow.sendToRenderer("desktop:onboarding-state-changed");
+    this.deps.desktopWindow.sendToRenderer(
+      DesktopRendererEventChannel.OnboardingStateChanged
+    );
   }
 
   async maybeShowOnboardingPopup(): Promise<void> {
@@ -710,7 +735,9 @@ export class ManagedOnboardingController {
         Observability.onboardingPopupSuppressedAuto();
         return;
       }
-      this.deps.desktopWindow.sendToRenderer("desktop:show-onboarding-popup");
+      this.deps.desktopWindow.sendToRenderer(
+        DesktopRendererEventChannel.ShowOnboardingPopup
+      );
       Observability.onboardingPopupShown();
     } catch (error) {
       gatewayLog.warn(
@@ -738,6 +765,16 @@ export class ManagedOnboardingController {
       managedProvisioning: this.managedOnboardingState,
     };
   }
+}
+
+function mayCommitManagedKey(
+  deps: ManagedOnboardingControllerDeps,
+  admission: DesktopAccountAdmission | null | undefined
+): boolean {
+  if (!(admission && deps.mayCommitManagedKey)) {
+    return true;
+  }
+  return deps.mayCommitManagedKey(admission);
 }
 
 function handoffFailureMessage(reason: OnboardingHandoffFailureReason): string {

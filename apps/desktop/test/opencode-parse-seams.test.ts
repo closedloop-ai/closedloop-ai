@@ -16,9 +16,9 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, test } from "node:test";
 import { parseOpenCodeTranscript } from "@repo/lib/harness/opencode/parse-opencode";
 import { InvalidTokenCountError } from "@repo/lib/harness/token-counts";
+import { afterEach, test } from "vitest";
 import { createOpencodeCollector } from "../src/main/collectors/opencode/opencode-collector.js";
 import { resolveOpencodeDiffStats } from "../src/main/collectors/opencode/opencode-diff-stats.js";
 import {

@@ -13,10 +13,6 @@ import {
   BranchSyncStatus,
   LinkType,
 } from "@repo/api/src/types/artifact";
-import {
-  BranchViewLoadErrorCode,
-  type BranchViewLoadErrorCode as BranchViewLoadErrorCodeType,
-} from "@repo/api/src/types/branch-view";
 import { GitHubPRState as ApiGitHubPRState } from "@repo/api/src/types/github";
 import {
   GitHubFetchCredentialType,
@@ -36,7 +32,7 @@ import {
   GitHubPRState,
   withDb,
 } from "@repo/database";
-import { NextRequest } from "next/server";
+import type { GitHubSinglePullRequestResult } from "@repo/github/pull-request-rest";
 import { expect } from "vitest";
 import type { handlePullRequest } from "@/app/webhooks/github/handlers/pull-request-handler";
 import { handlePush as handlePushHandler } from "@/app/webhooks/github/handlers/push-handler";
@@ -139,33 +135,6 @@ export function freshPullRequest(
   };
 }
 
-export function branchViewRequest(externalLinkId: string) {
-  return new NextRequest(
-    `https://api.example.test/branch-view/${externalLinkId}`
-  );
-}
-
-export function branchViewSyncRequest(externalLinkId: string) {
-  return new NextRequest(
-    `https://api.example.test/branch-view/${externalLinkId}/sync`,
-    { method: "POST" }
-  );
-}
-
-export function loopBranchArtifactRequest(loopId: string, body: unknown) {
-  return new Request(
-    `https://api.example.test/api/loops/${loopId}/branch-artifact`,
-    {
-      method: "POST",
-      headers: {
-        authorization: "Bearer runner-token",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-    }
-  );
-}
-
 export function routeContext<TParams extends Record<string, string>>(
   params: TParams
 ) {
@@ -188,7 +157,10 @@ export async function flushPendingPromises(pending: Promise<unknown>[]) {
   await Promise.all(pending.splice(0));
 }
 
-export function withFixtureHeadAuthority(result: any, ctx?: TestContext) {
+export function withFixtureHeadAuthority(
+  result: GitHubSinglePullRequestResult | null,
+  ctx?: TestContext
+): GitHubSinglePullRequestResult | null {
   if (
     !result ||
     result.headRepository ||
@@ -220,16 +192,6 @@ export async function expectSuccess<T>(response: Response): Promise<T> {
   const body = await response.json();
   expect(body.success).toBe(true);
   return body.data as T;
-}
-
-export async function expectBranchViewUnavailable(
-  response: Response,
-  code: BranchViewLoadErrorCodeType = BranchViewLoadErrorCode.PullRequestUnavailable
-) {
-  expect(response.status).toBe(404);
-  const body = await response.json();
-  expect(body).toMatchObject({ success: false, code });
-  return body;
 }
 
 export async function seedBranchWithCurrentPr(

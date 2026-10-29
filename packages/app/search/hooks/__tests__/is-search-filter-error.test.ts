@@ -12,12 +12,13 @@ describe("isSearchFilterError", () => {
     expect(isSearchFilterError(error)).toBe(true);
   });
 
-  it.each([
-    401, 403, 404, 429,
-  ])("does not classify a %i as a filter error", (status) => {
-    const error = new ApiError("nope", status);
-    expect(isSearchFilterError(error)).toBe(false);
-  });
+  it.each([401, 403, 404, 429])(
+    "does not classify a %i as a filter error",
+    (status) => {
+      const error = new ApiError("nope", status);
+      expect(isSearchFilterError(error)).toBe(false);
+    }
+  );
 
   it("does not classify a 5xx as a filter error", () => {
     const error = new ApiError("boom", 500);

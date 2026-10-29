@@ -96,6 +96,8 @@ export type ProfilingDbOpRow = {
 export type ProfilingIpcRow = {
   channel: string;
   ms: number;
+  /** Byte length of Node's V8 serialization of a successful response. */
+  responseBytes?: number;
   ts: number;
 };
 

@@ -6,6 +6,7 @@ import {
 import { BarChart3 } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 import { PageShell } from "../layout/page-shell";
+import { DesktopInsightsProvider } from "./desktop-insights-provider";
 import {
   INSIGHTS_PAGE_DESCRIPTION,
   INSIGHTS_PAGE_TITLE,
@@ -49,9 +50,11 @@ export function InsightsView() {
   }
 
   return (
-    <Suspense fallback={<InsightsLoadingState />}>
-      <LazyDesktopInsightsBoundedView />
-    </Suspense>
+    <DesktopInsightsProvider>
+      <Suspense fallback={<InsightsLoadingState />}>
+        <LazyDesktopInsightsBoundedView />
+      </Suspense>
+    </DesktopInsightsProvider>
   );
 }
 

@@ -38,19 +38,17 @@ export type NotifySlackOpts = {
   /** Datadog-pivotable correlation identifier. Derive via `buildCorrelationId()`. */
   correlationId: string;
   /**
-   * Bold headline for the alert. Optional: omitting it keeps the historical
-   * preview-schema wording so the existing callers' alerts are unchanged.
-   *
-   * New callers should pass their own. This helper started life serving one
-   * route and hardcoded that route's headline, so every later caller posts
-   * under a title describing work it never did — an ops channel where the
-   * headline contradicts the route on the next line costs triage time exactly
-   * when it is scarcest.
+   * Bold headline for the alert. Optional override: omitting it derives the
+   * headline from `route`, so a caller cannot inherit a headline naming a job
+   * it never ran (ISS-5869 — the previous default named one specific job and
+   * five callers posted under it). Pass one only where the derived wording
+   * reads worse than a hand-written line.
    */
   title?: string;
 };
 
-const DEFAULT_ALERT_TITLE = "Preview schema cleanup failure";
+/** Neutral headline for a `route` too malformed to name a job. */
+const UNIDENTIFIED_ROUTE_TITLE = "Scheduled job failure";
 
 const slackApiResponseSchema = z.object({
   ok: z.boolean(),
@@ -80,7 +78,7 @@ type PostToSlackResult = SlackApiResponse & {
  * Pure function — reads no environment variables and produces no side effects.
  *
  * Includes:
- * - Headline from `opts.title` (defaults to the historical preview-schema text)
+ * - Headline from `opts.title`, or derived from `opts.route` when absent
  * - Route name for triage
  * - Per-category error summary for any category with errored > 0
  * - Datadog correlation identifier passed in via `opts.correlationId`
@@ -89,7 +87,7 @@ export function buildAlertText(opts: NotifySlackOpts): string {
   const { route, message, counters, correlationId, title } = opts;
 
   const lines: string[] = [
-    `*${title ?? DEFAULT_ALERT_TITLE}* — route: \`${route}\``,
+    `*${title ?? deriveAlertTitle(route)}* — route: \`${route}\``,
     message,
   ];
 
@@ -170,9 +168,7 @@ export function postToSlack(
 
 /**
  * Per-channel variant of `postToSlack` — posts to an explicit `channel` rather
- * than the global ops-channel constant. Used to deliver engagement messages to
- * an org's connected workspace (`SlackIntegration.defaultChannelId`) instead of
- * the single hardcoded ops channel.
+ * than the global ops-channel constant. `postToSlack` delegates to it.
  *
  * Shares `postToSlack`'s exact wire contract, timeout, and retryable-error
  * semantics; never throws — always resolves with an ok/error result.
@@ -226,7 +222,7 @@ export async function postToSlackChannel(
 // ---------------------------------------------------------------------------
 
 /**
- * Posts a Slack alert to channel C0EXAMPLE00 on preview-schema cleanup failures.
+ * Posts a Slack alert to channel C0EXAMPLE00 on a scheduled-job failure.
  *
  * Semantics:
  * - Fire-and-forget: returns void
@@ -259,4 +255,19 @@ export async function notifySlack(opts: NotifySlackOpts): Promise<void> {
       slackError: result.error ?? "unknown",
     });
   }
+}
+
+/**
+ * Headline for a caller that passed no `title`, derived from the job half of
+ * `route` (`"<job>:<trigger>"`). Derived rather than defaulted so the headline
+ * cannot name a job other than the one that failed, and derived rather than
+ * restated per call site so the two cannot drift.
+ */
+export function deriveAlertTitle(route: string): string {
+  const [job = ""] = route.split(":");
+  const words = job.trim().split("-").filter(Boolean).join(" ");
+  if (words.length === 0) {
+    return UNIDENTIFIED_ROUTE_TITLE;
+  }
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)} failure`;
 }

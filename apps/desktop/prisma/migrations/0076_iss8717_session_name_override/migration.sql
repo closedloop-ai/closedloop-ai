@@ -1,0 +1,12 @@
+-- ISS-8717: the owner-authored session name, local half.
+--
+-- `sessions.name` is the collector's derivation and is deliberately fresh-wins
+-- on re-import (`write-core-import-phases-session.ts`: `name = COALESCE($1, name)`,
+-- so a changed harness AI title propagates). A rename stored there is therefore
+-- overwritten by the next import of the same transcript. This column is not
+-- written by any import path, so it survives, and it rides the sync payload to
+-- the cloud as an additive optional field.
+--
+-- Nullable, no default, no backfill: NULL is "never renamed", which is every
+-- existing row.
+ALTER TABLE "sessions" ADD COLUMN "name_override" TEXT;

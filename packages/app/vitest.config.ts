@@ -1,8 +1,23 @@
 import path from "node:path";
+import {
+  automaticJsx,
+  pinnedReporters,
+  resolveLaneWorkers,
+  shardFromEnv,
+} from "@repo/vitest-config";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  // Not redundant with this package's own `jsx: react-jsx`: a sibling package's
+  // `.tsx`, resolved from source by the aliases below, transforms under that
+  // package's tsconfig, and `@repo/rich-text`'s is the Next preset's
+  // `jsx: "preserve"`.
+  oxc: automaticJsx(),
   test: {
+    reporters: pinnedReporters(),
+    // ISS-10902 — see resolveLaneWorkers for why a lane declares its width.
+    maxWorkers: resolveLaneWorkers(),
+    ...shardFromEnv(),
     globals: true,
     environment: "jsdom",
     environmentOptions: {
@@ -24,22 +39,43 @@ export default defineConfig({
       // `@repo/cost/genai-cost`, which the catch-all would resolve to a
       // nonexistent `packages/cost/genai-cost`.
       "@repo/cost": path.resolve(import.meta.dirname, "../cost/src"),
+      "@repo/design-system": path.resolve(
+        import.meta.dirname,
+        "../design-system"
+      ),
+      "@closedloop-ai/design-system": path.resolve(
+        import.meta.dirname,
+        "../design-system"
+      ),
+      "@repo/loops-api": path.resolve(import.meta.dirname, "../loops-api/src"),
       "@closedloop-ai/loops-api": path.resolve(
         import.meta.dirname,
         "../loops-api/src"
       ),
-      "@closedloop-ai/design-system": path.resolve(
+      "@closedloop-ai/shared-platform": path.resolve(
         import.meta.dirname,
-        "../../packages/design-system"
+        "../shared-platform/src"
       ),
       "@repo/shared-platform": path.resolve(
         import.meta.dirname,
         "../shared-platform/src"
       ),
-      // @repo/crewd (FEA-3814) is source-consumed under a `/src` root too — its
-      // `./model` subpath resolves to `src/model.ts` via package.json exports,
-      // which the catch-all `@repo` alias below bypasses. Must precede `@repo`.
-      "@repo/crewd": path.resolve(import.meta.dirname, "../crewd/src"),
+      // `@repo/rich-text` builds from `@repo/document-schema` (ISS-12503),
+      // whose subpaths resolve under `src/` too.
+      "@repo/document-schema": path.resolve(
+        import.meta.dirname,
+        "../document-schema/src"
+      ),
+      // `shared/realtime` (PLN-2106) reads the realtime client, whose subpaths,
+      // and those of the contract it imports, resolve under `src/`.
+      "@repo/realtime-client": path.resolve(
+        import.meta.dirname,
+        "../realtime-client/src"
+      ),
+      "@repo/realtime-contract": path.resolve(
+        import.meta.dirname,
+        "../realtime-contract/src"
+      ),
       "@repo": path.resolve(import.meta.dirname, ".."),
     },
   },

@@ -20,7 +20,8 @@ import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppCoreStoryProviders } from "../../../shared/storybook/decorators";
-import { agentSessionKeys } from "../use-agent-sessions";
+import { MAIN_TRANSCRIPT_FILE_KEY } from "../../lib/session-transcript-href";
+import { agentSessionKeys } from "../agent-session-keys";
 import { useTranscriptAccess } from "../use-session-transcript";
 
 const SESSION_ID = "session-1";
@@ -95,9 +96,12 @@ describe("useTranscriptAccess malformed access response", () => {
     // And the pending determination resolves falsey on it, so React Query
     // schedules no poll. Executed against the real observer option — the exact
     // call site where an unguarded `data.files.some` would throw.
-    const query = client
-      ?.getQueryCache()
-      .find({ queryKey: agentSessionKeys.transcriptAccess(SESSION_ID) });
+    const query = client?.getQueryCache().find({
+      queryKey: agentSessionKeys.transcriptAccess(
+        SESSION_ID,
+        MAIN_TRANSCRIPT_FILE_KEY
+      ),
+    });
     if (query === undefined) {
       throw new Error("the transcript-access query was never observed");
     }

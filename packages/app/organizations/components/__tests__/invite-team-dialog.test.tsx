@@ -1,6 +1,6 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { InviteMemberStatus } from "@repo/api/src/types/onboarding";
+import { createWrapper } from "@repo/app/shared/test-utils";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { InviteTeamDialog } from "../invite-team-dialog";
 
@@ -24,18 +24,6 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
   },
 }));
 
-function createWrapper() {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false, gcTime: 0 },
-      mutations: { retry: false },
-    },
-  });
-  return ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  );
-}
-
 function renderDialog() {
   return render(
     <InviteTeamDialog trigger={<button type="button">Invite</button>} />,
@@ -57,7 +45,7 @@ describe("InviteTeamDialog", () => {
         {
           email: "teammate@example.com",
           invitationId: "inv_1",
-          status: "invited",
+          status: InviteMemberStatus.Invited,
         },
       ],
     });
@@ -97,8 +85,11 @@ describe("InviteTeamDialog", () => {
 
     fireEvent.click(screen.getByRole("button", { name: ADD_ANOTHER_REGEX }));
 
-    const inputs = await screen.findAllByLabelText("Email address");
-    fireEvent.change(inputs[1], { target: { value: "not-an-email" } });
+    // Once a second row exists, each row's aria-label gets a distinguishing
+    // row number so the two inputs are no longer indistinguishable to a
+    // screen reader (and to `findByLabelText`).
+    const secondInput = await screen.findByLabelText("Email address, row 2");
+    fireEvent.change(secondInput, { target: { value: "not-an-email" } });
 
     fireEvent.click(
       screen.getByRole("button", { name: SEND_ONE_INVITATION_REGEX })
@@ -117,7 +108,7 @@ describe("InviteTeamDialog", () => {
       results: [
         {
           email: "teammate@example.com",
-          status: "failed",
+          status: InviteMemberStatus.Failed,
           reason: "Clerk rejected the address",
         },
       ],

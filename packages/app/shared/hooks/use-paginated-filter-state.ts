@@ -1,5 +1,6 @@
 "use client";
 
+import { resolveTotalPages } from "@repo/api/src/utils/math";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
@@ -40,7 +41,7 @@ export function usePaginatedFilterState<TRow, TFilters>(
     [rows, filters, filterFn]
   );
   const total = filteredRows.length;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const totalPages = resolveTotalPages(total, pageSize);
 
   // Reset to page 0 whenever the *filters* change, regardless of how they were
   // changed. `handleFiltersChange` already resets, but consumers can (and do)

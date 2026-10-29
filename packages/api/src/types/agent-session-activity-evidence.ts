@@ -5,15 +5,13 @@
  * contract — the cloud detail read (Prisma `Json`) and the desktop sync assembly
  * (parsed SQLite JSON) — so the read and write mappers can't silently drift.
  *
- * ISS-6005: hoisted out of `agent-session.ts`. That file is on the
+ * ISS-6005: hoisted out of `agent-session.ts`. That file was then on the
  * `noExcessiveLinesPerFile` grandfather list, which is SHRINK-ONLY, and this
  * change added `recordUpdatedAt` to it — so a cohesive unit comes out in the
  * same commit (AGENTS.md → "File Size and Organization"). This was the module's
- * only runtime function among ~2000 lines of type declarations, which makes it
+ * only runtime function among its type declarations, which makes it
  * the natural seam: a parse-boundary coercion has different concerns from a
- * wire-shape declaration, and its own test file already sat beside it. The file
- * remains grandfathered — this pays down a slice of that debt, it does not
- * clear it.
+ * wire-shape declaration, and its own test file already sat beside it.
  */
 export function normalizeActivitySegmentEvidenceLayers(
   value: unknown

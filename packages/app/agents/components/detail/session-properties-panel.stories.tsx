@@ -1,7 +1,14 @@
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY } from "@repo/api/src/types/universal-artifact-status-flag";
+import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
+import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
+import { SESSION_METRIC_POPULATION_DISCLOSURE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import type { Decorator, Meta, StoryObj } from "@storybook/react";
+import { expect, userEvent, within } from "storybook/test";
 import { createAgentSessionDetailFixture } from "./agent-session-detail-fixtures";
 import { SessionPropertiesPanel } from "./session-properties-panel";
+
+const PROPERTIES_RE = /Properties/;
 
 /**
  * ISS-5818 (#4739 review, whitlockk): the Session detail PROPERTIES panel, promoted
@@ -36,9 +43,9 @@ const detailScopeDecorator: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "App Core/Agents/Session Properties Panel",
+  title: "Composites v1.0/Agents/Detail/Session Properties Panel",
   component: SessionPropertiesPanel,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "fullscreen" },
   decorators: [detailScopeDecorator],
 } satisfies Meta<typeof SessionPropertiesPanel>;
@@ -47,23 +54,30 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 /**
- * The shipped default: collapsed, gate off, status restated in the strip. This
- * is what every reader sees today, and the baseline the two variants below are
- * read against. Click the header to see the expanded grid the panel discloses.
- */
-/**
- * The collapsed strip as it ships. No status word: the title one line up carries
- * a status chip from a DIFFERENT axis (`SESSION_STATUS` in the chip,
- * `AgentSessionState` here), so the two could legitimately disagree and would
- * sit ~24px apart saying different words. The redundant statement went rather
- * than the axes being aliased, which is forbidden (ISS-5818; the gate that made
- * it conditional was retired by ISS-5999).
+ * The collapsed strip as it ships. No status word: the title one line up already
+ * carries a status chip, so repeating it here would state the same fact twice in
+ * one viewport (ISS-5818; the gate that made it conditional was retired by
+ * ISS-5999). Click the header to see the expanded grid the panel discloses.
  *
  * Worth looking at rather than only asserting: the strip stays balanced with one
  * fewer item, and no leading dot is left behind without its label.
  */
 export const Default: Story = {
   args: { session: runningSessionFixture() },
+};
+
+/** Expanded Properties row using the canonical Session status word and mark. */
+export const UniversalArtifactStatus: Story = {
+  args: { session: runningSessionFixture() },
+  parameters: {
+    appCore: { enabledFlags: [UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY] },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = canvas.getByRole("button", { name: PROPERTIES_RE });
+    await userEvent.click(toggle);
+    await expect(canvas.getByText("Running")).toBeVisible();
+  },
 };
 
 /**
@@ -85,11 +99,57 @@ export const RepositoryUnresolved: Story = {
   },
 };
 
+/**
+ * ISS-7737, gate ON: expand the grid and read Turns, Tokens, and Cost together.
+ * Three rows on one panel now carry a focusable sentence each, which is exactly
+ * the thing a screenshot answers and an assertion cannot — whether three
+ * disclosure buttons in one grid read as considered or as clutter, and whether
+ * the 8.26B token value still reads as the row's subject with a tooltip trigger
+ * wrapped round it.
+ *
+ * The session is the ticket's own: a parent-only 1,016 turns four rows from a
+ * subagent-folded 8,260,678,836 / $6,229.94. With the gate OFF (every other
+ * story here) the same panel renders those figures bare.
+ */
+export const MetricPopulationsNamed: Story = {
+  args: { session: foldedSessionFixture() },
+  decorators: [
+    (Story) => (
+      <FeatureFlagAdapterProvider
+        adapter={createStaticFeatureFlagAdapter({
+          enabledFlags: [SESSION_METRIC_POPULATION_DISCLOSURE_FEATURE_FLAG_KEY],
+        })}
+      >
+        <Story />
+      </FeatureFlagAdapterProvider>
+    ),
+  ],
+};
+
 /** A live run, so the strip and the expanded grid both have real values to show. */
 function runningSessionFixture() {
   return createAgentSessionDetailFixture({
     endedAt: null,
     name: "Properties panel session",
     status: SESSION_STATUS.ACTIVE,
+  });
+}
+
+/** Session 795c67ae's real magnitudes, at the two populations ISS-7737 names. */
+function foldedSessionFixture() {
+  return createAgentSessionDetailFixture({
+    cache: 7_994_296_736,
+    cacheReadTokens: 7_994_296_736,
+    cacheWrite: 238_501_193,
+    cacheWriteTokens: 238_501_193,
+    endedAt: null,
+    estimatedCost: 6229.941_627_15,
+    inputTokens: 97_223,
+    name: "Session with delegated subagent work",
+    outputTokens: 27_783_684,
+    status: SESSION_STATUS.ACTIVE,
+    tokensIn: 97_223,
+    tokensOut: 27_783_684,
+    turns: 1016,
   });
 }

@@ -59,9 +59,9 @@ function SidebarSectionHeaderDemo() {
 }
 
 const meta = {
-  title: "Design System/Navigation & Shell/Sidebar Section Header",
+  title: "Primitives v1.0/Navigation/Sidebar Section Header",
   component: SidebarSectionHeaderDemo,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },
@@ -71,7 +71,9 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Interactive: Story = {};
+export const Interactive: Story = {
+  tags: ["!manifest"],
+};
 
 export const WithLongTitle: Story = {
   render: () => (

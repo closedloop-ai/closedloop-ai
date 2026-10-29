@@ -7,6 +7,13 @@
 // which decides WHAT trace (if any) this renders.
 
 import {
+  type BranchDetail,
+  TRACE_USERS,
+  type TraceBlock,
+  type TraceInline,
+  type TraceTurn,
+} from "@repo/app/branches/components/prototype-preview/mock";
+import {
   Avatar,
   AvatarFallback,
 } from "@repo/design-system/components/ui/avatar";
@@ -16,13 +23,6 @@ import {
 } from "@repo/design-system/components/ui/chart-colors";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
-import {
-  type BranchDetail,
-  TRACE_USERS,
-  type TraceBlock,
-  type TraceInline,
-  type TraceTurn,
-} from "@/app/p/branches/mock";
 
 const agentBubbleBg = (colors: ChartColorPair) =>
   `color-mix(in oklch, ${colors.base} 8%, var(--card))`;

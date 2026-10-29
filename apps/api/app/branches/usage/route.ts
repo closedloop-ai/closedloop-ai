@@ -1,9 +1,8 @@
 import type { BranchUsageSummary } from "@repo/api/src/types/branch-usage";
-import {
-  branchListQuerySchema,
-  branchReadService,
-} from "@/app/branches/branch-read-service";
+import { branchListQuerySchema } from "@/app/branches/branch-list-query";
+import { branchReadService } from "@/app/branches/branch-read-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { listQueryRefusalMetadata } from "@/lib/list-query-param";
 import {
   errorResponse,
   parseQueryParams,
@@ -14,7 +13,8 @@ export const GET = withAnyAuth<BranchUsageSummary, "/branches/usage">(
   async ({ user }, request) => {
     const { params, errorResponse: parseErrorResponse } = parseQueryParams(
       request,
-      branchListQuerySchema
+      branchListQuerySchema,
+      { errorMetadata: listQueryRefusalMetadata }
     );
     if (parseErrorResponse) {
       return parseErrorResponse;

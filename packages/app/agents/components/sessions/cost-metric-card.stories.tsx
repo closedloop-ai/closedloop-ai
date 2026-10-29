@@ -1,5 +1,9 @@
 import { MAX_DELTA_PCT } from "@closedloop-ai/loops-api/insights";
 import {
+  TOTAL_ESTIMATED_COST_ALIAS_LABEL,
+  TOTAL_ESTIMATED_COST_LABEL,
+} from "@repo/api/src/types/total-estimated-cost-copy";
+import {
   SummaryCardRow,
   summaryCardClass,
 } from "@repo/app/shared/components/summary-card-row";
@@ -8,11 +12,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import {
   COST_METRIC_CARD_LABEL,
   CostMetricCard,
-  formatCostMetricDetail,
-  formatHonestCostMetricDetail,
-  SESSIONS_COST_HONEST_METRIC_CARD_INFO,
-  SESSIONS_COST_HONEST_METRIC_CARD_LABEL,
-  SESSIONS_COST_METRIC_CARD_LABEL,
+  SESSIONS_COST_NO_COST_RECORDED_DETAIL,
 } from "./cost-metric-card";
 
 /**
@@ -40,9 +40,9 @@ import {
  * `TooltipProvider`. So it declares no `parameters.appCore`.
  */
 const meta = {
-  title: "App Core/Agents/Cost Metric Card",
+  title: "Composites v1.0/Insights/Cost Metric Card",
   component: CostMetricCard,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (
@@ -92,30 +92,27 @@ export const Loading: Story = {
   args: { loading: true },
 };
 
-/** The Sessions framing: the label names what the number excludes. */
-export const SessionsNonSubscriptionLabel: Story = {
-  args: { label: SESSIONS_COST_METRIC_CARD_LABEL },
+/**
+ * The Sessions framing, as the strip actually renders it: ruling 7's alias, one
+ * label on every payload. The word is short but the figure is not a subset — it
+ * is the inclusive total, subscription share included, which is what the card's
+ * info popover says. See {@link LongLabelSharedBaseline} below for the canonical
+ * phrase, kept there because that story is about label GEOMETRY.
+ */
+export const SessionsAliasLabel: Story = {
+  args: { label: TOTAL_ESTIMATED_COST_ALIAS_LABEL },
 };
 
 /**
- * ISS-4773 honest-cost mode: the headline counts only API-billed spend, and the
- * detail line accounts for what the subscription covered plus what could not be
- * attributed at all — so the three buckets visibly sum to the population.
+ * The one caption the card still draws: ISS-5401's reason for a dashed
+ * headline. Read beside {@link Unavailable}, which is the same `—` with nothing
+ * under it — an uncaptioned dash is the failed-read state, not this one.
  */
-export const HonestApiBilledWithDetail: Story = {
+export const WithNoCostRecordedDetail: Story = {
   args: {
-    cost: 14_204,
-    label: SESSIONS_COST_HONEST_METRIC_CARD_LABEL,
-    info: SESSIONS_COST_HONEST_METRIC_CARD_INFO,
-    detail: formatHonestCostMetricDetail(2030, 16_783),
-  },
-};
-
-/** The subscription-estimate detail line on the non-honest card. */
-export const WithSubscriptionDetail: Story = {
-  args: {
-    label: SESSIONS_COST_METRIC_CARD_LABEL,
-    detail: formatCostMetricDetail(2030),
+    cost: null,
+    detail: SESSIONS_COST_NO_COST_RECORDED_DETAIL,
+    label: TOTAL_ESTIMATED_COST_ALIAS_LABEL,
   },
 };
 
@@ -169,6 +166,7 @@ export const FlatDelta: Story = {
  * below is that default, shown deliberately so the two are comparable.
  */
 export const DeltaToneMatrix: Story = {
+  tags: ["!manifest"],
   render: () => (
     <WithUnifiedDeltaPill>
       <div className="grid max-w-3xl gap-3 sm:grid-cols-3">
@@ -187,6 +185,7 @@ export const DeltaToneMatrix: Story = {
  * the default render has a canvas of its own rather than being invisible.
  */
 export const LegacyDeltaToneMatrix: Story = {
+  tags: ["!manifest"],
   render: () => (
     <div className="grid max-w-3xl gap-3 sm:grid-cols-3">
       <CostMetricCard cost={9061} delta={38} deltaLabel="QoQ" />
@@ -245,7 +244,7 @@ export const LongLabelSharedBaseline: Story = {
       <CostMetricCard
         className={summaryCardClass()}
         cost={9061}
-        label={SESSIONS_COST_METRIC_CARD_LABEL}
+        label={TOTAL_ESTIMATED_COST_LABEL}
       />
       <CostMetricCard
         className={summaryCardClass()}

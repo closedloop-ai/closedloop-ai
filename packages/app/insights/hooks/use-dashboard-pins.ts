@@ -1,12 +1,13 @@
 "use client";
 
+import { protoSafeRecord } from "@repo/lib/security/proto-safe-record";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import { useLocalStorageState } from "../../shared/hooks/use-local-storage-state";
 import {
   type DashboardTileSettings,
   type GridPosition,
-  gridPositionSchema,
+  gridLayoutSchema,
   type SharedDashboard,
   tileSettingsSchema,
 } from "../lib/dashboard-schema";
@@ -39,7 +40,7 @@ const ANALYTICS_PIE_TILE_IDS = [
 const storedPinsSchema = z.object({
   version: z.literal(STORAGE_VERSION),
   tiles: z.array(z.string()),
-  layout: z.record(z.string(), gridPositionSchema),
+  layout: gridLayoutSchema,
   settings: z.record(z.string(), tileSettingsSchema).optional().default({}),
 });
 
@@ -61,6 +62,10 @@ type LayoutResetStoredPins = z.infer<typeof layoutResetStoredPinsSchema>;
 
 const v6StoredPinsSchema = storedPinsSchema.extend({
   version: z.literal(6),
+  // Kept raw so the single-column-stack check below sees every entry's column
+  // before per-entry sanitization drops a corrupt one; otherwise a layout whose
+  // only non-zero-x entry is the corrupt one reads as a stack and is reset.
+  layout: protoSafeRecord(z.string(), z.unknown()),
 });
 
 type V6StoredPins = z.infer<typeof v6StoredPinsSchema>;
@@ -344,20 +349,31 @@ function migrateV6StoredPins(value: V6StoredPins): StoredPins {
   return removeRetiredTiles({
     ...value,
     version: STORAGE_VERSION,
-    layout: isSingleColumnStack(value.layout) ? {} : value.layout,
+    layout: isSingleColumnStack(value.layout)
+      ? {}
+      : gridLayoutSchema.parse(value.layout),
   });
 }
 
 // A single-column stack — every tile pinned to column 0 — is the signature of
 // the pre-fix corruption; a healthy multi-column dashboard places tiles at
-// varying x. Requires at least two tiles so a lone full-width tile is not
-// misread as corruption.
-function isSingleColumnStack(layout: Record<string, GridPosition>): boolean {
-  const positions = Object.values(layout);
-  return (
-    positions.length >= 2 && positions.every((position) => position.x === 0)
-  );
+// varying x. An entry too corrupt to read a column from is evidence of neither
+// shape, so it is excluded from the sample rather than counted as a non-zero x;
+// counting it let one junk entry hide the stack it sat in and carry the
+// corrupted layout forward. Requires at least two READABLE tiles so a lone
+// full-width tile is not misread as corruption.
+function isSingleColumnStack(layout: Record<string, unknown>): boolean {
+  const columns: number[] = [];
+  for (const position of Object.values(layout)) {
+    const column = gridColumnSchema.safeParse(position);
+    if (column.success) {
+      columns.push(column.data.x);
+    }
+  }
+  return columns.length >= 2 && columns.every((x) => x === 0);
 }
+
+const gridColumnSchema = z.object({ x: z.number() });
 
 function mergeTileIds(
   existing: readonly string[],

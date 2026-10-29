@@ -5,11 +5,13 @@
  *
  * Crucially it does NOT reimplement trace assembly: it reshapes the parser's flat
  * arrays into the shared projection's input contract (`metadata.messages`,
- * `events`, `agents`) and hands off to `projectAgentSessionTurnItems` — the SAME
- * projection the desktop DB-backed detail path runs. So the cloud-rendered trace
- * and the DB-backed trace agree by construction (PLN-1290's "one parser, zero
- * interpretation divergence" thesis). All ordering / tool-run coalescing / label
- * logic lives in the one shared projection; this file only owns the
+ * `events`, `agents`) and hands off to `projectAgentSessionTurnItemsFromEvents`
+ * — the SAME projection the desktop DB-backed detail path runs. Pricing and attribution
+ * agree: both price through `attributeTokenEventCosts` and group through
+ * `collectTraceGroups`. Turn boundaries do not: the DB path's `TurnDuration`,
+ * `APIError`, `ToolError` and `Compaction` rows end a tool run, while this
+ * path's events come only from tool uses. So per-turn durations and costs can
+ * differ even though session totals match. This file only owns the
  * parser-output → projection-input mapping.
  */
 
@@ -34,10 +36,7 @@ import type {
   NormalizedTokenRecord,
   NormalizedToolUse,
 } from "@repo/lib/harness/types";
-import {
-  projectAgentSessionTimelineEvents,
-  projectAgentSessionTurnItems,
-} from "@repo/lib/sessions/agent-session-detail-projection";
+import { projectAgentSessionTurnItemsFromEvents } from "@repo/lib/sessions/agent-session-detail-projection";
 
 /** Display identity for the human/agent actors of the projected trace. */
 export type TranscriptActorContext = {
@@ -69,7 +68,8 @@ type ProjectionMetadataMessage = {
  * Map a parsed `NormalizedSession` to the shared trace `TurnItem[]`.
  *
  * The mapping is deliberately thin — reshape the parser's flat arrays into the
- * projection's input contract, then delegate to `projectAgentSessionTurnItems`.
+ * projection's input contract, then delegate to
+ * `projectAgentSessionTurnItemsFromEvents`.
  */
 export function buildTurnItemsFromNormalizedSession(
   session: NormalizedSession,
@@ -87,18 +87,14 @@ export function buildTurnItemsFromNormalizedSession(
     .map(toProjectionMetadataMessage);
   const tokenUsageByModel = tokensByModelToUsage(session.tokensByModel);
 
-  const timeline = projectAgentSessionTimelineEvents(events, {
-    metadata: { messages, slashCommands: session.slashCommands },
-  });
-
-  return projectAgentSessionTurnItems({
+  return projectAgentSessionTurnItemsFromEvents({
     sessionId: session.sessionId,
     harness: context.harness,
     primaryModel: context.primaryModel,
     humanActor: context.humanActor,
-    timeline,
     agents,
     events,
+    metadata: { messages, slashCommands: session.slashCommands },
     tokenUsageByModel,
     // FEA-4178: the DB-backed detail path feeds `tokenEvents` from the
     // `token_events` table, but a parsed transcript (the primary web trace
@@ -220,11 +216,15 @@ function asJsonValue(value: unknown): JsonValue {
     return value.map(asJsonValue);
   }
   if (typeof value === "object") {
-    const out: { [key: string]: JsonValue } = {};
+    // ISS-8565: null-prototype container so a key literally named `__proto__`
+    // (which `JSON.parse` DOES create as a real own key) becomes an own
+    // property instead of hitting the inherited `__proto__` setter. The spread
+    // restores a normal prototype, and defines rather than assigns.
+    const out: { [key: string]: JsonValue } = Object.create(null);
     for (const [key, entry] of Object.entries(value)) {
       out[key] = asJsonValue(entry);
     }
-    return out;
+    return { ...out };
   }
   return null;
 }

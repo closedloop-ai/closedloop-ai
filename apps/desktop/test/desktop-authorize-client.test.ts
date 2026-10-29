@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   DESKTOP_AUTHORIZE_QUERY_PARAMS,
+  DESKTOP_BOOTSTRAP_SUPPORTED_TRUE,
+  DesktopSignInFraming,
+  DesktopSignInMethod,
   DesktopSignInProvider,
+  decodeDesktopEmailHint,
   decodeDesktopGatewayPublicKey,
 } from "@repo/api/src/types/desktop-authorize-url";
+import { test } from "vitest";
 import {
   buildDesktopAuthorizeUrl,
   redeemDesktopAuthorizationCode,
@@ -104,6 +108,10 @@ test("buildDesktopAuthorizeUrl targets the authorize path with snake_case params
   assert.equal(params.get(key.gatewayId), "gateway-1");
   assert.equal(params.get(key.deviceName), "Kerensa's MacBook");
   assert.equal(params.get(key.platform), "darwin");
+  assert.equal(
+    params.get(key.bootstrapSupported),
+    DESKTOP_BOOTSTRAP_SUPPORTED_TRUE
+  );
 
   // The device key is base64url-encoded so it round-trips through the sign-in
   // redirect: the raw param carries no PEM spaces/newlines, and it decodes back
@@ -132,13 +140,88 @@ test("buildDesktopAuthorizeUrl carries the picked provider", () => {
   const url = new URL(
     buildDesktopAuthorizeUrl({
       ...authorizeUrlInput(),
-      provider: DesktopSignInProvider.Google,
+      method: DesktopSignInProvider.Google,
     })
   );
 
   assert.equal(
     url.searchParams.get(DESKTOP_AUTHORIZE_QUERY_PARAMS.provider),
     DesktopSignInProvider.Google
+  );
+});
+
+// ISS-5954 M2 — the email pick rides the SAME wire key. An older web build
+// treats the unrecognized value as absent (GitHub, today's behavior); a newer
+// one branches to the email form.
+test("buildDesktopAuthorizeUrl carries the email method on the provider key", () => {
+  const url = new URL(
+    buildDesktopAuthorizeUrl({
+      ...authorizeUrlInput(),
+      method: DesktopSignInMethod.Email,
+    })
+  );
+
+  assert.equal(
+    url.searchParams.get(DESKTOP_AUTHORIZE_QUERY_PARAMS.provider),
+    DesktopSignInMethod.Email
+  );
+});
+
+// ISS-5954 M5 — the prefill hint: base64url on the wire (plus-addressing must
+// survive Clerk's re-decode hop), omitted entirely when implausible.
+test("buildDesktopAuthorizeUrl carries a plausible email hint base64url-encoded", () => {
+  const url = new URL(
+    buildDesktopAuthorizeUrl({
+      ...authorizeUrlInput(),
+      method: DesktopSignInMethod.Email,
+      emailHint: "kerensa+desktop@closedloop.ai",
+    })
+  );
+
+  const raw = url.searchParams.get(DESKTOP_AUTHORIZE_QUERY_PARAMS.emailHint);
+  assert.ok(raw, "email_hint param present");
+  assert.equal(decodeDesktopEmailHint(raw), "kerensa+desktop@closedloop.ai");
+});
+
+test("buildDesktopAuthorizeUrl omits an implausible email hint entirely", () => {
+  const url = new URL(
+    buildDesktopAuthorizeUrl({
+      ...authorizeUrlInput(),
+      method: DesktopSignInMethod.Email,
+      emailHint: "not an email",
+    })
+  );
+
+  assert.equal(
+    url.searchParams.has(DESKTOP_AUTHORIZE_QUERY_PARAMS.emailHint),
+    false
+  );
+});
+
+// ISS-5954 — the framing hint: carried verbatim when present, omitted entirely
+// when absent (never serialized as null/empty, per the absent-optional rule).
+test("buildDesktopAuthorizeUrl carries the framing when given and omits it otherwise", () => {
+  const withFraming = new URL(
+    buildDesktopAuthorizeUrl({
+      ...authorizeUrlInput(),
+      method: DesktopSignInMethod.Email,
+      framing: DesktopSignInFraming.SignIn,
+    })
+  );
+  assert.equal(
+    withFraming.searchParams.get(DESKTOP_AUTHORIZE_QUERY_PARAMS.framing),
+    DesktopSignInFraming.SignIn
+  );
+
+  const withoutFraming = new URL(
+    buildDesktopAuthorizeUrl({
+      ...authorizeUrlInput(),
+      method: DesktopSignInMethod.Email,
+    })
+  );
+  assert.equal(
+    withoutFraming.searchParams.has(DESKTOP_AUTHORIZE_QUERY_PARAMS.framing),
+    false
   );
 });
 

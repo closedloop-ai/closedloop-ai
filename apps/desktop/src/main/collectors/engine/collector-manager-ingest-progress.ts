@@ -1,8 +1,9 @@
 /**
  * @file collector-manager-ingest-progress.ts
  * @description FTUE first-pass ingest-progress bookkeeping, extracted from
- * collector-manager.ts (which is grandfathered shrink-only under the root
- * AGENTS.md line-count contract). Owns the per-harness first-pass progress map,
+ * collector-manager.ts (which has no entry in the `noExcessiveLinesPerFile`
+ * grandfather list, so the 1,000-line ceiling is enforced on it). Owns the
+ * per-harness progress map,
  * the first-pass-done gate, and the console-observability lines for the first
  * historical import pass, so the manager delegates rather than growing these
  * maps and their throttled-logging inline.
@@ -38,6 +39,12 @@
  *     90s and HISTORICAL_IMPORT_SESSION_TIMEOUT_MS is 120s per session, both
  *     above the warn window below).
  */
+
+import type { QuarantinedStageCounts } from "../../../shared/ingest-quarantine-contract.js";
+import {
+  createPendingByteLedger,
+  type PendingByteLedger,
+} from "./ingest-pending-bytes.js";
 
 // Console-observability thresholds for the first-pass backfill: a first pass
 // with at least this many source files carries the slow-first-launch hint, and
@@ -93,9 +100,11 @@ export type IngestProgressClock = {
 
 /**
  * Per-harness first-pass ingest progress plus its console-observability
- * bookkeeping. First-pass semantics are per-manager-lifecycle: the gate
- * (`firstPassDone`) is intentionally NOT cleared by `resetForStop`, because the
- * renderer treats the first-pass signal as first-launch import.
+ * bookkeeping. First-pass semantics are per-manager-lifecycle: `resetForStop`
+ * keeps the gate (`firstPassDone`) for every harness that FINISHED, because the
+ * renderer treats the first-pass signal as first-launch import — and re-arms it
+ * for one that did not, so the next pass is tracked and the ISS-6116 backfill
+ * counters survive a collector restart.
  */
 /**
  * ISS-5808 — how many CONSECUTIVE abandoned passes a harness may have before
@@ -103,17 +112,25 @@ export type IngestProgressClock = {
  *
  * The re-drive exists because a pass the db-host killed genuinely did not
  * finish and can finish against the replacement child. But the pass is re-armed
- * by the watcher off `HarnessImportResult.completed`, and the watcher has no
+ * by the watcher off `HarnessImportResult.outcome`, and the watcher has no
  * counter of its own — so a source that reproducibly kills the child on write
  * (the exit-code-5 fan-out signature) would re-crash on every re-drive, forever,
  * paced only by the supervisor's 30s crash backoff and degrading every other
  * db-host consumer with it. `main/sync/AGENTS.md` invariant 5: unbounded retry
  * is never acceptable, every terminal path must be reachable.
  *
- * Past the budget the pass reports COMPLETE again — the pre-ISS-5808 behaviour —
- * so recovery falls back to the 60s catch-up poll and the next launch. Nothing
- * is lost either way: import is idempotent and `unfinished` still records the
- * shortfall, so `isDrained()` keeps reporting the pass as not drained.
+ * Past the budget the pass reports `RetriesExhausted` (ISS-6207) — its own
+ * terminal, NOT completion — so recovery falls back to the 60s catch-up poll and
+ * the next launch without the boot-import lifecycle being told the work
+ * finished. Nothing is lost: import is idempotent, and where the pass reached
+ * `beginPass` the `unfinished` shortfall below keeps `isDrained()` reporting it
+ * as not drained. A pass abandoned BEFORE `beginPass` records no shortfall (see
+ * the early return in `abandonPass`), so `drained` can read true alongside
+ * `retriesExhausted` — which is why the readiness surfaces gate on the terminal
+ * claim itself, never on `drained` alone. The dividing line is `beginPass`, not
+ * which phase the pass was in: most of the source scan runs ahead of it, but
+ * ISS-8982's test-only seam throws from inside that scan AFTER the pass opens,
+ * and that abandon does record a shortfall.
  */
 const MAX_CONSECUTIVE_ABANDON_REDRIVES = 3;
 
@@ -140,6 +157,9 @@ export class IngestProgressTracker {
   private readonly processedSinceResume = new Map<string, number>();
   // Harnesses whose first pass ran to completion; gates re-tracking on later
   // catch-up passes so a routine catch-up is not surfaced as first-pass progress.
+  // ISS-6116: survives `resetForStop` only for harnesses that finished with
+  // nothing outstanding — one that still has sources to land is re-armed, so the
+  // next pass is tracked and the backfill counters keep reporting it.
   private readonly firstPassDone = new Set<string>();
   // Console-observability keyed by harness: `startedAt` is the first-pass start
   // (set once; gates the completion line and yields a correct duration across
@@ -156,6 +176,13 @@ export class IngestProgressTracker {
   // never starts moving is still reported), `stallLoggedAt` re-throttles the
   // line.
   private readonly lastAdvancedAt = new Map<string, number>();
+  // ISS-8058: when this harness last COMPLETED A SOURCE, and nothing else.
+  // Deliberately NOT `lastAdvancedAt`, which `beginPass` and `noteResumed` also
+  // seed — correct for a warn line (a re-entry or a resume is not worth warning
+  // about) and fatal for a wedge claim, because a pass that keeps yielding and
+  // re-entering without finishing anything would re-seed itself forever and
+  // never look wedged. Absent means no source has EVER landed for this pass.
+  private readonly lastSourceCompletedAt = new Map<string, number>();
   private readonly stallLoggedAt = new Map<string, number>();
   private cancelStallWatch: (() => void) | null = null;
   // Passes that are not advancing BY DESIGN, so reporting them would be the log
@@ -172,17 +199,27 @@ export class IngestProgressTracker {
   private readonly preparingStartedAt = new Map<string, number>();
   private readonly preparingStallLoggedAt = new Map<string, number>();
   // ISS-5281 (whitlockk review): the REAL shortfall a pass ended with, keyed by
-  // harness — sources this boot will not come back to, because the first-pass
+  // harness — sources THIS TRACKER will not come back to, because the first-pass
   // gate stops them being re-tracked. Recorded at settle/abandon and never
   // inferred from the counters afterwards, since `settlePass` deliberately
   // settles the bar to 100% and would otherwise erase the evidence. Boot-scoped:
   // cleared only by `resetForStop`.
+  // ISS-7306: that is a claim about TRACKING, not about importing. The catch-up
+  // poll re-runs the historical pass over the full source list for the life of
+  // the boot, and every category counted here is by construction the retryable
+  // one — so these sources ARE retried, they just stop being first-pass
+  // progress. Anything reported from this map must say the narrower thing.
   private readonly unfinished = new Map<string, number>();
   // ISS-5808 — consecutive abandoned passes per harness, the budget that bounds
   // the in-session re-drive `abandonPass` authorizes. Cleared on a settled pass
   // (progress was made, so the next failure starts from a full budget) and by
   // `resetForStop`. Bounded by construction: one small integer per harness.
   private readonly consecutiveAbandons = new Map<string, number>();
+  // ISS-8346 — the same passes counted in BYTES, for the analysis estimate. Kept
+  // in its own ledger rather than widened onto `progress` because the two units
+  // do not degrade together: a batch collector's pass has an honest source count
+  // and no measurable byte population at all.
+  private readonly pendingBytes: PendingByteLedger = createPendingByteLedger();
 
   private readonly log: (message: string) => void;
   private readonly clock: IngestProgressClock;
@@ -217,6 +254,105 @@ export class IngestProgressTracker {
       preparing: this.preparing.size > 0,
       drained: this.isDrained(),
     };
+  }
+
+  /**
+   * ISS-6116: the per-harness view the desktop import-health telemetry window
+   * reports. One row per harness with a tracked first pass, so `remaining` is a
+   * number this tracker actually knows rather than an inference — a harness the
+   * scan found nothing for never reaches {@link beginPass} and is absent here,
+   * which is what keeps an install with nothing to import from reading as a
+   * stalled one.
+   *
+   * Read-only ON PURPOSE: it shares {@link isNotAdvancing} with
+   * {@link checkStalls} so the log line and the counter can never disagree about
+   * what "not advancing" means, but it touches none of the throttle state, so a
+   * telemetry window cannot suppress a log line or vice versa.
+   */
+  reportHarnessProgress(): IngestHarnessProgressReport[] {
+    const now = this.clock.now();
+    // Three sources, because a harness can be wedged in any of them and only
+    // the first has a live progress entry: a running or settled pass, a pass
+    // ABANDONED past its re-drive budget (`abandonPass` drops the entry but
+    // preserves the shortfall), and a source scan frozen before it ever reached
+    // `beginPass`. Omitting the last two would report the harness as untracked,
+    // which a reader cannot tell from "this machine does not use it".
+    const harnesses = new Set([
+      ...this.progress.keys(),
+      ...this.unfinished.keys(),
+      ...this.preparing,
+    ]);
+    return [...harnesses].map((harness) => {
+      const remaining = this.remainingSources(harness);
+      return {
+        harness,
+        notAdvancing:
+          this.isNotAdvancing(harness, now) || this.isScanFrozen(harness, now),
+        ...(remaining === undefined ? {} : { remaining }),
+      };
+    });
+  }
+
+  /**
+   * ISS-8346: bytes these harnesses' tracked first passes have still to parse,
+   * or `null` when no honest number can be stated for them.
+   *
+   * MAIN-ONLY. It is deliberately absent from {@link snapshot} and so from the
+   * renderer wire: the estimate that consumes it is derived in main against an
+   * inventory the renderer does not hold, and a second byte figure on the import
+   * banner's payload would be a number nothing renders and everything could
+   * disagree with.
+   *
+   * The caller names the harnesses because the population it is dividing is not
+   * this tracker's. The transcript inventory enumerates only the harnesses it
+   * measured, so a harness importing outside that set — Cursor, Copilot — must
+   * not push the parsed figure past a total that never counted its bytes.
+   */
+  remainingPendingBytes(harnesses: readonly string[]): number | null {
+    return this.pendingBytes.remaining(harnesses, this.preparing);
+  }
+
+  /**
+   * ISS-8058: the import is demonstrably MOVING — there is a pass in flight that
+   * is not parked, and EVERY such pass completed a source within `withinMs`.
+   * The boot watchdog asks this before calling a still-running import wedged, so
+   * a first launch that is merely large re-arms instead of being reported as a
+   * failure.
+   *
+   * Three things this deliberately does NOT do, each of which had a pre-existing
+   * FEA-4156 regression test waiting for it:
+   *
+   * - It does not read {@link lastAdvancedAt}. That ledger is re-seeded by
+   *   `beginPass` and `noteResumed` with no source completed, so a wedged pass
+   *   looked freshly-advancing for a whole window after every cooperative
+   *   re-entry or resume. Only a completed source counts here.
+   * - It does not accept ANY pass moving as proof the import is healthy. One
+   *   harness landing sources must not mask a wedged sibling — that is the exact
+   *   case this watchdog exists for, and the only control for it, since the
+   *   renderer's backstop watches the aggregate the advancing harness is moving.
+   * - It does not fall back to the pass start for a harness that has completed
+   *   nothing. Absent means no source has ever landed, which is not-advancing:
+   *   otherwise a wedge would be excused for its first window.
+   *
+   * A pass parked by design is excluded rather than counted against — but if
+   * every in-flight pass is parked, or none is in flight at all (a source scan
+   * frozen before its first `beginPass`), nothing is progressing and this is
+   * false, which is what keeps those wedges reachable.
+   */
+  hasAdvancingPass(withinMs: number): boolean {
+    const now = this.clock.now();
+    let sawRunningPass = false;
+    for (const key of this.startedAt.keys()) {
+      if (this.suspended.has(key)) {
+        continue;
+      }
+      sawRunningPass = true;
+      const completedAt = this.lastSourceCompletedAt.get(key);
+      if (completedAt === undefined || now - completedAt >= withinMs) {
+        return false;
+      }
+    }
+    return sawRunningPass;
   }
 
   /**
@@ -314,8 +450,19 @@ export class IngestProgressTracker {
    *
    * Re-entry also un-suspends the pass and restarts its no-progress window: the
    * yielded interval was not time spent stuck.
+   *
+   * ISS-8346: `pendingBytes` is the same recomputed remaining population in
+   * bytes, and is SET rather than reconciled for exactly the reason the count
+   * cannot be — the scan sizes the sources it is about to import, so the sum it
+   * arrives with is already the remainder, with no numerator to protect from
+   * moving backwards. `null` means the population could not be measured, which
+   * is what a batch collector's pass always reports.
    */
-  beginPass(key: string, total: number): void {
+  beginPass(
+    key: string,
+    total: number,
+    pendingBytes: number | null = null
+  ): void {
     const entry = this.progress.get(key);
     const previousTotal = entry?.total ?? total;
     const expectedRemaining = entry
@@ -343,6 +490,7 @@ export class IngestProgressTracker {
       this.progress.set(key, current);
     }
     this.processedSinceResume.set(key, 0);
+    this.pendingBytes.begin(key, pendingBytes);
     const now = this.clock.now();
     this.suspended.delete(key);
     this.lastAdvancedAt.set(key, now);
@@ -404,12 +552,19 @@ export class IngestProgressTracker {
    * FINISHED, while the averages divide by ATTEMPTS since the current resume,
    * because the millisecond totals they average reset with that resume and
    * include the time a retried source cost.
+   *
+   * ISS-8346: `sourceBytes` leaves the byte remainder on the same condition and
+   * for the same reason — a source left for retry is still in the population the
+   * next {@link beginPass} will re-sum, so subtracting it here would make the
+   * remainder short by that file on every attempt. A source nothing could size
+   * passes 0, which is consistent with the total it was never added to.
    */
   advance(
     key: string,
     parseMsTotal: number,
     importMsTotal: number,
-    durable = true
+    durable = true,
+    sourceBytes = 0
   ): void {
     const entry = this.progress.get(key);
     if (!entry) {
@@ -417,6 +572,7 @@ export class IngestProgressTracker {
     }
     if (durable) {
       entry.processed += 1;
+      this.pendingBytes.consume(key, sourceBytes);
     }
     if (!this.startedAt.has(key)) {
       return;
@@ -429,6 +585,7 @@ export class IngestProgressTracker {
     const now = this.clock.now();
     this.suspended.delete(key);
     this.lastAdvancedAt.set(key, now);
+    this.lastSourceCompletedAt.set(key, now);
     this.stallLoggedAt.delete(key);
     const lastLoggedAt = this.progressLoggedAt.get(key) ?? 0;
     if (now - lastLoggedAt < INGEST_LOG_INTERVAL_MS) {
@@ -502,8 +659,23 @@ export class IngestProgressTracker {
         Math.round((this.clock.now() - startedAt) / 1000)
       );
       const completedTotal = entry?.total ?? this.announcedTotal.get(key) ?? 0;
+      // ISS-7306: the bar settles to 100% whether or not the pass left sources
+      // behind, so a bare "complete: N" was the only record a reader got — and
+      // it read identically for a clean pass and for one that finished with a
+      // third of its input unaccounted for. The shortfall preserved just above
+      // is named here, so a terminal pass either reconciles or says it did not.
+      // Says only what the tracker can prove. `firstPassDone` stops these being
+      // re-TRACKED as first-pass progress, which is not the same as never being
+      // retried: they stay in the pending population, so a later catch-up pass
+      // or the next launch still picks them up. Claiming otherwise here would
+      // be the same class of untrue line this change exists to remove.
+      const shortfall = this.unfinished.get(key) ?? 0;
+      const shortfallNote =
+        shortfall > 0
+          ? `; ${shortfall} left unfinished, for a later pass to retry`
+          : "";
       this.log(
-        `session backfill [${key}] first pass complete: ${completedTotal} source file(s) in ${seconds}s`
+        `session backfill [${key}] first pass complete: ${completedTotal} source file(s) in ${seconds}s${shortfallNote}`
       );
     }
     this.forgetPass(key);
@@ -525,10 +697,10 @@ export class IngestProgressTracker {
     this.consecutiveAbandons.set(key, abandons);
     const redriveBudgeted = abandons <= MAX_CONSECUTIVE_ABANDON_REDRIVES;
     if (!redriveBudgeted) {
-      // Emitted BEFORE the early return below: a pass that rejected during its
-      // source scan never reached `beginPass`, so `startedAt` is unset and the
-      // rest of this method is skipped — but the budget it just exhausted is
-      // exactly the case a reader most needs to see named.
+      // Emitted BEFORE the early return below: a pass that rejected ahead of
+      // `beginPass` has `startedAt` unset, so the rest of this method is
+      // skipped — but the budget it just exhausted is exactly the case a reader
+      // most needs to see named.
       this.log(
         `session backfill [${key}] re-drive budget exhausted after ${abandons} consecutive abandoned pass(es); leaving the rest to the next launch`
       );
@@ -564,6 +736,9 @@ export class IngestProgressTracker {
   checkStalls(): void {
     const now = this.clock.now();
     for (const [key, scanStartedAt] of this.preparingStartedAt) {
+      if (!this.isScanFrozen(key, now)) {
+        continue;
+      }
       if (
         !this.shouldReport(
           now,
@@ -579,7 +754,7 @@ export class IngestProgressTracker {
       );
     }
     for (const [key, startedAt] of this.startedAt) {
-      if (this.suspended.has(key)) {
+      if (!this.isNotAdvancing(key, now)) {
         continue;
       }
       const lastAdvancedAt = this.lastAdvancedAt.get(key) ?? startedAt;
@@ -602,11 +777,26 @@ export class IngestProgressTracker {
    * stop() cleanup. Drop the stranded progress entries (a restart that finds zero
    * pending sources otherwise strands a settled {total, processed} pair that
    * getIngestProgress keeps reporting) and the console-log bookkeeping (so a
-   * restart re-announces from a clean slate), but PRESERVE the first-pass gate:
-   * re-arming it on an in-process restart of an already-imported machine would
-   * make a routine catch-up surface as a false "Importing your history" state.
+   * restart re-announces from a clean slate), and preserve the first-pass gate
+   * for every harness that FINISHED: re-arming it on an in-process restart of an
+   * already-imported machine would make a routine catch-up surface as a false
+   * "Importing your history" state. A harness that did not finish is re-armed —
+   * see the loop below for why that is both the honest banner and the only way
+   * the ISS-6116 counters survive a restart.
    */
   resetForStop(): void {
+    // ISS-6116 (whitlockk review): re-arm the gate for harnesses that did NOT
+    // finish, BEFORE the ledger those harnesses are read from is cleared below.
+    // Preserving it unconditionally kept the banner honest on an already-
+    // imported machine, but it also meant `trackProgress` stayed false for the
+    // rest of the process lifetime — and the backfill telemetry reads the same
+    // ledger, so a retry that wedged in parse/import after a collector restart
+    // emitted neither `sources_remaining` nor `harness_not_advancing`. A harness
+    // still carrying sources that never landed is not "already imported", so
+    // re-arming it is also what makes the banner tell the truth.
+    for (const key of this.harnessesWithOutstandingWork()) {
+      this.firstPassDone.delete(key);
+    }
     this.suspended.clear();
     this.preparing.clear();
     this.preparingStartedAt.clear();
@@ -615,12 +805,111 @@ export class IngestProgressTracker {
     this.progressLoggedAt.clear();
     this.announcedTotal.clear();
     this.lastAdvancedAt.clear();
+    this.lastSourceCompletedAt.clear();
     this.stallLoggedAt.clear();
     this.progress.clear();
     this.processedSinceResume.clear();
     this.unfinished.clear();
     this.consecutiveAbandons.clear();
+    this.pendingBytes.clear();
     this.disarmStallWatch();
+  }
+
+  /**
+   * ISS-6116: source files this harness has not durably finished.
+   *
+   * The live counters are authoritative WHILE a pass is running. Once it has
+   * ended they are not: {@link settlePass} overwrites `processed` with `total`
+   * to settle the bar to 100% and {@link abandonPass} drops the entry outright,
+   * so a boot that gave up on 500 sources reads as a clean zero (or as nothing
+   * at all) — the erasure ISS-5281 preserved `unfinished` to survive, and
+   * exactly the "healthy during the outage" lie this counter exists to stop.
+   *
+   * The order matters both ways. `unfinished` is boot-scoped and survives
+   * {@link abandonPass}, which does NOT set the first-pass gate — so a harness
+   * whose pass was abandoned and re-begun has a stale shortfall recorded beside
+   * a live pass, and reading it in preference would report the old number.
+   */
+  private remainingSources(key: string): number | undefined {
+    const entry = this.progress.get(key);
+    if (entry && this.startedAt.has(key)) {
+      return Math.max(0, entry.total - entry.processed);
+    }
+    const shortfall = this.unfinished.get(key);
+    if (shortfall !== undefined) {
+      return shortfall;
+    }
+    // A harness still in its source scan has no denominator yet. Undefined, not
+    // zero: nobody has measured the population.
+    return entry ? Math.max(0, entry.total - entry.processed) : undefined;
+  }
+
+  /**
+   * ISS-6116: harnesses whose ledger still shows source files that never landed
+   * — a live pass caught mid-flight, a settled pass that preserved a shortfall,
+   * or an abandoned one. Reads {@link remainingSources}, so "outstanding" means
+   * exactly what the telemetry counter means by it; a harness that finished
+   * cleanly reports zero and is deliberately absent.
+   *
+   * Only valid BEFORE {@link resetForStop} clears the ledger it reads.
+   */
+  private harnessesWithOutstandingWork(): string[] {
+    const keys = new Set([...this.progress.keys(), ...this.unfinished.keys()]);
+    return [...keys].filter((key) => (this.remainingSources(key) ?? 0) > 0);
+  }
+
+  /**
+   * ISS-6116: the running-pass half of the not-advancing condition, split out of
+   * {@link checkStalls} so the telemetry counter and the log line share one
+   * definition. True only for a pass that is RUNNING (`startedAt` is the
+   * in-flight set, cleared at settle/abandon), is not parked by design, and has
+   * completed no source for a full {@link INGEST_STALL_WARN_MS} window. The
+   * frozen-SCAN half, which `checkStalls` reports in its own words because there
+   * is no processed/total yet, is {@link isScanFrozen}.
+   *
+   * Each of those three exclusions is a way "no forward progress" can be true
+   * without anything being wrong: a settled or abandoned pass has no work left
+   * to advance, a suspended one is paused or yielded on purpose, and a pass that
+   * just began has `lastAdvancedAt` seeded at its start so the window has to
+   * elapse before it can report. A harness the source scan found nothing for
+   * never enters `progress` at all and so is never asked.
+   */
+  private isNotAdvancing(key: string, now: number): boolean {
+    if (this.suspended.has(key)) {
+      return false;
+    }
+    const sinceAdvance = this.msSinceAdvance(key, now);
+    return sinceAdvance !== undefined && sinceAdvance >= INGEST_STALL_WARN_MS;
+  }
+
+  /**
+   * How long this pass has gone without forward progress, or `undefined` if it
+   * has no running pass. Reads {@link lastAdvancedAt}, so a begin, a re-entry,
+   * or a resume counts — right for {@link isNotAdvancing}'s warn line, which is
+   * an observation and not a failure claim. The wedge claim is a stricter
+   * question and reads {@link lastSourceCompletedAt} instead.
+   */
+  private msSinceAdvance(key: string, now: number): number | undefined {
+    const startedAt = this.startedAt.get(key);
+    if (startedAt === undefined) {
+      return undefined;
+    }
+    return now - (this.lastAdvancedAt.get(key) ?? startedAt);
+  }
+
+  /**
+   * ISS-6116: the source scan for this harness has been running longer than the
+   * no-progress window. The other way a harness stops advancing, and the one
+   * with no denominator to report — `listSources`/`collectPendingSources` run
+   * before the first {@link beginPass}, so a freeze there produces no progress
+   * entry at all (ISS-4917).
+   */
+  private isScanFrozen(key: string, now: number): boolean {
+    const scanStartedAt = this.preparingStartedAt.get(key);
+    if (scanStartedAt === undefined) {
+      return false;
+    }
+    return now - scanStartedAt >= INGEST_STALL_WARN_MS;
   }
 
   /** Whether a not-advancing line is due for `since`, given its last report. */
@@ -643,6 +932,7 @@ export class IngestProgressTracker {
     this.progressLoggedAt.delete(key);
     this.announcedTotal.delete(key);
     this.lastAdvancedAt.delete(key);
+    this.lastSourceCompletedAt.delete(key);
     this.stallLoggedAt.delete(key);
     this.suspended.delete(key);
     this.processedSinceResume.delete(key);
@@ -681,3 +971,93 @@ const defaultIngestProgressClock: IngestProgressClock = {
     return () => clearInterval(handle);
   },
 };
+
+/**
+ * ISS-6116: one harness's backfill state as a settled telemetry window sees it.
+ * `harness` is the collector key (a `Harness` value), typed `string` because
+ * this tracker is harness-agnostic; the emit site maps it onto the telemetry
+ * contract's closed label set.
+ */
+export type IngestHarnessProgressReport = {
+  harness: string;
+  /**
+   * Source files this harness has not durably finished. Zero is a real answer;
+   * ABSENT means no population has been measured yet, which is the state of a
+   * harness still inside its source scan.
+   */
+  remaining?: number;
+  notAdvancing: boolean;
+};
+
+/**
+ * What {@link IngestProgressTracker} plus the three lifecycles the collector
+ * manager owns beside it report together — `CollectorManager.getIngestProgress`
+ * builds exactly this. Composed off {@link IngestProgressSnapshot} rather than
+ * re-listing its fields, so a field added there cannot silently go unreported.
+ *
+ * Homed here rather than in `collector-manager.ts` (ISS-6116): the snapshot half
+ * of this type is already owned by this module, and the manager has no entry in
+ * the `noExcessiveLinesPerFile` grandfather list, so the 1,000-line ceiling is
+ * enforced on it.
+ */
+export type IngestProgressReport = IngestProgressSnapshot & {
+  importParked: boolean;
+  complete: boolean;
+  timedOut: boolean;
+  retriesExhausted: boolean;
+  quarantinedCount: number;
+  quarantinedByStage: QuarantinedStageCounts;
+};
+
+/**
+ * Fold the manager-owned lifecycle facts onto this tracker's snapshot.
+ *
+ * The three boot fields are DISTINCT claims and are reported separately on
+ * purpose (ISS-6207): `complete` means every harness finished its work;
+ * `timedOut` means the bound elapsed on an import still running; and
+ * `retriesExhausted` means it stopped with source files outstanding after their
+ * bounded automatic re-drive budget was spent. Collapsing either degraded claim
+ * into `complete` is what let a readiness state be reported over sessions that
+ * were never imported. The two degraded claims can both hold at once and neither
+ * is the negation of the other — read them through `isBootImportDegraded`.
+ */
+export function composeIngestProgressReport(input: {
+  snapshot: IngestProgressSnapshot;
+  /**
+   * ISS-5115 (whitlockk review): the import loop has ACKNOWLEDGED a pause by parking
+   * on the gate. Distinct from `isImportPaused()`, which is true from the instant
+   * the user asks and stays true through a whole source-discovery scan the loop
+   * cannot interrupt. The startup panel says "Pausing" until this flips, rather
+   * than claiming work already stopped.
+   */
+  importParked: boolean;
+  bootComplete: boolean;
+  bootTimedOut: boolean;
+  bootRetriesExhausted: boolean;
+  /**
+   * ISS-4444 / ISS-6115: how many transcripts have been QUARANTINED (their parse
+   * wedged or their import exceeded its bound repeatedly, so they are no longer
+   * retried). The boot import still COMPLETES with these skipped — this count
+   * lets the UI honestly surface "N sessions couldn't be imported" instead of
+   * silently under-counting.
+   */
+  quarantinedCount: number;
+  /**
+   * ISS-6115 (whitlockk review): the same population split by the stage that
+   * quarantined it. `quarantinedCount` alone changed meaning when the import
+   * bound started charging the store, and every renderer went on saying the
+   * transcript "couldn't be read" — which is false for an import stall, since the
+   * file was read and it is the WRITE that did not finish.
+   */
+  quarantinedByStage: QuarantinedStageCounts;
+}): IngestProgressReport {
+  return {
+    ...input.snapshot,
+    importParked: input.importParked,
+    complete: input.bootComplete,
+    timedOut: input.bootTimedOut,
+    retriesExhausted: input.bootRetriesExhausted,
+    quarantinedCount: input.quarantinedCount,
+    quarantinedByStage: input.quarantinedByStage,
+  };
+}

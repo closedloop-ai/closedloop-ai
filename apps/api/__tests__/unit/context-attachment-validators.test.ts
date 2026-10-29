@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ALLOWED_MIME_TYPES } from "@/app/documents/[id]/attachments/validators";
 import {
   CONTEXT_ATTACHMENT_MAX_SIZE_BYTES,
   CONTEXT_ATTACHMENT_MIME_TYPES,
@@ -41,11 +42,17 @@ describe("createContextAttachmentValidator", () => {
   });
 
   it("accepts a video mime type not present in base ALLOWED_MIME_TYPES", () => {
+    // ISS-10415: retargeted from `video/mp4`, which moved INTO the base list
+    // when artifact attachments learned to accept media. This case exists to
+    // prove the context lane still adds a type of its own; asserting it with a
+    // type the base list now carries would have kept the test green while it
+    // stopped testing anything.
     const result = createContextAttachmentValidator.safeParse({
       ...validInput,
-      mimeType: "video/mp4",
+      mimeType: "video/webm",
     });
     expect(result.success).toBe(true);
+    expect(ALLOWED_MIME_TYPES).not.toContain("video/webm");
   });
 
   it("accepts file at the maximum allowed size", () => {

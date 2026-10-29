@@ -30,6 +30,9 @@
  */
 
 import { OutboxStatus } from "../../shared/sync-lane-contract.js";
+import type { SignedInUserIdentity } from "../util/user-identity.js";
+import type { Prisma } from "./generated/client.js";
+import { chunkIds } from "./synced-session-hydration-plan.js";
 
 /**
  * The minimal raw-read surface this predicate needs. Structural rather than
@@ -47,23 +50,65 @@ export type PendingInvocationTemplate = {
 };
 
 /**
+ * ISS-8768: the `targetSourceKey` to pass when the machine has NO delivery target
+ * at all — no compute target has been negotiated, so nothing has ever been
+ * promoted out of the template key.
+ *
+ * A source key no row can carry, so the LEFT JOIN below matches nothing, every
+ * `target.source_sequence` is NULL, and every template session holding pending
+ * parts is correctly reported as owed. That is the truthful answer in that state:
+ * an unpaired machine owes its WHOLE template backlog, not zero. Reading it as
+ * zero is what let a 3,031-row backlog report as "nothing owed" for three weeks.
+ */
+export const NO_DELIVERY_TARGET_SOURCE_KEY = "";
+
+/**
  * The sessions whose template generation is NEWER than what the target-scoped
  * queue has delivered, keyset-paged after `afterSessionId`.
  *
  * A session qualifies only when the template still has at least one `pending`
  * outbox row of its own — a template whose parts were all cleared has nothing
  * left to clone, so counting it would inflate the backlog with settled work.
+ *
+ * `ownerIdentity`, when given, leaves out sessions another identity pair owns —
+ * the same predicate as `isForeignOwnedSession` (`../util/user-identity.ts`)
+ * and {@link loadForeignOwnedInvocationSessionIds}; keep all three in
+ * agreement. It filters BEFORE the `LIMIT`, so a window full of another
+ * environment's sessions cannot hide this identity's. The burn-down passes it
+ * (monitor 315255487, 2026-10-12: counting those sessions as owed left a
+ * remainder no promotion pass could drain); promotion filters per page itself.
  */
 export function loadPendingInvocationTemplates(
   tx: RawQueryClient,
   targetSourceKey: string,
   templateSourceKey: string,
   afterSessionId: string,
-  limit: number
+  limit: number,
+  ownerIdentity: SignedInUserIdentity | null = null
 ): Promise<PendingInvocationTemplate[]> {
+  const fixedValues = [
+    targetSourceKey,
+    templateSourceKey,
+    afterSessionId,
+    OutboxStatus.Pending,
+    limit,
+  ];
+  const userIdParam = `$${fixedValues.length + 1}`;
+  const organizationIdParam = `$${fixedValues.length + 2}`;
+  const ownerClause =
+    ownerIdentity === null
+      ? ""
+      : `AND NOT (parent.user_id IS NOT NULL
+                  AND parent.organization_id IS NOT NULL
+                  AND (parent.user_id <> ${userIdParam} OR parent.organization_id <> ${organizationIdParam}))`;
+  const ownerValues =
+    ownerIdentity === null
+      ? []
+      : [ownerIdentity.userId, ownerIdentity.organizationId];
   return tx.$queryRawUnsafe<PendingInvocationTemplate[]>(
     `SELECT template.external_session_id
        FROM agent_component_invocation_sync_cursors template
+       JOIN sessions parent ON parent.id = template.external_session_id
        LEFT JOIN agent_component_invocation_sync_cursors target
          ON target.source_key = $1
         AND target.external_session_id = template.external_session_id
@@ -79,13 +124,11 @@ export function loadPendingInvocationTemplates(
              AND outbox.external_generation_id = template.external_generation_id
              AND outbox.status = $4
         )
+        ${ownerClause}
       ORDER BY template.external_session_id
       LIMIT $5`,
-    targetSourceKey,
-    templateSourceKey,
-    afterSessionId,
-    OutboxStatus.Pending,
-    limit
+    ...fixedValues,
+    ...ownerValues
   );
 }
 
@@ -107,6 +150,14 @@ export function loadPendingInvocationTemplates(
  * against 3,490 template rows) so it engages only on a genuine, sustained backlog.
  */
 export const MAX_PENDING_INVOCATION_DELIVERY_PARTS = 500;
+
+/**
+ * cr PR #5377 review: every unbounded id list this lane interpolates into an
+ * `IN (...)` is chunked — same rule as `outbox-environment-partition.ts`'s
+ * chunking — so a large corpus degrades to more queries, never to a
+ * bind-parameter error.
+ */
+export const INVOCATION_ID_BIND_CHUNK_SIZE = 400;
 
 /**
  * Which of `candidateSessionIds` already have `pending` rows in the TARGET-scoped
@@ -159,6 +210,49 @@ export function selectPromotableInvocationSessions(
 ): string[] {
   const blocked = new Set(blockedSessionIds);
   return candidateSessionIds.filter((sessionId) => !blocked.has(sessionId));
+}
+
+/**
+ * ISS-7096: which of `candidateSessionIds` are owned by ANOTHER identity pair —
+ * a local session row whose `user_id` AND `organization_id` are both stamped
+ * and at least one differs from the signed-in pair. On a multi-environment
+ * device these are the other environment's sessions; a compute target is
+ * assigned per authenticated account+machine, so they are permanently not this
+ * target's work. A session with no local row or a NULL-owner pair is NOT
+ * foreign — the ISS-6168 boot claim may still stamp it as ours. The filter is
+ * the query-level twin of the canonical `isForeignOwnedSession`
+ * (`../util/user-identity.ts`), and so is the `ownerIdentity` clause of
+ * {@link loadPendingInvocationTemplates} — keep all three in agreement
+ * (cr-81036).
+ */
+export async function loadForeignOwnedInvocationSessionIds(
+  tx: Pick<Prisma.TransactionClient, "session">,
+  identity: { userId: string; organizationId: string },
+  candidateSessionIds: readonly string[]
+): Promise<string[]> {
+  if (candidateSessionIds.length === 0) {
+    return [];
+  }
+  const foreign: string[] = [];
+  for (const chunk of chunkIds(
+    [...candidateSessionIds],
+    INVOCATION_ID_BIND_CHUNK_SIZE
+  )) {
+    const rows = await tx.session.findMany({
+      where: {
+        id: { in: chunk },
+        userId: { not: null },
+        organizationId: { not: null },
+        NOT: {
+          userId: identity.userId,
+          organizationId: identity.organizationId,
+        },
+      },
+      select: { id: true },
+    });
+    foreign.push(...rows.map((row) => row.id));
+  }
+  return foreign;
 }
 
 /**

@@ -7,7 +7,7 @@
  *
  *   - `parseJsonValue` had NO covering test at all: deleting its body, its
  *     `try`, or its `catch` changed nothing any test could see.
- *   - `isoTs`'s string and unrepresentable-number branches survived `if (true)`,
+ *   - `toIso`'s string and unrepresentable-number branches survived `if (true)`,
  *     i.e. the guards added to make it total were themselves unguarded.
  *   - `extractDedupedUsage`'s skip condition survived `if (false)` AND `if (true)`
  *     — a filter that can be disabled entirely without a failing test. The
@@ -18,7 +18,8 @@
  * prevent is a plausible token total or a record sorting before every real one.
  */
 import { describe, expect, it } from "vitest";
-import { extractDedupedUsage, isoTs, parseJsonValue } from "./parse-claude";
+import { toIso } from "../parser-utils";
+import { extractDedupedUsage, parseJsonValue } from "./claude-usage";
 
 function usageEntry(
   message: Record<string, unknown>,
@@ -60,40 +61,42 @@ describe("parseJsonValue", () => {
   });
 });
 
-describe("isoTs", () => {
-  it("passes a non-empty string through verbatim", () => {
-    expect(isoTs("2026-07-09T12:00:00.000Z")).toBe("2026-07-09T12:00:00.000Z");
-    expect(isoTs("not-a-date")).toBe("not-a-date");
+describe("toIso", () => {
+  it("returns null for a string that is not a datetime", () => {
+    expect(toIso("2026-07-09T12:00:00.000Z")).toBe("2026-07-09T12:00:00.000Z");
+    // ISS-6738: text that is not a datetime is null now, not echoed back. It
+    // used to reach `startedAt`/`endedAt` and sort lexically against real stamps.
+    expect(toIso("not-a-date")).toBeNull();
   });
 
   it("treats an empty string as absent, not as a timestamp", () => {
     // A record stamped "" sorted before every real one, and `??` kept it while
     // `||` replaced it — the same absent value behaving differently by operator.
-    expect(isoTs("")).toBeNull();
+    expect(toIso("")).toBeNull();
   });
 
   it("returns null for a number no Date can represent", () => {
     // `toISOString` THROWS for these. One such record used to abort the whole
     // scan, which desktop retried every pass and the cloud showed as blank.
-    expect(isoTs(Number.NaN)).toBeNull();
-    expect(isoTs(Number.POSITIVE_INFINITY)).toBeNull();
-    expect(isoTs(Number.NEGATIVE_INFINITY)).toBeNull();
-    expect(isoTs(8.64e15 + 1)).toBeNull();
+    expect(toIso(Number.NaN)).toBeNull();
+    expect(toIso(Number.POSITIVE_INFINITY)).toBeNull();
+    expect(toIso(Number.NEGATIVE_INFINITY)).toBeNull();
+    expect(toIso(8.64e15 + 1)).toBeNull();
   });
 
   it("still converts a representable epoch, including the boundary", () => {
-    expect(isoTs(8.64e15)).toBe("+275760-09-13T00:00:00.000Z");
-    expect(isoTs(-1)).toBe("1969-12-31T23:59:59.999Z");
+    expect(toIso(8.64e15)).toBe("+275760-09-13T00:00:00.000Z");
+    expect(toIso(-1)).toBe("1969-12-31T23:59:59.999Z");
   });
 
   it("returns null for anything that is not a timestamp", () => {
     // A timestamp is an epoch number or a string. Everything else is an unknown
     // stamp, and null is how this function says that — the same answer whatever
     // the wrong shape happens to be, so no caller has to enumerate them.
-    expect(isoTs(true)).toBeNull();
-    expect(isoTs({ at: "2026-01-01" })).toBeNull();
-    expect(isoTs([])).toBeNull();
-    expect(isoTs(["2026-01-01"])).toBeNull();
+    expect(toIso(true)).toBeNull();
+    expect(toIso({ at: "2026-01-01" })).toBeNull();
+    expect(toIso([])).toBeNull();
+    expect(toIso(["2026-01-01"])).toBeNull();
   });
 });
 

@@ -6,15 +6,20 @@
  * format → NormalizedSession in `codex-parser`, and this descriptor wires them
  * together for the collector manager.
  */
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { statSync } from "node:fs";
 import path from "node:path";
+import type { NormalizedParseQuality } from "@repo/lib/harness/parse-quality";
 import { yieldToEventLoop } from "../engine/cooperative-yield.js";
+import type {
+  IngestStorePort,
+  IngestStoreSnapshot,
+} from "../engine/ingest-store-port.js";
 import { mergeTokensByModel } from "../engine/merge-tokens-by-model.js";
+import { corruptLineCount } from "../engine/parse-quality-scan.js";
 import { findWorkflowJournals } from "../parsing/codex-workflow-scanner.js";
 import { collectArtifacts } from "../parsing/parser-utils.js";
 import type {
   FileHarnessCollector,
-  NormalizedParseQuality,
   NormalizedSession,
   NormalizedSubagent,
 } from "../types.js";
@@ -25,6 +30,7 @@ import {
   sessionIdFromRolloutPath,
 } from "./codex-home.js";
 import {
+  codexZeroSessionParseKey,
   collectRolloutUsageSnapshotIdentities,
   parseRolloutFile,
 } from "./codex-parser.js";
@@ -45,22 +51,26 @@ export type CreateCodexCollectorOptions = {
   archivedDir?: string;
   listSources?: () => string[];
   /**
-   * FEA-2264: path to the persisted rollout-linkage cache. When set, the
-   * boot-time rollout-graph build re-reads only files changed since the last
-   * launch instead of all of them.
+   * FEA-2264: durable port for the persisted rollout-linkage cache. When set,
+   * the boot-time rollout-graph build re-reads only files changed since the last
+   * launch instead of all of them. ISS-9838 moved the backing store from a JSON
+   * file to a SQLite row behind this injected port (ISS-9837 R2).
    */
-  linkageCachePath?: string;
+  linkageStore?: IngestStorePort;
 };
 
 export function createCodexCollector(
   options: CreateCodexCollectorOptions = {}
 ): FileHarnessCollector {
+  // ISS-7625: the last parse's unreadable-rollout quality, awaiting a drain by
+  // `takeUnreadableParseQuality`. Per collector INSTANCE, as the Claude one is.
+  let unreadableParseQuality: NormalizedParseQuality | undefined;
   const sessionsDir = options.sessionsDir ?? getCodexSessionsDir();
   const archivedDir = options.archivedDir ?? getCodexArchivedDir();
   const listSources = options.listSources ?? listAllRolloutFiles;
   const rolloutGraph = createRolloutGraphCache(
     listSources,
-    options.linkageCachePath
+    options.linkageStore
   );
   // FEA-2264: maxWorkflowJournalMtime(source) depends only on dirname(source)
   // (it readdir-scans that directory for workflow journals), so memoize it by
@@ -120,22 +130,39 @@ export function createCodexCollector(
       return maxNullableMtime(workflowMtime, descendantMtime);
     },
     async parse(filePath: string): Promise<NormalizedSession[]> {
+      // ISS-7625: cleared before the parse so a prior source's report can never
+      // be drained as this one's.
+      unreadableParseQuality = undefined;
       const allSources = rolloutGraph.prepare(listSources());
       const byId = rolloutGraph.byId();
       const parent = findCodexParentSource(filePath, allSources, byId);
       if (parent) {
+        // A child rollout with a present parent is a HEALTHY zero: its content is
+        // imported under the parent, so it must report no ingest failure. The
+        // early return keeps the parser — and therefore the sink — out of it
+        // entirely, which is why `sessions.length === 0` was never a usable proxy.
         return [];
       }
-      const s = await parseRolloutFile(filePath);
+      const s = await parseRolloutFile(filePath, {
+        onUnreadableParse: (quality) => {
+          unreadableParseQuality = quality;
+        },
+      });
       if (!s) {
         return [];
       }
       await foldCodexDescendants(s, filePath, allSources, byId);
       return [s];
     },
+    takeUnreadableParseQuality: (): NormalizedParseQuality | undefined => {
+      const quality = unreadableParseQuality;
+      unreadableParseQuality = undefined;
+      return quality;
+    },
     sessionIdForSource(source: string): string | null {
       return sessionIdFromRolloutPath(source);
     },
+    zeroSessionParseKey: codexZeroSessionParseKey,
     isBurstArtifactSource(source: string): boolean {
       return (
         findCodexParentSource(
@@ -166,7 +193,8 @@ type CodexRolloutGraphCache = {
   ): ReturnType<typeof readCodexRolloutLinkage> | undefined;
 };
 
-// FEA-2264: persisted rollout-linkage cache (see ingestCodexLinkageCachePath).
+// FEA-2264: persisted rollout-linkage cache. ISS-9837 R3: this discriminates
+// the whole store's FORMAT, so a snapshot at another version is discarded whole.
 const LINKAGE_CACHE_VERSION = 1;
 // Non-path delimiter for the in-memory rollout-graph staleness key.
 const ROLLOUT_GRAPH_KEY_DELIM = String.fromCharCode(0);
@@ -225,48 +253,43 @@ function isValidPersistedLinkageEntry(
   );
 }
 
+// ISS-9837 R1: `hydrated` was resolved before the collector was constructed, so
+// this stays synchronous the way `listSources()` requires.
 function loadPersistedLinkage(
-  cachePath: string | undefined
+  store: IngestStorePort | undefined
 ): Map<string, PersistedLinkageEntry> {
-  if (!cachePath) {
+  const hydrated = store?.hydrated;
+  if (!hydrated || hydrated.version !== LINKAGE_CACHE_VERSION) {
     return new Map();
   }
-  try {
-    const parsed = JSON.parse(readFileSync(cachePath, "utf8")) as {
-      version?: number;
-      entries?: Record<string, unknown>;
-    };
-    if (parsed.version !== LINKAGE_CACHE_VERSION || !parsed.entries) {
-      return new Map();
+  const valid = new Map<string, PersistedLinkageEntry>();
+  for (const [key, entry] of Object.entries(hydrated.entries)) {
+    if (isValidPersistedLinkageEntry(entry, key)) {
+      valid.set(key, entry);
     }
-    const valid = new Map<string, PersistedLinkageEntry>();
-    for (const [key, entry] of Object.entries(parsed.entries)) {
-      if (isValidPersistedLinkageEntry(entry, key)) {
-        valid.set(key, entry);
-      }
-    }
-    return valid;
-  } catch {
-    return new Map();
   }
+  return valid;
 }
 
 function savePersistedLinkage(
-  cachePath: string | undefined,
+  store: IngestStorePort | undefined,
   cache: Map<string, PersistedLinkageEntry>
 ): void {
-  if (!cachePath) {
+  if (!store) {
     return;
   }
+  const snapshot: IngestStoreSnapshot = {
+    version: LINKAGE_CACHE_VERSION,
+    entries: Object.fromEntries(cache),
+  };
   try {
-    mkdirSync(path.dirname(cachePath), { recursive: true });
-    writeFileSync(
-      cachePath,
-      JSON.stringify({
-        version: LINKAGE_CACHE_VERSION,
-        entries: Object.fromEntries(cache),
-      })
-    );
+    // Best-effort and not retried: an unaccepted write just means the next
+    // launch rebuilds the linkage from the rollout files, which is what a cold
+    // cache already does. The port logs the failure.
+    store.save(snapshot).catch(() => {
+      // The port contract says `save` never rejects; terminating the chain
+      // keeps a port that breaks it from becoming an unhandled rejection.
+    });
   } catch {
     // Best-effort: a failed write just means the next launch rebuilds.
   }
@@ -445,7 +468,7 @@ async function buildRolloutByIdWithCacheAsync(
 
 function createRolloutGraphCache(
   listSources: () => string[],
-  linkageCachePath?: string
+  linkageStore?: IngestStorePort
 ): CodexRolloutGraphCache {
   let cachedKey = "";
   let cachedSources: readonly string[] = [];
@@ -461,7 +484,7 @@ function createRolloutGraphCache(
   // FEA-2264: session_meta linkage persisted across launches, keyed by source
   // path + mtime + size. The boot-time rollout-graph build re-reads only files
   // that changed since the last launch instead of all ~8k every time.
-  const persistedLinkage = loadPersistedLinkage(linkageCachePath);
+  const persistedLinkage = loadPersistedLinkage(linkageStore);
 
   // Commit a freshly built graph into the cache fields. Shared by the sync and
   // cooperative prepares so they update identical state.
@@ -482,7 +505,7 @@ function createRolloutGraphCache(
       cachedBySourcePath.set(linkage.sourcePath, linkage);
     }
     if (cacheDirty) {
-      savePersistedLinkage(linkageCachePath, persistedLinkage);
+      savePersistedLinkage(linkageStore, persistedLinkage);
     }
   };
 
@@ -646,6 +669,7 @@ export async function foldCodexDescendants(
       metadata: childMeta,
     });
     foldedToolUses.push(...ownedToolUses);
+    foldChildMcpCallEvidence(root, parsedChild, subagentId);
     mergeTokensByModel(root.tokensByModel, parsedChild.tokensByModel);
     root.tokenSeries.push(...parsedChild.tokenSeries);
     // FEA-3526: only the root is imported (child sources return [] from the
@@ -672,9 +696,9 @@ export async function foldCodexDescendants(
       parsedChild.usageExtras.reasoning_output_tokens;
     // FEA-2907: the folded child's transcript lines are part of the parent's
     // derived data, so its parse-quality signal must fold in too. Line counts
-    // are additive (total corruption/attempted across parent+children) and
-    // truncatedFinalLine ORs (any child truncated ⇒ the merged data has a
-    // truncation drop). Without this the parent under-reports malformed lines.
+    // are additive (total corruption/attempted across parent+children). Without
+    // this the parent under-reports malformed lines. `truncatedFinalLine` does
+    // NOT fold — see `mergeParseQuality`, where ISS-6336 took the OR back out.
     root.parseQuality = mergeParseQuality(
       root.parseQuality,
       parsedChild.parseQuality
@@ -732,35 +756,42 @@ function mergeParseQuality(
   if (!target) {
     return { ...source };
   }
-  // FEA-3702: sum the Codex `malformedRateLimits` count across the merged
-  // transcripts so a present-but-malformed rate_limits block is not silently
-  // dropped when the main rollout is folded with its workflow-journal companion.
-  // Optional/additive: omitted when neither side saw one (0), so clean sessions
-  // round-trip unchanged.
-  const malformedRateLimits =
-    (target.malformedRateLimits ?? 0) + (source.malformedRateLimits ?? 0);
-  // FEA-3713: aggregate unknown-record counts across the fork family the same
-  // way line counts aggregate; keep the field absent when neither side tracked
-  // it (both are 0) so a clean merge round-trips byte-identically.
-  const unknownRecords =
-    (target.unknownRecords ?? 0) + (source.unknownRecords ?? 0);
-  // FEA-3701: sum the optional MCP/tool-output correlation diagnostics across a
-  // session's descendant rollouts too — a child rollout can carry orphaned or
-  // ambiguous MCP outputs, and folding only the three base counters would drop
-  // that signal on a multi-rollout Codex session. Kept optional/omitted-when-zero
-  // to match the parser's shape (a fully-clean merge round-trips without them).
-  const orphanedToolOutputs =
-    (target.orphanedToolOutputs ?? 0) + (source.orphanedToolOutputs ?? 0);
-  const ambiguousToolOutputs =
-    (target.ambiguousToolOutputs ?? 0) + (source.ambiguousToolOutputs ?? 0);
+  // ISS-6336 (whitlockk review): the child's OWN trailing truncation is discounted
+  // here, and the discount is tallied, exactly as `foldChildParseQuality` does
+  // for a Claude sidecar. This re-derived the fold and got it wrong on both
+  // halves: summing `malformedLines` raw counted every descendant's benign
+  // live-write truncation as corruption — a healthy multi-rollout session
+  // emitted `session_parse_degraded` — and OR-ing `truncatedFinalLine` let the
+  // parent claim a trailing truncation it does not have, which discounts a
+  // genuinely corrupt parent line instead. `truncatedFinalLine` is a property of
+  // the ROOT rollout's own file; the `NormalizedParseQuality` contract says so.
+  const childTruncatedFinalLines =
+    (target.childTruncatedFinalLines ?? 0) +
+    (source.childTruncatedFinalLines ?? 0) +
+    (source.truncatedFinalLine ? 1 : 0);
+  // ISS-12036: the descendant's share of the merged `malformedLines`, so a
+  // degraded multi-rollout Codex session says WHICH writer lost the lines rather
+  // than only that some were lost. The descendant's own folded-child share
+  // (its workflow journals) stays in that bucket and is carried across, so the
+  // three shares still sum back to `corruptLineCount`.
+  const descendantCorrupt = corruptLineCount(source);
+  const foldedDescendantMalformedLines =
+    (target.foldedDescendantMalformedLines ?? 0) +
+    (source.foldedDescendantMalformedLines ?? 0) +
+    Math.max(0, descendantCorrupt - (source.foldedChildMalformedLines ?? 0));
+  const foldedChildMalformedLines =
+    (target.foldedChildMalformedLines ?? 0) +
+    (source.foldedChildMalformedLines ?? 0);
   return {
     totalLines: target.totalLines + source.totalLines,
-    malformedLines: target.malformedLines + source.malformedLines,
-    truncatedFinalLine: target.truncatedFinalLine || source.truncatedFinalLine,
-    ...(malformedRateLimits > 0 ? { malformedRateLimits } : {}),
-    ...(unknownRecords > 0 ? { unknownRecords } : {}),
-    ...(orphanedToolOutputs > 0 ? { orphanedToolOutputs } : {}),
-    ...(ambiguousToolOutputs > 0 ? { ambiguousToolOutputs } : {}),
+    malformedLines: target.malformedLines + descendantCorrupt,
+    truncatedFinalLine: target.truncatedFinalLine,
+    ...(childTruncatedFinalLines > 0 ? { childTruncatedFinalLines } : {}),
+    ...sumAdditiveParseCounters(target, source),
+    ...(foldedChildMalformedLines > 0 ? { foldedChildMalformedLines } : {}),
+    ...(foldedDescendantMalformedLines > 0
+      ? { foldedDescendantMalformedLines }
+      : {}),
   };
 }
 
@@ -788,4 +819,73 @@ function maxWorkflowJournalMtime(source: string): number | null {
     }
   }
   return maxMtime;
+}
+
+/**
+ * The plainly-additive optional counters a Codex descendant fold sums, in the
+ * order {@link mergeParseQuality} emits them.
+ *
+ * Each is a diagnostic a CHILD rollout can carry as readily as the root, and
+ * folding only the base line counts dropped the child's share on a multi-rollout
+ * session:
+ *   - `malformedRateLimits` (FEA-3702) — a present-but-malformed `rate_limits`
+ *     block, otherwise silently lost when the main rollout folds with its
+ *     workflow-journal companion;
+ *   - `unknownRecords` (FEA-3713) — records the classifier could not route;
+ *   - `orphanedToolOutputs` / `ambiguousToolOutputs` (FEA-3701) — MCP/tool-output
+ *     correlation diagnostics.
+ *
+ * A list rather than four near-identical statements (ISS-12036 pushed the
+ * function past the cognitive-complexity ceiling), and the summing rule they
+ * share is the whole reason they can share one: `a + b`, omitted when zero.
+ * {@link NormalizedParseQuality}'s other optional counters are deliberately NOT
+ * here — each carries an extra term and keeps its own statement.
+ */
+const ADDITIVE_PARSE_COUNTERS = [
+  "malformedRateLimits",
+  "unknownRecords",
+  "orphanedToolOutputs",
+  "ambiguousToolOutputs",
+] as const satisfies readonly (keyof NormalizedParseQuality)[];
+
+type AdditiveParseCounter = (typeof ADDITIVE_PARSE_COUNTERS)[number];
+
+/**
+ * Sum {@link ADDITIVE_PARSE_COUNTERS} across one fold, omitting every key that
+ * came out zero so a fully-clean merge round-trips byte-identically against a
+ * frozen `normalized.json`.
+ */
+function sumAdditiveParseCounters(
+  target: NormalizedParseQuality,
+  source: NormalizedParseQuality
+): Partial<Record<AdditiveParseCounter, number>> {
+  const summed: Partial<Record<AdditiveParseCounter, number>> = {};
+  for (const key of ADDITIVE_PARSE_COUNTERS) {
+    const total = (target[key] ?? 0) + (source[key] ?? 0);
+    if (total > 0) {
+      summed[key] = total;
+    }
+  }
+  return summed;
+}
+
+/**
+ * ISS-12552: a child's code-mode MCP calls are evidence of the subagent that
+ * made them, owned the same way as its tool uses.
+ */
+function foldChildMcpCallEvidence(
+  root: NormalizedSession,
+  child: NormalizedSession,
+  subagentId: string
+): void {
+  if (!child.mcpCallEvidence?.length) {
+    return;
+  }
+  root.mcpCallEvidence = [
+    ...(root.mcpCallEvidence ?? []),
+    ...child.mcpCallEvidence.map((call) => ({
+      ...call,
+      subagentId: call.subagentId ?? subagentId,
+    })),
+  ];
 }

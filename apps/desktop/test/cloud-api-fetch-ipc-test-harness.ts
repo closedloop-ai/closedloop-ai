@@ -16,6 +16,9 @@ export const UNTRUSTED_EVENT = {
   sender: { id: 2 } as unknown as WebContents,
 } as IpcMainInvokeEvent;
 
+/** The bridge's refusal for a non-GET path outside `NON_GET_ALLOWLIST`. */
+export const NOT_ALLOWLISTED_ERROR = /is not an allowlisted write endpoint/;
+
 type FetchCall = { url: URL; init: RequestInit };
 
 /** Register the production handler with deterministic auth/network test ports. */

@@ -5,7 +5,7 @@ import {
   emitProtocolMetric,
 } from "@repo/observability/telemetry/metrics";
 import { ORIGIN } from "@repo/observability/telemetry/origin";
-import { TelemetryCategory } from "@repo/observability/telemetry/schema";
+import { TelemetryCategory } from "@repo/observability/telemetry/telemetry-category";
 import type { Socket } from "socket.io";
 import { healMissingRegistryEntry } from "./registry-ownership.js";
 import type { TargetMetadata, TargetRegistry } from "./target-registry.js";
@@ -21,10 +21,15 @@ type WorkerContext = {
   degradedTimer: ReturnType<typeof setTimeout> | null;
   wasDegraded: boolean;
   gatewaySessionId?: string;
-  pluginVersion?: string;
   ownerToken?: string;
   /** What hello registered, kept so the heartbeat can re-create a lost entry. */
   registryMetadata?: TargetMetadata;
+  /**
+   * The last executor occupancy this desktop reported on its own presence, so
+   * the heartbeat can restate it (ISS-8453). Per-worker, so a reconnect starts
+   * with none rather than replaying the previous connection's number.
+   */
+  lastActiveCommands?: number;
 };
 
 type StartWorkerHeartbeatOptions = {
@@ -64,6 +69,14 @@ function onHeartbeatAck(
     isStillCurrentWorker,
     emitConnectionState,
   } = options;
+
+  // Clearing the interval does not cancel a probe already in flight, so this
+  // can resolve after the worker lost `targetId` (re-hello to a new target,
+  // takeover, disconnect). Writing here would re-orphan the entry teardown
+  // just deleted, restoring the ISS-7965 leak one cleanup cannot reach.
+  if (!isStillCurrentWorker()) {
+    return;
+  }
 
   const prev = lastHeartbeatAckAt.get(targetId);
   lastHeartbeatAckAt.set(targetId, now);
@@ -124,8 +137,17 @@ function onHeartbeatFailure(
     targetId,
     gatewaySessionId,
     degradedThresholdMs,
+    isStillCurrentWorker,
     emitConnectionState,
   } = options;
+
+  // Same in-flight window as the ack path: a rejection landing after teardown
+  // would arm a fresh degradedTimer on a disposed context that no cleanup path
+  // still holds, leaking the timer and emitting a stale-heartbeat signal for a
+  // target this worker no longer owns.
+  if (!isStillCurrentWorker()) {
+    return;
+  }
 
   log.error("Heartbeat failed", {
     targetId,

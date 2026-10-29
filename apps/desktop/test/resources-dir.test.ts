@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
-import { after, afterEach, before, beforeEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { afterAll, afterEach, beforeAll, beforeEach, test } from "vitest";
 import {
   type ElectronModuleMock,
   registerElectronModuleMock,
@@ -20,12 +20,12 @@ let electronMock: ElectronModuleMock;
 let originalResourcesPathDescriptor: PropertyDescriptor | undefined;
 let resolveResourcesDir: () => string;
 
-before(async () => {
+beforeAll(async () => {
   electronMock = registerElectronModuleMock();
   ({ resolveResourcesDir } = await import("../src/main/resources-dir.js"));
 });
 
-after(() => {
+afterAll(() => {
   electronMock.deregister();
 });
 

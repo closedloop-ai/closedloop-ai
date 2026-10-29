@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { openTestDb } from "./agent-db-test-utils.js";
 import { makePopulatedSession as makeSession } from "./normalized-session-test-utils.js";
 
@@ -93,6 +93,85 @@ test("Importer: fallback token_events at startedAt when tokenSeries empty but to
       totalDayInput,
       100,
       "fallback token_events carries input from tokensByModel"
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Importer: a re-keyed model does not get a second synthesized token_events row", async () => {
+  // ISS-12037 (marisolashgrove, tamsinb): `tokenSeries` and `tokensByModel` are
+  // deliberately different vocabularies — `buildTokensByModel` remaps a
+  // `codex-auto-review` series row onto the real model, and Copilot/OpenCode
+  // key the two from different fields — so the SAME spend routinely appears
+  // under two names. Deciding "this model is missing from the series" by
+  // matching names therefore synthesizes it a second time and doubles
+  // token_events. The query here is deliberately unscoped by model: scoped to
+  // one model it stays green while a sibling is double-counted.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fea1459-sqlite-"));
+  const db = await openTestDb(dir);
+
+  try {
+    const session = makeSession({
+      sessionId: "te-rekeyed-model-test",
+      tokenSeries: [
+        {
+          timestamp: "2026-06-07T10:00:30.000Z",
+          model: "codex-auto-review",
+          input: 60,
+          output: 30,
+          cacheRead: 5,
+          cacheWrite: 3,
+        },
+      ],
+      tokensByModel: {
+        "gpt-5-codex": { input: 60, output: 30, cacheRead: 5, cacheWrite: 3 },
+      },
+      startedAt: "2026-06-07T09:00:00.000Z",
+    });
+
+    await db.importer.importSession(session, "codex");
+
+    const events = await db.prisma.client.$queryRawUnsafe<
+      {
+        model: string;
+        input_tokens: number | bigint;
+        output_tokens: number | bigint;
+        cache_read_tokens: number | bigint;
+        cache_write_tokens: number | bigint;
+      }[]
+    >(
+      "SELECT model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens FROM token_events WHERE session_id = 'te-rekeyed-model-test'"
+    );
+    const usage = await db.tokenUsage.getBySession("te-rekeyed-model-test");
+    const eventTotal = events.reduce(
+      (sum, row) =>
+        sum +
+        Number(row.input_tokens) +
+        Number(row.output_tokens) +
+        Number(row.cache_read_tokens) +
+        Number(row.cache_write_tokens),
+      0
+    );
+    const usageTotal = usage.reduce(
+      (sum, row) =>
+        sum +
+        row.inputTokens +
+        row.outputTokens +
+        row.cacheReadTokens +
+        row.cacheWriteTokens,
+      0
+    );
+    assert.equal(
+      eventTotal,
+      usageTotal,
+      `token_events total must equal token_usage total; got ${eventTotal} vs ${usageTotal} across ${JSON.stringify(events.map((row) => row.model))}`
+    );
+    assert.equal(
+      events.filter((row) => row.model === "gpt-5-codex").length,
+      0,
+      "the aggregate's re-keyed name must not become a synthesized second row"
     );
   } finally {
     await db.close();

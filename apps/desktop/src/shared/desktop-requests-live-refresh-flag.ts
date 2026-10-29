@@ -1,7 +1,7 @@
 /**
  * ISS-5808 (ISS-4779 closed-by-default): desktop-only Labs flag (camelCase,
  * persisted `DesktopSettings` field) gating the Requests view's LIVE behavior —
- * the while-mounted re-read of events and jobs, and the copy that distinguishes
+ * the while-mounted re-read of events, and the copy that distinguishes
  * a failed read from a genuinely empty list.
  *
  * Off by default. With it off the view keeps its previous mount-time-snapshot

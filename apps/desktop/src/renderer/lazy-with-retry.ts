@@ -32,12 +32,18 @@ function defaultSleep(ms: number): Promise<void> {
  * before giving up.
  *
  * WHY: Lazily-imported route chunks can fail to load for transient reasons —
- * a dev-server restart, a momentary network blip, or a stale/renamed chunk
- * requested right after an app update. A single such rejection would otherwise
- * propagate through Suspense to the root error boundary and white-screen the
- * whole renderer. Retrying lets a momentary hiccup self-heal instead of
- * bricking the window; a genuinely-broken chunk still rejects (with the last
- * error) after all attempts are exhausted, so the boundary still catches it.
+ * a dev-server restart or a momentary network blip. A single such rejection
+ * would otherwise propagate through Suspense to the root error boundary and
+ * white-screen the whole renderer. Retrying lets a momentary hiccup self-heal
+ * instead of bricking the window; a genuinely-broken chunk still rejects
+ * (with the last error) after all attempts are exhausted, so the boundary
+ * still catches it.
+ *
+ * NOTE: only a static renderer (`pnpm dev:static`, `pnpm start`) reads `dist/`
+ * — `pnpm dev` serves from Vite — so only it is exposed to a concurrent
+ * `pnpm build` rewriting those files. A chunk whose content changed is then
+ * gone permanently under its old hashed name (an unchanged one re-emits at the
+ * same hash); retrying cannot recover that, so restart the app.
  */
 export async function importWithRetry<T>(
   factory: () => Promise<T>,
@@ -68,14 +74,16 @@ export async function importWithRetry<T>(
  * surfacing a failure. See {@link importWithRetry} for the WHY.
  */
 export function lazyWithRetry<
-  // Mirrors React's own `lazy` constraint (`ComponentType<any>`): components
-  // have differing, invariant prop shapes, so a narrower constraint such as
-  // `ComponentType<unknown>` would reject any component that declares props.
-  // biome-ignore lint/suspicious/noExplicitAny: matches React.lazy's signature so this stays a drop-in replacement.
-  T extends ComponentType<any>,
+  // Bounded by its OWN props: a fixed props type such as `unknown` would reject
+  // every component that declares props, since props sit in a parameter
+  // position.
+  T extends ComponentType<PropsOf<T>>,
 >(
   factory: () => Promise<{ default: T }>,
   options?: { retries?: number; baseDelayMs?: number }
 ): LazyExoticComponent<T> {
   return lazy(() => importWithRetry(factory, options));
 }
+
+/** The props a component declares. */
+type PropsOf<T> = T extends ComponentType<infer Props> ? Props : never;

@@ -19,14 +19,15 @@
  *  - web (`apps/app`) reads it as a PostHog flag via
  *    `AGENTS_DEFAULT_SORT_USAGE_FEATURE_FLAG_KEY`
  *    (`packages/app/shared/lib/feature-flags.ts`).
- *  - the desktop main process registers it as a Labs toggle via
- *    `DESKTOP_AGENTS_DEFAULT_SORT_USAGE_FEATURE_FLAG_KEY`
- *    (`apps/desktop/src/shared/feature-flags.ts`).
+ *  - the desktop renderer resolves the byte-for-byte-equal key from the
+ *    signed-in account's PostHog assignment, delivered over the IPC bridge,
+ *    under the alias `DESKTOP_AGENTS_DEFAULT_SORT_USAGE_FEATURE_FLAG_KEY`
+ *    (`apps/desktop/src/shared/feature-flags-labs-detail.ts`).
  *
  * Importing one constant on both sides means a future rename touches a single
- * definition — it can't silently split PostHog and Desktop the way two parallel
- * string literals could. The desktop parity test asserts each surface alias
- * resolves to this constant.
+ * definition — it can't silently split the two surfaces' reads of it the way
+ * two parallel string literals could. The desktop parity test asserts each
+ * surface alias resolves to this constant.
  */
 export const AGENTS_DEFAULT_SORT_USAGE_FLAG_KEY =
   "agents-default-sort-usage" as const;

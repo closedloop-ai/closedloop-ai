@@ -353,21 +353,21 @@ validate_desktop_download_url() {
   # onboarding must download them rather than fail validation. Closed[Ll]oop
   # matches the single-letter casing difference.
   #
-  # Two repos are accepted (FEA-3372): the private release repo (example-repo)
+  # Two repos are accepted (FEA-3372): the private release repo (closedloop-ai)
   # and the public repo the signed DMG is mirrored to, which is what makes this
   # download work with no credentials — this function's caller fetches the URL
   # with no Authorization header. Keep in sync with
   # isAllowedDesktopReleaseDownloadUrl in
   # packages/api/src/types/desktop-release.ts; a parity test in
-  # apps/app/lib/__tests__/desktop-managed-onboarding.test.ts pins the two
+  # apps/app/lib/__tests__/desktop-installer-script.test.ts pins the two
   # together. POSIX ERE has no non-capturing groups, so the repo alternation is a
   # real capture group and the version back-references are [2] and [3], not [1]
   # and [2].
-  local desktop_release_url_pattern='^https://github\.com/closedloop-ai/(example-repo|closedloop-ai)/releases/download/desktop-v([0-9]+\.[0-9]+\.[0-9]+)/Closed[Ll]oop-([0-9]+\.[0-9]+\.[0-9]+)-universal\.dmg$'
+  local desktop_release_url_pattern='^https://github\.com/closedloop-ai/(closedloop-ai|closedloop-ai)/releases/download/desktop-v([0-9]+\.[0-9]+\.[0-9]+)/Closed[Ll]oop-([0-9]+\.[0-9]+\.[0-9]+)-universal\.dmg$'
   if [[ "$CL_DESKTOP_DOWNLOAD_URL" =~ $desktop_release_url_pattern ]] && [ "${SHELL_VAR}{BASH_REMATCH[2]}" = "${SHELL_VAR}{BASH_REMATCH[3]}" ]; then
     return 0
   fi
-  fail_step "desktop_download" "Closedloop Desktop release" "CL_DESKTOP_DOWNLOAD_URL must be an HTTPS Closedloop Desktop release asset from closedloop-ai/example-repo or closedloop-ai/closedloop-ai."
+  fail_step "desktop_download" "Closedloop Desktop release" "CL_DESKTOP_DOWNLOAD_URL must be an HTTPS Closedloop Desktop release asset from closedloop-ai/closedloop-ai or closedloop-ai/closedloop-ai."
 }
 
 ensure_node_npm() {
@@ -387,31 +387,6 @@ ensure_claude_cli() {
   if ! ensure_usable_command claude claude --version; then
     fail_step "claude_cli_install" "registry.npmjs.org" "claude is still unavailable after installing @anthropic-ai/claude-code."
   fi
-}
-
-run_interactive_step() {
-  local step="$1"
-  local host="$2"
-  shift 2
-  if "$@"; then
-    return 0
-  fi
-  fail_step "$step" "$host" "Command failed: $*"
-}
-
-ensure_gh_auth() {
-  if gh auth status >/dev/null 2>&1; then
-    printf 'gh is authenticated; continuing.\n'
-    return 0
-  fi
-
-  printf 'GitHub CLI is installed but not authenticated.\n' >&2
-  if [ "$NONINTERACTIVE" = "1" ] || { [ ! -t 0 ] && [ ! -t 1 ]; }; then
-    fail_step "gh_auth" "github.com" "Run gh auth login, then rerun the onboarding command."
-  fi
-
-  printf 'Starting gh auth login so Desktop health checks can pass...\n'
-  run_interactive_step "gh_auth" "github.com" gh auth login
 }
 
 ensure_closedloop_plugins() {
@@ -563,7 +538,7 @@ cleanup_desktop_install() {
 
 install_desktop_app() {
   if [ -z "${SHELL_VAR}{CL_DESKTOP_DOWNLOAD_URL:-}" ]; then
-    fail_step "desktop_download" "example-repo Desktop release" "CL_DESKTOP_DOWNLOAD_URL is required."
+    fail_step "desktop_download" "closedloop-ai Desktop release" "CL_DESKTOP_DOWNLOAD_URL is required."
   fi
   validate_desktop_download_url
 
@@ -797,12 +772,6 @@ main() {
   run_required_prerequisite "workspace_directory" "Workspace directory" ensure_workspace_directory
   capture_validated_workspace_directory
   run_required_prerequisite "git" "Git" ensure_brew_package git git --version
-  run_required_prerequisite "gh" "GitHub CLI" ensure_brew_package gh gh --version
-  if has_failed_prerequisite "gh"; then
-    record_prerequisite_failure "gh_auth" "GitHub CLI authentication" "skipped because GitHub CLI is unavailable"
-  else
-    run_required_prerequisite "gh_auth" "GitHub CLI authentication" ensure_gh_auth
-  fi
   run_required_prerequisite "python3" "Python 3" ensure_python3
   run_required_prerequisite "claude" "Claude Code CLI" ensure_claude_cli
   run_required_prerequisite "jq" "jq" ensure_brew_package jq jq --version

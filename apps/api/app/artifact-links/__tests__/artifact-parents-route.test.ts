@@ -68,7 +68,7 @@ describe("GET /artifact-links/parents", () => {
           name: "PR #1170",
           slug: null,
           externalUrl:
-            "https://github.com/closedloop-ai/example-repo/pull/1170",
+            "https://github.com/closedloop-ai/closedloop-ai/pull/1170",
         },
       },
     ];

@@ -15,6 +15,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  GENERATED_CLIENT_OUTPUTS,
   inputFingerprint,
   isGeneratedClientFresh,
 } from "./generate-prisma-client-lib.mjs";
@@ -24,13 +25,6 @@ const appDir = path.join(scriptDir, "..");
 const repoRoot = path.join(appDir, "..", "..");
 const generatedDir = path.join(appDir, "src", "main", "database", "generated");
 const fingerprintFile = path.join(generatedDir, ".prisma-generate-fingerprint");
-
-const requiredOutputs = [
-  "client.ts",
-  "browser.ts",
-  path.join("internal", "class.ts"),
-  path.join("internal", "prismaNamespace.ts"),
-];
 
 const fingerprint = inputFingerprint(
   [
@@ -46,7 +40,7 @@ if (
   isGeneratedClientFresh({
     fingerprintFile,
     generatedDir,
-    requiredOutputs,
+    requiredOutputs: GENERATED_CLIENT_OUTPUTS,
     fingerprintValue: fingerprint,
   })
 ) {

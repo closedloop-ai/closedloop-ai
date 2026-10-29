@@ -86,9 +86,9 @@ function InteractiveFilterChipSet() {
 }
 
 const meta = {
-  title: "Design System/Primitives/Filter Chip",
+  title: "Primitives v1.0/Inputs/Filter Chip",
   component: FilterChip,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     label: "Status: Active",
     onRemove: () => undefined,
@@ -120,7 +120,7 @@ export const WithDropdown: Story = {
 export const LongLabel: Story = {
   args: {
     label:
-      "Repository: ~/projects/example-repo/apps/app/components/document-table",
+      "Repository: ~/projects/closedloop-ai/apps/app/components/document-table",
   },
 };
 

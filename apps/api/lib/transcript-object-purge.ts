@@ -11,12 +11,12 @@ import { log } from "@repo/observability/log";
  * follow-up cleanup rather than propagated — the backing rows are already gone
  * and the caller must not roll back on a storage error. Empty input is a no-op.
  *
- * `@repo/aws` is imported lazily because it begins with `import "server-only"`,
- * which throws when evaluated outside Next.js — e.g. the desktop gateway socket
- * server statically imports `compute-targets/service.ts` and the post-build
- * `server:import-smoke` script loads it under `tsx` (no Next runtime). Deferring
- * the import keeps the S3 dependency off the eager import graph of every module
- * that calls this helper.
+ * `@repo/aws/transcript-storage` is imported lazily because it begins with
+ * `import "server-only"`, which throws when evaluated outside Next.js — e.g. the
+ * desktop gateway socket server statically imports `compute-targets/service.ts`
+ * and the post-build `server:import-smoke` script loads it under `tsx` (no Next
+ * runtime). Deferring the import keeps the S3 dependency off the eager import
+ * graph of every module that calls this helper.
  */
 export async function purgeTranscriptObjectsBestEffort(
   keys: string[],
@@ -27,7 +27,9 @@ export async function purgeTranscriptObjectsBestEffort(
     return;
   }
   try {
-    const { deleteTranscriptObjects } = await import("@repo/aws");
+    const { deleteTranscriptObjects } = await import(
+      "@repo/aws/transcript-storage"
+    );
     await deleteTranscriptObjects(keys);
   } catch (error) {
     log.error(message, {

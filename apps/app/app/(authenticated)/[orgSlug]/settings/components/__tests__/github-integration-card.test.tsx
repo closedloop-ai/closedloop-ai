@@ -1,4 +1,7 @@
-import { GitHubInstallationStatus } from "@repo/api/src/types/github";
+import {
+  GitHubInstallationStatus,
+  GitHubOAuthRequiredReason,
+} from "@repo/api/src/types/github";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,7 +21,8 @@ const mockUseGitHubRepositories = vi.fn();
 const mockUseConfirmDifferentAccountReset = vi.fn();
 const mockRouterReplace = vi.fn();
 const mockSearchParams = new URLSearchParams();
-const CONNECT_GITHUB_BUTTON_NAME = /connect github/i;
+const CONNECT_GITHUB_BUTTON_NAME = /^connect github$/i;
+const RECONNECT_GITHUB_BUTTON_NAME = /^reconnect github$/i;
 const DISCONNECT_BUTTON_NAME = /^disconnect$/i;
 const DISCONNECT_DIALOG_NAME = /disconnect github/i;
 const INSTALL_APP_BUTTON_NAME = /install app/i;
@@ -69,6 +73,10 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   useFeatureFlagEnabled: () => false,
+  // The card's GitHub mark (FEA-3570) reads the OPTIONAL hook. Pinned closed
+  // rather than shared with the mock above, so this suite keeps asserting the
+  // shipped default and no unrelated flag fixture can flip the logo.
+  useFeatureFlagEnabledOptional: () => false,
 }));
 
 vi.mock("../public-repositories-section", () => ({
@@ -96,7 +104,7 @@ describe("GitHubIntegrationCard", () => {
     mockUseGetGitHubConnectUrl.mockImplementation((mode = "authorize") =>
       mode === "install"
         ? "/api/integrations/github?install=true"
-        : "/api/integrations/github"
+        : "/connect/github/link"
     );
     mockUseGitHubIntegrationStatus.mockReturnValue({
       data: { connected: false },
@@ -126,8 +134,10 @@ describe("GitHubIntegrationCard", () => {
     expect(
       screen.getByRole("button", { name: INSTALL_APP_BUTTON_NAME })
     ).toBeEnabled();
-    expect(mockUseGetGitHubConnectUrl).toHaveBeenCalledWith("authorize");
+    // PLN-1742 M5: useGitHubAuthorizeHref is a pure alias again, so both
+    // modes flow through the URL builder.
     expect(mockUseGetGitHubConnectUrl).toHaveBeenCalledWith("install");
+    expect(mockUseGetGitHubConnectUrl).toHaveBeenCalledWith("authorize", {});
   });
 
   it("navigates to the authorize flow from Connect GitHub", async () => {
@@ -137,7 +147,37 @@ describe("GitHubIntegrationCard", () => {
       screen.getByRole("button", { name: CONNECT_GITHUB_BUTTON_NAME })
     );
 
-    expect(mockLocationAssign).toHaveBeenCalledWith("/api/integrations/github");
+    expect(mockLocationAssign).toHaveBeenCalledWith("/connect/github/link");
+  });
+
+  // ISS-5958 M5: this card gates on the ORG's App installation (D3), and the row
+  // beside the button says "Not connected" about that installation. So the verb
+  // stays the first-time one even for a user whose own grant broke — a button
+  // reading "Reconnect GitHub" next to "Not connected" argues with its own row.
+  it("keeps the first-time verb when the user's own grant was revoked", () => {
+    mockUseGitHubIntegrationStatus.mockReturnValue({
+      data: {
+        connected: false,
+        githubDataConnection: {
+          connected: false,
+          sources: [],
+          oauthRequiredReasons: [GitHubOAuthRequiredReason.CredentialRevoked],
+        },
+      },
+      isError: false,
+      isLoading: false,
+      isRefetching: false,
+      refetch: vi.fn(),
+    });
+
+    render(<GitHubIntegrationCard />);
+
+    expect(
+      screen.getByRole("button", { name: CONNECT_GITHUB_BUTTON_NAME })
+    ).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: RECONNECT_GITHUB_BUTTON_NAME })
+    ).toBeNull();
   });
 
   it("navigates to the install flow from Install App", async () => {
@@ -211,8 +251,8 @@ describe("GitHubIntegrationCard", () => {
       data: [
         {
           id: "repo-1",
-          fullName: "closedloop-ai/example-repo",
-          name: "example-repo",
+          fullName: "closedloop-ai/closedloop-ai",
+          name: "closedloop-ai",
           owner: "closedloop-ai",
           private: true,
           githubRepoId: "100",
@@ -225,7 +265,7 @@ describe("GitHubIntegrationCard", () => {
     render(<GitHubIntegrationCard />);
 
     expect(screen.getByText("@closedloop-ai")).toBeInTheDocument();
-    expect(screen.getByText("closedloop-ai/example-repo")).toBeInTheDocument();
+    expect(screen.getByText("closedloop-ai/closedloop-ai")).toBeInTheDocument();
 
     await userEvent.click(
       screen.getByRole("button", { name: DISCONNECT_BUTTON_NAME })

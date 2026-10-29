@@ -5,7 +5,9 @@ import { scheduleLogFlush, scheduleLogFlushAfter } from "@/lib/route-utils";
 import { buildCorrelationId, notifySlack } from "@/lib/slack-notifier";
 
 /**
- * FEA-3789 (PRD-536 G3): daily cron that re-links orphaned session transcripts.
+ * FEA-3789 (PRD-536 G3): cron route that re-links orphaned session transcripts.
+ * Unscheduled by ISS-12780 (Perrin Upcott, 2026-10-21: "Unschedule, keep the
+ * code"), so it runs only when called.
  *
  * `SessionTranscript.sessionDetailId` is resolved lazily on the transcript
  * sync/complete/skip path, but a transcript that finishes uploading BEFORE its
@@ -32,6 +34,7 @@ export const GET = async (request: Request): Promise<Response> => {
   log.info(`[backfill-orphan-transcripts] ${result.summary}`, {
     linked: result.linked,
     unresolved: result.unresolved,
+    staleParent: result.staleParent,
     exitCode: result.exitCode,
   });
 

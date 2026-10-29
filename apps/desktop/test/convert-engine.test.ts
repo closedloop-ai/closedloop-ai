@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { AgentComponentKind } from "@repo/api/src/types/agent-component.js";
 import {
   ConvertFailureClass,
@@ -8,7 +7,8 @@ import {
   makeConvertInstallErrorOutcome,
 } from "@repo/api/src/types/convert-install.js";
 import { ConversionSupport } from "@repo/api/src/types/harness-conversion.js";
-import { HarnessName } from "@repo/crewd/model";
+import { HarnessName } from "@repo/api/src/types/harness-name";
+import { describe, test } from "vitest";
 import {
   type ConvertInstallRunner,
   classifyStreamRunError,

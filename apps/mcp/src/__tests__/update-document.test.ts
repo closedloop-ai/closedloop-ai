@@ -4,7 +4,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { registerUpdateDocument } from "../tools/update-document.js";
-import { createToolHarnessWithMock } from "./fixtures/tool-harness.js";
+import {
+  createToolHarnessWithMock,
+  registeredToolConfig,
+} from "./fixtures/tool-harness.js";
+import {
+  expectIssue,
+  ISO_DATE_UNION_REJECTION,
+  UUID_REJECTION,
+  ZodIssueCode,
+} from "./fixtures/zod-issues.js";
 
 type ToolHandler = (input: Record<string, unknown>) => Promise<{
   content: { type: "text"; text: string }[];
@@ -21,11 +30,7 @@ function createToolHarness(apiClient: ApiClient): {
     registerUpdateDocument,
     apiClient
   );
-  const registeredSchema = (
-    registerTool.mock.calls[0]?.[1] as {
-      inputSchema: Record<string, z.ZodType>;
-    }
-  ).inputSchema;
+  const registeredSchema = registeredToolConfig(registerTool).inputSchema;
   return { handler, registeredSchema };
 }
 
@@ -40,6 +45,8 @@ describe("update-document MCP tool", () => {
     const { registeredSchema } = createToolHarness(apiClient);
     expect(registeredSchema).toHaveProperty("assigneeId");
     expect(registeredSchema).toHaveProperty("dueDate");
+    expect(registeredSchema).toHaveProperty("expectedStatus");
+    expect(registeredSchema).toHaveProperty("expectedPriority");
   });
 
   it("passes a valid UUID assigneeId to apiClient.put body", async () => {
@@ -107,11 +114,32 @@ describe("update-document MCP tool", () => {
     });
   });
 
+  it("forwards expectedStatus with a status update", async () => {
+    (apiClient.put as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "doc-1",
+      status: IssueStatus.Done,
+    });
+    const { handler } = createToolHarness(apiClient);
+
+    await handler({
+      documentId: "FEA-42",
+      expectedStatus: IssueStatus.InReview,
+      status: IssueStatus.Done,
+    });
+
+    expect(apiClient.put).toHaveBeenCalledWith("/documents/FEA-42", {
+      expectedStatus: IssueStatus.InReview,
+      status: IssueStatus.Done,
+    });
+  });
+
   it("rejects a non-UUID string for assigneeId via schema validation", () => {
     const { registeredSchema } = createToolHarness(apiClient);
-    const assigneeSchema = registeredSchema.assigneeId;
-    const result = assigneeSchema.safeParse("not-a-uuid");
-    expect(result.success).toBe(false);
+    expectIssue(
+      registeredSchema.assigneeId.safeParse("not-a-uuid"),
+      [],
+      UUID_REJECTION
+    );
   });
 
   it("forwards priority to apiClient.put body", async () => {
@@ -131,6 +159,107 @@ describe("update-document MCP tool", () => {
     });
     expect(JSON.parse(result.content[0].text)).toMatchObject({
       priority: Priority.High,
+    });
+  });
+
+  it("forwards an explicit null priority as a CLEAR, distinctly from omitting it (ISS-9665)", async () => {
+    // Three states, three different requests. `priority: null` clears the
+    // field; an omitted key leaves it alone; a member sets it. Before ISS-9665
+    // the input schema was `z.enum(Priority)`, so an API-key caller could set a
+    // priority and never clear one — the honest representation the API now
+    // accepts was unreachable from this tool. `pickDefined` strips only
+    // `undefined`, so the null must survive into the body.
+    (apiClient.put as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "doc-1",
+      priority: null,
+    });
+    const { handler, registeredSchema } = createToolHarness(apiClient);
+
+    expect(registeredSchema.priority.safeParse(null).success).toBe(true);
+
+    const result = await handler({ documentId: "FEA-42", priority: null });
+
+    const calledBody = (apiClient.put as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[1] as Record<string, unknown>;
+    // `toHaveProperty` with null, not `toMatchObject` — an omitted key would
+    // satisfy a looser matcher and is the exact confusion under test.
+    expect(calledBody).toHaveProperty("priority", null);
+    expect(JSON.parse(result.content[0].text)).toHaveProperty("priority", null);
+  });
+
+  it("forwards an explicit null projectId as a CLEAR, distinctly from omitting it (ISS-12858)", async () => {
+    (apiClient.put as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "doc-1",
+      projectId: null,
+    });
+    const { handler, registeredSchema } = createToolHarness(apiClient);
+
+    expect(registeredSchema.projectId.safeParse(null).success).toBe(true);
+
+    await handler({ documentId: "FEA-42", projectId: null });
+    await handler({ documentId: "FEA-42", title: "Renamed" });
+
+    const calls = (apiClient.put as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[0]?.[1]).toEqual({ projectId: null });
+    expect(calls[1]?.[1]).toEqual({ title: "Renamed" });
+    expect(calls[1]?.[1]).not.toHaveProperty("projectId");
+  });
+
+  it("forwards expectedPriority as a stale-write guard, null included (ISS-9440)", async () => {
+    // The agent-facing half of the precondition. Same three states as
+    // `priority` above and for the same reason: omitting the key leaves the
+    // write unguarded, a member asserts that member, and `null` asserts the
+    // artifact currently holds NO priority — which is the guard an agent needs
+    // most, since unset→member is the write this tool makes most often. Without
+    // the key on the schema the server's 409 is unreachable from here.
+    (apiClient.put as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "doc-1",
+      priority: Priority.High,
+    });
+    const { handler, registeredSchema } = createToolHarness(apiClient);
+
+    expect(registeredSchema.expectedPriority.safeParse(null).success).toBe(
+      true
+    );
+
+    await handler({
+      documentId: "FEA-42",
+      expectedPriority: null,
+      priority: Priority.High,
+    });
+
+    const calledBody = (apiClient.put as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[1] as Record<string, unknown>;
+    expect(calledBody).toHaveProperty("expectedPriority", null);
+    expect(calledBody).toHaveProperty("priority", Priority.High);
+  });
+
+  it("forwards a member expectedPriority and omits the key when unguarded", async () => {
+    (apiClient.put as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "doc-1",
+    });
+    const { handler } = createToolHarness(apiClient);
+
+    await handler({
+      documentId: "FEA-42",
+      expectedPriority: Priority.Low,
+      priority: Priority.Urgent,
+    });
+    await handler({ documentId: "FEA-42", priority: Priority.Urgent });
+
+    const put = apiClient.put as ReturnType<typeof vi.fn>;
+    expect(put.mock.calls[0]?.[1]).toHaveProperty(
+      "expectedPriority",
+      Priority.Low
+    );
+    expect(put.mock.calls[1]?.[1]).not.toHaveProperty("expectedPriority");
+  });
+
+  it("rejects an invalid expectedPriority value via schema validation", () => {
+    const { registeredSchema } = createToolHarness(apiClient);
+    expectIssue(registeredSchema.expectedPriority.safeParse("CRITICAL"), [], {
+      code: ZodIssueCode.InvalidValue,
+      values: Object.values(Priority),
     });
   });
 
@@ -220,16 +349,19 @@ describe("update-document MCP tool", () => {
 
   it("rejects an invalid priority value via schema validation", () => {
     const { registeredSchema } = createToolHarness(apiClient);
-    const prioritySchema = registeredSchema.priority;
-    const result = prioritySchema.safeParse("CRITICAL");
-    expect(result.success).toBe(false);
+    expectIssue(registeredSchema.priority.safeParse("CRITICAL"), [], {
+      code: ZodIssueCode.InvalidValue,
+      values: Object.values(Priority),
+    });
   });
 
   it("rejects a non-UUID string for approverId via schema validation", () => {
     const { registeredSchema } = createToolHarness(apiClient);
-    const approverSchema = registeredSchema.approverId;
-    const result = approverSchema.safeParse("not-a-uuid");
-    expect(result.success).toBe(false);
+    expectIssue(
+      registeredSchema.approverId.safeParse("not-a-uuid"),
+      [],
+      UUID_REJECTION
+    );
   });
 
   it("accepts ISO date and timezone-qualified datetime dueDate values", () => {
@@ -242,8 +374,10 @@ describe("update-document MCP tool", () => {
 
   it("rejects invalid dueDate strings via schema validation", () => {
     const { registeredSchema } = createToolHarness(apiClient);
-    const dueDateSchema = registeredSchema.dueDate;
-    const result = dueDateSchema.safeParse("2026-07-32");
-    expect(result.success).toBe(false);
+    expectIssue(
+      registeredSchema.dueDate.safeParse("2026-07-32"),
+      [],
+      ISO_DATE_UNION_REJECTION
+    );
   });
 });

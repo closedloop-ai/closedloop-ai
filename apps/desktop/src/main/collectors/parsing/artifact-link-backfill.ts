@@ -14,6 +14,7 @@ import {
   type RepoResolver,
 } from "../../database/artifact-link-persistence.js";
 import type { Prisma } from "../../database/generated/client.js";
+import { NORMALIZED_PR_LINK_METHOD } from "../../database/pr-link-maintenance.js";
 import type { DesktopPrisma } from "../../database/prisma-client.js";
 import { stampSegmentWorkItemRefs } from "../../database/segment-work-item-stamp.js";
 import {
@@ -46,10 +47,10 @@ import { parseTranscriptFile as parseCursorSession } from "../cursor/cursor-pars
 import { isImportableSourcePath } from "../engine/source-admission.js";
 import type { NormalizedSession } from "../types.js";
 import {
-  EXTRACTOR_VERSION,
   extractArtifactRefs,
   LAUNCH_METADATA_REF_METHOD,
 } from "./artifact-ref-extractor.js";
+import { EXTRACTOR_VERSION } from "./artifact-ref-extractor-version.js";
 import { extractWorkItemOccurrences } from "./work-item-occurrences.js";
 
 type TranscriptSource = {
@@ -115,7 +116,7 @@ export type BackfillResult = {
 //     (see `importPhaseArtifactLinks`).
 const NON_REDERIVED_LINK_METHODS = [
   LAUNCH_METADATA_REF_METHOD,
-  "normalized_pr",
+  NORMALIZED_PR_LINK_METHOD,
   "pull_requests_fold",
   "branch_pr_association",
 ] as const;
@@ -496,9 +497,13 @@ export async function backfillArtifactLinksFromTranscripts(
             sessionId,
             ...NON_REDERIVED_LINK_METHODS
           );
-          const { captured, droppedUnresolvedBareRepo } =
+          const { captured, droppedUnresolvedBareRepo, droppedPastWireBound } =
             regularRefs.length === 0
-              ? { captured: 0, droppedUnresolvedBareRepo: false }
+              ? {
+                  captured: 0,
+                  droppedUnresolvedBareRepo: false,
+                  droppedPastWireBound: 0,
+                }
               : await persistArtifactLinks(
                   tx,
                   sessionId,
@@ -507,7 +512,12 @@ export async function backfillArtifactLinksFromTranscripts(
                   log,
                   repoResolver
                 );
-          if (captured !== regularRefs.length) {
+          // ISS-8882: a ref whose repo slug is past the wire bound is refused,
+          // not captured, so it leaves the denominator too. Counting it as a
+          // partial persistence would throw this session's transaction on every
+          // sweep forever — the wedge shape this ticket exists to close, moved
+          // from the cloud batch to the local backfill.
+          if (captured !== regularRefs.length - droppedPastWireBound) {
             throw new Error("partial artifact-link persistence");
           }
           const activityOnlyMetadataChanged =
@@ -802,13 +812,27 @@ async function readRederivedLinkProjections(
       status: string | null;
       observed_at: string | null;
       monitored_activity: string | null;
+      base_ref: string | null;
     }[]
   >(
-    `SELECT artifact_id, relation, method, is_primary, status, observed_at,
-            json_extract(evidence, '$.monitoredSessionActivity') AS monitored_activity
-       FROM session_artifact_links
-      WHERE session_id = $1
-        AND method NOT IN (${NON_REDERIVED_LINK_METHODS_PLACEHOLDERS})`,
+    // ISS-8175: `artifacts.base_ref` is joined in because a re-derivation can
+    // change ONLY that column — the created-PR base fill leaves every
+    // `session_artifact_links` column byte-identical. Without it here the
+    // fingerprint compares equal, `updated_at` never advances, and the base a
+    // re-scan just recovered stays in local SQLite forever. This is the first
+    // sync-relevant value the backfill writes outside the link row itself; any
+    // future one belongs in this projection for the same reason.
+    `SELECT l.artifact_id, l.relation, l.method, l.is_primary, l.status,
+            l.observed_at, a.base_ref,
+            CASE
+              WHEN json_valid(l.evidence)
+                THEN json_extract(l.evidence, '$.monitoredSessionActivity')
+              ELSE NULL
+            END AS monitored_activity
+       FROM session_artifact_links l
+       JOIN artifacts a ON a.id = l.artifact_id
+      WHERE l.session_id = $1
+        AND l.method NOT IN (${NON_REDERIVED_LINK_METHODS_PLACEHOLDERS})`,
     sessionId,
     ...NON_REDERIVED_LINK_METHODS
   );
@@ -824,6 +848,7 @@ async function readRederivedLinkProjections(
         row.status,
         row.observed_at,
         row.monitored_activity,
+        row.base_ref,
       ])
     );
   }

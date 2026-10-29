@@ -6,18 +6,15 @@
 // positive-control assertions on each channel.
 
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
-import { vi } from "vitest";
+import { describe, test, vi } from "vitest";
 import type {
   ApprovalStore,
   PendingApproval,
   ResolvedApproval,
 } from "../src/main/approvals/approval-store.js";
-import {
-  ApprovalsIpcChannel,
-  registerApprovalsIpcHandlers,
-} from "../src/main/ipc/approvals-ipc.js";
+import { registerApprovalsIpcHandlers } from "../src/main/ipc/approvals-ipc.js";
 import type { SettingsStore } from "../src/main/settings/settings-store.js";
+import { ApprovalsIpcChannel } from "../src/shared/approvals-ipc-channel.js";
 import type { AlwaysAllowRule } from "../src/shared/contracts.js";
 import {
   createIpcRegistrar,

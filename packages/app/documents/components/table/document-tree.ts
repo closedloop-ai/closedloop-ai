@@ -1,6 +1,10 @@
 import { type Artifact, ArtifactType } from "@repo/api/src/types/artifact";
 import { DocumentType } from "@repo/api/src/types/document";
-import type { TreeChild, TreeNode } from "@repo/api/src/types/project-tree";
+import type {
+  ArtifactHierarchyState,
+  TreeChild,
+  TreeNode,
+} from "@repo/api/src/types/project-tree";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
 import type { DocumentRowData } from "@repo/app/documents/lib/artifact-row-adapter";
 
@@ -28,8 +32,6 @@ export function getItemTitle(item: DocumentRowItem): string {
   return item.data.name;
 }
 
-// ---- Tree-based grouping ----
-
 /** Unified group shape used by the tree grouping path. */
 export type DisplayGroup = {
   groupKey: string;
@@ -39,17 +41,18 @@ export type DisplayGroup = {
 
 function treeEntityToRowItem(
   entity: Artifact,
-  documentMap: Map<string, DocumentRowData>
+  documentMap: Map<string, DocumentRowData>,
+  hierarchy?: ArtifactHierarchyState
 ): DocumentRowItem | null {
   switch (entity.type) {
     case ArtifactType.Document: {
       const doc = documentMap.get(entity.id);
-      return doc ? toRowItem(doc) : null;
+      return doc ? { ...toRowItem(doc), hierarchy } : null;
     }
     case ArtifactType.Branch:
-      return { kind: "branch", data: entity };
+      return { data: entity, hierarchy, kind: "branch" };
     case ArtifactType.Session:
-      return { kind: "session", data: entity };
+      return { data: entity, hierarchy, kind: "session" };
     // Deployments are deliberately excluded from the documents table — a
     // product decision, not an oversight (FEA-1763). Revisit there if
     // deployments should ever surface in this view.
@@ -75,7 +78,7 @@ function buildNestedChildrenFromDFS(
     if (itemsById.has(child.id)) {
       continue;
     }
-    const childItem = treeEntityToRowItem(child, documentMap);
+    const childItem = treeEntityToRowItem(child, documentMap, child.hierarchy);
     if (childItem) {
       childItem.children = [];
       itemsById.set(child.id, childItem);
@@ -127,7 +130,7 @@ export function groupByProjectTree(
   const groups: DisplayGroup[] = [];
 
   for (const node of nodes) {
-    const root = treeEntityToRowItem(node.root, documentMap);
+    const root = treeEntityToRowItem(node.root, documentMap, node.hierarchy);
     if (!root) {
       continue;
     }
@@ -257,4 +260,17 @@ export function collectArtifactRowItems(
     }
   }
   return items;
+}
+
+/** IDs parented by the internal canonical project forest, excluding display-only parents. */
+export function internalHierarchyChildIds(
+  treeData: { nodes: readonly TreeNode[] } | null | undefined
+): Set<string> {
+  const childIds = new Set<string>();
+  for (const node of treeData?.nodes ?? []) {
+    for (const child of node.children) {
+      childIds.add(child.id);
+    }
+  }
+  return childIds;
 }

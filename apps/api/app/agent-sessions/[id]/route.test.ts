@@ -1,7 +1,4 @@
-import {
-  type AgentSessionDetail,
-  AgentSessionState,
-} from "@repo/api/src/types/agent-session";
+import type { AgentSessionDetail } from "@repo/api/src/types/agent-session";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import {
@@ -13,8 +10,10 @@ import {
 let mockAuthContext: AuthContext;
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context.params),
+  withAnyAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context.params),
 }));
 
 vi.mock("../service", () => ({
@@ -26,7 +25,22 @@ vi.mock("../service", () => ({
 import { agentSessionsService } from "../service";
 import { GET } from "./route";
 
-const SESSION_ID = "session-1";
+const SESSION_ID = "01997d8e-3b2e-7c6a-8f1a-1b2c3d4e5f60";
+const NOT_A_UUID = "not-a-uuid";
+/**
+ * What `artifactTagPermissionsForAuth` resolves for a Clerk SESSION caller:
+ * `hasApiKeyScopes` short-circuits true off the session auth method, so both
+ * capabilities are granted. The api-key case below is the control that pins
+ * these as DERIVED rather than a constant the route hands down.
+ */
+const SESSION_AUTH_TAG_PERMISSIONS = { canApply: true, canRemove: true };
+
+function getAs(id: string) {
+  return GET(
+    createMockRequest({ url: `http://localhost:3002/agent-sessions/${id}` }),
+    createMockRouteContext({ id })
+  );
+}
 
 describe("GET /agent-sessions/[id]", () => {
   beforeEach(() => {
@@ -38,28 +52,15 @@ describe("GET /agent-sessions/[id]", () => {
   });
 
   it("returns manual state with unchanged status, origin, and trace fields", async () => {
-    const response = await GET(
-      createMockRequest({
-        url: `http://localhost:3002/agent-sessions/${SESSION_ID}`,
-      }),
-      createMockRouteContext({ id: SESSION_ID })
-    );
+    const response = await getAs(SESSION_ID);
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       success: true,
       data: expect.objectContaining({
         id: SESSION_ID,
-        state: AgentSessionState.Blocked,
         status: "active",
         origin: "DESKTOP_SYNC",
-        timeline: [
-          expect.objectContaining({
-            kind: "tool",
-            title: "Read",
-            tl: 0,
-          }),
-        ],
         turnItems: [
           expect.objectContaining({
             type: "tools",
@@ -71,26 +72,21 @@ describe("GET /agent-sessions/[id]", () => {
     expect(agentSessionsService.findSessionDetail).toHaveBeenCalledWith({
       id: SESSION_ID,
       organizationId: "test-org-id",
+      tagPermissions: SESSION_AUTH_TAG_PERMISSIONS,
     });
   });
 
-  it("returns fallback state values from the service boundary", async () => {
+  it("passes status and origin through the service boundary unchanged", async () => {
     vi.mocked(agentSessionsService.findSessionDetail).mockResolvedValue(
-      buildDetail({ state: AgentSessionState.Completed })
+      buildDetail({})
     );
 
-    const response = await GET(
-      createMockRequest({
-        url: `http://localhost:3002/agent-sessions/${SESSION_ID}`,
-      }),
-      createMockRouteContext({ id: SESSION_ID })
-    );
+    const response = await getAs(SESSION_ID);
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       success: true,
       data: expect.objectContaining({
-        state: AgentSessionState.Completed,
         status: "active",
         origin: "DESKTOP_SYNC",
       }),
@@ -103,29 +99,61 @@ describe("GET /agent-sessions/[id]", () => {
   // as the flag winds down. Org-scoping (`organizationId` in the service read)
   // remains the boundary.
   it("returns the detail without a monitoring-flag gate (FEA-4155)", async () => {
-    const response = await GET(
-      createMockRequest({
-        url: `http://localhost:3002/agent-sessions/${SESSION_ID}`,
-      }),
-      createMockRouteContext({ id: SESSION_ID })
-    );
+    const response = await getAs(SESSION_ID);
 
     expect(response.status).toBe(200);
     expect(agentSessionsService.findSessionDetail).toHaveBeenCalledWith({
       id: SESSION_ID,
       organizationId: "test-org-id",
+      tagPermissions: SESSION_AUTH_TAG_PERMISSIONS,
+    });
+  });
+
+  // ISS-10436: `SessionDetail.artifactId` is `@db.Uuid`, so a non-UUID id used
+  // to reach Prisma, raise P2023, and fall out of `withAuth` as a 500.
+  it("answers 404 for an id that is not a UUID, before the service is asked", async () => {
+    const response = await getAs(NOT_A_UUID);
+
+    expect(response.status).toBe(404);
+    expect(agentSessionsService.findSessionDetail).not.toHaveBeenCalled();
+  });
+
+  it("hands a v7 UUID to the service unchanged", async () => {
+    const response = await getAs(SESSION_ID);
+
+    expect(response.status).toBe(200);
+    expect(agentSessionsService.findSessionDetail).toHaveBeenCalledTimes(1);
+    expect(agentSessionsService.findSessionDetail).toHaveBeenCalledWith({
+      id: SESSION_ID,
+      organizationId: "test-org-id",
+      tagPermissions: SESSION_AUTH_TAG_PERMISSIONS,
+    });
+  });
+
+  // ISS-10995: without this the read serves neither `tags` nor
+  // `tagAvailability`, and the Details tab's Tags row never draws — the row the
+  // ticket exists to make editable. Two auth shapes, because one cannot tell a
+  // derived capability from a constant.
+  it("resolves the caller's tag capabilities from its own scopes", async () => {
+    mockAuthContext = createTestAuthContext({
+      apiKeyScopes: ["read", "write"],
+      authMethod: "api_key",
+    });
+
+    await getAs(SESSION_ID);
+
+    expect(agentSessionsService.findSessionDetail).toHaveBeenCalledWith({
+      id: SESSION_ID,
+      organizationId: "test-org-id",
+      // `delete` is absent from the key's scopes, so removal is not granted.
+      tagPermissions: { canApply: true, canRemove: false },
     });
   });
 
   it("maps missing sessions to not found", async () => {
     vi.mocked(agentSessionsService.findSessionDetail).mockResolvedValue(null);
 
-    const response = await GET(
-      createMockRequest({
-        url: `http://localhost:3002/agent-sessions/${SESSION_ID}`,
-      }),
-      createMockRouteContext({ id: SESSION_ID })
-    );
+    const response = await getAs(SESSION_ID);
 
     expect(response.status).toBe(404);
   });
@@ -141,11 +169,10 @@ function buildDetail(
     name: "Session One",
     status: "active",
     origin: "DESKTOP_SYNC",
-    state: AgentSessionState.Blocked,
     harness: "claude",
     cwd: "/tmp/worktree",
-    repositoryFullName: "closedloop-ai/example-repo",
-    repo: "closedloop-ai/example-repo",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
+    repo: "closedloop-ai/closedloop-ai",
     worktreePath: "/tmp/worktree",
     model: "claude-sonnet-4",
     primaryModel: "claude-sonnet-4",
@@ -208,15 +235,6 @@ function buildDetail(
     attribution: null,
     agents: [],
     events: [],
-    timeline: [
-      {
-        t: "2026-05-20T17:01:00.000Z",
-        tMs: Date.parse("2026-05-20T17:01:00.000Z"),
-        kind: "tool",
-        title: "Read",
-        tl: 0,
-      },
-    ],
     turnItems: [
       {
         type: "tools",
@@ -242,3 +260,28 @@ function buildDetail(
     ...overrides,
   };
 }
+
+// ISS-12197: the Details-tab fields are additive and optional on the wire. A
+// detail that predates them (an older producer) must cross the route with the
+// keys ABSENT — never defaulted to `null`, which would claim a read that found
+// nothing where nothing was read.
+describe("GET /agent-sessions/[id] with a pre-ISS-12197 detail shape", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAuthContext = createTestAuthContext();
+  });
+
+  it("serves the old shape without inventing the ownership keys", async () => {
+    const detail = buildDetail();
+    expect(detail).not.toHaveProperty("createdBy");
+    vi.mocked(agentSessionsService.findSessionDetail).mockResolvedValue(detail);
+
+    const response = await getAs(SESSION_ID);
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data).not.toHaveProperty("createdAt");
+    expect(body.data).not.toHaveProperty("createdBy");
+    expect(body.data).not.toHaveProperty("dueDate");
+  });
+});

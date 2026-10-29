@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
-import { DATA_REVISION } from "../src/main/collectors/engine/data-revision.js";
+import { test } from "vitest";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import {
   CODEX_OTEL_MAX_ATTRIBUTE_COUNT,
@@ -49,7 +49,7 @@ test("Codex OTel batch persists spans, minimal session, token source, and replay
     assert.equal(spans[0].span_id, "span-1");
     assert.equal(spans[0].duration_ms, 125);
     assert.equal(spans[0].tool_name, "shell");
-    assert.equal(spans[0].revision_id, DATA_REVISION);
+    assert.equal(spans[0].revision_id, effectiveDataRevision());
 
     const session = await db.sessions.getById("otel-session");
     assert.equal(session?.harness, "codex");
@@ -65,7 +65,7 @@ test("Codex OTel batch persists spans, minimal session, token source, and replay
       tokenRows[0].usage_source,
       CodexOtelTokenUsageSource.OtelLogPayload
     );
-    assert.equal(tokenRows[0].revision_id, DATA_REVISION);
+    assert.equal(tokenRows[0].revision_id, effectiveDataRevision());
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });
@@ -130,7 +130,7 @@ test("Codex OTel empty batch is silent and leaves parser token usage unchanged",
         cache_read_tokens: 3,
         cache_write_tokens: 4,
         usage_source: CodexOtelTokenUsageSource.JsonlParser,
-        revision_id: DATA_REVISION,
+        revision_id: effectiveDataRevision(),
       },
     ]);
     const spanCount = await countRows(db, "codex_trace_span", "silent-session");
@@ -484,7 +484,7 @@ test("Codex OTel parser fallback cannot overwrite authoritative OTel token usage
         cache_read_tokens: 25,
         cache_write_tokens: 10,
         usage_source: CodexOtelTokenUsageSource.OtelLogPayload,
-        revision_id: DATA_REVISION,
+        revision_id: effectiveDataRevision(),
       },
       {
         session_id: "precedence-session",
@@ -494,7 +494,7 @@ test("Codex OTel parser fallback cannot overwrite authoritative OTel token usage
         cache_read_tokens: 4,
         cache_write_tokens: 3,
         usage_source: CodexOtelTokenUsageSource.JsonlParser,
-        revision_id: DATA_REVISION,
+        revision_id: effectiveDataRevision(),
       },
     ]);
   } finally {
@@ -872,7 +872,7 @@ test("normalizeStoredTimestampFormats heals pre-existing offset-form rows to can
         "2026-06-18T10:00:00+02:00",
         "2026-06-18T10:05:00+02:00",
         "2026-06-18T09:00:00.000Z",
-        DATA_REVISION
+        effectiveDataRevision()
       )
     );
     // A pre-existing derived analytics row carrying the OLD offset-form
@@ -898,7 +898,7 @@ test("normalizeStoredTimestampFormats heals pre-existing offset-form rows to can
         "legacy-offset",
         "gpt-5-codex",
         CodexOtelTokenUsageSource.OtelLogPayload,
-        DATA_REVISION,
+        effectiveDataRevision(),
         "2026-06-18T06:30:00-05:00",
         "2026-06-18T12:00:00.000Z"
       )
@@ -916,7 +916,7 @@ test("normalizeStoredTimestampFormats heals pre-existing offset-form rows to can
         "2026-06-18T10:00:00+02:00",
         "2026-06-18T10:01:00+02:00",
         "2026-06-18T12:00:00.000Z",
-        DATA_REVISION
+        effectiveDataRevision()
       )
     );
 

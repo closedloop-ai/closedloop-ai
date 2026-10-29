@@ -10,12 +10,16 @@ import {
   SessionPrRelationType,
 } from "@repo/api/src/types/session-artifact-link";
 import { ArtifactType, Prisma } from "@repo/database";
+import { UNCOMPUTED_SESSION_LAST_ACTIVITY_MS } from "@repo/lib/branches/branch-last-active";
 
 /**
  * SQL predicate for an explicitly user-scoped branch contribution read.
  * Mirrors the Branches usage compatibility window: explicit `wrote` qualifies,
  * explicit `reviewed` does not, and legacy null participation remains active
  * unless its metadata clearly derives reviewed-only participation.
+ *
+ * The contributor is the linked session's creator
+ * (`session_artifact.created_by_id`, ISS-12251 D-4).
  */
 export function branchContributorExistsSql(contributorUserId: string) {
   return Prisma.sql`EXISTS (
@@ -30,7 +34,7 @@ export function branchContributorExistsSql(contributorUserId: string) {
       AND al.link_type = ${LinkType.RelatesTo}::"LinkType"
       AND session_artifact.organization_id = a.organization_id
       AND session_artifact.type = ${ArtifactType.SESSION}::"ArtifactType"
-      AND sd.user_id = ${contributorUserId}::uuid
+      AND session_artifact.created_by_id = ${contributorUserId}::uuid
       AND ${activeWriteBranchParticipationSql()}
   )`;
 }
@@ -51,6 +55,82 @@ export function branchContributorExistsSql(contributorUserId: string) {
  * Callers negate this for the "No session" facet.
  */
 export function branchLinkedSessionExistsSql() {
+  return Prisma.sql`EXISTS (${branchLinkedSessionSelectSql(Prisma.sql`1`)})`;
+}
+
+/**
+ * How many DISTINCT sessions that same predicate admits — the number the
+ * Branches list's Sessions sort key reads off `BranchRow.sessionIds.length`.
+ * Shares the predicate with {@link branchLinkedSessionExistsSql} rather than
+ * restating it, so "has a session" and "how many sessions" cannot disagree.
+ */
+export function branchLinkedSessionCountSql() {
+  return Prisma.sql`(${branchLinkedSessionSelectSql(
+    Prisma.sql`COUNT(DISTINCT al.source_id)::int`
+  )})`;
+}
+
+/**
+ * ISS-11915: the latest computed last activity of the SAME linked sessions
+ * {@link branchLinkedSessionCountSql} counts, the shared Last-active fallback
+ * (`resolveBranchLastActiveMetric`) in SQL. The epoch default and non-finite
+ * values are skipped exactly as the shared resolver skips them.
+ */
+export function branchLinkedSessionLastActivitySql() {
+  return Prisma.sql`(${branchLinkedSessionSelectSql(
+    Prisma.sql`MAX(sd.last_activity_at)`
+  )}
+      AND isfinite(sd.last_activity_at)
+      AND sd.last_activity_at <> ${uncomputedSessionLastActivitySql()}
+  )`;
+}
+
+/**
+ * The uncomputed epoch as a `timestamp` literal (the column has no zone). A
+ * literal rather than a bound `Date`, so the only instants a candidate read
+ * binds are its own window and evaluation clock.
+ */
+function uncomputedSessionLastActivitySql(): Prisma.Sql {
+  const literal = new Date(UNCOMPUTED_SESSION_LAST_ACTIVITY_MS)
+    .toISOString()
+    .replace("T", " ")
+    .replace("Z", "");
+  return Prisma.raw(`TIMESTAMP '${literal}'`);
+}
+
+function branchLinkedSessionSelectSql(projection: Prisma.Sql) {
+  return Prisma.sql`
+    SELECT ${projection}
+    FROM artifact_links al
+    INNER JOIN artifacts session_artifact
+      ON session_artifact.id = al.source_id
+    INNER JOIN session_detail sd
+      ON sd.artifact_id = session_artifact.id
+    WHERE al.organization_id = a.organization_id
+      AND al.target_id = a.id
+      AND al.link_type = ${LinkType.RelatesTo}::"LinkType"
+      AND session_artifact.organization_id = a.organization_id
+      AND session_artifact.type = ${ArtifactType.SESSION}::"ArtifactType"
+      AND (
+        al.metadata ->> 'linkKind' IN (
+          ${SessionArtifactLinkKind.SessionPr},
+          ${SessionArtifactLinkKind.SessionBranch}
+        )
+        OR al.metadata -> 'linkKinds' @> ${JSON.stringify([
+          SessionArtifactLinkKind.SessionPrSet,
+        ])}::jsonb
+      )
+      AND ${activeWriteBranchParticipationSql()}
+  `;
+}
+
+/**
+ * Product-membership Wrote evidence. Unlike usage compatibility reads, this
+ * predicate requires the persisted participation literal to be explicit;
+ * legacy null or metadata-inferred participation remains auditable but cannot
+ * make a Branch Product-visible.
+ */
+export function branchProductWroteExistsSql() {
   return Prisma.sql`EXISTS (
     SELECT 1
     FROM artifact_links al
@@ -63,11 +143,16 @@ export function branchLinkedSessionExistsSql() {
       AND al.link_type = ${LinkType.RelatesTo}::"LinkType"
       AND session_artifact.organization_id = a.organization_id
       AND session_artifact.type = ${ArtifactType.SESSION}::"ArtifactType"
-      AND al.metadata ->> 'linkKind' IN (
-        ${SessionArtifactLinkKind.SessionPr},
-        ${SessionArtifactLinkKind.SessionBranch}
+      AND (
+        al.metadata ->> 'linkKind' IN (
+          ${SessionArtifactLinkKind.SessionPr},
+          ${SessionArtifactLinkKind.SessionBranch}
+        )
+        OR al.metadata -> 'linkKinds' @> ${JSON.stringify([
+          SessionArtifactLinkKind.SessionPrSet,
+        ])}::jsonb
       )
-      AND ${activeWriteBranchParticipationSql()}
+      AND al.branch_participation = ${BranchParticipationKind.Wrote}
   )`;
 }
 
@@ -97,7 +182,8 @@ export async function branchHasLinkedSession(
   return rows.length > 0;
 }
 
-function activeWriteBranchParticipationSql() {
+/** Canonical Wrote-or-genuinely-unclassified legacy Branch membership predicate. */
+export function activeWriteBranchParticipationSql() {
   return Prisma.sql`(
     al.branch_participation = ${BranchParticipationKind.Wrote}
     OR (
@@ -179,11 +265,17 @@ function metadataReviewEvidenceSql() {
 }
 
 // FEA-4003 — LOC-change range over `additions + deletions`, summed from
-// `branch_file_changes` (the same rows `sumFileChanges` folds into the row's
-// additions/deletions). NULL-exclusion: a branch with NO file-change rows has
-// unavailable LOC, so once either bound is set it is EXCLUDED (the EXISTS gate),
-// mirroring the date-window null-exclusion convention. A missing per-file count
-// coalesces to 0 inside the SUM, matching `sumFileChanges`.
+// `branch_file_changes` (the same rows `getBranchFileChangeTotals` folds into
+// the row's additions/deletions). NULL-exclusion: a branch with NO file-change
+// rows has unavailable LOC, so once either bound is set it is EXCLUDED (the
+// EXISTS gate), mirroring the date-window null-exclusion convention.
+//
+// This filter and the row projection DELIBERATELY DIVERGE on a PARTIAL cache: a
+// missing per-file count coalesces to 0 here, where `getBranchFileChangeTotals`
+// makes the whole dimension unavailable. A range predicate has to place every
+// branch on one side of a bound or the other, so it ranks a partial cache by
+// what it does know; the projection has the option of saying "unknown", and
+// takes it.
 export function appendBranchCandidateLocRangePredicate(
   predicates: Prisma.Sql[],
   min: number | undefined,
@@ -208,12 +300,11 @@ export function appendBranchCandidateLocRangePredicate(
 }
 
 // Scalar SUM of a branch's total LOC change from its file-change rows. COALESCE
-// keeps a per-file NULL count at 0, matching `sumFileChanges`; the outer SUM is
-// NULL only when there are no rows, which the EXISTS gate has already excluded.
-// This sums ALL file-change rows, whereas the row projection's `sumFileChanges`
-// folds only the first 500 (its `take`); for the rare branch with >500 changed
-// files the filter uses the true total rather than replicating that unordered,
-// nondeterministic cap — the more correct basis for a range predicate.
+// keeps a per-file NULL count at 0 (see the divergence noted above); the outer
+// SUM is NULL only when there are no rows, which the EXISTS gate has already
+// excluded. Sums ALL of a branch's rows, as the row projection's own fold now
+// does too — ISS-10298 removed the `take`-bounded reads this used to be the only
+// unbounded reader against, so the two no longer differ on population.
 function branchLocChangeSumSql(): Prisma.Sql {
   return Prisma.sql`(
     SELECT COALESCE(SUM(COALESCE(fc.additions, 0) + COALESCE(fc.deletions, 0)), 0)
@@ -223,7 +314,7 @@ function branchLocChangeSumSql(): Prisma.Sql {
 }
 
 // A branch has AVAILABLE LOC iff it has ≥1 file-change row (mirrors
-// `sumFileChanges` returning null only for an empty change set).
+// `getBranchFileChangeTotals` emitting no group for an empty change set).
 function branchLocEnrichedExistsSql(): Prisma.Sql {
   return Prisma.sql`EXISTS (
     SELECT 1

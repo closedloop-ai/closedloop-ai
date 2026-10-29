@@ -1,6 +1,10 @@
 import type { CacheWriteTtl } from "@repo/lib/harness/types";
 import type { Harness, NormalizedSession } from "../collectors/types.js";
-import type { WriteQueueCancelOutcome } from "../database/write-queue.js";
+import type {
+  WriteDispatchProbe,
+  WriteQueueCancelOutcome,
+} from "../database/write-queue.js";
+import type { ParsePolicy } from "../parse-policy/parse-policy.js";
 
 /** Snake_case hook payload `data` block as delivered by the hook handlers. */
 export type HookData = {
@@ -83,6 +87,13 @@ export type ImportResult = {
    */
   sessionDataChanged?: boolean;
   /**
+   * ISS-12251: true when an existing row's `created_at` was filled or lowered.
+   * Set only by `importSessionWithTx`, like `sessionDataChanged`; a
+   * `created_at`-only change does not move `updated_at`, so the rebuild reports
+   * the row in `needsResync` on this signal alone.
+   */
+  createdAtChanged?: boolean;
+  /**
    * ISS-5103: labels of the tolerated record groups that failed when
    * `incomplete` is set (the write-core `runGroup` labels, in failure order).
    * Additive and optional — omitted when no tolerated group failed, and absent
@@ -91,12 +102,37 @@ export type ImportResult = {
    * (unrecognized labels degrade to `unknown`).
    */
   failedGroups?: readonly string[];
+  /**
+   * ISS-12036: this import was a BYTE-IDENTICAL re-offer — the session already
+   * existed and nothing about it changed, so there was nothing to write.
+   *
+   * It qualifies `skipped`, which `write-core.ts` sets for two unrelated
+   * reasons: the FEA-3227 no-op above, and a REFUSAL that wrote no row (an
+   * unusable session id, the FEA-2027 unsafe token count). Both return
+   * `{ skipped: true, reactivated: false }`, so {@link isDurableImportProgress}
+   * reports neither as progress and import-health telemetry then classified a
+   * window of pure no-ops as `wedged` — the false positive ISS-12036 measured
+   * at 134 of 208 outcomes on one install.
+   *
+   * Set ONLY on the no-op path, never on a refusal, so the absent default is the
+   * conservative one: an importer that predates this field, and any refusal site
+   * added later, keep counting toward the wedge rather than silently excusing
+   * themselves from it. Optional and clone-safe, so the db-host proxy carries it
+   * unchanged.
+   */
+  unchanged?: boolean;
 };
 
 export type Importer = {
   importSession(
     session: NormalizedSession,
-    harness: Harness
+    harness: Harness,
+    /**
+     * ISS-12552 (PRD-800 "Rollout"): the policy the session was parsed
+     * under. Optional and clone-safe; absent, the store imports under its own
+     * current policy.
+     */
+    parsePolicy?: ParsePolicy
   ): ImportResult | Promise<ImportResult>;
   /**
    * ISS-4572 (task-scoped): evict THIS session's own queued/in-flight historical
@@ -135,4 +171,75 @@ export type Importer = {
     sessionId: string,
     reason?: Error
   ): WriteQueueCancelOutcome | Promise<WriteQueueCancelOutcome>;
+  /**
+   * ISS-7256: has this session's import write been sitting in the serialized write
+   * queue WITHOUT ever dispatching? The read-only form of the question
+   * {@link cancelInFlightWrite} answers with
+   * {@link WriteQueueCancelOutcome.Queued} — but that one can only answer it by
+   * evicting the task, which is precisely what the bound must not do to a session
+   * that has done nothing wrong.
+   *
+   * `importSessionBounded` asks at its deadline. `true` means the whole bound was
+   * spent behind a DIFFERENT owner's write, so this session neither wedged the
+   * writer nor burned the deadline on its own work — the ISS-4410 premise does not
+   * hold and abandoning the source would cost a full re-parse and re-import next
+   * pass for nothing.
+   *
+   * Optional and clone-safe on both topologies, but NOT answered in the same
+   * place on both — and that difference is the point (whitlockk review). The
+   * in-process importer reads the queue directly. The DB-host proxy forwards the
+   * property path as an IPC `invoke`, and the DISPATCHER answers it from a
+   * mirror of the store thread's queue rather than forwarding it on. It has to:
+   * the deadline fires because the store thread is inside a long synchronous
+   * write, so a request that has to reach that thread is answered by nothing
+   * until the very condition it asks about has ended. See
+   * `db-host/write-dispatch-mirror.ts`.
+   *
+   * An importer without the hook keeps the pre-ISS-7256 behavior (the deadline
+   * always ends the attempt).
+   */
+  hasUndispatchedWrite?(
+    sessionId: string
+  ): WriteDispatchProbe | Promise<WriteDispatchProbe>;
 };
+
+/**
+ * Whether this result wrote something durable. A `failed` import halted before
+ * the session was durably handled, and a skip that did not reactivate matched an
+ * existing row and wrote nothing; everything else landed a row.
+ *
+ * The canonical predicate, not a copy: the collector manager gates its imported
+ * tally, the mid-source quantum, and the resume cursor on it, and import-health
+ * telemetry classifies a tally window with it. A returned result is NOT by
+ * itself progress, so the two must not drift.
+ */
+export function isDurableImportProgress(result: ImportResult): boolean {
+  return !(result.failed || (result.skipped && !result.reactivated));
+}
+
+/**
+ * ISS-12036: did this import leave its source to be RE-OFFERED without landing
+ * what it was offered for?
+ *
+ * The condition the source's retry budget is charged on, and deliberately not
+ * the negation of {@link isDurableImportProgress} — the two answer different
+ * questions and disagree in both directions:
+ *
+ *   - an `incomplete` import DID write durably, and still leaves the source
+ *     unmarked so the failed record group is retried next pass;
+ *   - a byte-identical re-offer (`unchanged`) writes nothing and is not progress,
+ *     yet there is nothing left to land, so charging it would quarantine a
+ *     healthy source the orphan self-heal merely keeps re-listing.
+ *
+ * Everything else that is not durable progress — a `failed` import, and the
+ * refusals that write no row (an unusable session id, the FEA-2027 unsafe token
+ * count) — is an offer that did not land. `unchanged` is checked FIRST and wins
+ * outright: write-core never sets it alongside a failed record group, so the two
+ * cannot both be true, and reading it first keeps that guarantee local.
+ */
+export function isUnlandedImportOffer(result: ImportResult): boolean {
+  if (result.unchanged === true) {
+    return false;
+  }
+  return result.incomplete === true || !isDurableImportProgress(result);
+}

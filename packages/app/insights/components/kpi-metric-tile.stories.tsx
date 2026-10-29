@@ -178,9 +178,9 @@ const NoComparisonReasonsCanvas = () => (
 );
 
 const meta = {
-  title: "App Core/Insights/KPI Metric Tile",
+  title: "Composites v1.0/Insights/KPI Metric Tile",
   component: PinnedKpiMetricTileCanvas,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },
@@ -192,16 +192,25 @@ type Story = StoryObj<typeof meta>;
 
 export const PinnedWithInfo: Story = {};
 
+// Two tiles compared side by side to show the polarity contract, not one
+// concept per story — kept out of the AI manifest for that reason.
 export const RisingDeltaByPolarity: Story = {
   render: () => <RisingDeltaPolarityCanvas />,
+  tags: ["!manifest"],
 };
 
+// Three tiles compared side by side, not one concept per story — kept out of
+// the AI manifest for that reason.
 export const MutedStatesTrio: Story = {
   render: () => <MutedTrioCanvas />,
+  tags: ["!manifest"],
 };
 
+// Two tiles compared side by side, not one concept per story — kept out of the
+// AI manifest for that reason.
 export const NoComparisonReasons: Story = {
   render: () => <NoComparisonReasonsCanvas />,
+  tags: ["!manifest"],
   play: ({ canvasElement }) => {
     // Focus, not hover: Radix opens a tooltip immediately on focus and only after
     // the provider's 700ms delay on hover, so focusing is what puts the sentence

@@ -18,6 +18,10 @@ export const keys = () =>
       // org-scoped key prefixes. Optional in schema; throws at runtime when unset
       // (mirrors FILE_ATTACHMENTS_BUCKET / TRANSCRIPTS_BUCKET pattern).
       PLUGIN_STORE_BUCKET: z.string().min(1).optional(),
+      // ISS-12017: a local S3-compatible store (the vibe environment's MinIO).
+      // Production and stage leave it unset and reach AWS S3 through the SDK's
+      // regional endpoint.
+      AWS_S3_ENDPOINT: z.url().optional(),
     },
     runtimeEnv: {
       AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
@@ -26,5 +30,6 @@ export const keys = () =>
       FILE_ATTACHMENTS_BUCKET: process.env.FILE_ATTACHMENTS_BUCKET,
       TRANSCRIPTS_BUCKET: process.env.TRANSCRIPTS_BUCKET,
       PLUGIN_STORE_BUCKET: process.env.PLUGIN_STORE_BUCKET,
+      AWS_S3_ENDPOINT: process.env.AWS_S3_ENDPOINT,
     },
   });

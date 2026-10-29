@@ -20,7 +20,6 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { computeDefinitionHash } from "@repo/api/src/definition-fingerprint";
 // The DISPLAY harness contract ({claude,codex,both}) — the same union the
 // collector persists and the read path coerces to (FEA-4028). NOT the wider
@@ -33,6 +32,7 @@ import {
   createNormalizedSession,
   HarnessImportMode,
 } from "@repo/lib/harness/types";
+import { test } from "vitest";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import {
   captureInvocationDefinitionEvidence,

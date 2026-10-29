@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
 import type { CoachingHarnessResult } from "../src/main/agent-monitor/agent-coaching-harness.js";
 import { generateCoachingTips } from "../src/main/agent-monitor/agent-coaching-harness.js";
 import {

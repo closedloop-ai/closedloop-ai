@@ -12,11 +12,8 @@ import {
   TokenOpsWidget,
 } from "@repo/api/src/types/session-analytics";
 import { createDbFanoutLimiter } from "@/lib/db-fanout";
-import {
-  type InsightsScopeContext,
-  resolvePeriodRange,
-  sessionScopeSql,
-} from "./service";
+import { resolvePeriodRange } from "./service/period";
+import { type InsightsScopeContext, sessionScopeSql } from "./service/scope";
 import {
   isLostSession,
   isRecoverableWasteBasis,
@@ -67,6 +64,15 @@ export const MIN_GRADED_SESSIONS = 12;
  * tokens WHILE being pointed at smaller-than-median jobs. Rate alone is not the
  * signal — a premium model on genuinely hard work is earning its price; the
  * same model on small work is not.
+ *
+ * The two halves are measured over DIFFERENT token bases, and that split is
+ * load-bearing: the rate divides spend by every billed token so its population
+ * matches the dollars, while the job-size proxy counts first-pass tokens only so
+ * replaying one cached prefix is not counted as a bigger job. Grading both over
+ * one all-inclusive total made them move together with a harness's cache reuse
+ * rather than with price and job size, which left cache-heavy models
+ * structurally unable to earn this verdict — see `BILLED_TOKEN_SUM` and
+ * `WORK_TOKEN_SUM` in `tokenops-waste-queries.ts` (ISS-5189).
  */
 export const OVERPOWERED_RATE_MULTIPLE = 3;
 
@@ -84,7 +90,7 @@ function signalsOfSpendRow(row: SpendGridRow): OutcomeSignals {
   return {
     endsWithError: row.endsWithError,
     producedArtifact: row.producedArtifact,
-    state: row.state,
+    status: row.status,
     // The grid groups on this predicate, so the bucket is homogeneous: every
     // session in it either consumed wall-clock or none of them did.
     wallClockMinutes: row.hasWallClock ? 1 : 0,
@@ -178,6 +184,25 @@ type FleetBaseline = {
   medianSessionTokens: number;
 };
 
+/**
+ * One model's two medians, kept apart all the way to the projection.
+ *
+ * `null` is "no median for this model", NOT zero, and it is never coerced to
+ * one on the way to the verdict. A fabricated `0` was strictly worse than
+ * unknown here: it satisfies the Over-powered small-jobs guard
+ * (`0 < fleet.medianSessionTokens` for any positive fleet median), so a model
+ * whose median simply failed to come back would have been convicted of running
+ * small jobs on no evidence. The narrowed work basis also makes a REAL `0`
+ * easier to reach — only input, output and cache writes have to be zero — so
+ * the sentinel and the measurement would no longer be distinguishable.
+ */
+type ModelMedians = {
+  /** Billed basis. Feeds the retired wire field only, never the verdict. */
+  billed: number | null;
+  /** New-work basis. The job-size half of the verdict, and what the screen renders. */
+  work: number | null;
+};
+
 function shareOf(part: number, whole: number): number {
   return whole > 0 ? part / whole : 0;
 }
@@ -194,7 +219,14 @@ function median(values: readonly number[]): number {
   return (sorted[middle - 1] + sorted[middle]) / HALF;
 }
 
-/** What this model charges per million tokens actually delivered. */
+/**
+ * The blended price this model actually charged: spend over every token that
+ * spend paid for. Numerator and denominator cover the same population by
+ * construction — `estimated_cost` prices all four token classes and exposes no
+ * per-class breakdown, so any narrower denominator would report a rate for a
+ * bill it does not describe (ISS-5189). The job-size half of the verdict is the
+ * separate `medianWorkTokens` basis, not this one.
+ */
 function ratePerMillion(accumulator: ModelAccumulator): number {
   return accumulator.tokens > 0
     ? (accumulator.usd / accumulator.tokens) * TOKENS_PER_MILLION
@@ -228,7 +260,7 @@ function accumulateModels(
  */
 function fleetBaselineOf(
   byModel: Map<string, ModelAccumulator>,
-  medians: Map<string, number>
+  medians: Map<string, ModelMedians>
 ): FleetBaseline {
   const graded = [...byModel.entries()].filter(
     ([, accumulator]) => accumulator.sessions >= MIN_GRADED_SESSIONS
@@ -239,14 +271,18 @@ function fleetBaselineOf(
       graded.reduce((sum, [, item]) => sum + item.usd, 0)
     ),
     medianRate: median(graded.map(([, item]) => ratePerMillion(item))),
-    medianSessionTokens: median(
-      graded.map(([model]) => medians.get(model) ?? 0)
-    ),
+    // Models with no work median are DROPPED from the baseline rather than
+    // folded in as zeros. A zero here is not a neutral placeholder: it drags
+    // the fleet's median job size down and makes every OTHER model look large
+    // by comparison, which suppresses the verdict fleet-wide on a read that
+    // partially failed. `median([])` is 0, so a fleet with no medians at all
+    // withholds the Over-powered verdict instead of handing it out.
+    medianSessionTokens: median(workMediansOf(graded, medians)),
   };
 }
 
 function resolveVerdict(
-  model: { rate: number; errorShare: number; medianTokens: number },
+  model: { rate: number; errorShare: number; medianWorkTokens: number | null },
   fleet: FleetBaseline
 ): ModelVerdict {
   // Failing more than its peers comes first: a model handing its cheap rate
@@ -254,9 +290,14 @@ function resolveVerdict(
   if (model.errorShare > fleet.errorShare * UNDERPOWERED_ERROR_MULTIPLE) {
     return ModelVerdict.Underpowered;
   }
+  // Over-powered is a CONJUNCTION, and an unknown job size cannot satisfy half
+  // of it. Without the explicit null check this reads a fabricated `0`, which
+  // is below any positive fleet median and would convict the model on the
+  // strength of a number nobody measured.
   if (
+    model.medianWorkTokens !== null &&
     model.rate > fleet.medianRate * OVERPOWERED_RATE_MULTIPLE &&
-    model.medianTokens < fleet.medianSessionTokens
+    model.medianWorkTokens < fleet.medianSessionTokens
   ) {
     return ModelVerdict.Overpowered;
   }
@@ -266,14 +307,20 @@ function resolveVerdict(
 function toModelRow(
   model: string,
   accumulator: ModelAccumulator,
-  medianTokens: number,
+  medians: ModelMedians,
   fleet: FleetBaseline
 ): ModelRightSizingRow {
   const errorShare = shareOf(accumulator.errorOutcomeUsd, accumulator.usd);
   const graded = accumulator.sessions >= MIN_GRADED_SESSIONS;
   const row: ModelRightSizingRow = {
     errorOutcomeUsd: round2(accumulator.errorOutcomeUsd),
-    medianTokens,
+    // The RETIRED field, on its original billed basis and with its original
+    // required shape, including the `0` it has always projected for a missing
+    // median. Nothing in this repo reads it any more — not the verdict above,
+    // not the screen — so its sentinel can no longer decide anything; it is
+    // here only for the `apps/app` build that predates `medianWorkTokens`, and
+    // narrowing it now would break exactly the client it exists to serve.
+    medianTokens: medians.billed ?? 0,
     model,
     sessions: accumulator.sessions,
     usd: round2(accumulator.usd),
@@ -283,11 +330,21 @@ function toModelRow(
         : 0,
     verdict: graded
       ? resolveVerdict(
-          { errorShare, medianTokens, rate: ratePerMillion(accumulator) },
+          {
+            errorShare,
+            medianWorkTokens: medians.work,
+            rate: ratePerMillion(accumulator),
+          },
           fleet
         )
       : ModelVerdict.Ungraded,
   };
+  // OMITTED, not null and emphatically not 0, when there is no work median:
+  // the screen renders its unavailable dash for an absent key, and a `0` would
+  // be indistinguishable from a model that really did no first-pass work.
+  if (medians.work !== null) {
+    row.medianWorkTokens = medians.work;
+  }
   // OMITTED, not null and emphatically not 0, for an ungraded model: there is
   // no verdict to be confident about, and a `0%` would read as "we are certain
   // it is wrong".
@@ -297,18 +354,45 @@ function toModelRow(
   return row;
 }
 
+/** `null` and `undefined` alike mean "no median", never zero. */
+function toMedian(value: number | null | undefined): number | null {
+  return value === null || value === undefined ? null : Number(value);
+}
+
+const NO_MEDIANS: ModelMedians = { billed: null, work: null };
+
+function workMediansOf(
+  graded: readonly (readonly [string, ModelAccumulator])[],
+  medians: Map<string, ModelMedians>
+): number[] {
+  const values: number[] = [];
+  for (const [model] of graded) {
+    const work = medians.get(model)?.work;
+    if (work !== null && work !== undefined) {
+      values.push(work);
+    }
+  }
+  return values;
+}
+
 export function foldModelRows(
   rows: readonly ModelSpendGridRow[],
   medianRows: readonly ModelMedianRow[]
 ): ModelRightSizingRow[] {
   const byModel = accumulateModels(rows);
-  const medians = new Map(
-    medianRows.map((row) => [row.model, Number(row.medianTokens ?? 0)])
+  const medians = new Map<string, ModelMedians>(
+    medianRows.map((row) => [
+      row.model,
+      {
+        billed: toMedian(row.medianTokens),
+        work: toMedian(row.medianWorkTokens),
+      },
+    ])
   );
   const fleet = fleetBaselineOf(byModel, medians);
   return [...byModel.entries()]
     .map(([model, accumulator]) =>
-      toModelRow(model, accumulator, medians.get(model) ?? 0, fleet)
+      toModelRow(model, accumulator, medians.get(model) ?? NO_MEDIANS, fleet)
     )
     .sort((a, b) => b.usd - a.usd);
 }

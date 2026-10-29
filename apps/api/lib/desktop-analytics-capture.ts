@@ -1,21 +1,35 @@
 import { analytics } from "@repo/analytics/server";
 import type { DesktopAnalyticsCaptureInput } from "./desktop-analytics-handler";
+import { assertDesktopAnalyticsCaptureConfigured } from "./desktop-analytics-sink-configured";
 
 /**
  * Serverless-runtime capture sink: forwards one validated Desktop analytics
- * event to PostHog. Shared by the serverless entry points — the relay
- * socket-event dispatcher (`app/internal/relay/socket-event/service.ts`) and
- * the FEA-3425 REST twin (`app/desktop/analytics/service.ts`) — so capture
- * behavior cannot drift between transports.
+ * event to PostHog for the REST routes (`app/desktop/analytics/service.ts`
+ * and its sign-in twin).
  *
- * Deliberately NOT in `desktop-analytics-handler.ts`: the handler is
- * runtime-neutral and is also imported by the long-lived direct-connect socket
- * server (`lib/desktop-gateway-socket-server.ts`), which owns its own
- * `nodeAnalytics`-backed sink — analytics runtime selection stays with each
- * owning entrypoint.
+ * Throws on an unconfigured PostHog client instead of enqueueing into the
+ * no-op stub, so the handler answers `capture_failed` rather than a
+ * `captured: true` for an event that was never captured (see
+ * `desktop-analytics-sink-configured.ts`).
  */
 export function captureDesktopAnalytics(
   input: DesktopAnalyticsCaptureInput
 ): void {
+  assertDesktopAnalyticsCaptureConfigured();
   analytics.capture(input);
+}
+
+/**
+ * ISS-10503 (PRD-736 D5, invariant 5): the server-emitted PostHog alias that
+ * folds a pre-auth onboarding attempt's history into the authenticated person.
+ * Only the handler — which alone knows the authoritative clerkUserId — calls
+ * this; the client never asserts the merged identity. `node_uuid` is never
+ * passed here (PRD-389 §8): the desktop presents an onboarding id only.
+ */
+export function aliasDesktopAnalytics(input: {
+  distinctId: string;
+  alias: string;
+}): void {
+  assertDesktopAnalyticsCaptureConfigured();
+  analytics.alias(input);
 }

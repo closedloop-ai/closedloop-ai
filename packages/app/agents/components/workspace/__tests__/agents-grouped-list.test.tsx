@@ -11,62 +11,16 @@ import {
 import { AGENT_COMPONENT_AUTHORS_LABEL } from "@repo/app/agents/lib/agent-component-authors";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 import { describe, expect, it } from "vitest";
-import { AppCoreStoryProviders } from "../../../../shared/storybook/decorators";
 import type { AgentComponentsDataSource } from "../../../data-source/agent-components-data-source";
-import { AgentComponentsDataSourceProvider } from "../../../data-source/provider";
 import { AgentsGroupedList } from "../agents-grouped-list";
+import { testDataSource, Wrapper } from "./agents-grouped-list-harness";
 
-// ---------------------------------------------------------------------------
 // Fixtures — the factory + inventory are shared with the desktop parity suite
 // via `agent-component-fixtures` so the two "renders consistently on both
 // surfaces" parity claims cannot drift against different component shapes.
-// ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Test data source factory
-// ---------------------------------------------------------------------------
-
-function testDataSource(
-  items: AgentComponent[] = FIXTURE_COMPONENTS,
-  onList?: (filters: AgentComponentQueryFilters) => void,
-  scope = "test"
-): AgentComponentsDataSource {
-  return {
-    scope,
-    list: (filters) => {
-      onList?.(filters);
-      return Promise.resolve({
-        items,
-        total: items.length,
-      } satisfies AgentComponentListResponse);
-    },
-    detail: () => Promise.reject(new Error("detail unused in list tests")),
-  };
-}
-
-function Wrapper({
-  children,
-  dataSource,
-  enabledFlags,
-}: {
-  children: ReactNode;
-  dataSource: AgentComponentsDataSource;
-  enabledFlags?: readonly string[];
-}) {
-  return (
-    <AppCoreStoryProviders enabledFlags={enabledFlags}>
-      <AgentComponentsDataSourceProvider dataSource={dataSource}>
-        {children}
-      </AgentComponentsDataSourceProvider>
-    </AppCoreStoryProviders>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Top-level regex constants (biome/performance/useTopLevelRegex)
-// ---------------------------------------------------------------------------
 
 // Exact match: the type-tab "All" (aria-label "All"), NOT the time-window
 // "All time" radio which also contains "all".
@@ -95,11 +49,6 @@ const RE_AUTHORS_FACET = new RegExp(`^${AGENT_COMPONENT_AUTHORS_LABEL}$`);
 const RE_BOB_COLLABORATOR_OPTION = /bob/i;
 // ISO-8601 datetime prefix — asserts the windowed query carries a startDate.
 const RE_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
-// FEA-3178: MetricCard delta chip renders `{positive?"+":""}{delta}%`.
-const RE_PLUS_100_PCT = /\+100%/;
-const RE_MINUS_50_PCT = /-50%/;
-// Any signed-percentage delta chip — used to assert NONE render for "All".
-const RE_ANY_PCT_CHIP = /[+-]\d+%/;
 // FEA-3176 / FEA-3620: accessible name of the newly-discovered "New" indicator
 // (unified from a text pill into a pulsing dot; the label is preserved).
 const RE_NEW_BADGE = /discovered in the last 7 days/i;
@@ -108,6 +57,12 @@ const RE_NEW_TEXT = /^New$/;
 // FEA-3054: accessible name (aria-label) of the inventory search box. Anchors
 // the control by its a11y contract so the test breaks if the label regresses.
 const RE_SEARCH_BOX = /^Search components$/;
+// ISS-6939: the two three-page cases mount 102 rows and drive a real paging
+// interaction, which the default 5s does not budget for under V8 coverage
+// instrumentation on a shared runner — one timed out in coverage-main run
+// 31964296359 and cost that day's whole measurement. Sized to fail on a hang,
+// not on contention, and deliberately not a file-wide default.
+const MULTI_PAGE_INTERACTION_TIMEOUT_MS = 30_000;
 
 // Near-now vs. well-outside-the-window fixed timestamps for the New-badge tests.
 const RECENT_FIRST_SEEN = new Date(
@@ -141,9 +96,7 @@ const FIXTURE_WITH_TMH: AgentComponent[] = [
   }),
 ];
 
-// ---------------------------------------------------------------------------
 // T-10.7: AgentsGroupedList component tests
-// ---------------------------------------------------------------------------
 
 describe("AgentsGroupedList", () => {
   it("renders the type-tab bar with All and core-kind tabs", async () => {
@@ -190,6 +143,7 @@ describe("AgentsGroupedList", () => {
   it("shows loading state while data is in flight", () => {
     const neverResolves: AgentComponentsDataSource = {
       scope: "test-loading",
+      honorsDateWindow: false,
       list: () => new Promise(() => {}),
       detail: () => new Promise(() => {}),
     };
@@ -206,6 +160,7 @@ describe("AgentsGroupedList", () => {
   it("shows an error state (not the empty state) when the list query rejects", async () => {
     const rejectingSource: AgentComponentsDataSource = {
       scope: "test-error",
+      honorsDateWindow: false,
       list: () => Promise.reject(new Error("network down")),
       detail: () => Promise.reject(new Error("detail unused")),
     };
@@ -360,11 +315,9 @@ describe("AgentsGroupedList", () => {
     expect(screen.queryByText(RE_NO_MATCH)).not.toBeInTheDocument();
   });
 
-  // -------------------------------------------------------------------------
   // FEA-4019: Tools/MCPs/Hooks are first-class top-level type tabs by DEFAULT
   // (no feature flag) on both web and desktop — the shared component drives
   // both surfaces, so removing the old Labs gate lights the tabs up everywhere.
-  // -------------------------------------------------------------------------
 
   it("renders Tools/MCPs/Hooks as first-class top-level type tabs by default (no flag)", async () => {
     render(
@@ -415,9 +368,7 @@ describe("AgentsGroupedList", () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // Pagination + summary-over-full-set (agents page pagination bug fix)
-  // -------------------------------------------------------------------------
 
   // Row name anchors carry an /agents/ href (see AgentsTable renderNameLead);
   // pagination controls are hrefless <a> and so are NOT role="link", which lets
@@ -429,14 +380,7 @@ describe("AgentsGroupedList", () => {
 
   it("caps the list at one page while the summary counts the full set", async () => {
     const user = userEvent.setup();
-    const many = Array.from({ length: 60 }, (_, i) =>
-      makeComponent({
-        id: `uuid-page-${i}`,
-        name: `Paged Component ${i}`,
-        kind: AgentComponentKind.Subagent,
-        invocations: 10,
-      })
-    );
+    const many = manyComponents(60, "Paged", { invocations: 10 });
 
     render(
       <Wrapper dataSource={testDataSource(many)}>
@@ -456,116 +400,95 @@ describe("AgentsGroupedList", () => {
     await waitFor(() => expect(rowLinks()).toHaveLength(10));
   });
 
-  it("resets to page 1 when a filter narrows to a still-multi-page subset", async () => {
-    const user = userEvent.setup();
-    // 60 subagents + 60 commands = 120 rows across 3 pages on the All tab.
-    // Names are zero-padded so the default Name-Asc sort is index order, which
-    // lets us assert WHICH page's rows are visible. Filtering to Commands still
-    // leaves 60 rows (2 pages), so a reset-to-page-1 is the ONLY thing that can
-    // surface "Command 00" — the empty-state clamp cannot, since the set is not
-    // empty. This distinguishes an explicit reset from the empty-state clamp.
-    const subagents = Array.from({ length: 60 }, (_, i) =>
-      makeComponent({
-        id: `uuid-sub-${i}`,
-        name: `Subagent ${String(i).padStart(2, "0")}`,
-        kind: AgentComponentKind.Subagent,
-      })
-    );
-    const commands = Array.from({ length: 60 }, (_, i) =>
-      makeComponent({
-        id: `uuid-cmd-${i}`,
-        name: `Command ${String(i).padStart(2, "0")}`,
+  it(
+    "resets to page 1 when a filter narrows to a still-multi-page subset",
+    async () => {
+      // 51 subagents + 51 commands = 102 rows across 3 pages on the All tab.
+      // Filtering to Commands still leaves 51 rows (2 pages), so a
+      // reset-to-page-1 is the ONLY thing that can surface "Command 00" — the
+      // empty-state clamp cannot, since the set is not empty.
+      const subagents = manyComponents(51, "Subagent");
+      const commands = manyComponents(51, "Command", {
         kind: AgentComponentKind.Command,
-      })
-    );
+      });
 
-    render(
-      <Wrapper dataSource={testDataSource([...subagents, ...commands])}>
-        <AgentsGroupedList getComponentHref={(c) => `/agents/${c.id}`} />
-      </Wrapper>
-    );
+      render(
+        <Wrapper dataSource={testDataSource([...subagents, ...commands])}>
+          <AgentsGroupedList getComponentHref={(c) => `/agents/${c.id}`} />
+        </Wrapper>
+      );
 
-    // Page 1 of the All tab shows the first 50 rows (Command 00…Command 49).
-    await waitFor(() => expect(rowLinks()).toHaveLength(50));
-    // Advance to page 2 (rows 51-100) — "Command 00" is no longer on screen.
-    await user.click(screen.getByLabelText(RE_NEXT_PAGE));
-    await waitFor(() =>
-      expect(screen.queryByText("Command 00")).not.toBeInTheDocument()
-    );
+      // Page 1 of the All tab shows the first 50 rows (Command 00…Command 49).
+      await waitFor(() => expect(rowLinks()).toHaveLength(50));
+      // Advance to page 2 (rows 51-100) — "Command 00" is no longer on screen.
+      fireEvent.click(screen.getByLabelText(RE_NEXT_PAGE));
+      await waitFor(() =>
+        expect(screen.queryByText("Command 00")).not.toBeInTheDocument()
+      );
 
-    // Filter to Commands: 60 rows remain (still 2 pages, NOT empty). A correct
-    // reset lands on page 1, so the first page's rows (incl. "Command 00")
-    // render and page 2's last-page count (10) is NOT what we see.
-    await user.click(screen.getByRole("radio", { name: RE_COMMANDS_TAB }));
-    await waitFor(() => {
-      expect(screen.getByText("Command 00")).toBeInTheDocument();
-    });
-    // Page 1 of the 60 filtered commands is a FULL page of 50 — proving we are
-    // on page 1 (page 2 would show the remaining 10), i.e. an explicit reset,
-    // not the empty-state clamp (which would show 0).
-    expect(rowLinks()).toHaveLength(50);
-    expect(screen.queryByText(RE_NO_MATCH)).not.toBeInTheDocument();
-  });
+      // Filter to Commands: 51 rows remain (still 2 pages, NOT empty). A correct
+      // reset lands on page 1, so the first page's rows (incl. "Command 00")
+      // render and page 2's last-page count (1) is NOT what we see.
+      fireEvent.click(screen.getByRole("radio", { name: RE_COMMANDS_TAB }));
+      await waitFor(() => {
+        expect(screen.getByText("Command 00")).toBeInTheDocument();
+      });
+      // Page 1 of the 51 filtered commands is a FULL page of 50 — proving we are
+      // on page 1 (page 2 would show the remaining 1), i.e. an explicit reset,
+      // not the empty-state clamp (which would show 0).
+      expect(rowLinks()).toHaveLength(50);
+      expect(screen.queryByText(RE_NO_MATCH)).not.toBeInTheDocument();
+    },
+    MULTI_PAGE_INTERACTION_TIMEOUT_MS
+  );
 
-  // -------------------------------------------------------------------------
   // FEA-3054: inventory search box (the control this PR renders)
-  // -------------------------------------------------------------------------
 
-  it("narrows the rendered rows to the typed query and resets to page 1", async () => {
-    const user = userEvent.setup();
-    // 60 "Alpha" + 60 "Beta" = 120 rows across 3 pages on the All tab. Names are
-    // zero-padded so the default Name-Asc sort is index order, letting us assert
-    // WHICH page's rows are visible. Typing "Alpha" leaves 60 rows (still 2
-    // pages, NOT empty), so surfacing "Alpha 00" can ONLY come from a
-    // reset-to-page-1 — the empty-state clamp cannot, since the set is non-empty.
-    const alphas = Array.from({ length: 60 }, (_, i) =>
-      makeComponent({
-        id: `uuid-alpha-${i}`,
-        name: `Alpha ${String(i).padStart(2, "0")}`,
-        kind: AgentComponentKind.Subagent,
-      })
-    );
-    const betas = Array.from({ length: 60 }, (_, i) =>
-      makeComponent({
-        id: `uuid-beta-${i}`,
-        name: `Beta ${String(i).padStart(2, "0")}`,
-        kind: AgentComponentKind.Subagent,
-      })
-    );
+  it(
+    "narrows the rendered rows to the typed query and resets to page 1",
+    async () => {
+      // 51 "Alpha" + 51 "Beta" = 102 rows across 3 pages on the All tab. Typing
+      // "Alpha" leaves 51 rows (still 2 pages, NOT empty), so surfacing
+      // "Alpha 00" can ONLY come from a reset-to-page-1 — the empty-state clamp
+      // cannot, since the set is non-empty.
+      const alphas = manyComponents(51, "Alpha");
+      const betas = manyComponents(51, "Beta");
 
-    render(
-      <Wrapper dataSource={testDataSource([...alphas, ...betas])}>
-        <AgentsGroupedList getComponentHref={(c) => `/agents/${c.id}`} />
-      </Wrapper>
-    );
+      render(
+        <Wrapper dataSource={testDataSource([...alphas, ...betas])}>
+          <AgentsGroupedList getComponentHref={(c) => `/agents/${c.id}`} />
+        </Wrapper>
+      );
 
-    // Page 1 of the All tab shows the first 50 rows (Alpha 00…Alpha 49).
-    await waitFor(() => expect(rowLinks()).toHaveLength(50));
-    // Advance to page 2 (rows 51-100) — "Alpha 00" is no longer on screen.
-    await user.click(screen.getByLabelText(RE_NEXT_PAGE));
-    await waitFor(() =>
-      expect(screen.queryByText("Alpha 00")).not.toBeInTheDocument()
-    );
+      // Page 1 of the All tab shows the first 50 rows (Alpha 00…Alpha 49).
+      await waitFor(() => expect(rowLinks()).toHaveLength(50));
+      // Advance to page 2 (rows 51-100) — "Alpha 00" is no longer on screen.
+      fireEvent.click(screen.getByLabelText(RE_NEXT_PAGE));
+      await waitFor(() =>
+        expect(screen.queryByText("Alpha 00")).not.toBeInTheDocument()
+      );
 
-    // Enter a query in the search box: only the 60 "Alpha …" rows should remain,
-    // and a correct filter reset lands back on page 1 (so "Alpha 00" reappears)
-    // while the "Beta …" rows drop out entirely. A single `fireEvent.change`
-    // models the control's `onChange(handleFiltersChange)` in one shot — the
-    // render→state→filter→page-reset wiring under test — without paying for a
-    // per-keystroke re-render of the 120-row set (which times out under load).
-    const searchBox = screen.getByLabelText(RE_SEARCH_BOX);
-    fireEvent.change(searchBox, { target: { value: "Alpha" } });
+      // Enter a query in the search box: only the 51 "Alpha …" rows should remain,
+      // and a correct filter reset lands back on page 1 (so "Alpha 00" reappears)
+      // while the "Beta …" rows drop out entirely. A single `fireEvent.change`
+      // models the control's `onChange(handleFiltersChange)` in one shot — the
+      // render→state→filter→page-reset wiring under test — without paying for a
+      // per-keystroke re-render of the large row set under coverage load.
+      const searchBox = screen.getByLabelText(RE_SEARCH_BOX);
+      fireEvent.change(searchBox, { target: { value: "Alpha" } });
 
-    await waitFor(() => {
-      expect(screen.getByText("Alpha 00")).toBeInTheDocument();
-    });
-    // Page 1 of the 60 filtered Alphas is a FULL page of 50 — proving page 1
-    // (page 2 would show the remaining 10), i.e. an explicit reset, not the
-    // empty-state clamp (which would show 0).
-    expect(rowLinks()).toHaveLength(50);
-    expect(screen.queryByText("Beta 00")).not.toBeInTheDocument();
-    expect(screen.queryByText(RE_NO_MATCH)).not.toBeInTheDocument();
-  });
+      await waitFor(() => {
+        expect(screen.getByText("Alpha 00")).toBeInTheDocument();
+      });
+      // Page 1 of the 51 filtered Alphas is a FULL page of 50 — proving page 1
+      // (page 2 would show the remaining 1), i.e. an explicit reset, not the
+      // empty-state clamp (which would show 0).
+      expect(rowLinks()).toHaveLength(50);
+      expect(screen.queryByText("Beta 00")).not.toBeInTheDocument();
+      expect(screen.queryByText(RE_NO_MATCH)).not.toBeInTheDocument();
+    },
+    MULTI_PAGE_INTERACTION_TIMEOUT_MS
+  );
 
   it("shows the empty state when the search query matches nothing", async () => {
     const user = userEvent.setup();
@@ -592,9 +515,7 @@ describe("AgentsGroupedList", () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // Time-window (All / 30 / 60 / 90 day) filter
-  // -------------------------------------------------------------------------
 
   it("selecting a time window re-queries the server with a startDate param", async () => {
     // FEA-3160: windowing is SERVER-SIDE now. The default "All" window sends no
@@ -653,6 +574,7 @@ describe("AgentsGroupedList", () => {
     ];
     const dataSource: AgentComponentsDataSource = {
       scope: "agent-components:http",
+      honorsDateWindow: true,
       list: (filters) =>
         Promise.resolve({
           items: typeof filters.startDate === "string" ? windowed : allTime,
@@ -691,14 +613,7 @@ describe("AgentsGroupedList", () => {
   it("summary Invocations sums the full server-windowed set, not the page", async () => {
     // The server returns the windowed rows; the summary must aggregate over all
     // of them (across every client page), not just the visible page slice.
-    const many = Array.from({ length: 60 }, (_, i) =>
-      makeComponent({
-        id: `uuid-win-${i}`,
-        name: `Windowed Component ${i}`,
-        kind: AgentComponentKind.Subagent,
-        invocations: 5,
-      })
-    );
+    const many = manyComponents(60, "Windowed", { invocations: 5 });
 
     render(
       <Wrapper dataSource={testDataSource(many)}>
@@ -712,219 +627,8 @@ describe("AgentsGroupedList", () => {
     expect(screen.getByText("300")).toBeInTheDocument();
   });
 
-  // -------------------------------------------------------------------------
-  // FEA-3178: period-over-period delta on the summary cards
-  // -------------------------------------------------------------------------
-
-  // The delta is ONLY shown on a data source that genuinely honors the
-  // startDate/endDate window — the web/HTTP source ("agent-components:http").
-  // A source that ignores the window (the desktop local source) would return
-  // the SAME rows for the current and preceding query, fabricating a 0% delta,
-  // so the component suppresses the delta there. These tests therefore mint a
-  // source under the windowed scope so a real prior baseline exists.
-  const WINDOWED_SCOPE = "agent-components:http";
-  // The desktop local source scope — ignores the window, so no delta must show.
-  const LOCAL_SCOPE = "agent-components:local";
-
-  // A data source that serves the CURRENT window (startDate only, or all-time)
-  // vs the PRECEDING window (startDate + endDate) from two distinct populations,
-  // so a delta computes off a real prior baseline. The preceding query is the
-  // only one that sends `endDate` (see AgentsGroupedList's second
-  // useAgentComponents). `scope` defaults to the windowed source; pass
-  // LOCAL_SCOPE to model a source that ignores the window.
-  function periodOverPeriodDataSource(
-    current: AgentComponent[],
-    previous: AgentComponent[],
-    scope: string = WINDOWED_SCOPE
-  ): AgentComponentsDataSource {
-    return {
-      scope,
-      list: (filters) => {
-        const isPreceding = typeof filters.endDate === "string";
-        const items = isPreceding ? previous : current;
-        return Promise.resolve({
-          items,
-          total: items.length,
-        } satisfies AgentComponentListResponse);
-      },
-      detail: () => Promise.reject(new Error("detail unused in list tests")),
-    };
-  }
-
-  it("renders a period-over-period delta chip with the right sign when a window is selected", async () => {
-    const user = userEvent.setup();
-    // Current window: 2 components, 30 invocations total. Previous window: 1
-    // component, 15 invocations. Components: (2-1)/1 = +100%. Invocations:
-    // (30-15)/15 = +100%. Authors: current {alice,bob}=2 vs previous
-    // {alice}=1 = +100%.
-    const current = [
-      makeComponent({
-        id: "cur-1",
-        name: "Current A",
-        invocations: 20,
-        collaborators: ["alice"],
-      }),
-      makeComponent({
-        id: "cur-2",
-        name: "Current B",
-        invocations: 10,
-        collaborators: ["bob"],
-      }),
-    ];
-    const previous = [
-      makeComponent({
-        id: "prev-1",
-        name: "Prev A",
-        invocations: 15,
-        collaborators: ["alice"],
-      }),
-    ];
-
-    render(
-      <Wrapper dataSource={periodOverPeriodDataSource(current, previous)}>
-        <AgentsGroupedList />
-      </Wrapper>
-    );
-
-    // Select a bounded window so the preceding query fires.
-    await screen.findByText("Current A");
-    await user.click(screen.getByRole("radio", { name: RE_LAST_60_DAYS }));
-
-    // At least one +100% delta chip renders (Components / Invocations /
-    // Authors all moved +100%). The chip text carries the sign + percentage.
-    await waitFor(() => {
-      expect(screen.getAllByText(RE_PLUS_100_PCT).length).toBeGreaterThan(0);
-    });
-  });
-
-  it("renders a NEGATIVE delta when the current window shrank vs the prior period", async () => {
-    const user = userEvent.setup();
-    // Invocations: current 10 vs previous 20 ⇒ (10-20)/20 = -50%.
-    const current = [
-      makeComponent({ id: "cur-1", name: "Current A", invocations: 10 }),
-    ];
-    const previous = [
-      makeComponent({ id: "prev-1", name: "Prev A", invocations: 20 }),
-    ];
-
-    render(
-      <Wrapper dataSource={periodOverPeriodDataSource(current, previous)}>
-        <AgentsGroupedList />
-      </Wrapper>
-    );
-
-    await screen.findByText("Current A");
-    await user.click(screen.getByRole("radio", { name: RE_LAST_60_DAYS }));
-
-    await waitFor(() => {
-      expect(screen.getAllByText(RE_MINUS_50_PCT).length).toBeGreaterThan(0);
-    });
-  });
-
-  it("shows NO delta chip for the All window (no prior period to compare)", async () => {
-    // The default window is "All": the preceding query is disabled (never sends
-    // endDate), so no baseline exists and no delta chip renders — never a
-    // fabricated placeholder. Assert no signed-percentage chip is present.
-    render(
-      <Wrapper
-        dataSource={testDataSource(
-          FIXTURE_COMPONENTS,
-          undefined,
-          WINDOWED_SCOPE
-        )}
-      >
-        <AgentsGroupedList />
-      </Wrapper>
-    );
-
-    await screen.findByText("My Orchestrator Agent");
-    expect(screen.queryByText(RE_ANY_PCT_CHIP)).not.toBeInTheDocument();
-  });
-
-  it("shows NO delta on a data source that ignores the date window (desktop local)", async () => {
-    const user = userEvent.setup();
-    // The local source returns the SAME population regardless of the window, so
-    // current === previous and a naive delta would fabricate 0%. The component
-    // gates the delta on the windowed (HTTP) scope, so NO chip must render even
-    // after a bounded window is selected on the local source.
-    const rows = [
-      makeComponent({ id: "loc-1", name: "Local A", invocations: 20 }),
-      makeComponent({ id: "loc-2", name: "Local B", invocations: 10 }),
-    ];
-
-    render(
-      <Wrapper dataSource={periodOverPeriodDataSource(rows, rows, LOCAL_SCOPE)}>
-        <AgentsGroupedList />
-      </Wrapper>
-    );
-
-    await screen.findByText("Local A");
-    await user.click(screen.getByRole("radio", { name: RE_LAST_60_DAYS }));
-
-    // Give the (suppressed) preceding query a chance to have run: assert the
-    // summary is rendered but carries no signed-percentage delta chip.
-    await waitFor(() => {
-      expect(screen.getByText("Local A")).toBeInTheDocument();
-    });
-    expect(screen.queryByText(RE_ANY_PCT_CHIP)).not.toBeInTheDocument();
-  });
-
-  it("facet-filters the PREVIOUS window the same way as the current before computing the delta", async () => {
-    const user = userEvent.setup();
-    // Current window (Subagent kind): 1 subagent, 10 invocations.
-    // Previous window: 1 subagent (10 invocations) PLUS an unrelated Command.
-    // With the Agents (Subagent) type-tab active, BOTH the current and the
-    // previous populations must be narrowed to Subagents. The facet-filtered
-    // previous Invocations = 20 (the subagent only), so the delta is
-    // (10-20)/20 = -50%. If the previous window were left UNfiltered, its
-    // Invocations would be 20 (subagent) + 30 (command) = 50, giving
-    // (10-50)/50 = -80% — a different, apples-to-oranges number. Asserting the
-    // -50% chip proves the previous population is facet-filtered like-for-like.
-    const current = [
-      makeComponent({
-        id: "cur-sub",
-        name: "Current Subagent",
-        kind: AgentComponentKind.Subagent,
-        invocations: 10,
-      }),
-    ];
-    const previous = [
-      makeComponent({
-        id: "prev-sub",
-        name: "Prev Subagent",
-        kind: AgentComponentKind.Subagent,
-        invocations: 20,
-      }),
-      makeComponent({
-        id: "prev-cmd",
-        name: "Prev Command",
-        kind: AgentComponentKind.Command,
-        invocations: 30,
-      }),
-    ];
-
-    render(
-      <Wrapper dataSource={periodOverPeriodDataSource(current, previous)}>
-        <AgentsGroupedList />
-      </Wrapper>
-    );
-
-    // Narrow to the Agents (Subagent) type-tab AND select a bounded window.
-    await screen.findByText("Current Subagent");
-    await user.click(screen.getByRole("radio", { name: RE_AGENTS_TAB }));
-    await user.click(screen.getByRole("radio", { name: RE_LAST_60_DAYS }));
-
-    // The Invocations delta reflects the FACET-FILTERED previous population
-    // (subagent only, 20 → -50%), never the unfiltered previous total (50).
-    await waitFor(() => {
-      expect(screen.getAllByText(RE_MINUS_50_PCT).length).toBeGreaterThan(0);
-    });
-  });
-
-  // -------------------------------------------------------------------------
   // FEA-3176 / FEA-3620: newly-discovered "New" indicator — a pulsing dot
   // (unified from the old text pill) when firstSeenAt is within the last 7 days.
-  // -------------------------------------------------------------------------
 
   it("renders a New dot (not a text pill) for a component discovered in the last 7 days", async () => {
     render(
@@ -1005,9 +709,7 @@ describe("AgentsGroupedList", () => {
     expect(nameSpan).toContainElement(activeDot);
   });
 
-  // -------------------------------------------------------------------------
   // FEA-3179: live "active in the last hour" pulse dot in the Name lead cell
-  // -------------------------------------------------------------------------
 
   it("renders the active pulse dot for a recently-invoked component and not for a stale one", async () => {
     // The dot keys off `lastInvokedAt` (real usage recency), NOT `lastSeenAt`
@@ -1084,3 +786,23 @@ describe("AgentsGroupedList", () => {
     expect(screen.queryByTestId("agent-active-dot")).not.toBeInTheDocument();
   });
 });
+
+/**
+ * `count` components named `<label> 00`…, zero-padded so the default Name-Asc
+ * sort is index order and a paging test can assert WHICH page is on screen.
+ * `overrides` cannot displace the id or name that property depends on.
+ */
+function manyComponents(
+  count: number,
+  label: string,
+  overrides: Partial<AgentComponent> = {}
+): AgentComponent[] {
+  return Array.from({ length: count }, (_, index) =>
+    makeComponent({
+      kind: AgentComponentKind.Subagent,
+      ...overrides,
+      id: `uuid-${label}-${index}`,
+      name: `${label} ${String(index).padStart(2, "0")}`,
+    })
+  );
+}

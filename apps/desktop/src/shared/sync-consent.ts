@@ -13,7 +13,10 @@ import type { SyncObservabilityTier } from "./contracts.js";
  * consent signal.
  */
 export type SyncConsentRecord = {
-  /** `null` until the user has answered the consent question on this device. */
+  /**
+   * `null` is unset, never an explicit no-sync choice. Off records the Local
+   * tier, so both the picker and collection gate can distinguish it (ISS-12523).
+   */
   tier: SyncObservabilityTier | null;
   /** The org the answer was recorded for. `null` is a real value — see `bound`. */
   organizationId: string | null;
@@ -46,7 +49,7 @@ export function hasRecordedSyncConsent(
   record: SyncConsentRecord,
   organizationId: string | null
 ): boolean {
-  if (record.tier === null) {
+  if (!hasAnsweredSyncConsent(record)) {
     return false;
   }
   if (!record.bound) {
@@ -76,4 +79,18 @@ export function consentTierForOrg(
   organizationId: string | null
 ): SyncObservabilityTier | null {
   return hasRecordedSyncConsent(record, organizationId) ? record.tier : null;
+}
+
+/**
+ * ISS-10950 — whether this device has answered the sync-policy question AT ALL,
+ * for any org.
+ *
+ * The un-scoped half of {@link hasRecordedSyncConsent}, which reads it. Consumers
+ * that gate EGRESS want the org-scoped predicate; the one consumer that wants
+ * this one gates whether local session parsing may begin, and a later sign-in
+ * into a different org does not withdraw the reader's agreement to have their
+ * own disk read.
+ */
+export function hasAnsweredSyncConsent(record: SyncConsentRecord): boolean {
+  return record.tier !== null;
 }

@@ -22,7 +22,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  isOrgAdmin: vi.fn(),
+  getOrgAdminStatus: vi.fn(),
   computeTargetsService: {
     findOwnedById: vi.fn(),
   },
@@ -43,7 +43,7 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
-vi.mock("@repo/aws", () => ({
+vi.mock("@repo/aws/catalog-assets", () => ({
   getCatalogAssetDownloadUrl: mocks.getCatalogAssetDownloadUrl,
 }));
 
@@ -52,7 +52,7 @@ vi.mock("@repo/aws/keys", () => ({
 }));
 
 vi.mock("@/lib/auth/org-admin", () => ({
-  isOrgAdmin: mocks.isOrgAdmin,
+  getOrgAdminStatus: mocks.getOrgAdminStatus,
 }));
 
 vi.mock("@/app/compute-targets/service", () => ({
@@ -60,9 +60,16 @@ vi.mock("@/app/compute-targets/service", () => ({
 }));
 
 import {
+  CatalogItemScope,
+  CatalogItemSource,
   DistributionMode,
   DistributionTargetingType,
 } from "@repo/api/src/types/distribution";
+import {
+  ORG_ADMIN_STATUS_ADMIN,
+  ORG_ADMIN_STATUS_NOT_ADMIN,
+  ORG_ADMIN_STATUS_PROVIDER_ERROR,
+} from "@/__tests__/support/auth/org-admin-gate.test-fixtures";
 import { distributionsService } from "../service";
 
 // ---------------------------------------------------------------------------
@@ -106,15 +113,71 @@ function installDb(db: Record<string, unknown>) {
 
 const NOW = new Date("2026-07-01T00:00:00.000Z");
 
-function buildCatalogItemRow(overrides: Record<string, unknown> = {}) {
+type CatalogItemRow = {
+  id: string;
+  organizationId: string | null;
+  scope: CatalogItemScope;
+  source: CatalogItemSource;
+  archived: boolean;
+  [key: string]: unknown;
+};
+
+type CatalogItemWhere = {
+  id?: string;
+  archived?: boolean;
+  // An arm narrows only on the keys it names; `source` is carried because the
+  // catalog service's visibility predicate is `{ scope, source }`, so a double
+  // blind to it could not tell a curated global row from an org_custom one.
+  OR?: Array<{
+    organizationId?: string;
+    scope?: string;
+    source?: string;
+  }>;
+};
+
+function buildCatalogItemRow(
+  overrides: Partial<CatalogItemRow> = {}
+): CatalogItemRow {
   return {
     id: "item-1",
+    organizationId: "org-1",
+    scope: CatalogItemScope.Org,
+    source: CatalogItemSource.OrgCustom,
+    archived: false,
     name: "My Plugin",
     targetKind: "plugin",
-    source: "org_custom",
     coaching: false,
     ...overrides,
   };
+}
+
+function matchesCatalogItemWhere(
+  where: CatalogItemWhere | undefined,
+  row: CatalogItemRow
+): boolean {
+  if (where?.id !== undefined && where.id !== row.id) {
+    return false;
+  }
+  if (where?.archived !== undefined && where.archived !== row.archived) {
+    return false;
+  }
+  if (where?.OR === undefined) {
+    return true;
+  }
+  return where.OR.some(
+    ({ organizationId, scope, source }) =>
+      (organizationId === undefined || organizationId === row.organizationId) &&
+      (scope === undefined || scope === row.scope) &&
+      (source === undefined || source === row.source)
+  );
+}
+
+function buildCatalogItemFindFirst(rows: CatalogItemRow[]) {
+  return vi.fn(({ where }: { where?: CatalogItemWhere }) =>
+    Promise.resolve(
+      rows.find((row) => matchesCatalogItemWhere(where, row)) ?? null
+    )
+  );
 }
 
 function buildDistributionRow(overrides: Record<string, unknown> = {}) {
@@ -145,7 +208,7 @@ describe("distributionsService.create", () => {
   });
 
   it("returns 403 when caller is not an org admin", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(false);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_NOT_ADMIN);
     installDb({});
 
     const result = await distributionsService.create(
@@ -164,11 +227,51 @@ describe("distributionsService.create", () => {
     expect(result.ok === false && result.error).toBe(403);
   });
 
+  /**
+   * ISS-8661. This gate answers with a `StatusCode` rather than a Response, so
+   * it is the one shape where the 403/503 split can be lost silently — the
+   * route maps whatever code it is handed. 503, and no write.
+   */
+  it("returns 503, not 403, when the role could not be resolved", async () => {
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_PROVIDER_ERROR);
+    const db = installDb({});
+
+    const result = await distributionsService.create(
+      "org-1",
+      "user-1",
+      "clerk-org-1",
+      "clerk-user-1",
+      {
+        catalogItemId: "item-1",
+        mode: DistributionMode.AutoInstall,
+        targetingType: DistributionTargetingType.All,
+      }
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error).toBe(503);
+    // Fail-closed: a 503 that created the row first would be worse than the
+    // 403 it replaces, and the status assertion alone cannot see it.
+    expect(db.distribution.create).not.toHaveBeenCalled();
+  });
+
   it("returns 400 when catalogItemId does not belong to the org", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
+    const foreignCatalogItem = buildCatalogItemRow({
+      id: "foreign-item",
+      organizationId: "org-2",
+    });
     installDb({
       catalogItem: {
-        findFirst: vi.fn().mockResolvedValue(null),
+        findFirst: buildCatalogItemFindFirst([foreignCatalogItem]),
+      },
+      distribution: {
+        create: vi.fn().mockResolvedValue(
+          buildDistributionRow({
+            catalogItemId: foreignCatalogItem.id,
+            catalogItem: foreignCatalogItem,
+          })
+        ),
       },
     });
 
@@ -178,7 +281,73 @@ describe("distributionsService.create", () => {
       "clerk-org-1",
       "clerk-user-1",
       {
-        catalogItemId: "nonexistent-item",
+        catalogItemId: foreignCatalogItem.id,
+        mode: DistributionMode.AutoInstall,
+        targetingType: DistributionTargetingType.All,
+      }
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error).toBe(400);
+  });
+
+  it("returns 400 when the org's catalog item is archived", async () => {
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
+    const archivedCatalogItem = buildCatalogItemRow({ archived: true });
+    installDb({
+      catalogItem: {
+        findFirst: buildCatalogItemFindFirst([archivedCatalogItem]),
+      },
+      distribution: {
+        create: vi.fn().mockResolvedValue(
+          buildDistributionRow({
+            catalogItemId: archivedCatalogItem.id,
+            catalogItem: archivedCatalogItem,
+          })
+        ),
+      },
+    });
+
+    const result = await distributionsService.create(
+      "org-1",
+      "user-1",
+      "clerk-org-1",
+      "clerk-user-1",
+      {
+        catalogItemId: archivedCatalogItem.id,
+        mode: DistributionMode.AutoInstall,
+        targetingType: DistributionTargetingType.All,
+      }
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error).toBe(400);
+  });
+
+  it("returns 400 when catalogItemId names no row the org can see", async () => {
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
+    const ownCatalogItem = buildCatalogItemRow();
+    installDb({
+      catalogItem: {
+        findFirst: buildCatalogItemFindFirst([ownCatalogItem]),
+      },
+      distribution: {
+        create: vi.fn().mockResolvedValue(
+          buildDistributionRow({
+            catalogItemId: "unrequested-item",
+            catalogItem: ownCatalogItem,
+          })
+        ),
+      },
+    });
+
+    const result = await distributionsService.create(
+      "org-1",
+      "user-1",
+      "clerk-org-1",
+      "clerk-user-1",
+      {
+        catalogItemId: "unrequested-item",
         mode: DistributionMode.AutoInstall,
         targetingType: DistributionTargetingType.All,
       }
@@ -189,7 +358,8 @@ describe("distributionsService.create", () => {
   });
 
   it("creates distribution with no targeting entries for all-targeting", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
+    const catalogItem = buildCatalogItemRow();
     const distributionRow = buildDistributionRow({
       targetingType: DistributionTargetingType.All,
       targetingEntries: [],
@@ -198,7 +368,7 @@ describe("distributionsService.create", () => {
 
     installDb({
       catalogItem: {
-        findFirst: vi.fn().mockResolvedValue({ id: "item-1" }),
+        findFirst: buildCatalogItemFindFirst([catalogItem]),
       },
       distribution: {
         create: distributionCreate,
@@ -224,8 +394,49 @@ describe("distributionsService.create", () => {
     expect(result.ok && result.value.targetingEntries).toHaveLength(0);
   });
 
+  it("creates a distribution for a global catalog item", async () => {
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
+    const catalogItem = buildCatalogItemRow({
+      id: "global-item",
+      organizationId: null,
+      scope: CatalogItemScope.Global,
+      source: CatalogItemSource.Curated,
+    });
+    const distributionCreate = vi.fn().mockResolvedValue(
+      buildDistributionRow({
+        catalogItemId: catalogItem.id,
+        catalogItem,
+      })
+    );
+
+    installDb({
+      catalogItem: {
+        findFirst: buildCatalogItemFindFirst([catalogItem]),
+      },
+      distribution: {
+        create: distributionCreate,
+      },
+    });
+
+    const result = await distributionsService.create(
+      "org-1",
+      "user-1",
+      "clerk-org-1",
+      "clerk-user-1",
+      {
+        catalogItemId: catalogItem.id,
+        mode: DistributionMode.AutoInstall,
+        targetingType: DistributionTargetingType.All,
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(distributionCreate).toHaveBeenCalledTimes(1);
+  });
+
   it("creates DistributionTargetingEntry rows for specific-targeting with compute targets", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
+    const catalogItem = buildCatalogItemRow();
     const distributionRow = buildDistributionRow({
       targetingType: DistributionTargetingType.Specific,
       targetingEntries: [
@@ -237,7 +448,7 @@ describe("distributionsService.create", () => {
 
     installDb({
       catalogItem: {
-        findFirst: vi.fn().mockResolvedValue({ id: "item-1" }),
+        findFirst: buildCatalogItemFindFirst([catalogItem]),
       },
       distribution: {
         create: distributionCreate,
@@ -271,7 +482,8 @@ describe("distributionsService.create", () => {
   });
 
   it("creates DistributionTargetingEntry rows for specific-targeting with user IDs", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
+    const catalogItem = buildCatalogItemRow();
     const distributionRow = buildDistributionRow({
       targetingType: DistributionTargetingType.Specific,
       targetingEntries: [
@@ -283,7 +495,7 @@ describe("distributionsService.create", () => {
 
     installDb({
       catalogItem: {
-        findFirst: vi.fn().mockResolvedValue({ id: "item-1" }),
+        findFirst: buildCatalogItemFindFirst([catalogItem]),
       },
       distribution: {
         create: distributionCreate,
@@ -313,7 +525,8 @@ describe("distributionsService.create", () => {
   });
 
   it("mixes compute target and user targeting entries in one create call", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
+    const catalogItem = buildCatalogItemRow();
     const distributionRow = buildDistributionRow({
       targetingType: DistributionTargetingType.Specific,
       targetingEntries: [
@@ -325,7 +538,7 @@ describe("distributionsService.create", () => {
 
     installDb({
       catalogItem: {
-        findFirst: vi.fn().mockResolvedValue({ id: "item-1" }),
+        findFirst: buildCatalogItemFindFirst([catalogItem]),
       },
       distribution: {
         create: distributionCreate,
@@ -363,7 +576,7 @@ describe("distributionsService.update", () => {
   });
 
   it("returns 403 when caller is not an org admin", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(false);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_NOT_ADMIN);
     installDb({});
 
     const result = await distributionsService.update(
@@ -378,8 +591,25 @@ describe("distributionsService.update", () => {
     expect(result.ok === false && result.error).toBe(403);
   });
 
+  it("returns 503, not 403, when the role could not be resolved", async () => {
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_PROVIDER_ERROR);
+    const db = installDb({});
+
+    const result = await distributionsService.update(
+      "org-1",
+      "dist-1",
+      "clerk-org-1",
+      "clerk-user-1",
+      { mode: DistributionMode.OptIn }
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error).toBe(503);
+    expect(db.distribution.update).not.toHaveBeenCalled();
+  });
+
   it("returns 404 when distribution does not belong to the org", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
     installDb({
       distribution: {
         findFirst: vi.fn().mockResolvedValue(null),
@@ -399,7 +629,7 @@ describe("distributionsService.update", () => {
   });
 
   it("updates mode without rebuilding targeting entries when only mode changes", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
     const updatedRow = buildDistributionRow({ mode: DistributionMode.OptIn });
     const distributionUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
     const distributionFindFirst = vi
@@ -443,7 +673,7 @@ describe("distributionsService.update", () => {
   });
 
   it("rebuilds targeting entries when targetingType changes to specific", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
     const updatedRow = buildDistributionRow({
       targetingType: DistributionTargetingType.Specific,
       targetingEntries: [{ computeTargetId: "ct-3", userId: null }],
@@ -507,7 +737,7 @@ describe("distributionsService.update", () => {
   });
 
   it("deletes targeting entries when switching from specific to all", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
     const updatedRow = buildDistributionRow({
       targetingType: DistributionTargetingType.All,
       targetingEntries: [],

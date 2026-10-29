@@ -19,11 +19,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { CollectorManager } from "../src/main/collectors/engine/collector-manager.js";
 import type { ImportResult } from "../src/main/dashboard/agent-dashboard-db-types.js";
 import { deferred } from "./deferred.js";
 import { fakeCollector, makeSession } from "./normalized-session-test-utils.js";
+import { waitForCondition } from "./wait-for-condition.js";
 
 // A tiny bound keeps the test fast and deterministic: the wedged write never
 // resolves, so the ONLY way the second source imports is via the timeout path.
@@ -40,14 +41,13 @@ async function noopCooperativeDelay(): Promise<void> {
  * rule, so a regression that reintroduces the wedge fails loudly instead of a
  * later assertion seeing stale state.
  */
-async function waitUntil(predicate: () => boolean): Promise<void> {
-  const startedAt = Date.now();
-  while (!predicate()) {
-    if (Date.now() - startedAt > WAIT_TIMEOUT_MS) {
-      throw new Error("timed out waiting for the import loop to advance");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
+function waitUntil(predicate: () => boolean): Promise<void> {
+  return waitForCondition(
+    predicate,
+    WAIT_TIMEOUT_MS,
+    5,
+    "timed out waiting for the import loop to advance"
+  );
 }
 
 test("ISS-4410: a wedged first-session import does not stall the boot import; the loop advances to later sources", async () => {
@@ -81,7 +81,6 @@ test("ISS-4410: a wedged first-session import does not stall the boot import; th
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -107,7 +106,7 @@ test("ISS-4410: a wedged first-session import does not stall the boot import; th
     // The loop must reach and complete the GOOD source despite the wedged first
     // source — the whole point of the bound.
     await waitUntil(() => completedImports.includes("good-session"));
-    manager.stop();
+    await manager.stop();
     // Let stop() settle the never-resolving wedged promise's rejection path.
     wedged.resolve({ skipped: false, reactivated: false });
 
@@ -145,7 +144,6 @@ test("ISS-4410: the wedged source is left unmarked so it retries on the next lau
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -167,7 +165,7 @@ test("ISS-4410: the wedged source is left unmarked so it retries on the next lau
     await new Promise((resolve) =>
       setTimeout(resolve, TEST_IMPORT_TIMEOUT_MS * 6)
     );
-    firstManager.stop();
+    await firstManager.stop();
     wedged.resolve({ skipped: false, reactivated: false });
 
     // Second pass over the SAME stateDir (so the persisted catchup cache is
@@ -182,7 +180,6 @@ test("ISS-4410: the wedged source is left unmarked so it retries on the next lau
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -200,7 +197,7 @@ test("ISS-4410: the wedged source is left unmarked so it retries on the next lau
 
     secondManager.start();
     await waitUntil(() => secondPassImports.includes("wedged-session"));
-    secondManager.stop();
+    await secondManager.stop();
 
     assert.ok(
       secondPassImports.includes("wedged-session"),
@@ -238,7 +235,6 @@ test("ISS-4410 (whitlockk review): a genuine importSession rejection aborts the 
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -271,7 +267,7 @@ test("ISS-4410 (whitlockk review): a genuine importSession rejection aborts the 
     await new Promise((resolve) =>
       setTimeout(resolve, TEST_IMPORT_TIMEOUT_MS * 4)
     );
-    manager.stop();
+    await manager.stop();
 
     assert.ok(
       importAttempts.includes("rejecting-session"),
@@ -306,7 +302,6 @@ test("ISS-4410 (whitlockk review): a synchronous importer throw aborts without l
           throw new Error("synchronous db-host failure");
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       log: (message) => logs.push(message),
@@ -329,7 +324,7 @@ test("ISS-4410 (whitlockk review): a synchronous importer throw aborts without l
     await new Promise((resolve) =>
       setTimeout(resolve, TEST_IMPORT_TIMEOUT_MS * 6)
     );
-    manager.stop();
+    await manager.stop();
 
     assert.ok(
       importAttempts.includes("sync-throw-session"),

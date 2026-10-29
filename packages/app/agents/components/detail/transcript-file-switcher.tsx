@@ -3,7 +3,10 @@
 import type { SyncedAgentSessionAgent } from "@repo/api/src/types/agent-session";
 import type { TranscriptAvailabilitySummary } from "@repo/api/src/types/desktop-transcripts";
 import { TranscriptAvailability } from "@repo/api/src/types/desktop-transcripts";
-import { Chip } from "@repo/design-system/components/ui/chip";
+import {
+  CHIP_FOCUS_RING_CLASS,
+  Chip,
+} from "@repo/design-system/components/ui/chip";
 import {
   Collapsible,
   CollapsibleContent,
@@ -61,10 +64,8 @@ import {
 /**
  * Shared trigger treatment. The DS `Collapsible` ships no base styles, so hover,
  * the focus ring and the tap-target floor are supplied here rather than
- * inherited. The ring recipe mirrors `Chip`'s interactive variant
- * (`focus-visible:border-ring` + `ring-ring/50` + `ring-[3px]`) so the trigger
- * and the chips beside it focus identically — the solid border change carries
- * the contrast, the ring is the glow around it.
+ * inherited. The ring is `Chip`'s own `CHIP_FOCUS_RING_CLASS`, so the trigger
+ * and the chips beside it focus identically.
  *
  * `w-fit`, not `w-full justify-between`: both cited references (the Properties
  * disclosure in `agent-detail.tsx` and the DS `SectionHeader`) hug their
@@ -74,8 +75,8 @@ import {
 const TRIGGER_CLASS = cn(
   "flex w-fit items-center gap-1.5 rounded-md border border-transparent px-2 py-1.5 text-left",
   "touch:min-h-tap-min hover:bg-accent hover:text-accent-foreground",
-  "outline-none transition-colors",
-  "focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+  "transition-colors",
+  CHIP_FOCUS_RING_CLASS
 );
 
 export type TranscriptFileSwitcherProps = {
@@ -260,16 +261,16 @@ function SubagentReconciliationCaption({
   if (!caption) {
     return null;
   }
+  // A caveat rendered in the calmest color we own is not a caveat, so an
+  // unreadable sidechain tones the caption `warning` — the SAME variant
+  // vocabulary the affected chips use, via the catalog ToneLabel rather than a
+  // local class string that can drift from it.
+  //
+  // ToneLabel truncates by default, which is right for a one-word status stem
+  // and wrong here: the worst-case caption is three clauses, and the clause
+  // most likely to be clipped is the caveat the whole fold exists to protect.
+  // It wraps instead.
   return (
-    // A caveat rendered in the calmest color we own is not a caveat, so an
-    // unreadable sidechain tones the caption `warning` — the SAME variant
-    // vocabulary the affected chips use, via the catalog ToneLabel rather than a
-    // local class string that can drift from it.
-    //
-    // ToneLabel truncates by default, which is right for a one-word status stem
-    // and wrong here: the worst-case caption is three clauses, and the clause
-    // most likely to be clipped is the caveat the whole fold exists to protect.
-    // It wraps instead.
     <ToneLabel
       className="text-clip whitespace-normal"
       variant={hasUnreadableSubagentTranscripts(summary) ? "warning" : "muted"}

@@ -54,16 +54,11 @@
   --popover-foreground: oklch(0.232 0 0);
   --primary: oklch(0.528 0.214 267);
   --primary-foreground: oklch(1 0 0);
-  /* ISS-4793: the link-TEXT color. `--primary` is tuned as a FILL (button
-     backgrounds, accents) and is too dark to carry small text on a dark
-     surface -- at 12px on the muted session-detail pill it measures 1.9:1 in
-     dark, well under the 4.5:1 WCAG 1.4.3 floor. This token is the same hue
-     held at a lightness that stays legible as text in BOTH themes, so a
-     surface that needs "this text is a link" has something to reach for that
-     is not the fill color. */
-  --link: oklch(0.47 0.214 267);
+  /* ISS-4793: keep link text independent from the primary fill so each theme
+     can tune the two roles separately. */
+  --link: #93c5fd;
   --secondary: oklch(0.925 0.058 146.3);
-  --secondary-foreground: oklch(0.381 0.113 149);
+  --secondary-foreground: oklch(0.35 0.1 165);
   --muted: oklch(0.7 0 0 / 0.12);
   --muted-foreground: oklch(0.466 0 0);
   --accent: oklch(0.94 0.04 267);
@@ -76,25 +71,29 @@
   --warning-foreground: oklch(0.45 0.12 85);
   --info: oklch(0.6 0.15 250);
   --info-foreground: oklch(0.45 0.12 250);
-  --ai: oklch(0.6 0.2 295);
-  --ai-foreground: oklch(0.4 0.15 295);
+  --ai: #5b21b6;
+  --ai-foreground: #5b21b6;
   --border: oklch(0.5 0.008 267 / 0.1);
   --input: oklch(1 0 0 / 0);
   --input-border: oklch(0.5 0.008 267 / 0.14);
-  --ring: oklch(0.861 0.04 250);
+  /* ISS-9063: the focus indicator is drawn at full opacity and must clear WCAG
+     1.4.11's 3:1 against the surface it sits on. `--primary` does (5.45:1 on
+     background and card); the old oklch(0.861 0.04 250) was 1.47:1 at full
+     strength and 1.21:1 at the /50 every consumer composited it at. */
+  --ring: var(--primary);
   /* Categorical palette — 10 hues spread around the wheel so series stay
      distinguishable before the sequence repeats. chart-2 (blue) and chart-3
      (green) were near-white (L ~0.91) and washed out on the light surface;
      dropped lightness + raised chroma so they read as real colors. */
-  --chart-1: oklch(0.554 0.214 266.2);
-  --chart-2: oklch(0.74 0.13 221);
+  --chart-1: #bae6fd;
+  --chart-2: #06b6d4;
   --chart-3: oklch(0.72 0.16 148.6);
   --chart-4: oklch(0.902 0.128 87.8);
   --chart-5: oklch(0.756 0.162 38);
-  --chart-6: oklch(0.62 0.21 25);
+  --chart-6: #be123c;
   --chart-7: oklch(0.66 0.2 330);
   --chart-8: oklch(0.55 0.22 295);
-  --chart-9: oklch(0.7 0.13 195);
+  --chart-9: #0f766e;
   --chart-10: oklch(0.78 0.17 125);
   /* Chart axis line + tick-label colors. Dedicated tokens (not opacity-shifted
      border/muted-foreground) so the axis baseline and its labels can be tuned
@@ -110,12 +109,19 @@
   --sidebar-accent: oklch(0.92 0.008 267);
   --sidebar-accent-foreground: oklch(0.322 0 0);
   --sidebar-border: oklch(0.933 0 0);
-  --sidebar-ring: oklch(0.762 0 0);
+  /* WCAG 1.4.11. Every call site draws this as `ring-2` with no opacity
+     modifier, so it measures straight against the surface behind it. The grey
+     this used to be read 1.90:1 on `--sidebar` and 1.68:1 on a hovered or
+     active item (`--sidebar-accent`); `--primary` reads 5.02:1 and 4.45:1. That
+     is the token ISS-9063 gave `--ring` in this theme, so the chrome and the
+     content show one focus indicator rather than two. The `.dark` value already
+     clears the floor and is deliberately not moved. */
+  --sidebar-ring: var(--primary);
   --progress: oklch(0.6 0.005 267 / 0.2);
   --progress-foreground: var(--primary);
   --thinking: var(--primary);
   --closedloop-violet: oklch(0.61 0.256 285.5);
-  --highlight: rgb(0 89 255 / 0.15);
+  --highlight: #67e8f9;
   /* Brand marketing gradient — the warm-to-blue wash behind the auth
      showcase panel. A fixed brand asset (identical across themes), tokenized
      so surfaces reference `--brand-gradient` instead of inlining palette hex. */
@@ -177,8 +183,13 @@
      do not generate `z-*` utilities — consume as `z-[var(--z-modal)]`. The
      overlay migration off z-50 lands in a later slice (with the bottom-nav). */
   --z-base: 0;
+  /* A grid table's pinned column (ISS-6959): above the unpositioned cells that
+     scroll beneath it, and deliberately below `--z-sticky` so a scrolled row
+     never paints over the sticky header sitting at that tier. */
+  --z-pinned-column: 1;
   --z-sticky: 10;
   --z-bottom-nav: 20;
+  --z-pinned-header: 30;
   --z-overlay: 40;
   --z-modal: 50;
   --z-popover: 60;
@@ -190,9 +201,22 @@
   --icon-sm: 1rem;
   --icon-md: 1.25rem;
   --icon-lg: 1.5rem;
+  /* Avatar (Figma "Components/Avatar", Nerys 2026-10-22): one placeholder
+     colour pair for every person avatar. Values are the Figma primitives
+     (tokens/Primitives/tailwindcss-colors.json), not Tailwind's own palette,
+     whose shades differ; they move to the colour theme when it lands. */
+  --avatar-placeholder: #e4e4e7; /* Zinc/200 */
+  --avatar-placeholder-foreground: #09090b; /* Zinc/950 */
+  --avatar-status-border: #d4d4d8; /* Zinc/300 */
+  --avatar-status-online: #16a34a; /* Green/600 */
 }
 
 .dark {
+  /* Avatar: Figma's dark mode (Nerys, 2026-10-22). */
+  --avatar-placeholder: #3f3f46; /* Zinc/700 */
+  --avatar-placeholder-foreground: #fafafa; /* Zinc/50 */
+  --avatar-status-border: #d4d4d8; /* Zinc/300 */
+  --avatar-status-online: #166534; /* Green/800 */
   --background: oklch(0.24 0.005 270);
   --foreground: oklch(0.948 0.002 270);
   --card: oklch(0.255 0.008 270);
@@ -224,7 +248,10 @@
   --border: oklch(1 0.005 270 / 0.06);
   --input: oklch(0.27 0.007 270);
   --input-border: oklch(0.5 0.01 270 / 0.25);
-  --ring: oklch(0.5 0.1 270 / 0.8);
+  /* ISS-9063: dark `--primary` is only 2.97:1 on card and 2.85:1 on popover, so
+     the ring takes the lighter primary hue `--link` already carries for this
+     theme (8.39:1 on popover, the tightest surface). */
+  --ring: var(--link);
   /* Dark-mode categorical palette: brightened (L ~0.66–0.80) and re-saturated
      so series read clearly against the dark background — the prior values
      (L ~0.4) sat too close to the card/background and looked muddy. */
@@ -312,6 +339,10 @@
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
   --color-muted: var(--muted);
+  --color-avatar-placeholder: var(--avatar-placeholder);
+  --color-avatar-placeholder-foreground: var(--avatar-placeholder-foreground);
+  --color-avatar-status-border: var(--avatar-status-border);
+  --color-avatar-status-online: var(--avatar-status-online);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-secondary: var(--secondary);
   --color-primary-foreground: var(--primary-foreground);
@@ -472,7 +503,7 @@
 /* This layer is added by shadcn/ui */
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border outline-ring;
   }
   body {
     @apply bg-background text-foreground;
@@ -545,6 +576,163 @@
 @layer components {
   .surface-panel {
     @apply bg-surface-1 border-border rounded-xl border;
+  }
+
+  [data-grid-interaction-contract="pointer-hover"]
+    :is([data-grid-row], [data-grid-card-id]) {
+    cursor: default;
+  }
+
+  [data-grid-interaction-contract="pointer-hover"]
+    :is([data-grid-row], [data-grid-card-id])[draggable="true"] {
+    cursor: grab;
+  }
+
+  [data-grid-interaction-contract="pointer-hover"]
+    :is(
+      [data-grid-row],
+      [data-grid-card-id]
+    )[data-interaction-state="dragging"] {
+    @apply opacity-70;
+    cursor: grabbing;
+  }
+
+  [data-grid-interaction-contract="pointer-hover"]
+    [data-interaction-state="drag-over"] {
+    @apply bg-accent/40 ring-2 ring-ring ring-inset;
+  }
+
+  [data-grid-interaction-contract="pointer-hover"][data-interaction-state="editing"]
+    :is([data-grid-row], [data-grid-card-id]) {
+    @apply ring-2 ring-ring ring-inset;
+  }
+
+  [data-grid-interaction-contract="pointer-hover"]
+    :is([data-grid-row], [data-grid-card-id])[data-state="selected"] {
+    @apply bg-primary/10 ring-2 ring-ring ring-inset;
+  }
+
+  [data-grid-interaction-contract="pointer-hover"][data-interaction-state="loading"]
+    :is([data-grid-row], [data-grid-card-id]) {
+    @apply animate-pulse;
+  }
+
+  [data-grid-interaction-contract="pointer-hover"][data-interaction-state="error"]
+    :is([data-grid-row], [data-grid-card-id]) {
+    @apply border-destructive/30 ring-2 ring-destructive ring-inset;
+  }
+
+  [data-grid-interaction-contract="pointer-hover"]
+    [data-grid-contextual-action] {
+    @apply opacity-0 duration-150;
+    transition-property: opacity, background-color, color;
+  }
+
+  [data-grid-interaction-contract="pointer-hover"]
+    [class~="group/row"]:is(:hover, :focus-within)
+    [data-grid-contextual-action],
+  [data-grid-interaction-contract="pointer-hover"]
+    [data-grid-contextual-action]:is(:focus-visible, [data-state="open"]) {
+    @apply opacity-100;
+  }
+
+  @media (pointer: coarse) {
+    [data-grid-interaction-contract="pointer-hover"]
+      [data-grid-contextual-action] {
+      @apply opacity-100;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [data-grid-interaction-contract="pointer-hover"]
+      [data-grid-contextual-action] {
+      transition: none;
+    }
+  }
+
+  [data-grid-interaction-contract="pointer-hover"]
+    :is([data-grid-row], [data-grid-card-id])
+    :is(
+      button:not(:disabled):not([data-grid-row-drag-handle]),
+      a[href],
+      [role="button"]:not([aria-disabled="true"]),
+      select:not(:disabled),
+      input:is(
+        [type="button"],
+        [type="submit"],
+        [type="reset"],
+        [type="checkbox"],
+        [type="radio"],
+        [type="range"],
+        [type="color"],
+        [type="file"],
+        [type="date"],
+        [type="datetime-local"],
+        [type="month"],
+        [type="time"],
+        [type="week"]
+      ):not(:disabled)
+    ) {
+    cursor: pointer;
+  }
+
+  [data-grid-interaction-contract="pointer-hover"]
+    :is([data-grid-row], [data-grid-card-id])
+    :is(
+      input:not([type]):not(:disabled),
+      input:is(
+        [type="text"],
+        [type="search"],
+        [type="email"],
+        [type="url"],
+        [type="tel"],
+        [type="password"],
+        [type="number"]
+      ):not(:disabled),
+      textarea:not(:disabled),
+      [contenteditable="true"]
+    ) {
+    cursor: text;
+  }
+
+  [data-grid-interaction-contract="pointer-hover"]
+    :is([data-grid-row], [data-grid-card-id])
+    [data-grid-row-drag-handle] {
+    cursor: grab;
+  }
+
+  [data-grid-interaction-contract="pointer-hover"]
+    :is([data-grid-row], [data-grid-card-id])
+    [data-grid-row-drag-handle]:active {
+    cursor: grabbing;
+  }
+
+  [data-grid-interaction-contract="pointer-hover"]
+    :is([data-grid-row], [data-grid-card-id])
+    :is(
+      button:disabled,
+      input:disabled,
+      select:disabled,
+      textarea:disabled,
+      [aria-disabled="true"]
+    ) {
+    cursor: not-allowed;
+  }
+}
+
+@layer utilities {
+  [data-grid-interaction-contract="pointer-hover"][data-interaction-state="error"]
+    :is([data-grid-row], [data-grid-card-id]) {
+    @apply bg-destructive/12;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [data-grid-interaction-contract="pointer-hover"][data-interaction-state="loading"]
+      :is([data-grid-row], [data-grid-card-id]),
+    [data-grid-interaction-contract="pointer-hover"][data-interaction-state="loading"]
+      [data-slot="skeleton"] {
+      animation: none;
+    }
   }
 }
 

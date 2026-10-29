@@ -2,7 +2,7 @@
 
 ## Ownership
 
-`apps/desktop` is the source-owned Closedloop Desktop/Electron client inside the `example-repo` monorepo. Do not treat `closedloop-ai/closedloop-electron` as an active implementation or release owner; references to that repository must be explicitly historical.
+`apps/desktop` is the source-owned Closedloop Desktop/Electron client inside the `closedloop-ai` monorepo. Do not treat `closedloop-ai/closedloop-electron` as an active implementation or release owner; references to that repository must be explicitly historical.
 
 End-user-perceivable UI changes must ship behind a flag, default off — see root AGENTS.md + the `ui-feature-flag-attestation` gate. On desktop the gate is a Labs config toggle; when the surface is shared with web, keep it gated on both (PostHog on web, Labs here) so it can't leak on one while hidden on the other. Renderer-only work with no web analogue needs the Labs toggle alone — do not invent a PostHog flag for a surface `apps/app` does not have.
 
@@ -111,15 +111,15 @@ Distinguish transient failures (network timeout, CLI not found in PATH, gh auth 
 
 ## Release Contract
 
-Desktop releases are owned by `closedloop-ai/example-repo` and use the shared Desktop release contract from `@repo/api/src/types/desktop-release`. Release producers and consumers must use the `desktop-v<version>` tag, `desktop-release.json`, `latest-mac.yml`, and the Desktop-only URL allowlist. Do not use repo-global latest release semantics for Desktop web lookup or packaged updater behavior.
+Desktop releases are owned by `closedloop-ai/closedloop-ai` and use the shared Desktop release contract from `@repo/api/src/types/desktop-release`. Release producers and consumers must use the `desktop-v<version>` tag, `desktop-release.json`, `latest-mac.yml`, and the Desktop-only URL allowlist. Do not use repo-global latest release semantics for Desktop web lookup or packaged updater behavior.
 
-Public first-install distribution (FEA-3372) mirrors the signed DMG to `closedloop-ai/closedloop-ai`, which receives the `.dmg` only — ownership of the release, the updater feed, and `downloadUrl` resolution stays on `closedloop-ai/example-repo`. Public docs must link the rolling `desktop-latest` release's fixed-name `Closedloop-universal.dmg` asset, never `/releases/latest`: a non-desktop release in that repo would otherwise hijack the link and hand people the wrong artifact.
+Public first-install distribution (FEA-3372) mirrors the signed DMG to `closedloop-ai/closedloop-ai`, which receives the `.dmg` only — ownership of the release, the updater feed, and `downloadUrl` resolution stays on `closedloop-ai/closedloop-ai`. Public docs must link the rolling `desktop-latest` release's fixed-name `Closedloop-universal.dmg` asset, never `/releases/latest`: a non-desktop release in that repo would otherwise hijack the link and hand people the wrong artifact.
 
 **The rolling `desktop-latest` release deliberately claims repo-global "Latest" on `closedloop-ai/closedloop-ai` (ISS-6007, Marisol's explicit call, 2026-08-11).** This is a scoped override of the rule above, which still holds everywhere else — nothing about Desktop *web lookup* or *packaged updater* behavior may read repo-global latest, and the per-version archive releases stay `--latest=false`. The override exists so both permanent first-install URLs resolve to the same fixed-name asset: `/releases/download/desktop-latest/Closedloop-universal.dmg` (unchanged, and still what the public docs link) and `/releases/latest/download/Closedloop-universal.dmg`. The hijack risk that originally motivated the blanket ban is **accepted, not refuted**: that repo is desktop-only today, so nothing competes for the pointer, and the `claim_public_latest` / `verify_public_latest` jobs in `.github/workflows/desktop-release.yml` read the repo-Latest tag back after the claim and fail loudly into Slack (`scripts/deploy/verify-public-latest-release.ts`) if it is not `desktop-latest`. Re-evaluate the override — do not silently revert it — if that repo ever hosts non-desktop releases.
 
 **Know the guard's actual reach before relying on it.** It observes the pointer only while a release run is in flight, so it catches a hijack that already happened by the next release; it is not a continuous monitor, and a non-desktop release that takes repo-global Latest between releases goes unreported until then. Detecting that case needs a check on a release-event or scheduled trigger, independent of promotion — there is none today, so do not describe the pointer as continuously guarded. **Reclaiming the pointer does not need a new version**: the public `desktop-latest` promotion runs on the idempotent skip path too (ISS-6387), so re-dispatching `Release Desktop` for an already-published version re-promotes and re-claims. `gh release edit desktop-latest --repo closedloop-ai/closedloop-ai --latest=true` remains the direct route.
 
-Users on old `closedloop-electron` updater builds do not auto-upgrade across repositories. Active install and upgrade instructions must direct them to manually install the new `example-repo` Desktop release.
+Users on old `closedloop-electron` updater builds do not auto-upgrade across repositories. Active install and upgrade instructions must direct them to manually install the new `closedloop-ai` Desktop release.
 
 ## Idempotent Re-Processing: Revision Constants
 

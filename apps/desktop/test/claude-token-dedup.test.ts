@@ -4,7 +4,7 @@
  * Split out of the former fea1459-attribution-accuracy.test.ts (FEA-2235 D2).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
 import { writeClaudeTranscript } from "./normalized-session-test-utils.js";
 

@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  adoptionShare,
   categoryDisplayLabel,
+  installCount,
+  installCountOrUnavailable,
   PackContentKind,
   type PackView,
   packDisambiguators,
+  toPackContentKind,
+  trendingPackIds,
+  trendSlope,
 } from "../pack-view";
 
 function makePackView(overrides: Partial<PackView> & { id: string }): PackView {
@@ -273,3 +279,85 @@ describe("packDisambiguators", () => {
     expect(qualifiers.get("b")).toBe("Skill");
   });
 });
+
+describe("pack view metric derivations", () => {
+  it("normalizes known content kinds and defaults unknown values to plugin", () => {
+    expect(toPackContentKind("SKILL")).toBe(PackContentKind.Skill);
+    expect(toPackContentKind(undefined)).toBe(PackContentKind.Plugin);
+    expect(toPackContentKind("future-kind")).toBe(PackContentKind.Plugin);
+  });
+
+  it("distinguishes measured zero installs from an unavailable roster", () => {
+    const unavailable = makePackView({ id: "unknown" });
+    const roster = makePackView({
+      id: "roster",
+      teamUsage: {
+        installers: [
+          { id: "user-1", name: "Ada", initials: "AL" },
+          { id: "user-2", name: "Grace", initials: "GH" },
+        ],
+        installTrend: [],
+      },
+    });
+    const measured = makePackView({
+      id: "measured",
+      teamUsage: { installedCount: 0, installTrend: [] },
+    });
+
+    expect(installCountOrUnavailable(unavailable)).toBeNull();
+    expect(installCount(unavailable)).toBe(0);
+    expect(installCountOrUnavailable(roster)).toBe(2);
+    expect(installCountOrUnavailable(measured)).toBe(0);
+  });
+
+  it("computes adoption only with a positive team size and measured installs", () => {
+    expect(adoptionShare(makePackView({ id: "missing" }))).toBeNull();
+    expect(
+      adoptionShare(
+        makePackView({
+          id: "zero-size",
+          teamUsage: { installedCount: 1, teamSize: 0, installTrend: [] },
+        })
+      )
+    ).toBeNull();
+    expect(
+      adoptionShare(
+        makePackView({
+          id: "measured",
+          teamUsage: { installedCount: 2, teamSize: 3, installTrend: [] },
+        })
+      )
+    ).toBe(67);
+  });
+
+  it("derives slopes and marks only catalog-relative climbers", () => {
+    const flat = packWithTrend("flat", [1]);
+    const slow = packWithTrend("slow", [1, 2]);
+    const medium = packWithTrend("medium", [1, 4]);
+    const fast = packWithTrend("fast", [1, 6]);
+    expect(trendSlope(flat)).toBe(0);
+    expect(trendSlope(fast)).toBe(5);
+    expect(trendingPackIds([flat, fast])).toEqual(new Set());
+    expect(trendingPackIds([flat, slow, medium, fast])).toEqual(
+      new Set(["medium", "fast"])
+    );
+  });
+
+  it("handles an even number of climbing slopes at the median boundary", () => {
+    expect(
+      trendingPackIds([
+        packWithTrend("one", [0, 1]),
+        packWithTrend("two", [0, 2]),
+        packWithTrend("three", [0, 3]),
+        packWithTrend("four", [0, 4]),
+      ])
+    ).toEqual(new Set(["three", "four"]));
+  });
+});
+
+function packWithTrend(id: string, installTrend: number[]): PackView {
+  return makePackView({
+    id,
+    teamUsage: { installTrend },
+  });
+}

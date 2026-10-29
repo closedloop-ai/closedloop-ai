@@ -32,6 +32,10 @@ const { mockFindFirst, mockFindUnique, mockEventFindMany, mockEventCreate } =
 
 const mockUpdate = vi.fn();
 
+type EventReadArgs = {
+  where?: { sequence?: { gt?: number; lte?: number } };
+};
+
 const db = {
   desktopCommand: {
     findFirst: mockFindFirst,
@@ -39,12 +43,43 @@ const db = {
     update: mockUpdate,
   },
   desktopCommandEvent: {
-    findMany: mockEventFindMany,
+    // `mockEventFindMany` still receives the exact args every assertion below
+    // names; the `sequence` bounds are applied to its RESULT. Without that a
+    // fixture declared once with `mockResolvedValue` re-serves rows the caller
+    // has already consumed, and the replay loop — which now pages until a read
+    // comes back empty — would deliver them twice. A real read cannot do that,
+    // so honouring the cursor here keeps the fake from inventing a race.
+    findMany: async (args: EventReadArgs) => {
+      const rows = await mockEventFindMany(args);
+      if (!Array.isArray(rows)) {
+        return rows;
+      }
+      const gt = args?.where?.sequence?.gt;
+      const lte = args?.where?.sequence?.lte;
+      return rows.filter(
+        (row: { sequence: number }) =>
+          (gt === undefined || row.sequence > gt) &&
+          (lte === undefined || row.sequence <= lte)
+      );
+    },
     create: mockEventCreate,
   },
+  // ISS-8547: the event read resolves how far it may go from `octet_length`
+  // before fetching any payload. This suite owns the subscribe race, not that
+  // bound, so the probe answers permissively; the bound has its own modelling
+  // fake in `desktop-command-store-event-paging.test.ts`.
+  $queryRaw: vi.fn(() =>
+    Promise.resolve([{ bytes: 1, sequence: Number.MAX_SAFE_INTEGER }])
+  ),
 };
 
 vi.mock("@repo/database", () => ({
+  Prisma: {
+    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+      strings,
+      values,
+    }),
+  },
   withDb: Object.assign((fn: (client: unknown) => unknown) => fn(db), {
     tx: (fn: (client: unknown) => unknown) => fn(db),
   }),
@@ -183,11 +218,16 @@ describe("subscribeCommandEvents — attaching", () => {
       { afterSequence: 7 }
     );
 
-    expect(mockEventFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ sequence: { gt: 7 } }),
-      })
-    );
+    // `gt` stays exact — that is the contract this case is named for. The read
+    // also carries an `lte` now, the upper end of the byte budget it resolved
+    // before fetching (ISS-8547), so the matcher admits it and asserts it is
+    // really there rather than widening to any `sequence` shape at all.
+    const readArgs = mockEventFindMany.mock.calls[0]?.[0] as
+      | EventReadArgs
+      | undefined;
+
+    expect(readArgs?.where?.sequence?.gt).toBe(7);
+    expect(typeof readArgs?.where?.sequence?.lte).toBe("number");
   });
 
   it("skips the replay query entirely when replay is disabled", async () => {
@@ -226,15 +266,23 @@ describe("subscribeCommandEvents — the replay/live race", () => {
     // reproduces exactly what the source comment describes: the event is
     // delivered live to the already-registered listener, and is ALSO in the
     // rows the replay is about to return.
-    mockEventFindMany.mockImplementation(async () => {
-      await desktopCommandStore.ingestCommandEvent({
-        commandId,
-        computeTargetId: TARGET_ID,
-        eventType: "chunk",
-        data: { chunk: "chunk-1" },
-      });
-      return [eventRow(commandId, 1), eventRow(commandId, 2)];
-    });
+    // `Once`, because the race window is the FIRST replay query. The replay now
+    // pages until a read comes back empty, and a fixture that re-published on
+    // every call would be staging a second, different race rather than this one.
+    mockEventFindMany
+      .mockImplementationOnce(async () => {
+        await desktopCommandStore.ingestCommandEvent({
+          commandId,
+          computeTargetId: TARGET_ID,
+          eventType: "chunk",
+          data: { chunk: "chunk-1" },
+        });
+        return [eventRow(commandId, 1), eventRow(commandId, 2)];
+      })
+      .mockImplementation(async () => [
+        eventRow(commandId, 1),
+        eventRow(commandId, 2),
+      ]);
 
     await desktopCommandStore.subscribeCommandEvents(
       TARGET_ID,
@@ -257,15 +305,18 @@ describe("subscribeCommandEvents — the replay/live race", () => {
     // because sequence 1 is in the rows findMany returns either way. Here the
     // replay's read snapshot predates the write, so its rows EXCLUDE sequence 1
     // and the live notification is the only path by which it can arrive.
-    mockEventFindMany.mockImplementation(async () => {
-      await desktopCommandStore.ingestCommandEvent({
-        commandId,
-        computeTargetId: TARGET_ID,
-        eventType: "chunk",
-        data: { chunk: "chunk-1" },
-      });
-      return [eventRow(commandId, 2)];
-    });
+    // `Once` for the same reason as the case above.
+    mockEventFindMany
+      .mockImplementationOnce(async () => {
+        await desktopCommandStore.ingestCommandEvent({
+          commandId,
+          computeTargetId: TARGET_ID,
+          eventType: "chunk",
+          data: { chunk: "chunk-1" },
+        });
+        return [eventRow(commandId, 2)];
+      })
+      .mockImplementation(async () => [eventRow(commandId, 2)]);
 
     await desktopCommandStore.subscribeCommandEvents(
       TARGET_ID,
@@ -471,260 +522,5 @@ describe("subscribeCommandEvents — unsubscribing", () => {
     });
 
     expect(listener).not.toHaveBeenCalled();
-  });
-});
-
-describe("operation-id lookups", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("resolves an operation id to its most recent command", async () => {
-    const commandId = freshCommandId();
-    mockFindFirst.mockResolvedValue(commandRow(commandId));
-
-    const resolved = await desktopCommandStore.findCommandIdByOperationId(
-      `operation-${commandId}`
-    );
-
-    expect(resolved).toBe(commandId);
-    // Newest-first: an operation id can be reused across retries, and the
-    // caller wants the live attempt rather than a historical one.
-    expect(mockFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ orderBy: { createdAt: "desc" } })
-    );
-  });
-
-  it("returns null for an unknown operation id", async () => {
-    mockFindFirst.mockResolvedValue(null);
-
-    await expect(
-      desktopCommandStore.findCommandIdByOperationId("operation-missing")
-    ).resolves.toBeNull();
-  });
-
-  it("scopes the lookup to a compute target when one is supplied", async () => {
-    const commandId = freshCommandId();
-    mockFindFirst.mockResolvedValue(commandRow(commandId));
-
-    await desktopCommandStore.findCommandIdByOperationId(
-      `operation-${commandId}`,
-      TARGET_ID
-    );
-
-    expect(mockFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ computeTargetId: TARGET_ID }),
-      })
-    );
-  });
-
-  it("omits the target filter when none is supplied", async () => {
-    const commandId = freshCommandId();
-    mockFindFirst.mockResolvedValue(commandRow(commandId));
-
-    await desktopCommandStore.findCommandIdByOperationId(
-      `operation-${commandId}`
-    );
-
-    const where = mockFindFirst.mock.calls[0]?.[0].where as Record<
-      string,
-      unknown
-    >;
-    // An absent target must not become `computeTargetId: undefined` in the
-    // predicate — Prisma treats that as an explicit filter on undefined.
-    expect("computeTargetId" in where).toBe(false);
-  });
-
-  it("serves a repeated lookup from cache without a second query", async () => {
-    const commandId = freshCommandId();
-    mockFindFirst.mockResolvedValue(commandRow(commandId));
-    const operationId = `operation-${commandId}`;
-
-    await desktopCommandStore.findCommandIdByOperationId(operationId);
-    mockFindFirst.mockClear();
-    const second =
-      await desktopCommandStore.findCommandIdByOperationId(operationId);
-
-    expect(second).toBe(commandId);
-    expect(mockFindFirst).not.toHaveBeenCalled();
-  });
-
-  it("never serves a scoped lookup from a cache entry warmed by another target", async () => {
-    // operationId is NOT unique across compute targets. A cache warmed by
-    // target A must not answer target B's scoped lookup: the results route
-    // (compute-targets/[id]/results) resolves the id scoped, then ingests
-    // scoped — so A's command id reaching B silently drops the result with 200.
-    const operationId = "operation-shared-across-targets";
-    const foreignCommandId = freshCommandId();
-    const ownCommandId = freshCommandId();
-
-    mockFindFirst.mockResolvedValue(
-      commandRow(foreignCommandId, {
-        operationId,
-        computeTargetId: FOREIGN_TARGET_ID,
-      })
-    );
-    await desktopCommandStore.findCommandIdByOperationId(
-      operationId,
-      FOREIGN_TARGET_ID
-    );
-
-    mockFindFirst.mockClear();
-    mockFindFirst.mockResolvedValue(
-      commandRow(ownCommandId, { operationId, computeTargetId: TARGET_ID })
-    );
-    const resolved = await desktopCommandStore.findCommandIdByOperationId(
-      operationId,
-      TARGET_ID
-    );
-
-    expect(resolved).toBe(ownCommandId);
-    // And it must reach the database to get there, rather than returning the
-    // warmed entry: a cache hit here IS the leak.
-    expect(mockFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ computeTargetId: TARGET_ID }),
-      })
-    );
-  });
-
-  it("still serves an UNSCOPED lookup from a cache warmed by any target", async () => {
-    const operationId = "operation-unscoped-cache-hit";
-    const commandId = freshCommandId();
-    mockFindFirst.mockResolvedValue(
-      commandRow(commandId, { operationId, computeTargetId: FOREIGN_TARGET_ID })
-    );
-
-    await desktopCommandStore.findCommandIdByOperationId(
-      operationId,
-      FOREIGN_TARGET_ID
-    );
-    mockFindFirst.mockClear();
-    const resolved =
-      await desktopCommandStore.findCommandIdByOperationId(operationId);
-
-    // The target check narrows scoped reads only. Validating an unscoped read
-    // against a target it never supplied would turn every such lookup into a
-    // permanent cache miss.
-    expect(resolved).toBe(commandId);
-    expect(mockFindFirst).not.toHaveBeenCalled();
-  });
-
-  it("falls through to the database when a cached id no longer resolves", async () => {
-    const commandId = freshCommandId();
-    const operationId = `operation-${commandId}`;
-    mockFindFirst.mockResolvedValue(commandRow(commandId));
-    await desktopCommandStore.getCommandByOperationId(operationId);
-
-    // The cached command id is now stale — the row it points at is gone, but a
-    // newer attempt for the same operation exists. The cached lookup resolves
-    // by PRIMARY KEY (`findUnique`); the fall-through is the `findFirst` scan.
-    const replacementId = freshCommandId();
-    mockFindUnique.mockResolvedValue(null);
-    mockFindFirst.mockResolvedValue(commandRow(replacementId, { operationId }));
-
-    const summary =
-      await desktopCommandStore.getCommandByOperationId(operationId);
-
-    // A stale cache entry must degrade to a query, not to a null. Returning
-    // null here would report a live command as missing for as long as the entry
-    // survived.
-    expect(summary?.commandId).toBe(replacementId);
-  });
-
-  it("keeps BOTH targets warm when they share an operation id", async () => {
-    // Validating the target on read made the cache correct, but the entry was
-    // still keyed by operationId alone — so the two targets evicted each other.
-    // B's scoped miss overwrote A's entry, then A missed and overwrote B's, and
-    // an alternating pair never hit at all. The results route resolves the id
-    // per streamed event, so that thrash costs a findFirst per chunk.
-    const operationId = "operation-shared-warm-both";
-    const ownCommandId = freshCommandId();
-    const foreignCommandId = freshCommandId();
-
-    mockFindFirst.mockResolvedValue(
-      commandRow(ownCommandId, { operationId, computeTargetId: TARGET_ID })
-    );
-    await desktopCommandStore.findCommandIdByOperationId(
-      operationId,
-      TARGET_ID
-    );
-
-    mockFindFirst.mockResolvedValue(
-      commandRow(foreignCommandId, {
-        operationId,
-        computeTargetId: FOREIGN_TARGET_ID,
-      })
-    );
-    await desktopCommandStore.findCommandIdByOperationId(
-      operationId,
-      FOREIGN_TARGET_ID
-    );
-
-    // Both are warm now. Neither scoped lookup may reach the database again,
-    // and each must still answer with ITS OWN command — a shared key would
-    // return the last writer's id to both.
-    mockFindFirst.mockClear();
-    const own = await desktopCommandStore.findCommandIdByOperationId(
-      operationId,
-      TARGET_ID
-    );
-    const foreign = await desktopCommandStore.findCommandIdByOperationId(
-      operationId,
-      FOREIGN_TARGET_ID
-    );
-
-    expect(own).toBe(ownCommandId);
-    expect(foreign).toBe(foreignCommandId);
-    expect(mockFindFirst).not.toHaveBeenCalled();
-  });
-
-  it("never leaks across targets whose per-target cache keys collide", async () => {
-    // Per-target keys made the read-side target check redundant for ordinary
-    // ids, which would leave it unpinned. It is NOT redundant here: these two
-    // pairs compose to the SAME key, so the key alone would hand the first
-    // target's command to the second — the original cross-target leak, back
-    // through the encoding. Both values are plain strings, so this is reachable
-    // input, not a type-forbidden one.
-    const warmedTargetId = "target-collide";
-    const warmedOperationId = "shared:tail";
-    // `${warmedTargetId}:${warmedOperationId}` === `${readTargetId}:${readOperationId}`
-    const readTargetId = "target-collide:shared";
-    const readOperationId = "tail";
-
-    const warmedCommandId = freshCommandId();
-    mockFindFirst.mockResolvedValue(
-      commandRow(warmedCommandId, {
-        operationId: warmedOperationId,
-        computeTargetId: warmedTargetId,
-      })
-    );
-    await desktopCommandStore.findCommandIdByOperationId(
-      warmedOperationId,
-      warmedTargetId
-    );
-
-    const ownCommandId = freshCommandId();
-    mockFindFirst.mockClear();
-    mockFindFirst.mockResolvedValue(
-      commandRow(ownCommandId, {
-        operationId: readOperationId,
-        computeTargetId: readTargetId,
-      })
-    );
-    const resolved = await desktopCommandStore.findCommandIdByOperationId(
-      readOperationId,
-      readTargetId
-    );
-
-    // The colliding entry must not answer; the lookup has to reach the database
-    // scoped to its own target.
-    expect(resolved).toBe(ownCommandId);
-    expect(mockFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ computeTargetId: readTargetId }),
-      })
-    );
   });
 });

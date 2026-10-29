@@ -2,18 +2,42 @@
  * @file yield-db-host-loop.ts
  * @description FEA-2264 shared cooperative-yield helper for the DB-host child.
  *
- * SQLite/libSQL runs synchronously on the DB host's single JS thread, which ALSO
- * serves the renderer's `desktop:db:*` reads. A long store op (the artifact-link
- * backfill, a full-corpus session hydration) that only ever awaits
- * microtask-resolved promises never returns control to libuv's poll phase, where
- * the parent process's queued IPC messages are delivered — so the dashboard
- * stays frozen until the op finishes. A `setImmediate` boundary reaches the
- * check phase and lets the loop service those queued reads BETWEEN units of
- * work, WITHOUT the real per-iteration sleep a main-side `cooperativeDelay`
- * applies (the backfill passes thousands of iterations, so a 50ms sleep each
- * would add minutes). Callers that thread this in as a `cooperativeDelay(ms)`
- * intentionally ignore the `ms` argument: the base `yieldDbHostLoop` yields, it
- * does not sleep.
+ * SQLite/libSQL runs synchronously on ONE JS thread, and since ISS-8246 M1 that
+ * thread is the STORE thread (`db-store-host.ts`) — which is where every
+ * `desktop:db:*` read executes. A read reaches it as an `Execute` message on the
+ * inner port, so the store thread picks it up only when its loop turns. A long
+ * store op (the artifact-link backfill, a full-corpus session hydration) that
+ * only ever awaits microtask-resolved promises never returns control to libuv's
+ * poll phase, where those messages are delivered — so every queued read waits
+ * out the whole op. A `setImmediate` boundary reaches the check phase and lets
+ * them interleave BETWEEN units of work, WITHOUT the real per-iteration sleep a
+ * main-side `cooperativeDelay` applies (the backfill passes thousands of
+ * iterations, so a 50ms sleep each would add minutes). Callers that thread this
+ * in as a `cooperativeDelay(ms)` intentionally ignore the `ms` argument: the
+ * base `yieldDbHostLoop` yields, it does not sleep.
+ *
+ * ## M2 measured these calls rather than deleting them
+ *
+ * PLN-1837 M2 planned to delete the five plain calls as "inert on a thread with
+ * no renderer reads". They are not inert, and none was deleted. Measured over a
+ * `.backup` snapshot of a real 634 MB corpus, yields on versus collapsed to a
+ * microtask: a read queued against the analytics aggregate waited 108–115 ms
+ * instead of 270–279 ms (the whole op); a read queued mid hydration-sweep
+ * started at 2109 ms instead of 2763 ms; the store thread's longest silent
+ * window went 296 ms → 1287 ms. M1 changed WHICH thread stalls, not whether one
+ * does.
+ *
+ * That evidence is a latency measurement and deliberately has no suite guard:
+ * `no-timing-assertions` forbids writing one, and the non-timing proxies — a
+ * loop-turn count, or "a macrotask queued against the op ran before it settled"
+ * — stay green with every yield deleted (verified by mutation), so a guard built
+ * on them would be a false green rather than protection. That holds for the
+ * READ sweeps measured here, whose statements reach the loop through other
+ * boundaries too. The IMPORT write path is different: between its record
+ * groups there is no other loop turn at all, so the same proxy is a real guard
+ * there — `test/import-yield-queued-reads.test.ts` (ISS-10401) pairs it with a
+ * yields-collapsed control arm that reproduces the hang. Do not delete that
+ * suite as a known false green.
  *
  * EXCEPTION (FEA-3132): `yieldDbHostLoopUnderMemoryPressure` below is the one
  * caller that DOES sleep — but only while `getMemoryPressure().level === "high"`.
@@ -25,11 +49,26 @@ import {
   getMemoryPressure,
   type MemoryPressure,
 } from "./db-host-memory-watchdog.js";
+import { throwIfStoreReadCancelled } from "./store-read-cancellation.js";
 
-export function yieldDbHostLoop(): Promise<void> {
-  return new Promise((resolve) => {
+/**
+ * ISS-9802 — this is also the CANCELLATION CHECKPOINT, and it is the only one.
+ *
+ * The yield was already the one place a long store op hands the loop back, so it
+ * is where a cancel posted while the op runs can first be seen. That fixes the
+ * granularity at a STATEMENT BOUNDARY: an op abandons its remaining statements,
+ * and the statement already inside the synchronous libSQL driver finishes first
+ * because nothing at this layer can interrupt it.
+ *
+ * An op running with no cancellation scope — every write, every backfill, every
+ * read from a caller that sent no token — sees no store and cannot throw here,
+ * so the checkpoint is inert for them.
+ */
+export async function yieldDbHostLoop(): Promise<void> {
+  await new Promise<void>((resolve) => {
     setImmediate(resolve);
   });
+  throwIfStoreReadCancelled();
 }
 
 // FEA-3132 (E3/E4/E1): bound on how long a single yield parks a backfill under
@@ -58,6 +97,14 @@ const PRESSURE_MAX_WAITS = 50;
  * parking — sitting next to the watchdog's own pressure logs — rather than an
  * unexplained stall) and again if it exhausts `maxWaits` and proceeds under
  * still-high pressure. Steady-state (no parking) stays silent.
+ *
+ * ISS-8246 M2 expected to CONVERT this to "a worker-appropriate throttle" and
+ * found nothing to convert. Both of its jobs survived the M1 split intact: the
+ * FEA-3132 real-sleep throttle keys on RSS, which is process-wide and therefore
+ * unchanged by the store moving to a thread, and the FEA-2264 responsiveness
+ * half now serves the store thread's own queued reads instead of the
+ * dispatcher's. Its two callers (`db-store-ops.ts`) moved to that thread with
+ * the backfills they wrap.
  */
 export async function yieldDbHostLoopUnderMemoryPressure(opts?: {
   getPressure?: () => MemoryPressure;

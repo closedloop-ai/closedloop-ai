@@ -48,6 +48,13 @@ export function buildFieldRow(overrides: Record<string, unknown> = {}) {
     customLabel: null,
     customLabelPosition: null,
     isGlobalToOrg: false,
+    // FEA-4222: the column is `@default([])` and NOT nullable, so a real row
+    // always carries the array. Defaulting to empty rather than to some entity
+    // type keeps this the legacy "unscoped field" case that
+    // `assertFieldAppliesToEntityType` accepts, so every suite built on this
+    // fixture keeps testing what it was written to test; a case about
+    // applicability states its own `entityTypes`.
+    entityTypes: [],
     enumOptions: [],
     ...overrides,
   };
@@ -69,6 +76,9 @@ export function buildValueRow(overrides: Record<string, unknown> = {}) {
     peopleValueIds: [],
     displayValue: "",
     enumValue: null,
+    // Every read path joins the reference targets (ISS-7208), so a row shaped
+    // without this key does not match what the include can return.
+    references: [],
     customField: {
       id: TEST_FIELD_ID,
       name: "Priority",

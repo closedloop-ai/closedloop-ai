@@ -7,12 +7,17 @@
  * one canonical owner.
  */
 
-import { z } from "zod";
+import type { Priority } from "@repo/api/src/types/common";
 import type { SessionPR } from "../agent-sync/agent-session-sync-contract.js";
 
 type SqliteSessionRow = {
   id: string;
   name: string | null;
+  // ISS-8717: the owner's rename, if any. Distinct from `name`, which the
+  // importer re-derives from the transcript on every import.
+  name_override?: string | null;
+  // ISS-10332: the user-set priority; NULL is "no priority".
+  priority: Priority | null;
   status: string;
   cwd: string | null;
   // FEA-3555: durable cache of the last successfully live-resolved repo full
@@ -33,6 +38,9 @@ type SqliteSessionRow = {
   last_activity_at?: string | null;
   ended_at: string | null;
   awaiting_input_since: string | null;
+  // ISS-12251: canonical UTC ISO, or NULL when never imported. Optional because
+  // not every SELECT projects it.
+  created_at?: string | null;
   // ISS-4586: SQLite boolean (0/1/NULL) — whether the run ended on an unrecovered
   // error. Synced additively to the cloud so its reaper can classify orphans.
   ends_with_error: number | null;
@@ -44,6 +52,17 @@ type SqliteSessionRow = {
   cost_usd_estimated: number | null;
   cost_currency: string | null;
   cost_source: string | null;
+  // ISS-7229: Claude's OWN reported cost, rolled up from `claude_code_cost_event`.
+  // Optional on the row type for the same reason `last_activity_at` is — not
+  // every SELECT in this file projects it. `null` means no OTel cost events were
+  // captured for the session, which is NOT the same as a reported zero.
+  // NOT `number` (review of #6406). The raw-query driver maps this REAL column
+  // to a Prisma `Decimal`, which `stored-cost-usd.ts` documents having already
+  // caused two defects — a `typeof` test that reported every backfilled session
+  // unusable, and a bare `Number()` that worked only because `Decimal` carries a
+  // `valueOf`. Typing it as the shape the driver actually returns forces every
+  // reader through `coerceStoredCostUsd` instead of trusting a number.
+  authoritative_cost_usd?: unknown;
   data_revision: number;
 };
 
@@ -54,7 +73,6 @@ type SqliteAgentRow = {
   type: string;
   subagent_type: string | null;
   status: string;
-  task: string | null;
   current_tool: string | null;
   started_at: string;
   updated_at: string;
@@ -114,8 +132,17 @@ type SqliteTokenEventRow = {
   output_cost_usd_estimated: number | null;
   cache_read_cost_usd_estimated: number | null;
   cache_creation_cost_usd_estimated: number | null;
-  source_identity: string | null;
-  cost_summary: string | null;
+  // ISS-6227: optional, because a narrowed (`omitTokenEventCostColumns`) read
+  // omits these two sync-only columns from the SELECT list entirely rather than
+  // paying for a NULL cell per row. Both consumers (`parseStoredTokenSourceIdentity`,
+  // `parseStoredTokenCostSummary`) already map `null` and `undefined` to the same
+  // `undefined`, so an absent property is indistinguishable downstream from the
+  // NULL cell it replaced.
+  source_identity?: string | null;
+  cost_summary?: string | null;
+  // ISS-12552: NULL is the main agent. Optional because a row type built by
+  // hand for a test or a read that predates the column carries no cell.
+  agent_id?: string | null;
 };
 
 // FEA-2730 (G10): the desktop `session_analytics` rollup row (one per session).
@@ -155,21 +182,22 @@ type SqliteArtifactLinkRow = {
   sha: string | null;
   title: string | null;
   branch_name: string | null;
-  lines_added: number | null;
-  lines_removed: number | null;
-  files_changed: number | null;
+  // ISS-10332: the joined artifact's priority (only branch rows carry one).
+  priority: Priority | null;
   link_observed_at: string | null;
   artifact_committed_at: string | null;
   artifact_observed_at: string | null;
   artifact_last_seen_at: string | null;
-  // FEA-2732: PR state from the joined `artifacts` (kind='pull_request') row,
-  // synced into the cloud PullRequestDetail via the `pull_request` artifactRef.
-  // (LOC facts reuse the shared lines_added/lines_removed/files_changed above.)
-  pr_state: string | null;
-  // FEA-3329: the AUTHORITATIVE PR-opened instant from `pull_requests.opened_at`
-  // (GitHub metadata via enrichment), joined for the PR timeline marker so it
-  // lands at its real opened time — not the shared per-import ingest `now` on
-  // `link_observed_at`. Null until the PR is enriched.
+  // ISS-8175: the base ref gh named when THIS desktop opened the PR, from the
+  // joined `artifacts` row. Null for a merely referenced PR, and for any PR
+  // created before the extractor learned to capture it.
+  base_ref: string | null;
+  // FEA-3329: the AUTHORITATIVE PR-opened instant from `pull_requests.opened_at`,
+  // joined for the PR timeline marker so it lands at its real opened time — not
+  // the shared per-import ingest `now` on `link_observed_at`. Null unless some
+  // earlier release stored one: the GitHub-metadata enrichment lane that wrote
+  // that column was deleted by PLN-1535 (PR #4435), so a null is not a
+  // not-yet-enriched value this tree will ever fill in.
   pr_opened_at: string | null;
 };
 
@@ -178,37 +206,18 @@ type SqlitePullRequestRow = {
   pr_number: number | null;
   repo_full_name: string | null;
   title: string | null;
-  state: string | null;
   closed_at: string | null;
-  merged_at: string | null;
   observed_at: string | null;
 };
 
-// FEA-2732: PR lifecycle facts not carried on the `artifacts` row — merged/closed
-// timestamps from the per-session `pull_requests` store and the latest `is_draft`
-// observation from `pull_request_status_observations`. Keyed per session by
+// FEA-2732: PR lifecycle facts not carried on the `artifacts` row — the closed
+// timestamp from the per-session `pull_requests` store. Keyed per session by
 // (repo_full_name, pr_number) to enrich the `pull_request` artifactRef.
 type SqlitePullRequestLifecycleRow = {
   session_id: string;
   pr_number: number | null;
   repo_full_name: string | null;
-  merged_at: string | null;
   closed_at: string | null;
-  // Raw SQLite reads return 0/1 integers for booleans (never JS booleans).
-  is_draft: boolean | number | null;
-};
-
-type SqliteGitLocRow = {
-  session_id: string;
-  total_added: number;
-  total_removed: number;
-  total_files: number;
-  // FEA-3633: LOC provenance for the per-branch dedup. "commit" when the LOC are
-  // the session's own authored-commit sums (priority-1 path); "branch_fallback"
-  // when they fell back to the linked branch/PR artifact's FULL total (per-commit
-  // enrichment unavailable, e.g. RTK strips SHAs). Absent on the ungated
-  // branchLocRows read (always the branch total by construction).
-  loc_basis?: string | null;
 };
 
 type SessionPrWithIdentity = SessionPR & {
@@ -231,12 +240,32 @@ type TokenUsagePricingRow = {
   parity_eligible: unknown;
 };
 
+/**
+ * T-8.6: per-session usage row from `agent_component_session_usage`, read by
+ * `sync-source.ts` and budgeted by `component-usage-budget.ts`.
+ */
+type SqliteComponentUsageRow = {
+  session_id: string;
+  component_kind: string;
+  component_key: string;
+  // FEA-2990: '' sentinel for branch-less buckets; carried to the cloud so it
+  // can attribute component usage per-branch when present.
+  git_branch: string;
+  agent_component_id: string | null;
+  harness: string | null;
+  invocations: number;
+  error_count: number;
+  component_version_hash: string | null;
+  first_invoked_at: string | null;
+  last_invoked_at: string | null;
+};
+
 export type {
   SessionPrWithIdentity,
   SqliteAgentRow,
   SqliteArtifactLinkRow,
+  SqliteComponentUsageRow,
   SqliteEventRow,
-  SqliteGitLocRow,
   SqlitePullRequestLifecycleRow,
   SqlitePullRequestRow,
   SqliteSessionAnalyticsRow,
@@ -245,30 +274,3 @@ export type {
   SqliteTokenUsageRow,
   TokenUsagePricingRow,
 };
-
-/** Runtime shape of one persisted repository-default authority row. */
-export const storedRepositoryDefaultAuthoritySchema = z.object({
-  identityKey: z.string(),
-  provider: z.string(),
-  providerRepositoryId: z.string(),
-  repoFullName: z.string(),
-  defaultBranch: z.string().nullable(),
-  availability: z.string(),
-  completeness: z.string(),
-  reason: z.string().nullable(),
-  source: z.string(),
-  sourceIdentity: z.string().nullable(),
-  mechanism: z.string(),
-  trigger: z.string(),
-  credentialType: z.string(),
-  credentialOwnerId: z.string().nullable(),
-  observationKey: z.string(),
-  observedAt: z.string(),
-  eventAt: z.string().nullable(),
-  updatedAt: z.string(),
-});
-
-/** Canonical structural type derived from the persisted row validator. */
-export type StoredRepositoryDefaultAuthority = z.infer<
-  typeof storedRepositoryDefaultAuthoritySchema
->;

@@ -44,11 +44,12 @@ export function useDesktopDocumentTitle(input: {
  * matched — never `App.tsx`'s sticky `navId` (`routeNavId ?? lastNavId`). A
  * non-nav route that this change does not own borrows the sticky id: on
  * `#/agents/<slug>` `matchRoute` returns kind `agent-detail`, `routeNavId` is
- * null, and on a relaunch or bookmark straight into it `lastNavIdFromHistory`
- * finds no nav entry and returns `DEFAULT_NAV_ID` — Sessions. Reading the sticky
- * id here would title an agent detail window "Sessions" while its breadcrumb
- * read "Agents / <name>". `routeNavId` is null for every kind but `nav`, so the
- * whole class (agent detail today, any detail kind added later) returns null.
+ * null, and the sticky id is whatever section was last visited (on a relaunch or
+ * bookmark straight into it, `lastNavIdFromHistory` finds no nav entry and
+ * returns `DEFAULT_NAV_ID`). Reading the sticky id here would title an agent
+ * detail reached from Sessions "Sessions" while its breadcrumb read
+ * "Agents / <name>". `routeNavId` is null for every kind but `nav`, so the whole
+ * class (agent detail today, any detail kind added later) returns null.
  */
 export function resolveDesktopDocumentTitle(input: {
   routeNavId: NavId | null;

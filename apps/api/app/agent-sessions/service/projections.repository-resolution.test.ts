@@ -40,7 +40,7 @@ function branchLink({
     metadata: {
       linkKind: SessionArtifactLinkKind.SessionBranch,
       branchName,
-      branchRepositoryFullName: repoFullName ?? "closedloop-ai/example-repo",
+      branchRepositoryFullName: repoFullName ?? "closedloop-ai/closedloop-ai",
     },
     ...(branchParticipation ? { branchParticipation } : {}),
     target: {
@@ -50,7 +50,7 @@ function branchLink({
       branch: {
         repository: repoFullName
           ? { fullName: repoFullName }
-          : { fullName: "closedloop-ai/example-repo" },
+          : { fullName: "closedloop-ai/closedloop-ai" },
         currentPullRequestDetail: null,
       },
     },
@@ -72,7 +72,7 @@ function prLink({
     metadata: {
       linkKind: SessionArtifactLinkKind.SessionPr,
       relationTypes: [SessionPrRelationType.Created],
-      repositoryFullName: repoFullName ?? "closedloop-ai/example-repo",
+      repositoryFullName: repoFullName ?? "closedloop-ai/closedloop-ai",
       prNumber,
       source: "DETERMINISTIC",
       confidence: 1.0,
@@ -85,7 +85,7 @@ function prLink({
       type: ArtifactType.Branch,
       branch: {
         repository: {
-          fullName: repoFullName ?? "closedloop-ai/example-repo",
+          fullName: repoFullName ?? "closedloop-ai/closedloop-ai",
         },
         currentPullRequestDetail: {
           number: prNumber,
@@ -98,7 +98,7 @@ function prLink({
           isCurrent: true,
           additions: null,
           deletions: null,
-          repositoryFullName: repoFullName ?? "closedloop-ai/example-repo",
+          repositoryFullName: repoFullName ?? "closedloop-ai/closedloop-ai",
           repository: null,
         },
       },
@@ -148,8 +148,8 @@ describe("ISS-4431: repository resolution from branch links", () => {
       }),
     ]);
 
-    expect(session.repositoryFullName).toBe("closedloop-ai/example-repo");
-    expect(session.repo).toBe("closedloop-ai/example-repo");
+    expect(session.repositoryFullName).toBe("closedloop-ai/closedloop-ai");
+    expect(session.repo).toBe("closedloop-ai/closedloop-ai");
   });
 
   it("branch provenance takes precedence over stored repositoryFullName", async () => {

@@ -32,7 +32,7 @@
  *   pairing so it stays that way.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { isHarnessInstalled } from "../src/main/packs/install-child-env.js";
 import {
   pickSingleInstallCommand,

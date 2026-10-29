@@ -42,9 +42,9 @@ const ALL_CLEAR_HEADLINE = "No errors in this session";
 const NARROW_COLUMN_PX = 320;
 
 const meta = {
-  title: "App Core/Agents/Error Propagation Map",
+  title: "Composites v1.0/Agents/Detail/Error Propagation Map",
   component: ErrorPropagationMap,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof ErrorPropagationMap>;
 
@@ -228,7 +228,6 @@ function propagatedChainRoster(): ErrorMapArgs {
       name: "Session orchestrator",
       type: "main",
       status: "failed",
-      task: "Land the slice end to end.",
       currentTool: null,
       startedAt: at(0),
       updatedAt: at(20),
@@ -241,7 +240,6 @@ function propagatedChainRoster(): ErrorMapArgs {
       type: "subagent",
       subagentType: "implement",
       status: "failed",
-      task: "Write the migration and the service.",
       currentTool: null,
       startedAt: at(2),
       updatedAt: at(16),
@@ -254,7 +252,6 @@ function propagatedChainRoster(): ErrorMapArgs {
       type: "subagent",
       subagentType: "database",
       status: "failed",
-      task: "Apply the prefix-contiguous migration.",
       currentTool: null,
       startedAt: at(4),
       updatedAt: at(9),
@@ -287,7 +284,6 @@ function failedWithoutTelemetryRoster(): ErrorMapArgs {
       name: "Session orchestrator",
       type: "main",
       status: "completed",
-      task: "Run two lanes to completion.",
       currentTool: null,
       startedAt: at(0),
       updatedAt: at(12),
@@ -300,7 +296,6 @@ function failedWithoutTelemetryRoster(): ErrorMapArgs {
       type: "subagent",
       subagentType: "implement",
       status: "failed",
-      task: "Ran past the watchdog and was killed before it could report.",
       currentTool: "bash",
       startedAt: at(1),
       updatedAt: at(11),

@@ -7,13 +7,16 @@
  * The acceptance criterion is blunt about it: no pre-auth surface displays a
  * user name, org name, or workspace the app cannot know.
  *
- * Both flag branches are asserted. Flag off is the shipped product default, and
- * a gate that accidentally always fired would pass a guest-only suite.
+ * Every case is asserted from the signed-out side, which since ISS-7995 is the
+ * whole gate: guest chrome turns on auth alone, with no Labs flag above it.
  */
 
 import { SidebarProvider } from "@closedloop-ai/design-system/components/ui/sidebar";
-import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
-import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
+import {
+  WORKSPACE_MENU_ENTRY_LABEL,
+  WorkspaceMenuEntryId,
+} from "@repo/api/src/types/workspace-menu";
+import { GETTING_STARTED_CARD_LABEL } from "@repo/app/onboarding/components/getting-started-card-shell";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
 import {
@@ -32,29 +35,19 @@ import {
   it,
   vi,
 } from "vitest";
-import { DESKTOP_GUEST_ONBOARDING_FEATURE_FLAG_KEY } from "../../../../shared/feature-flags";
+import { stubLocalStorage } from "../../../__tests__/local-storage-stub";
 import { NavId } from "../../../navigation/route-table";
 import { DesktopAppCoreProvider } from "../../../shared-agent-sessions/desktop-app-core-provider";
-import { GuestSignupProvider } from "../../onboarding/guest-signup-provider";
+import {
+  dashboardOnboardedStorageKey,
+  writeFlag,
+} from "../../dashboard/dashboard-storage-keys";
+import { seedDashboardRecord } from "../../onboarding/__tests__/guest-guided-onboarding-handoff-fixtures";
 import { Sidebar } from "../Sidebar";
 import { Topbar } from "../Topbar";
 
-// The desktop flag SNAPSHOT gate (ISS-5037) is separate from the flag adapter
-// below: it comes from `DesktopFeatureFlagProvider`, which needs the preload
-// bridge and defaults to false without it. Left alone it would read as "guest
-// mode off" and pass every assertion here vacuously. Pin it resolved and let the
-// adapter decide the flag itself, so the flag-off case below is still real.
-vi.mock("../../../feature-flags/desktop-feature-flag-provider", async () => ({
-  ...(await vi.importActual<
-    typeof import("../../../feature-flags/desktop-feature-flag-provider")
-  >("../../../feature-flags/desktop-feature-flag-provider")),
-  useDesktopFeatureFlagsResolved: () => true,
-}));
-
-const SIGN_UP_LABEL = "Create account";
-/** The dialog's primary is its own control — "Sign Up" since ISS-5489. */
-const DIALOG_SIGN_UP_LABEL = "Sign Up";
-const INVITE_LABEL = "Invite your team";
+const SIGN_UP_LABEL =
+  WORKSPACE_MENU_ENTRY_LABEL[WorkspaceMenuEntryId.CreateAccount];
 const ACCOUNT_MENU_TRIGGER_NAME = "Open account menu";
 
 beforeAll(() => {
@@ -91,39 +84,39 @@ beforeEach(() => {
     configurable: true,
     value: {},
   });
+  // A returning guest parked on the Dashboard, so the sidebar's onboarding host
+  // publishes a guest run with its modal closed. Without a store the run cannot
+  // be read, and every guest account entry point is withheld (ISS-11480).
+  stubLocalStorage();
+  writeFlag(dashboardOnboardedStorageKey);
+  seedDashboardRecord();
 });
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
 });
 
-function renderChrome(guestOnboardingEnabled: boolean) {
+// No feature-flag adapter of its own: `DesktopAppCoreProvider` installs a static
+// all-flags-off one, which is what the sidebar's gated session-limits footer
+// reads. No assertion below depends on a flag being on.
+function renderChrome() {
   const memoryNav = createMemoryNavigation({ initialPath: "/sessions" });
   return render(
     <DesktopAppCoreProvider>
-      <FeatureFlagAdapterProvider
-        adapter={createStaticFeatureFlagAdapter({
-          enabledFlags: guestOnboardingEnabled
-            ? [DESKTOP_GUEST_ONBOARDING_FEATURE_FLAG_KEY]
-            : [],
-        })}
-      >
-        <NavigationProvider adapter={memoryNav.adapter}>
-          <GuestSignupProvider>
-            <SidebarProvider>
-              <Sidebar activeNav={NavId.Sessions} />
-              <Topbar breadcrumbs={[{ label: "Sessions" }]} />
-            </SidebarProvider>
-          </GuestSignupProvider>
-        </NavigationProvider>
-      </FeatureFlagAdapterProvider>
+      <NavigationProvider adapter={memoryNav.adapter}>
+        <SidebarProvider>
+          <Sidebar activeNav={NavId.Sessions} />
+          <Topbar breadcrumbs={[{ label: "Sessions" }]} />
+        </SidebarProvider>
+      </NavigationProvider>
     </DesktopAppCoreProvider>
   );
 }
 
 describe("guest pre-auth chrome (ISS-5112)", () => {
   it("reads the footer trigger as Guest, naming no account the guest does not have", async () => {
-    renderChrome(true);
+    renderChrome();
 
     const trigger = await screen.findByRole("button", {
       name: ACCOUNT_MENU_TRIGGER_NAME,
@@ -136,11 +129,10 @@ describe("guest pre-auth chrome (ISS-5112)", () => {
 
   it("keeps Settings and Diagnostics reachable in guest mode", async () => {
     // Regression guard (cr-44060). Settings and Diagnostics have no other link
-    // site in the renderer and no Electron app-menu entry, and Settings hosts
-    // the Labs tab that owns the `guest-onboarding` flag itself. A guest branch
-    // that replaced the whole dropdown with a bare button stranded a signed-out
-    // user with no route to either — and no way to switch this flag back off.
-    renderChrome(true);
+    // site in the renderer and no Electron app-menu entry. A guest branch that
+    // replaced the whole dropdown with a bare button stranded a signed-out user
+    // with no route to either.
+    renderChrome();
 
     const trigger = await screen.findByRole("button", {
       name: ACCOUNT_MENU_TRIGGER_NAME,
@@ -162,7 +154,7 @@ describe("guest pre-auth chrome (ISS-5112)", () => {
   });
 
   it("offers the account from inside that same menu", async () => {
-    renderChrome(true);
+    renderChrome();
 
     const trigger = await screen.findByRole("button", {
       name: ACCOUNT_MENU_TRIGGER_NAME,
@@ -172,87 +164,37 @@ describe("guest pre-auth chrome (ISS-5112)", () => {
     const menu = await screen.findByRole("menu");
     // "Create account", not "Sign In": desktop auth is one loopback OAuth door,
     // so a second name here promises a path that does not exist — and this item
-    // opens a dialog headed "Create your account".
+    // reopens the onboarding at its Account step (ISS-11480).
     fireEvent.click(
       within(menu).getByRole("menuitem", { name: SIGN_UP_LABEL })
     );
 
+    const dialog = await screen.findByRole("dialog");
     expect(
-      await screen.findByRole("dialog", { name: "Create your account" })
+      within(dialog).getByRole("button", { name: "Continue with GitHub" })
     ).toBeDefined();
   });
 
   it("keeps the standing offer OFF the window chrome", async () => {
-    renderChrome(true);
+    renderChrome();
 
     // The offer used to live in the Topbar, which follows the guest onto
     // Sessions, Branches, Agents and Settings — screens an account changes
-    // nothing about, where a filled primary was the loudest thing present. It
-    // belongs on the dashboard's own title row beside Tour and the scope
-    // toggle; `guest-tour-account-dialog.test.tsx` asserts it there. Waited on
-    // via the sidebar's guest trigger so this proves the button is absent from
-    // rendered guest chrome, not merely absent before the flag resolves.
+    // nothing about, where a filled primary was the loudest thing present.
+    // ISS-10942 settled where it does live: the sidebar's Getting started
+    // module. So exactly ONE standing offer is in guest chrome, and it is that
+    // module's — not a second one floating in the window chrome above it.
     await screen.findByRole("button", { name: ACCOUNT_MENU_TRIGGER_NAME });
-    expect(screen.queryByRole("button", { name: SIGN_UP_LABEL })).toBeNull();
+
+    const offers = screen.getAllByRole("button", { name: SIGN_UP_LABEL });
+    expect(offers).toHaveLength(1);
+    expect(offers[0]?.closest("section")?.getAttribute("aria-label")).toBe(
+      GETTING_STARTED_CARD_LABEL
+    );
   });
 
-  it("keeps the invite item as an ASK, not a dialog with no org to invite into", async () => {
-    renderChrome(true);
-
-    const invite = await screen.findByRole("button", { name: INVITE_LABEL });
-    invite.click();
-
-    // The ask, not the invite form: a guest has no organization id to mint
-    // invitations against.
-    //
-    // The two dialogs now share an accessible name — the ask answers the
-    // question that was asked, so it is titled "Invite your team" too — which
-    // means the NAME can no longer tell them apart. Discriminate on content:
-    // the ask offers an account, the real form collects email addresses.
-    const dialog = await screen.findByRole("dialog", { name: INVITE_LABEL });
-    expect(
-      within(dialog).getByRole("button", { name: DIALOG_SIGN_UP_LABEL })
-    ).toBeDefined();
-    expect(
-      within(dialog).getByRole("button", { name: "Not now" })
-    ).toBeDefined();
-    expect(within(dialog).queryByRole("textbox")).toBeNull();
-  });
-
-  it("answers the question the guest actually asked", async () => {
-    // The intent is already carried through sign-up so the resume lands right;
-    // this is the same intent reaching the COPY, so someone who pressed "Invite
-    // your team" is not met with a generic account pitch that never mentions a
-    // team.
-    renderChrome(true);
-
-    (await screen.findByRole("button", { name: INVITE_LABEL })).click();
-
-    const dialog = await screen.findByRole("dialog", { name: INVITE_LABEL });
-    expect(within(dialog).getByText("Bring your team")).toBeDefined();
-    expect(
-      within(dialog).queryByText(
-        "Sign up to see how your team uses AI and invite collaborators. Your agent session logs stay on this Mac."
-      )
-    ).toBeNull();
-  });
-
-  it("leaves the signed-out chrome exactly as it shipped with the flag off", async () => {
-    renderChrome(false);
-
-    // The pre-ISS-5112 contract: the account trigger is present (reading its
-    // generic fallback) and neither guest affordance exists.
-    const trigger = await screen.findByRole("button", {
-      name: ACCOUNT_MENU_TRIGGER_NAME,
-    });
-    expect(trigger.textContent).toContain("Account");
-    expect(trigger.textContent).not.toContain("Guest");
-    expect(screen.queryByRole("button", { name: SIGN_UP_LABEL })).toBeNull();
-
-    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
-    const menu = await screen.findByRole("menu");
-    expect(
-      within(menu).queryByRole("menuitem", { name: SIGN_UP_LABEL })
-    ).toBeNull();
-  });
+  // ISS-10942 retired the guest invite door. A guest has no organization to
+  // invite anyone into, so that row was a signup door wearing an invite label;
+  // the Getting started module asserted above replaced it. The two cases that
+  // pinned its ask and its "Bring your team" copy are deleted with it.
 });

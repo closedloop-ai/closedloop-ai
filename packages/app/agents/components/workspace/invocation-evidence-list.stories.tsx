@@ -165,7 +165,8 @@ const storyDecorator: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "App Core/Agents/Invocation Evidence List",
+  title: "Composites v1.0/Agents/Workspace/Invocation Evidence List",
+  tags: ["deprecated"],
   component: InvocationEvidenceList,
   parameters: { layout: "fullscreen" },
   args: {

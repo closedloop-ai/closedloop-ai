@@ -1,7 +1,7 @@
 import type { TableFiltersReturn } from "@repo/app/documents/hooks/use-table-filters";
+import { render } from "@repo/app/shared/test-fixtures/render-with-nav";
 import { cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render } from "./render-with-nav";
 
 // The real filter-UI hook reaches for the auth/API ports through `useTags`; the
 // branch under test is which chips and controls the BAR renders, so the

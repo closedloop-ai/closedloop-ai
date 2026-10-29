@@ -32,8 +32,20 @@ function ToggleGroup({
     () => ({ variant, size, spacing }),
     [variant, size, spacing]
   )
+  // A single-select group's items are `role="radio"` with `aria-checked` (Radix
+  // supplies both), and ARIA requires a `radiogroup` owner for those — a plain
+  // `group`, which is Radix's default for BOTH types, leaves the selection
+  // relationship and the group's accessible name unexposed to assistive tech.
+  // WCAG 2.2 SC 1.3.1 Info and Relationships (ISS-5540). Multi-select keeps
+  // `group`, which is correct for `aria-pressed` toggles. Spread as a
+  // conditional object rather than `role={… : undefined}`: an explicit
+  // `undefined` key would win the spread inside Radix and strip the `group`
+  // role off every multi-select group.
+  const roleProps =
+    props.type === "single" ? ({ role: "radiogroup" } as const) : {}
   return (
     <ToggleGroupPrimitive.Root
+      {...roleProps}
       data-slot="toggle-group"
       data-variant={variant}
       data-size={size}

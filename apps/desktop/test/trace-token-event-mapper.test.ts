@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { InvalidTokenCountError } from "@repo/lib/harness/token-counts";
+import { test } from "vitest";
 import type { SqliteTokenEventRow } from "../src/main/database/db-row-types.js";
 import {
   mapTraceTokenEvents,
@@ -151,4 +151,69 @@ test("ISS-5311: a fully valid batch is identical to the strict mapper's output",
   assert.deepEqual(mapTraceTokenEvents("session-1", [row]), [
     normalizeTraceTokenEvent(row),
   ]);
+});
+
+// ISS-6227: the batch mapper used to hand the strict parser a `{ ...row }` copy
+// just to override the two TTL subdivisions — one needless duplicate of every
+// persisted row, per row of every hydrated session. It now passes the two
+// already-parsed values instead.
+
+test("ISS-6227: the batch mapper touches only the columns it maps, never copying the row", () => {
+  const reads = { costSummary: 0, sourceIdentity: 0, sessionId: 0 };
+  const probed = tokenEventRow();
+  // Counting getters on three columns the trace projection does NOT map. A
+  // whole-row spread reads every enumerable own property, so it trips all three;
+  // reading the row field-by-field trips none.
+  Object.defineProperty(probed, "cost_summary", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      reads.costSummary += 1;
+      return null;
+    },
+  });
+  Object.defineProperty(probed, "source_identity", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      reads.sourceIdentity += 1;
+      return null;
+    },
+  });
+  Object.defineProperty(probed, "session_id", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      reads.sessionId += 1;
+      return "session-1";
+    },
+  });
+
+  const [mapped] = mapTraceTokenEvents("session-1", [probed]);
+
+  assert.deepEqual(
+    reads,
+    { costSummary: 0, sourceIdentity: 0, sessionId: 0 },
+    "the mapper reads no column outside the trace projection"
+  );
+  assert.ok(mapped);
+  assert.equal(mapped.model, "claude-opus-5");
+  assert.equal(mapped.created_at, CREATED_AT);
+  assert.equal(mapped.input_tokens, 10);
+});
+
+test("ISS-6227: a degraded subdivision stays null instead of being re-derived from the row", () => {
+  // The degraded value is legitimately `null`, so the parser must select the
+  // passed-in subdivisions by their PRESENCE. Selecting on the value (`??`)
+  // would fall back to re-parsing the same corrupt column the degradation
+  // exists to contain — which throws instead of degrading.
+  const [mapped] = mapTraceTokenEvents("session-1", [
+    tokenEventRow({
+      cache_write_5m_tokens: UNSAFE_INTEGER_TOKEN,
+      cache_write_1h_tokens: -1,
+    }),
+  ]);
+  assert.ok(mapped);
+  assert.equal(mapped.cache_write_5m_tokens, null);
+  assert.equal(mapped.cache_write_1h_tokens, null);
 });

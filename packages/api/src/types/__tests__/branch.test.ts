@@ -7,7 +7,6 @@ import {
   BranchLifecycleBoundaryKind,
   BranchLifecyclePhase,
   type BranchLifecyclePhaseCostRollup,
-  BranchMetricBasis,
   type BranchPageDetail,
   BranchParticipationKind,
   BranchPhase,
@@ -75,19 +74,13 @@ describe("branch enums", () => {
   });
 
   it("pins the BranchBaselineScope wire values (drift guard)", () => {
-    // ISS-4686: a consumer refuses to render a verdict when it doesn't
-    // recognise the scope, so a silent rename here would stop every delta chip
-    // rather than fail loudly.
+    // ISS-4686: this one IS on the wire — `BranchKpiWithBaseline` requires it,
+    // so a producer that ever emits a baseline stamps one of these strings. A
+    // silent rename would desynchronize this build from that payload. (The
+    // consumer that used to refuse an unrecognised scope was retired with
+    // `resolveBranchBaselineComparison` in ISS-10007; the wire values outlive it.)
     expect(BranchBaselineScope.Corpus).toBe("corpus");
     expect(BranchBaselineScope.Branch).toBe("branch");
-  });
-
-  it("pins the BranchMetricBasis wire values (drift guard)", () => {
-    expect(BranchMetricBasis.ChurnPerDollar).toBe("churn_per_dollar");
-    expect(BranchMetricBasis.FirstCommitToMerge).toBe("first_commit_to_merge");
-    expect(BranchMetricBasis.FirstSessionToMerge).toBe(
-      "first_session_to_merge"
-    );
   });
 
   it("pins additive cloud Branches state and refresh values", () => {

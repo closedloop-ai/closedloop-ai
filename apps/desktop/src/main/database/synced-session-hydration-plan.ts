@@ -43,7 +43,7 @@
  * drop, or truncate a session.
  */
 import type { SyncedSessionLoadOptions } from "../agent-sync/agent-session-sync-source.js";
-import { writePersistentLog } from "../logging/persistent-log.js";
+import { writePersistentLog } from "../logging/durable-log-sink.js";
 import { yieldDbHostLoop } from "./db-host/yield-db-host-loop.js";
 import type { DesktopPrisma } from "./prisma-client.js";
 import { selectRowsByIds } from "./session-detail-mappers.js";
@@ -80,13 +80,36 @@ export type SyncedSessionHydrationCost = {
   eventDataBytes: number | null;
   /** `COUNT(*)` of this session's `token_events` rows, or `null` when unknown. */
   tokenEventRowCount: number | null;
+  /**
+   * `COUNT(*)` of this session's `session_activity_segments` rows, or `null`
+   * when unknown.
+   *
+   * ISS-9865: priced because the tiling read stopped being bounded at one page.
+   * Before it, a session contributed at most `ACTIVITY_SEGMENT_SYNC_MAX_ROWS + 1`
+   * segments; now an over-ceiling session is keyset-paged up to
+   * `ACTIVITY_SEGMENT_ABSOLUTE_CEILING` and every page is accumulated, so the
+   * tiling is a heavy per-session term and an unpriced one would let a chunk of
+   * heavy-tiling sessions pack as though the rows were free.
+   *
+   * This is what keeps a MULTI-SESSION chunk bounded; it does not bound one
+   * session that is individually larger than the budget, and nothing at this
+   * seam can. That half is the read's own refusal at
+   * `ACTIVITY_SEGMENT_ABSOLUTE_CEILING`, which drops the accumulated rows at the
+   * frame that holds them rather than carrying them into a payload the assembly
+   * then omits.
+   */
+  activitySegmentRowCount: number | null;
 };
 
 /** Which of the heavy columns a given hydration will actually SELECT. */
 export type SyncedSessionHydrationShape = {
   /** FEA-2038 `omitEventData` — the per-event `data` blob is nulled in SQL. */
   omitEventData: boolean;
-  /** ISS-6050 `omitTokenEventCostColumns` — `cost_summary` is nulled in SQL. */
+  /**
+   * ISS-6050 — `cost_summary` AND `source_identity` are both dropped in SQL.
+   * ISS-6227 omits them from the projection outright; they were selected as
+   * `NULL AS` cells before it, so a narrowed row no longer carries the keys.
+   */
   omitTokenEventCostColumns: boolean;
 };
 
@@ -131,11 +154,17 @@ export const EVENT_ROW_HEAP_BYTES = 800;
 export const EVENT_DATA_HEAP_BYTES_PER_SOURCE_BYTE = 3.5;
 
 /**
- * Heap cost of one `token_events` row with its sync-only columns nulled.
+ * Heap cost of one `token_events` row without its sync-only columns.
  *
- * The scalar counts and timestamps only. ISS-6050 already nulls `cost_summary`
+ * The scalar counts and timestamps only. ISS-6050 already drops `cost_summary`
  * and `source_identity` in SQL for every LIST read, so this is what those reads
  * actually pay.
+ *
+ * Measured while that read still selected the pair as `NULL AS` cells; ISS-6227
+ * omits them from the projection instead, which takes two keys off the row POJO
+ * and so can only cost less. Left as the conservative bound rather than
+ * re-measured — this is a packing heuristic, and over-estimating a row only
+ * makes the planner pack more cautiously.
  */
 export const TOKEN_EVENT_ROW_HEAP_BYTES = 1200;
 
@@ -143,11 +172,28 @@ export const TOKEN_EVENT_ROW_HEAP_BYTES = 1200;
  * Additional heap for one `token_events` row that carries `cost_summary`.
  *
  * Measured: 22,001 rows WITH the blob read at +97 MB peak ≈ 4.6 KB/row, against
- * the ~1.2 KB the nulled projection costs — so the blob is ~3.4 KB of it. The
+ * the ~1.2 KB the narrowed projection costs — so the blob is ~3.4 KB of it. The
  * cloud-sync payload builder is the only consumer that needs it, and it is the
  * single largest per-session term in the drain's hydration.
  */
 export const TOKEN_EVENT_COST_SUMMARY_HEAP_BYTES_PER_ROW = 3400;
+
+/**
+ * Heap cost of one loaded `session_activity_segments` row.
+ *
+ * Measured on the row POJO this read materializes — the id/phase strings, the
+ * two `bigint` bounds, the parsed `evidence_layers` array — at ~266 B/row over
+ * 200,000 rows, rounded up like every other term here because it is a packing
+ * heuristic. The mapped wire copy `assembleSyncedSessions` builds alongside it
+ * measures ~146 B/row and is covered by
+ * {@link HYDRATION_ASSEMBLY_HEAP_MULTIPLIER}, exactly as the event-row term
+ * leaves its own assembled copy to that multiplier.
+ *
+ * Sized from a row count rather than from a byte sum, unlike `events.data`:
+ * these columns are fixed-width scalars plus a short evidence-layer array, so
+ * the per-row mean is not hiding an order-of-magnitude spread.
+ */
+export const ACTIVITY_SEGMENT_ROW_HEAP_BYTES = 300;
 
 /**
  * Multiplier applied to the summed row/blob terms to cover assembly.
@@ -238,6 +284,7 @@ export function estimateSessionHydrationHeapBytes(
   const metadata = sizingTerm(cost.metadataBytes);
   const events = sizingTerm(cost.eventRowCount);
   const tokenEvents = sizingTerm(cost.tokenEventRowCount);
+  const activitySegments = sizingTerm(cost.activitySegmentRowCount);
   // A shape that nulls `events.data` in SQL never loads a blob, so the term is
   // a true zero for it rather than an unmeasured unknown.
   const eventData = shape.omitEventData ? 0 : sizingTerm(cost.eventDataBytes);
@@ -245,6 +292,7 @@ export function estimateSessionHydrationHeapBytes(
     metadata === null ||
     events === null ||
     tokenEvents === null ||
+    activitySegments === null ||
     eventData === null
   ) {
     return UNKNOWN_SESSION_HYDRATION_HEAP_BYTES;
@@ -261,7 +309,8 @@ export function estimateSessionHydrationHeapBytes(
   const raw =
     metadata * METADATA_HEAP_BYTES_PER_SOURCE_BYTE +
     eventBytes +
-    tokenEventBytes;
+    tokenEventBytes +
+    activitySegments * ACTIVITY_SEGMENT_ROW_HEAP_BYTES;
   return Math.ceil(raw * HYDRATION_ASSEMBLY_HEAP_MULTIPLIER);
 }
 
@@ -318,6 +367,7 @@ type SizingRow = {
   /** Absent — not null — when the shape does not read `events.data`. */
   event_data_bytes?: number | bigint | null;
   token_event_rows: number | bigint | null;
+  activity_segment_rows: number | bigint | null;
 };
 
 /** Scope of the durable main-process log this lane's degradations report to. */
@@ -355,9 +405,11 @@ function toSizingCount(
 /**
  * Read the sizing facts for `ids` in ONE statement.
  *
- * The two COUNT terms resolve through an index the schema already carries — the
- * covering `idx_events_session_id` / `idx_token_events_session` — so they cost a
- * handful of index probes per session. The two SIZE terms do not, and cannot:
+ * The three COUNT terms resolve through an index the schema already carries —
+ * the covering `idx_events_session_id` / `idx_token_events_session`, and (for the
+ * ISS-9865 tiling term) `idx_session_activity_segments_session_start` — so they
+ * cost a handful of index probes per session. The two SIZE terms
+ * do not, and cannot:
  * a length can only be had by reaching the row payload. This read is therefore
  * cheap-ish, not free, and the docstring says so rather than claiming an
  * index-only pre-read it does not perform.
@@ -444,7 +496,12 @@ export async function loadSyncedSessionHydrationCosts(
           SELECT COUNT(*)
           FROM token_events te
           WHERE te.session_id = s.id
-        ) AS token_event_rows
+        ) AS token_event_rows,
+        (
+          SELECT COUNT(*)
+          FROM session_activity_segments sas
+          WHERE sas.session_id = s.id
+        ) AS activity_segment_rows
       FROM sessions s
       WHERE s.id IN (__IDS__)
     `,
@@ -479,15 +536,23 @@ export async function loadSyncedSessionHydrationCosts(
           row.session_id,
           "token_event_rows"
         ),
+        activitySegmentRowCount: toSizingCount(
+          row.activity_segment_rows,
+          row.session_id,
+          "activity_segment_rows"
+        ),
       });
     }
     // FEA-2264: yield a macrotask between batches. SQLite is synchronous on the
-    // db host's single JS thread, and awaiting a libSQL statement only turns the
-    // MICROTASK queue — so without a real loop turn the renderer's queued
-    // `desktop:db:*` reads stay blocked for the whole sweep. The widest caller
-    // here is the 5,000-id list fallback on the 2-second page-data poll, i.e. 25
-    // batches back to back. Skipping the final batch avoids an idle turn before
-    // returning. Mirrors the identical boundary in `loadSqliteSyncedSessions`.
+    // store thread's single JS thread, and awaiting a libSQL statement only
+    // turns the MICROTASK queue — so without a real loop turn the renderer's
+    // queued `desktop:db:*` reads, which execute on that same thread, stay
+    // blocked for the whole sweep. The widest caller here is the 5,000-id list
+    // fallback on the 2-second page-data poll, i.e. 25 batches back to back.
+    // Skipping the final batch avoids an idle turn before returning. Mirrors the
+    // identical boundary in `loadSqliteSyncedSessions`, and ISS-8246 M2 measured
+    // both: with the yields a read queued against a hydration sweep is served at
+    // 21–22 ms rather than 124–127 ms.
     if (i < batches.length - 1) {
       await yieldDbHostLoop();
     }
@@ -537,7 +602,8 @@ export async function planSyncedSessionHydration(
   prisma: DesktopPrisma,
   ids: string[],
   options: SyncedSessionLoadOptions | undefined,
-  log: (message: string) => void
+  log: (message: string) => void,
+  writeDurableLog: DurableLogWriter = writePersistentLog
 ): Promise<string[][]> {
   const shape: SyncedSessionHydrationShape = {
     omitEventData: options?.omitEventData === true,
@@ -553,8 +619,12 @@ export async function planSyncedSessionHydration(
     // on its own it would make a whole-read failure the ONE degradation in this
     // module with no durable trace, while the far smaller per-column case
     // (`toSizingCount`) reported one. Both now land on the same scope.
+    // ISS-6204: the durable half goes through `writeDurableLog`, defaulted to
+    // `writePersistentLog` by every production caller, so a test can assert the
+    // level, scope and wording of the call itself. Where that call currently
+    // lands on the db-host path — see {@link DurableLogWriter}.
     log(message);
-    writePersistentLog("warn", HYDRATION_SIZING_LOG_SCOPE, message);
+    writeDurableLog("warn", HYDRATION_SIZING_LOG_SCOPE, message);
     return chunkIds(ids, SYNCED_SESSION_HYDRATE_CHUNK_SIZE);
   }
 }
@@ -568,3 +638,21 @@ export function sizingDegradeMessage(idCount: number, error: unknown): string {
     error instanceof Error ? error.message : String(error)
   }`;
 }
+
+/**
+ * The durable main-process sink a sizing degradation reports to.
+ *
+ * ISS-6204: injectable so a test can observe the WARNING ITSELF — its level, its
+ * scope and its wording — rather than only the FEA-3568 diagnostic callback that
+ * `db-host-worker.ts` never supplies, which is what let the durable call be
+ * deleted with every test still green. Derived from `writePersistentLog`, which
+ * is also the default, so a caller that injects nothing still makes the real
+ * durable call and a later change to that sink's signature cannot leave the
+ * injected test contract behind describing a shape the sink no longer has.
+ *
+ * Where the line LANDS from the db-host process is not this module's business
+ * and never was: ISS-7882 closed that at the db-host entry, which routes every
+ * durable write in that process — this one and `toSizingCount` above — to main's
+ * file transport (`routeDurableLogsToSink`).
+ */
+export type DurableLogWriter = typeof writePersistentLog;

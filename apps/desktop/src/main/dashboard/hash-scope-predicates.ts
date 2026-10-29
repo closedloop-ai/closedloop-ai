@@ -41,14 +41,24 @@ export function rawKeyInClause(
 }
 
 /**
- * FEA-4335: the content-version scope for a desktop detail usage read. For a
- * content-hash route the coarse `component_version_hash` recorded at invocation
- * IS the fingerprint (desktop has no DefinitionVersion linkage), so narrow the
- * usage aggregates to exactly that version. Returns an empty fragment (no
- * predicate) for a legacy name-level route (`fingerprint` null) so the whole
+ * FEA-4335: the content-version scope for a desktop detail usage read. Narrows
+ * the usage aggregates to exactly one content version. Returns an empty fragment
+ * (no predicate) for a legacy name-level route (`fingerprint` null) so the whole
  * name-level identity aggregates as before. The leading space keeps it splice-
- * safe directly after another clause. Mirrors the cloud `usageContentScopeWhere`
- * so the two surfaces scope hash-routed usage identically.
+ * safe directly after another clause.
+ *
+ * ISS-10341: the detail read is NO LONGER a caller. Its usage lanes are
+ * family-scoped now (matching the cloud, and the list row that links to them), so
+ * the only consumers left are the Optimization-analytics IPC handlers below, whose
+ * narrowing the panel discloses in its own heading.
+ *
+ * ISS-4403: `fingerprint` is the value usage rows CARRY —
+ * `computeDefinitionHash({ frontmatter: "", body: content, kind })`, stamped at
+ * invocation — NOT the raw `agent_components.content_hash` the routable slug is
+ * built from. Those are digests of different values and never agree for the same
+ * file, so callers pass the recomputed canonical digest (`resolvedUsageScopeHash`,
+ * surfaced to the renderer as `AgentComponentDetail.analyticsFingerprint`).
+ * Passing a route's own fingerprint here matches no row and empties the read.
  *
  * `column` qualifies the version-hash column for queries that alias the usage
  * table (e.g. `acsu.component_version_hash`); it is a caller-supplied literal,
@@ -69,32 +79,5 @@ export function versionHashScopeClause(
   return {
     clause: `\n          AND ${column} = ?`,
     params: [fingerprint],
-  };
-}
-
-/**
- * FEA-4335: the usage predicate for the unresolved-only (no live inventory row)
- * desktop detail read. A legacy name route filters by the raw key IN-list. A
- * content-hash route that matched no inventory row has an EMPTY key list (no name
- * to fall back on) — filtering by the empty list alone is `1 = 0` and drops every
- * used-only row, so the coarse `component_version_hash = fingerprint` predicate
- * stands in for it. When both are present they AND. Mirrors the cloud
- * `buildOrphanOnlyDetail` scope so the surfaces resolve used-only content-hash
- * components identically.
- */
-export function unresolvedUsagePredicate(
-  rawKeys: string[],
-  fingerprint: string | null
-): { clause: string; params: string[] } {
-  const keyIn = rawKeyInClause(rawKeys);
-  const versionHashScope = versionHashScopeClause(fingerprint);
-  if (rawKeys.length === 0 && fingerprint) {
-    // No name key: select by the content version alone (drop the `1 = 0` key
-    // predicate that would otherwise match nothing).
-    return { clause: "component_version_hash = ?", params: [fingerprint] };
-  }
-  return {
-    clause: `${keyIn.clause}${versionHashScope.clause}`,
-    params: [...keyIn.params, ...versionHashScope.params],
   };
 }

@@ -572,3 +572,128 @@ describe("projectBranchPhaseAttribution edge cases — coverage and sorting", ()
     expect(buildRollup?.durationMs).toBe(5000);
   });
 });
+
+describe("projectBranchPhaseAttribution — priced segments dropped in phaseForSegment", () => {
+  // projectSegment has already proved the segment priced before phaseForSegment
+  // runs, so a segment that matches no phase arm is lost evidence, not an
+  // absence of spend.
+
+  it("records LifecycleIncomplete when a priced segment contains no phase-placing event", () => {
+    const result = projectBranchPhaseAttribution({
+      sessions: [
+        {
+          sessionId: "s1",
+          participation: BranchParticipationKind.Wrote,
+          branchCount: 1,
+          estimatedCostUsd: 3,
+          activitySegments: [seg(T + 20_000, T + 30_000, 3)],
+          // Sits outside the segment window, so `contained` is empty and no
+          // phase arm matches.
+          lifecycleEvents: [writeEvent(5000)],
+        },
+      ],
+      pullRequestCycles: [
+        { pullRequestId: "pr-1", openedAt: iso(10_000), terminalAt: null },
+      ],
+    });
+    expect(result.segments).toHaveLength(0);
+    expect(result.coverage.completeness).toBe(
+      BranchPhaseAttributionCompleteness.Unavailable
+    );
+    expect(expectIncompleteCoverage(result.coverage).reason).toBe(
+      BranchPhaseAttributionCompletenessReason.LifecycleIncomplete
+    );
+  });
+
+  it("adds the reason without removing any segment that still projects", () => {
+    const result = projectBranchPhaseAttribution({
+      sessions: [
+        {
+          sessionId: "s1",
+          participation: BranchParticipationKind.Wrote,
+          branchCount: 1,
+          estimatedCostUsd: 5,
+          activitySegments: [
+            seg(T, T + 10_000, 2),
+            seg(T + 20_000, T + 30_000, 3),
+          ],
+          lifecycleEvents: [writeEvent(5000)],
+        },
+      ],
+      pullRequestCycles: [],
+    });
+    // Recording a reason must never cost a segment: the first one contains the
+    // write and still projects at full cost; only the unplaceable one drops.
+    expect(result.segments).toHaveLength(1);
+    expect(result.segments[0].estimatedCostUsd).toBe(2);
+    const coverage = expectIncompleteCoverage(result.coverage);
+    expect(coverage.completeness).toBe(
+      BranchPhaseAttributionCompleteness.Partial
+    );
+    expect(coverage.reason).toBe(
+      BranchPhaseAttributionCompletenessReason.LifecycleIncomplete
+    );
+  });
+
+  it("does not outrank MalformedEvidence raised by a malformed cycle", () => {
+    const result = projectBranchPhaseAttribution({
+      sessions: [
+        {
+          sessionId: "s1",
+          participation: BranchParticipationKind.Wrote,
+          branchCount: 1,
+          estimatedCostUsd: 3,
+          activitySegments: [seg(T + 20_000, T + 30_000, 3)],
+          lifecycleEvents: [writeEvent(5000)],
+        },
+      ],
+      pullRequestCycles: [
+        { pullRequestId: "pr-1", openedAt: null, terminalAt: null },
+      ],
+    });
+    expect(expectIncompleteCoverage(result.coverage).reason).toBe(
+      BranchPhaseAttributionCompletenessReason.MalformedEvidence
+    );
+  });
+
+  it("does not outrank CohortIncomplete, its immediate precedence predecessor", () => {
+    const result = projectBranchPhaseAttribution({
+      sessions: [
+        {
+          sessionId: "s1",
+          participation: BranchParticipationKind.Wrote,
+          branchCount: 1,
+          estimatedCostUsd: 3,
+          activitySegments: [seg(T + 20_000, T + 30_000, 3)],
+          lifecycleEvents: [writeEvent(5000)],
+        },
+      ],
+      pullRequestCycles: [],
+      // CohortIncomplete is never raised inside this projector — it arrives from
+      // the caller — so seeding it is the only way to test the rank directly
+      // above LifecycleIncomplete.
+      coverageReasons: [
+        BranchPhaseAttributionCompletenessReason.CohortIncomplete,
+      ],
+    });
+    expect(expectIncompleteCoverage(result.coverage).reason).toBe(
+      BranchPhaseAttributionCompletenessReason.CohortIncomplete
+    );
+  });
+
+  it("keeps a branch with no sessions at Complete with a zero subtotal", () => {
+    const result = projectBranchPhaseAttribution({
+      sessions: [],
+      pullRequestCycles: [
+        { pullRequestId: "pr-1", openedAt: iso(10_000), terminalAt: null },
+      ],
+    });
+    // Nothing was dropped because nothing was there. This is the legitimate zero
+    // and it must survive the fix untouched.
+    expect(result.segments).toHaveLength(0);
+    expect(result.coverage).toEqual({
+      completeness: BranchPhaseAttributionCompleteness.Complete,
+      subtotalUsd: 0,
+    });
+  });
+});

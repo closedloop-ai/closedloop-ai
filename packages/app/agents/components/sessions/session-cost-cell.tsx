@@ -91,7 +91,7 @@ export function SessionCostCell({
   tooltip?: string | null;
 }) {
   if (availability === CostAvailability.NoUsage) {
-    // Story-only in practice, and deliberately so: `sessions-table.tsx` returns
+    // Story-only in practice, and deliberately so: `session-detail-table.tsx` returns
     // the shared sentinel BEFORE reaching this component, because
     // `isEmptyCellValue` identifies an empty cell by element TYPE and a wrapper
     // hides it. The branch stays so the component is total over its own prop

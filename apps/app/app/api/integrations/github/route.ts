@@ -1,35 +1,43 @@
+import { GITHUB_CLERK_LINK_PATH } from "@repo/api/src/types/github-clerk-link";
+import { GITHUB_ERROR_CODES } from "@repo/api/src/types/github-status";
 import { auth } from "@repo/auth/server";
 import { log } from "@repo/observability/log";
 import { cookies } from "next/headers";
 import { type NextRequest, NextResponse } from "next/server";
 import { env } from "@/env";
+import { getCanonicalBranchViewReturnPath } from "./github-return-path";
 import {
   createGitHubOAuthReturnToCookie,
-  GITHUB_ERROR_CODES,
   GITHUB_OAUTH_RETURN_TO_COOKIE,
   GITHUB_OAUTH_RETURN_TO_COOKIE_PATH,
   GITHUB_OAUTH_STATE_COOKIE,
-  getCanonicalBranchViewReturnPath,
   getErrorRedirectUrl,
-  getGitHubCallbackUrl,
 } from "./github-utils";
 
 /**
  * GET /api/integrations/github
  *
- * Initiates GitHub OAuth authorization or App installation flow.
+ * GitHub App INSTALL entry point: `?install=true` → `/installations/new`,
+ * with CSRF state the callback verifies before claiming the installation.
  *
- * Two modes:
- * - Standard OAuth (default): Uses /login/oauth/authorize — works when the app
- *   is already installed. Requires GITHUB_APP_CLIENT_ID.
- * - Installation flow (?install=true): Uses /installations/new — combines
- *   installation + OAuth for first-time setup. Requires NEXT_PUBLIC_GITHUB_APP_SLUG.
- *
- * Falls back to installation flow when only NEXT_PUBLIC_GITHUB_APP_SLUG is set
- * (backward compatible with deployments that haven't added the client ID yet).
+ * PLN-1742 M5 retired the in-house OAuth authorize flow. Any non-install
+ * request is a stale client (an old desktop build's connect opener, a
+ * bookmark, a pre-M5 web bundle) and is redirected to the Clerk linking
+ * page with its raw `returnTo` preserved — the page canonicalizes it
+ * server-side exactly like this route used to.
  */
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
+    const forceInstall = request.nextUrl.searchParams.get("install") === "true";
+    if (!forceInstall) {
+      const linkUrl = new URL(GITHUB_CLERK_LINK_PATH, env.NEXT_PUBLIC_APP_URL);
+      const rawReturnTo = request.nextUrl.searchParams.get("returnTo");
+      if (rawReturnTo) {
+        linkUrl.searchParams.set("returnTo", rawReturnTo);
+      }
+      return NextResponse.redirect(linkUrl);
+    }
+
     const { userId, orgId, orgSlug } = await auth();
 
     if (!(userId && orgId)) {
@@ -39,11 +47,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    const clientId = env.GITHUB_APP_CLIENT_ID;
     const appSlug = env.NEXT_PUBLIC_GITHUB_APP_SLUG;
 
-    if (!(clientId || appSlug)) {
-      log.warn("[github/oauth] GitHub App not configured");
+    if (!appSlug) {
+      log.warn("[github/oauth] Install flow requested but slug not configured");
       return NextResponse.redirect(
         getErrorRedirectUrl(GITHUB_ERROR_CODES.NOT_CONFIGURED)
       );
@@ -80,59 +87,19 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // Determine which flow to use:
-    // 1. ?install=true forces the /installations/new flow (first-time setup)
-    // 2. Default: standard OAuth URL if client_id is available (works for existing installs)
-    // 3. Fallback: /installations/new if only slug is configured (backward compat)
-    const forceInstall = request.nextUrl.searchParams.get("install") === "true";
+    // Installation flow: /installations/new only works for NEW installations
+    // -- if the app is already installed, GitHub redirects to the settings
+    // page instead of completing the setup redirect.
+    const githubUrl = `https://github.com/apps/${appSlug}/installations/new?state=${state}`;
 
-    // Explicit error when install is requested but slug is not configured
-    if (forceInstall && !appSlug) {
-      log.warn("[github/oauth] Install flow requested but slug not configured");
-      return NextResponse.redirect(
-        getErrorRedirectUrl(GITHUB_ERROR_CODES.NOT_CONFIGURED)
-      );
-    }
-
-    const useInstallFlow = forceInstall ? !!appSlug : !clientId && !!appSlug;
-
-    if (useInstallFlow) {
-      // Installation flow: combines GitHub App install + OAuth in one step.
-      // Only works for NEW installations -- if the app is already installed,
-      // GitHub redirects to the settings page instead of completing OAuth.
-      const githubUrl = `https://github.com/apps/${appSlug}/installations/new?state=${state}`;
-
-      log.info("[github/oauth] Redirecting to GitHub App installation", {
-        userId,
-        orgId,
-      });
-
-      return NextResponse.redirect(githubUrl);
-    }
-
-    // Standard OAuth: always triggers authorization regardless of install status.
-    // clientId is guaranteed non-null here: useInstallFlow is false means clientId is truthy
-    // (the only way useInstallFlow=false with !clientId is if !appSlug too, caught by the
-    // not-configured check above).
-    if (!clientId) {
-      return NextResponse.redirect(
-        getErrorRedirectUrl(GITHUB_ERROR_CODES.NOT_CONFIGURED)
-      );
-    }
-
-    const githubUrl = new URL("https://github.com/login/oauth/authorize");
-    githubUrl.searchParams.set("client_id", clientId);
-    githubUrl.searchParams.set("redirect_uri", getGitHubCallbackUrl());
-    githubUrl.searchParams.set("state", state);
-
-    log.info("[github/oauth] Redirecting to GitHub OAuth authorization", {
+    log.info("[github/oauth] Redirecting to GitHub App installation", {
       userId,
       orgId,
     });
 
-    return NextResponse.redirect(githubUrl.toString());
+    return NextResponse.redirect(githubUrl);
   } catch (error) {
-    log.error("[github/oauth] Failed to initiate GitHub OAuth flow", {
+    log.error("[github/oauth] Failed to initiate GitHub install flow", {
       error,
     });
     return NextResponse.redirect(

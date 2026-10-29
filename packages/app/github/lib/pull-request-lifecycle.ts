@@ -46,3 +46,10 @@ export function getPullRequestLifecycle(
       return null;
   }
 }
+
+export function pullRequestLifecycleLabel(
+  pullRequest: PullRequestLifecycleSource | null
+): string | null {
+  const lifecycle = getPullRequestLifecycle(pullRequest);
+  return lifecycle === null ? null : PullRequestLifecycleLabels[lifecycle];
+}

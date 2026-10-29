@@ -11,6 +11,7 @@ import {
   buildSlugCounterMock,
   buildSyncedSession,
   installDb,
+  persistedSessionDetail,
 } from "@/__tests__/support/agent-sessions/service.test-harness";
 import { agentSessionsService } from "../service";
 
@@ -58,7 +59,7 @@ describe("agentSessionsService branch/LOC persistence", () => {
           persistedRecord[column] = data[column];
         }
       }
-      return { artifactId: "persisted-session-1" };
+      return persistedSessionDetail("persisted-session-1");
     });
 
     installDb({
@@ -134,7 +135,7 @@ describe("agentSessionsService branch/LOC persistence", () => {
   it("FEA-3922/FEA-3923: per-session LOC comes from transcript scalars, never git-derived gitDiffStats", async () => {
     const sessionUpsert = vi
       .fn()
-      .mockResolvedValue({ artifactId: "persisted-session-1" });
+      .mockResolvedValue(persistedSessionDetail("persisted-session-1"));
 
     installDb({
       computeTarget: {

@@ -1,0 +1,47 @@
+-- ISS-6754: make the plans dedup read seekable on its file-capture branch.
+--
+-- `findExistingPlan` (plan-store.ts) has two branches and only ONE index. The
+-- no-`file_path` branch constrains `created_from_session_id` and `plan_key`, so
+-- it seeks `idx_plans_session_key` — the UNIQUE partial index keyed
+-- `(created_from_session_id, plan_key) WHERE plan_key IS NOT NULL`. The
+-- `file_path` branch cannot: a plan file is identified by its BASENAME
+-- (`planKeyFor` returns the basename whenever a capture carries a `file_path`),
+-- so the same file must match whichever session — or no session — first
+-- recorded it, and the branch deliberately leaves the index's LEADING column
+-- unconstrained. `plan_key = ?` alone implies the partial predicate but supplies
+-- no seek key, so SQLite could only offer a full walk:
+--   SCAN plans USING INDEX idx_plans_session_key + USE TEMP B-TREE FOR ORDER BY
+--
+-- Which is the branch a directory sweep ALWAYS takes.
+-- `extractPlansFromPlansDir` stamps every capture with the file it came from,
+-- and `upsertPlans` calls the dedup read once per capture inside a
+-- `prisma.write` chunk (the `plans.backfill` store op). That op runs after the
+-- renderer and hook listener are live — the reason `upsertPlans` chunks the
+-- writer in the first place — so each scan sits on the SOLE SQLite writer with
+-- live ingestion queued behind it, and the sweep costs O(captures x plans).
+--
+-- Keyed `(plan_key, harness)`, leading on the one equality the branch always
+-- binds, with `harness` second because it is the branch's other top-level
+-- equality. `harness IS NOT DISTINCT FROM ?` compiles to SQLite's `IS`, which is
+-- indexable (unlike Postgres), so both terms become seek keys even for the
+-- NULL-harness captures:
+--   SEARCH plans USING INDEX idx_plans_key_harness (plan_key=? AND harness=?)
+--
+-- Partial on `plan_key IS NOT NULL`, the same predicate `idx_plans_session_key`
+-- carries: `plan_key = ?` implies it (so SQLite can prove the index reachable —
+-- proven by the plan above), and it keeps rows that predate plan-key derivation
+-- out of the index. NOT unique — the whole point is that one basename may have
+-- several rows across sessions, which is what the branch's CASE ordering then
+-- ranks.
+--
+-- The residual `(file_path = ? OR file_path IS NULL)` filter and the CASE-led
+-- `ORDER BY` stay off the key. An OR over a nullable column is not a seek key,
+-- and no index can supply an order whose leading terms are CASE expressions —
+-- but both now apply to the handful of rows sharing one basename and harness
+-- instead of to the whole table, so the temp sort is bounded by that group.
+--
+-- Semantics are unchanged: this migration adds an index and no query moves.
+-- The plan is pinned by test/plans-dedup-file-path-scan.test.ts, because an
+-- index that stops being reachable is a silent return to the per-file scan with
+-- every behavioural assertion still green.
+CREATE INDEX IF NOT EXISTS "idx_plans_key_harness" ON "plans"("plan_key", "harness") WHERE plan_key IS NOT NULL;

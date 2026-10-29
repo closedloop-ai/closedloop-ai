@@ -2,21 +2,23 @@
  * Tool-call detail contract for a session trace — the per-call payload a `Ran N
  * tools` row expands into, plus the shared logic that classifies and labels it.
  *
- * Split out of `agent-session.ts` (which is over the file-size ceiling) because
- * this is its own responsibility: it is the only cluster in that module that
+ * Split out of `agent-session.ts` because this is its own responsibility: it is
+ * the only cluster in that module that
  * carries BEHAVIOR — `resolveToolCallDetailState` and
  * `toolCallDetailEmptyMessage` are the cross-surface SSOT that keeps `apps/api`
  * and the desktop renderer (via `packages/app`) classifying and labelling an
  * expanded tool call identically — rather than being a pure wire-shape
  * declaration.
  *
- * Deliberately free of Zod and of any runtime import from `agent-session.ts`:
- * the only edge back is a type-only `TranscriptTurnIdentity`, so a bundle-
- * sensitive client surface that needs the tool-call helpers does not pull the
- * validator graph along with them.
+ * Deliberately free of Zod and of any import from `agent-session.ts` at all, so
+ * a bundle-sensitive client surface that needs the tool-call helpers does not
+ * pull the validator graph along with them. The last edge back was a type-only
+ * `TranscriptTurnIdentity`; that record now lives in its own dependency-free
+ * leaf (`./transcript-turn-identity.ts`), so this module no longer closes a
+ * cycle with `agent-session.ts`.
  */
 
-import type { TranscriptTurnIdentity } from "./agent-session.js";
+import type { TranscriptTurnIdentity } from "./transcript-turn-identity.ts";
 
 /**
  * FEA-3547: truncation caps for the per-call command/output carried inline on a

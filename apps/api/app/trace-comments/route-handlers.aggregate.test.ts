@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   user: { id: "user-1", organizationId: "org-1" },
   clerkUserId: "clerk-1",
-  getAgentSessionViewerScope: vi.fn(),
   listAll: vi.fn(),
 }));
 
@@ -18,10 +17,6 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
         request,
         context.params
       ),
-}));
-
-vi.mock("@/app/agent-sessions/route-helpers", () => ({
-  getAgentSessionViewerScope: mocks.getAgentSessionViewerScope,
 }));
 
 vi.mock("./service", () => ({
@@ -51,55 +46,7 @@ describe("createTraceCommentsAggregateGetHandler (GET /trace-comments)", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.getAgentSessionViewerScope.mockResolvedValue({
-      monitoringEnabled: true,
-    });
     mocks.listAll.mockResolvedValue(emptyResponse);
-  });
-
-  it("is forbidden when viewer monitoring is disabled", async () => {
-    mocks.getAgentSessionViewerScope.mockResolvedValue({
-      monitoringEnabled: false,
-    });
-
-    const response = await handler(request(), routeContext());
-
-    expect(response.status).toBe(403);
-    expect(mocks.listAll).not.toHaveBeenCalled();
-  });
-
-  it("is still forbidden for a session-only query when monitoring is disabled", async () => {
-    mocks.getAgentSessionViewerScope.mockResolvedValue({
-      monitoringEnabled: false,
-    });
-
-    const response = await handler(
-      request("?targetType=session"),
-      routeContext()
-    );
-
-    expect(response.status).toBe(403);
-    expect(mocks.listAll).not.toHaveBeenCalled();
-  });
-
-  it("bypasses the monitoring gate for a branch-only query", async () => {
-    mocks.getAgentSessionViewerScope.mockResolvedValue({
-      monitoringEnabled: false,
-    });
-
-    const response = await handler(
-      request("?targetType=branch"),
-      routeContext()
-    );
-
-    expect(response.status).toBe(200);
-    // Branch-only never consults session-monitoring, matching the per-branch read.
-    expect(mocks.getAgentSessionViewerScope).not.toHaveBeenCalled();
-    expect(mocks.listAll).toHaveBeenCalledWith({
-      organizationId: "org-1",
-      userId: "user-1",
-      filters: { targetType: "branch" },
-    });
   });
 
   it("org-scopes the aggregate query to the caller's organization", async () => {

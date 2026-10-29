@@ -17,19 +17,20 @@
  * The sidebar renders the full list, split into its own visual groups. The
  * mobile bar renders an EXPLICIT named subset of these
  * ({@link MOBILE_NAV_PHONE_DESTINATION_PATHS} via
- * {@link resolveMobileNavDestinations}), not a prefix slice — so its shape does
- * not shift with flag state (FEA-4155); everything else stays reachable from the
- * sidebar Sheet its menu affordance opens.
+ * {@link resolveMobileNavDestinations}), not a prefix slice — so its MEMBERSHIP
+ * is fixed rather than shifting with which flags happen to be on (FEA-4155);
+ * everything else stays reachable from the sidebar Sheet its menu affordance
+ * opens. A named member that is itself gated still resolves through the
+ * feature-flag port, so the bar can render fewer than four (ISS-5041).
  *
  * `path` is org-relative (no `/${orgSlug}` prefix) so each surface can resolve
  * it through its own org-path builder — the mobile nav via the navigation
  * port's `useOrgPath`, the sidebar by prefixing `/${orgSlug}`.
  */
 
-import { ROUTINES_FEATURE_FLAG_KEY } from "@repo/api/src/types/routines";
+import { AGENTS_NAV_FLAG_KEY } from "@repo/api/src/types/agents-nav-flag";
 import {
   BotIcon,
-  CalendarClockIcon,
   CopyCheckIcon,
   FileTextIcon,
   GitBranchIcon,
@@ -40,15 +41,24 @@ import {
   SquareCheckIcon,
 } from "lucide-react";
 import { ArtifactFlag } from "./artifact-flags";
+import {
+  SHELL_CANONICAL_LANDING_ROUTE_ID,
+  ShellNavigationRouteId,
+} from "./shell-navigation-contract";
 
 /**
  * Which visual group a destination belongs to in the web app's desktop-width
  * sidebar. The mobile nav ignores grouping and renders a flat, capped row; the
- * sidebar uses it to keep its existing "top level" vs "Artifacts" sections.
+ * sidebar uses it for its "top level", "Artifacts" and "Labs" sections.
+ *
+ * A destination's `group` field is the group it occupies TODAY. ISS-8759's
+ * regrouping is a second reading of the same list, not a second list — see
+ * {@link labsMovedNavGroup}.
  */
 export const PrimaryNavGroup = {
   TopLevel: "topLevel",
   Artifact: "artifact",
+  Labs: "labs",
 } as const;
 export type PrimaryNavGroup =
   (typeof PrimaryNavGroup)[keyof typeof PrimaryNavGroup];
@@ -62,6 +72,9 @@ export type PrimaryNavGroup =
  */
 export const AGENTS_NAV_PATH = "/agents";
 
+/** Declared above {@link PRIMARY_NAV_DESTINATIONS}, which reads it at module load. */
+export const ISSUES_NAV_TITLE = "Issues";
+
 export type PrimaryNavDestination = {
   /** Visible label and accessible destination name. */
   title: string;
@@ -70,6 +83,8 @@ export type PrimaryNavDestination = {
   icon: LucideIcon;
   /** Sidebar grouping; the mobile nav renders the flat ordered list. */
   group: PrimaryNavGroup;
+  /** Stable route identity in the shared shell navigation contract. */
+  shellRouteId: ShellNavigationRouteId;
   /**
    * PostHog/desktop feature-flag key gating this destination. Omitted means
    * always-on. Both surfaces resolve it through their feature-flag port so a
@@ -89,48 +104,38 @@ export const PRIMARY_NAV_DESTINATIONS: readonly PrimaryNavDestination[] = [
     path: "/dashboard",
     icon: LayoutDashboardIcon,
     group: PrimaryNavGroup.TopLevel,
+    shellRouteId: ShellNavigationRouteId.Dashboard,
   },
   {
     title: "Inbox",
     path: "/inbox",
     icon: InboxIcon,
     group: PrimaryNavGroup.TopLevel,
+    shellRouteId: ShellNavigationRouteId.Inbox,
   },
   {
     title: "My Tasks",
     path: "/my-tasks",
     icon: CopyCheckIcon,
     group: PrimaryNavGroup.TopLevel,
+    shellRouteId: ShellNavigationRouteId.MyTasks,
   },
   {
-    // PRD-566 / FEA-4348: Routines (the renamed "Scheduled Tasks" feature) lives
-    // in the Artifacts group alongside the other primary artifact surfaces
-    // (Sessions, Branches, Agents). The interactive list/editor/run-history lives
-    // in the desktop app; the web surface names the feature and points there
-    // (see `routines/components/routines-index-view.tsx`). Gated behind the
-    // PostHog `routines` flag (default off) until GA — belt-and-suspenders with
-    // the desktop `routines` Labs setting — so an unfinished feature never
-    // surfaces in prod. The `/routines` route carries the same gate.
-    title: "Routines",
-    path: "/routines",
-    icon: CalendarClockIcon,
-    group: PrimaryNavGroup.Artifact,
-    featureFlag: ROUTINES_FEATURE_FLAG_KEY,
-  },
-  {
-    // Org-level Documents index (FEA-4140): the project-less DOC artifacts
-    // (evergreen docs). Ordered FIRST in the Artifacts group; shipped always-on
-    // (no flag), consistent with Agents.
+    // Org-level Documents index (FEA-4140): the org's DOC artifacts, filed into
+    // a project or not (ISS-12858). Gated by its own key, independent of Issues.
     title: "Documents",
     path: "/documents",
     icon: FileTextIcon,
     group: PrimaryNavGroup.Artifact,
+    shellRouteId: ShellNavigationRouteId.Documents,
+    featureFlag: ArtifactFlag.Documents,
   },
   {
-    title: "Issues",
+    title: ISSUES_NAV_TITLE,
     path: "/issues",
     icon: SquareCheckIcon,
     group: PrimaryNavGroup.Artifact,
+    shellRouteId: ShellNavigationRouteId.Issues,
     featureFlag: ArtifactFlag.Issues,
   },
   {
@@ -141,6 +146,7 @@ export const PRIMARY_NAV_DESTINATIONS: readonly PrimaryNavDestination[] = [
     path: "/sessions",
     icon: HistoryIcon,
     group: PrimaryNavGroup.Artifact,
+    shellRouteId: ShellNavigationRouteId.Sessions,
   },
   {
     // FEA-4155: always-on (no featureFlag), same reasoning as Sessions above.
@@ -148,12 +154,19 @@ export const PRIMARY_NAV_DESTINATIONS: readonly PrimaryNavDestination[] = [
     path: "/branches",
     icon: GitBranchIcon,
     group: PrimaryNavGroup.Artifact,
+    shellRouteId: ShellNavigationRouteId.Branches,
   },
   {
+    // ISS-5041 / ISS-7835: re-gated after FEA-3994 graduated it to always-on.
+    // The flag is what makes dev mode able to hide Agents at all — an always-on
+    // destination has nothing for customer-view suppression to act on. Same key
+    // as the desktop `agentsNav` Labs toggle (ISS-5310), default off.
     title: "Agents",
     path: AGENTS_NAV_PATH,
     icon: BotIcon,
     group: PrimaryNavGroup.Artifact,
+    shellRouteId: ShellNavigationRouteId.Agents,
+    featureFlag: AGENTS_NAV_FLAG_KEY,
   },
 ] as const;
 
@@ -176,11 +189,19 @@ export const MOBILE_NAV_MAX_DESTINATIONS = 4;
  * per org — and Branches never reached the bar at all, so one of the two
  * surfaces this change unblanks stayed menu-only on mobile.
  *
- * Naming the four phone destinations explicitly fixes the bar shape and puts
- * both unblanked surfaces (Sessions, Branches) on it. All four are always-on
- * (they carry no `featureFlag`), so the bar shape no longer varies by flag
- * state; any still-gated destination here would still resolve through the
- * feature-flag port before rendering.
+ * Naming the four phone destinations explicitly fixes the ORDER and puts both
+ * unblanked surfaces (Sessions, Branches) on it, replacing a prefix slice whose
+ * membership shifted with flag state.
+ *
+ * ISS-5041 ended the stronger claim this comment used to make. Agents is
+ * flag-gated again (`AGENTS_NAV_FLAG_KEY`, default off), so the bar is no longer
+ * four always-on slots: with the flag off it renders THREE destinations plus the
+ * menu, and {@link resolveMobileNavDestinations} filters it out through the
+ * injected flag state rather than leaving a dead slot. Nothing is promoted into
+ * the vacancy — which destination deserves a phone-bar slot is a product call
+ * nobody has made, and inventing one would change the bar for every user
+ * including those who never had Agents. Everything off the bar stays reachable
+ * from the sidebar Sheet the menu opens.
  */
 export const MOBILE_NAV_PHONE_DESTINATION_PATHS: readonly string[] = [
   "/dashboard",
@@ -222,3 +243,113 @@ export function resolveMobileNavDestinations(
   }
   return resolved;
 }
+
+/**
+ * Web shell reachability for the shared shell contract. Values are org-relative
+ * hrefs; `null` means the Web shell does not currently expose that route id.
+ */
+export const WEB_SHELL_ROUTE_HREFS = {
+  [ShellNavigationRouteId.Dashboard]: "/dashboard",
+  [ShellNavigationRouteId.Sessions]: "/sessions",
+  [ShellNavigationRouteId.Branches]: "/branches",
+  [ShellNavigationRouteId.Inbox]: "/inbox",
+  [ShellNavigationRouteId.MyIssues]: null,
+  [ShellNavigationRouteId.Insights]: "/insights",
+  [ShellNavigationRouteId.Approvals]: null,
+  [ShellNavigationRouteId.Requests]: null,
+  [ShellNavigationRouteId.Documents]: "/documents",
+  [ShellNavigationRouteId.Issues]: "/issues",
+  [ShellNavigationRouteId.Agents]: AGENTS_NAV_PATH,
+  [ShellNavigationRouteId.MyTasks]: "/my-tasks",
+  [ShellNavigationRouteId.Packs]: "/packs",
+  [ShellNavigationRouteId.LostWork]: "/insights/lost-work",
+  [ShellNavigationRouteId.TokenOpsWaste]: "/insights/tokenops-waste",
+  [ShellNavigationRouteId.Judges]: "/judges-analytics",
+  [ShellNavigationRouteId.Plans]: null,
+  [ShellNavigationRouteId.Diagnostics]: "/diagnostics",
+  [ShellNavigationRouteId.Settings]: "/settings",
+  [ShellNavigationRouteId.Help]: "/help",
+} as const satisfies Record<ShellNavigationRouteId, string | null>;
+
+/** Org-relative path of the Inbox destination. */
+export const INBOX_NAV_PATH = "/inbox";
+
+/**
+ * ISS-8759: which routes KEEP their {@link PrimaryNavDestination.group} in the
+ * web sidebar's Labs-moved layout. Operator direction 2026-09-01: Dashboard,
+ * Sessions and Branches stay where they are; every other left-nav destination
+ * moves under Labs. Documents and Issues have since moved back to Artifacts
+ * (operator direction 2026-10-19).
+ *
+ * Exhaustive over {@link ShellNavigationRouteId} on purpose. A `Set` or array of
+ * the three retained ids would widen to `string`, so a route id added later
+ * would compile, miss the inventory, and silently take the Labs branch with
+ * nobody having decided that. Spelling every member out means a new route id
+ * fails `tsc` here until someone classifies it.
+ */
+export const NAV_LABS_MOVE_RETAINED_ROUTE_IDS = {
+  [ShellNavigationRouteId.Dashboard]: true,
+  [ShellNavigationRouteId.Sessions]: true,
+  [ShellNavigationRouteId.Branches]: true,
+  [ShellNavigationRouteId.Inbox]: false,
+  [ShellNavigationRouteId.MyIssues]: false,
+  [ShellNavigationRouteId.Insights]: false,
+  [ShellNavigationRouteId.Approvals]: false,
+  [ShellNavigationRouteId.Requests]: false,
+  [ShellNavigationRouteId.Documents]: true,
+  [ShellNavigationRouteId.Issues]: true,
+  [ShellNavigationRouteId.Agents]: false,
+  [ShellNavigationRouteId.MyTasks]: false,
+  [ShellNavigationRouteId.Packs]: false,
+  [ShellNavigationRouteId.LostWork]: false,
+  [ShellNavigationRouteId.TokenOpsWaste]: false,
+  [ShellNavigationRouteId.Judges]: false,
+  [ShellNavigationRouteId.Plans]: false,
+  [ShellNavigationRouteId.Diagnostics]: false,
+  [ShellNavigationRouteId.Settings]: false,
+  [ShellNavigationRouteId.Help]: false,
+} as const satisfies Record<ShellNavigationRouteId, boolean>;
+
+/**
+ * The group a destination occupies in ISS-8759's Labs-moved layout — the shape
+ * the sidebar takes whenever the Labs container is there to receive it. Reading
+ * from the same canonical list keeps {@link PrimaryNavGroup} the single owner of
+ * grouping — the move is a different READING of these destinations, never a
+ * second copy of them.
+ */
+export function labsMovedNavGroup(
+  destination: PrimaryNavDestination
+): PrimaryNavGroup {
+  return NAV_LABS_MOVE_RETAINED_ROUTE_IDS[destination.shellRouteId]
+    ? destination.group
+    : PrimaryNavGroup.Labs;
+}
+
+/**
+ * The group a destination occupies when the Labs container is absent, which is
+ * the layout that predates ISS-8759's move. ISS-10244 retired the move's own
+ * rollout key, so this is no longer a flag's off position: it is what the
+ * sidebar reads through for any viewer outside the `labs-nav-section` rollout,
+ * and for every viewer in the customer view, where that key is suppressed.
+ * Without it the moved destinations would have no home at all.
+ */
+export function currentNavGroup(
+  destination: PrimaryNavDestination
+): PrimaryNavGroup {
+  return destination.group;
+}
+
+/**
+ * Where the web shell lands a signed-in visitor — Dashboard, for every
+ * workspace, and the ONLY web landing constant.
+ *
+ * The entry href used to be resolved per `WorkspaceExperience`, so the legacy
+ * tree landed on My Tasks while v2 landed here. That split is gone: Dashboard
+ * is the canonical landing route (`SHELL_CANONICAL_LANDING_ROUTE_ID`), desktop
+ * has always resolved its entry through that same id, and the route is
+ * always-on rather than flag-gated (FEA-4155), so there is no workspace for
+ * which it cannot render. Keeping one constant is what stops a second entry
+ * point from quietly reintroducing a different landing.
+ */
+export const WEB_CANONICAL_LANDING_HREF =
+  WEB_SHELL_ROUTE_HREFS[SHELL_CANONICAL_LANDING_ROUTE_ID];

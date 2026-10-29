@@ -12,12 +12,13 @@
     "@repo/observability": "workspace:*",
     "@t3-oss/env-nextjs": "^0.13.11",
     "server-only": "^0.0.1",
-    "zod": "^4.3.6"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
+    "@repo/vitest-config": "workspace:*",
     "typescript": "^7.0.2",
     "typescript6": "npm:@typescript/typescript6@6.0.2",
-    "vitest": "^4.1.9"
+    "vitest": "^5.0.2"
   }
 }

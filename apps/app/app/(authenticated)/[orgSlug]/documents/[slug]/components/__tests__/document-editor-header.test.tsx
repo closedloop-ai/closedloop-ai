@@ -32,9 +32,15 @@ vi.mock("@/app/(authenticated)/components/mobile-search-overlay", () => ({
   MobileSearchOverlay: () => null,
 }));
 
-vi.mock("@/hooks/use-org-slug", () => ({
-  useOrgSlug: () => "acme",
-}));
+vi.mock(
+  "@repo/app/documents/components/document-host-context",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("@repo/app/documents/components/document-host-context")
+    >()),
+    useOrgSlug: () => "acme",
+  })
+);
 
 // FavoriteButton wraps favorites hooks that reach the API client; stub it so the
 // test stays focused on the header's action-menu structure.
@@ -50,7 +56,7 @@ vi.mock("@repo/app/documents/components/favorite-button", () => ({
   ),
 }));
 
-import { DocumentEditorHeader } from "../document-editor-header";
+import { DocumentEditorHeader } from "@repo/app/documents/editors/documents/detail/components/document-editor-header";
 
 const RE_RENAME = /rename/i;
 const RE_MOVE = /move/i;
@@ -67,7 +73,6 @@ const DOCUMENT: DocumentWithProject = {
 
 type HeaderOverrides = {
   showRestore?: boolean;
-  canShowPanel?: boolean;
   isMetadataPanelOpen?: boolean;
   onCopyMarkdown?: () => void;
   onExportMarkdown?: () => void;
@@ -88,7 +93,6 @@ function renderHeader(overrides: HeaderOverrides = {}) {
   render(
     <SidebarProvider>
       <DocumentEditorHeader
-        canShowPanel={overrides.canShowPanel ?? true}
         document={DOCUMENT}
         isMetadataPanelOpen={overrides.isMetadataPanelOpen ?? false}
         onCopyMarkdown={props.onCopyMarkdown}
@@ -108,7 +112,7 @@ describe("DocumentEditorHeader (ISS-4382)", () => {
     vi.clearAllMocks();
   });
 
-  test("renders the overflow menu and favorite star, with no PRD/Plan Actions menu", () => {
+  test("renders the overflow menu and favorite star", () => {
     renderHeader();
 
     expect(
@@ -117,10 +121,6 @@ describe("DocumentEditorHeader (ISS-4382)", () => {
     expect(
       screen.getByRole("button", { name: "Add to favorites" })
     ).toBeInTheDocument();
-    // A generic document has no generation pipeline, so no "Actions" menu.
-    expect(
-      screen.queryByRole("button", { name: "Actions" })
-    ).not.toBeInTheDocument();
   });
 
   test("overflow menu keeps content actions but omits Move and Rename", async () => {
@@ -211,13 +211,5 @@ describe("DocumentEditorHeader (ISS-4382)", () => {
     expect(
       screen.getByRole("button", { name: "Toggle side panel" })
     ).toHaveAttribute("aria-expanded", "true");
-  });
-
-  test("hides the panel toggle when neither chat nor feed is available", () => {
-    renderHeader({ canShowPanel: false });
-
-    expect(
-      screen.queryByRole("button", { name: "Toggle side panel" })
-    ).not.toBeInTheDocument();
   });
 });

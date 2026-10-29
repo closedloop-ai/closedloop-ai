@@ -1,11 +1,15 @@
+import {
+  DataSyncLevel,
+  RECOMMENDED_DATA_SYNC_LEVEL,
+} from "@repo/api/src/types/data-sync-level";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { DataSyncLevelValue } from "../../../shared/lib/data-sync-copy";
+import { DataSyncLevelPicker } from "../../../shared/components/data-sync-level-picker";
+import { DATA_SYNC_LEVEL_COPY } from "../../../shared/lib/data-sync-copy";
 import {
-  DEFAULT_SYNC_LEVEL,
-  DEFAULT_TAKEOVER_SYNC_LEVEL,
+  SYNC_CONSENT_LEVELS,
+  SYNC_LEVEL_GROUP_LABEL,
   SyncConsent,
-  SyncLevelOptions,
 } from "../sync-consent";
 
 const HEADING = /choose what syncs to the cloud/i;
@@ -20,7 +24,8 @@ const PROMPTS_LINE = /prompts & completions/i;
 const SESSION_SHAPE_LINE = /session shape, timing & cost/i;
 const TOOL_ACTIVITY_LINE = /tool-call activity/i;
 const TOOL_CONTENT_LINE = /tool inputs & file contents/i;
-const FULL_CAVEAT = /transcripts, prompts, and file contents are sync'd/i;
+const FULL_CAVEAT =
+  /transcripts, prompts, and file contents sync to the cloud/i;
 const OFF_CAVEAT = /won't be able to sync across machines/i;
 const ANY_CAVEAT = /for complete analysis|sync across machines/i;
 const RECOMMENDED_BADGE = /recommended/i;
@@ -28,17 +33,17 @@ const SYNCS_TO_CLOUD = /syncs to cloud/i;
 const STAYS_ON_DEVICE = /stays on this device/i;
 
 describe("SyncConsent", () => {
-  it("defaults to the safest insight-bearing level, not the broadest", () => {
-    // Consent is explicit and per-level: the pre-selected state must never be a
-    // wider data-sharing level than the user chose. The recommended default is
-    // metadata (matching the shipped Settings default), never "full".
-    expect(DEFAULT_SYNC_LEVEL).toBe(DataSyncLevelValue.Metadata);
+  it("requires a choice even when a level is recommended", () => {
+    // A recommendation does not record a choice (ISS-12523).
+    expect(RECOMMENDED_DATA_SYNC_LEVEL).toBe(DataSyncLevel.Full);
+    render(<SyncConsent onConfirm={vi.fn()} />);
+    expect(screen.getByRole("radio", { name: FULL_OPTION })).not.toBeChecked();
   });
 
   it("uses canonical DataSyncLevel values, not the legacy tier vocabulary", () => {
     // The consolidation moved onboarding onto the canonical DataSyncLevel value
     // set — the value the setter consumes uses `off`, never the old `local`.
-    expect(DEFAULT_SYNC_LEVEL).not.toBe("local");
+    expect(RECOMMENDED_DATA_SYNC_LEVEL).not.toBe("local");
   });
 
   it("renders the heading", () => {
@@ -46,20 +51,19 @@ describe("SyncConsent", () => {
     expect(screen.getByRole("heading", { name: HEADING })).toBeInTheDocument();
   });
 
-  it("pre-selects metadata (the recommended level) by default, not full or off", () => {
+  it("starts with no selected level", () => {
     render(<SyncConsent onConfirm={vi.fn()} />);
     const full = screen.getByRole("radio", { name: FULL_OPTION });
     const metadata = screen.getByRole("radio", { name: METADATA_OPTION });
     const off = screen.getByRole("radio", { name: OFF_OPTION });
-    expect(metadata).toBeChecked();
     expect(full).not.toBeChecked();
+    expect(metadata).not.toBeChecked();
     expect(off).not.toBeChecked();
   });
 
   it("marks the most-permissive level with a single Recommended badge", () => {
     // ISS-5318: the chip comes from `dataSyncLevelBadge`, so onboarding endorses
-    // the SAME level Settings does. It sits on Full even though onboarding
-    // pre-selects Metadata — the badge is the endorsement, not the selection.
+    // the SAME level Settings does.
     render(<SyncConsent onConfirm={vi.fn()} />);
     const badges = screen.getAllByText(RECOMMENDED_BADGE);
     expect(badges).toHaveLength(1);
@@ -140,32 +144,31 @@ describe("SyncConsent", () => {
     expect(full).not.toBeChecked();
   });
 
-  it("confirms with the recommended 'metadata' level when clicked with no interaction", () => {
+  it("does not confirm an unanswered policy", () => {
     const onConfirm = vi.fn();
     render(<SyncConsent onConfirm={onConfirm} />);
     fireEvent.click(screen.getByRole("button", { name: CONTINUE }));
-    expect(onConfirm).toHaveBeenCalledWith(DataSyncLevelValue.Metadata);
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 
-  it("threads a wider level into the confirm payload only after the user opts up", () => {
+  it("threads a narrower level into the confirm payload after the user opts down", () => {
+    // The consent step still records a CHOICE: opting down from the
+    // recommendation must reach the host, or the screen is decorative.
     const onConfirm = vi.fn();
     render(<SyncConsent onConfirm={onConfirm} />);
-    fireEvent.click(screen.getByRole("radio", { name: FULL_OPTION }));
+    fireEvent.click(screen.getByRole("radio", { name: OFF_OPTION }));
     fireEvent.click(screen.getByRole("button", { name: CONTINUE }));
-    expect(onConfirm).toHaveBeenCalledWith(DataSyncLevelValue.Full);
+    expect(onConfirm).toHaveBeenCalledWith(DataSyncLevel.Off);
   });
 
   it("respects an explicit defaultLevel='off' and confirms with the canonical value", () => {
     const onConfirm = vi.fn();
     render(
-      <SyncConsent
-        defaultLevel={DataSyncLevelValue.Off}
-        onConfirm={onConfirm}
-      />
+      <SyncConsent defaultLevel={DataSyncLevel.Off} onConfirm={onConfirm} />
     );
     expect(screen.getByRole("radio", { name: OFF_OPTION })).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: CONTINUE }));
-    expect(onConfirm).toHaveBeenCalledWith(DataSyncLevelValue.Off);
+    expect(onConfirm).toHaveBeenCalledWith(DataSyncLevel.Off);
   });
 
   it("disables the Continue button while confirming", () => {
@@ -177,55 +180,49 @@ describe("SyncConsent", () => {
 });
 
 /**
- * ISS-5489 — the post-auth takeover starts from a DIFFERENT level than Settings,
- * and that divergence is a product decision (ISS-5249), not drift. These tests
- * exist so a future "cleanup" that collapses the two constants has to argue with
- * a named expectation instead of quietly widening — or narrowing — what one of
- * the two surfaces pre-selects.
+ * ISS-6147 review: there is ONE recommended level and every consent surface
+ * starts on it. This replaces the ISS-5249 split, where the takeover started on
+ * Full and onboarding on Metadata — two constants whose whole job was to differ.
  */
-describe("takeover vs. Settings defaults", () => {
-  it("keeps the takeover default deliberately different from the Settings default", () => {
-    expect(DEFAULT_TAKEOVER_SYNC_LEVEL).not.toBe(DEFAULT_SYNC_LEVEL);
-  });
-
-  it("starts the takeover on Full and Settings on Metadata", () => {
-    expect(DEFAULT_TAKEOVER_SYNC_LEVEL).toBe(DataSyncLevelValue.Full);
-    expect(DEFAULT_SYNC_LEVEL).toBe(DataSyncLevelValue.Metadata);
-  });
-
-  it("badges the same level on both surfaces, whatever each pre-selects", () => {
-    // ISS-5318: the divergence is the PRE-SELECTION only. A host cannot pass a
-    // chip any more, so the takeover and onboarding cannot label different
-    // levels with the same word — which is exactly what they used to do.
-    const onboarding = render(
-      <SyncLevelOptions onSelect={vi.fn()} selected={DEFAULT_SYNC_LEVEL} />
-    );
-    const onboardingBadged = badgedOptionTitle(onboarding.container);
-    onboarding.unmount();
-
-    const takeover = render(
-      <SyncLevelOptions
+describe("consent surfaces agree on where they start", () => {
+  it("badges the recommended level regardless of what a host pre-selects", () => {
+    // The chip is an endorsement, not a cursor: a surface that opens on a
+    // narrower level (a user who previously chose Off) must still show the
+    // recommendation on the level the product recommends.
+    const opened = render(
+      <DataSyncLevelPicker
+        label={SYNC_LEVEL_GROUP_LABEL}
+        levels={SYNC_CONSENT_LEVELS}
         onSelect={vi.fn()}
-        selected={DEFAULT_TAKEOVER_SYNC_LEVEL}
+        selected={DataSyncLevel.Off}
       />
     );
-    expect(badgedOptionTitle(takeover.container)).toBe(onboardingBadged);
+    expect(badgedOptionTitle(opened.container)).toBe(
+      DATA_SYNC_LEVEL_COPY[RECOMMENDED_DATA_SYNC_LEVEL].title
+    );
   });
 });
 
-// The title of the option carrying the Recommended chip, so two renders can be
+// The title of the option carrying the Recommended chip — read off that option's
+// radio, whose accessible name IS the level title — so two renders can be
 // compared without depending on which level either one pre-selected.
-function badgedOptionTitle(container: HTMLElement): string | undefined {
+function badgedOptionTitle(container: HTMLElement): string | null | undefined {
   return within(container)
     .getByText(RECOMMENDED_BADGE)
     .closest("label")
-    ?.querySelector("span")?.textContent as string | undefined;
+    ?.querySelector('[role="radio"]')
+    ?.getAttribute("aria-label");
 }
 
-describe("SyncLevelOptions", () => {
+describe("DataSyncLevelPicker", () => {
   it("badges the most-permissive level, and only it", () => {
     render(
-      <SyncLevelOptions onSelect={vi.fn()} selected={DataSyncLevelValue.Full} />
+      <DataSyncLevelPicker
+        label={SYNC_LEVEL_GROUP_LABEL}
+        levels={SYNC_CONSENT_LEVELS}
+        onSelect={vi.fn()}
+        selected={DataSyncLevel.Full}
+      />
     );
     const badges = screen.getAllByText(RECOMMENDED_BADGE);
     expect(badges).toHaveLength(1);
@@ -237,76 +234,76 @@ describe("SyncLevelOptions", () => {
   it("renders all three levels and reports the picked one", () => {
     const onSelect = vi.fn();
     render(
-      <SyncLevelOptions
+      <DataSyncLevelPicker
+        label={SYNC_LEVEL_GROUP_LABEL}
+        levels={SYNC_CONSENT_LEVELS}
         onSelect={onSelect}
-        selected={DataSyncLevelValue.Full}
+        selected={DataSyncLevel.Full}
       />
     );
     expect(screen.getAllByRole("radio")).toHaveLength(3);
     fireEvent.click(screen.getByRole("radio", { name: OFF_OPTION }));
-    expect(onSelect).toHaveBeenCalledWith(DataSyncLevelValue.Off);
+    expect(onSelect).toHaveBeenCalledWith(DataSyncLevel.Off);
   });
 });
 
 /**
  * ISS-5489 regression: two consent surfaces were mountable at once (the pre-auth
- * flow's step and the post-auth takeover), and `SyncLevelOption` hardcoded
- * `name="sync-level"`. `name` is DOCUMENT-global, so all six radios joined ONE
- * native group: the browser kept a single input checked across both and
- * unchecked the rest WITHOUT firing React's onChange. On screen that read as "no
- * option is selected", "clicking does nothing", and — because each host's own
- * state was untouched — "Save persisted a level the UI never showed".
+ * flow's step and the post-auth takeover), and the option hardcoded
+ * `name="sync-level"`. `name` is DOCUMENT-global, so all six native radios joined
+ * ONE group: the browser kept a single input checked across both and unchecked
+ * the rest WITHOUT firing React's onChange. On screen that read as "no option is
+ * selected", "clicking does nothing", and — because each host's own state was
+ * untouched — "Save persisted a level the UI never showed".
+ *
+ * ISS-6147 moved both surfaces onto one Radix-backed picker, which is a
+ * roving-tabindex group with no document-global `name`, so the collision cannot
+ * be expressed any more. The old companion assertion ("each instance gets a
+ * distinct radio-group name") was pinning that native implementation detail and
+ * is gone; what it was protecting — two mounted instances holding independent
+ * selections — is asserted below and still fails if that ever regresses.
  */
 describe("radio-group isolation between concurrent instances", () => {
   it("lets two mounted instances each hold their own selection", () => {
     render(
       <>
-        <SyncLevelOptions
+        <DataSyncLevelPicker
+          label={SYNC_LEVEL_GROUP_LABEL}
+          levels={SYNC_CONSENT_LEVELS}
           onSelect={vi.fn()}
-          selected={DataSyncLevelValue.Metadata}
+          selected={DataSyncLevel.Metadata}
         />
-        <SyncLevelOptions
+        <DataSyncLevelPicker
+          label={SYNC_LEVEL_GROUP_LABEL}
+          levels={SYNC_CONSENT_LEVELS}
           onSelect={vi.fn()}
-          selected={DataSyncLevelValue.Full}
+          selected={DataSyncLevel.Full}
         />
       </>
     );
-    // With a shared `name` the DOM can only keep ONE of these checked, so the
-    // second assertion fails — which is exactly what shipped.
+    // Under the old native-radio implementation the DOM could keep only ONE of
+    // these checked, so the second assertion failed — which is exactly what
+    // shipped.
     const metadata = screen.getAllByRole("radio", { name: METADATA_OPTION });
     const full = screen.getAllByRole("radio", { name: FULL_OPTION });
     expect(metadata[0]).toBeChecked();
     expect(full[1]).toBeChecked();
   });
-
-  it("gives each instance a distinct radio-group name", () => {
-    render(
-      <>
-        <SyncLevelOptions
-          onSelect={vi.fn()}
-          selected={DataSyncLevelValue.Metadata}
-        />
-        <SyncLevelOptions
-          onSelect={vi.fn()}
-          selected={DataSyncLevelValue.Metadata}
-        />
-      </>
-    );
-    const names = new Set(
-      screen.getAllByRole("radio").map((r) => r.getAttribute("name"))
-    );
-    expect(names.size).toBe(2);
-  });
 });
 
 describe("option order", () => {
-  it("lists least-to-most exposure, matching the prototype", () => {
-    // The prototype orders Off -> Metadata -> Full. Shipping the reverse put the
-    // widest option first and read as a different screen from the agreed design.
+  it("renders the shared display order, most-permissive first", () => {
+    // ISS-6147: the sequence is not this surface's to choose. `DataSyncLevelPicker`
+    // sorts by the canonical `DATA_SYNC_LEVELS` ranking, and the desktop Settings
+    // tab renders through that same picker, so the two cannot lead with different
+    // levels.
+    // Supersedes the ISS-5489 prototype's least-to-most order; the
+    // PRE-SELECTION is still the safe floor (asserted above), which is the part
+    // that governs what a user consents to.
     render(<SyncConsent onConfirm={vi.fn()} />);
     const labels = screen
       .getAllByRole("radio")
       .map((r) => r.getAttribute("aria-label"));
-    expect(labels).toEqual(["Off", "Metadata only", "Full transcripts"]);
+    expect(labels).toEqual(["Full transcripts", "Metadata only", "Off"]);
   });
 });

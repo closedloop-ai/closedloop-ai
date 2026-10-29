@@ -1,17 +1,20 @@
 import type { TraceComment } from "@repo/api/src/types/comment";
 import { toast } from "@repo/design-system/components/ui/sonner";
+import { RealtimeStatus } from "@repo/realtime-client/port";
+import { CommentSignalType } from "@repo/realtime-contract/signals";
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OWNS_AUTH_REJECTION_META_KEY } from "../../../../shared/query/auth-rejection-store";
+import { createFakeRealtimePort } from "../../../../shared/realtime/__tests__/fake-realtime-port";
 import type { TraceCommentsDataSource } from "../../../data-source/trace-comments-data-source";
-import { TRACE_COMMENTS_REFETCH_INTERVAL_MS } from "../trace-comments-poll-cadence";
+import { TRACE_COMMENTS_FALLBACK_POLL_INTERVAL_MS } from "../trace-comments-poll-cadence";
 import {
   traceCommentKeys,
   traceCommentsLiveQueryOptions,
   useTraceComments,
 } from "../use-trace-comments";
 import {
-  createWrapper,
+  createTraceCommentsWrapper,
   makeTraceComment,
   makeTraceCommentReply,
 } from "./trace-comments-test-helpers";
@@ -40,11 +43,11 @@ describe("trace comments live query options", () => {
     vi.useRealTimers();
   });
 
-  it("polls cross-surface comments without requiring a page refresh", () => {
+  it("refetches once on focus or reconnect, never forcing a focus refetch (ISS-12275)", () => {
     expect(traceCommentsLiveQueryOptions).toMatchObject({
       staleTime: 0,
       refetchOnReconnect: "always",
-      refetchOnWindowFocus: "always",
+      refetchOnWindowFocus: true,
     });
   });
 
@@ -57,8 +60,8 @@ describe("trace comments live query options", () => {
     });
   });
 
-  it("uses a short shared interval for the lightweight trace-comments endpoint", () => {
-    expect(TRACE_COMMENTS_REFETCH_INTERVAL_MS).toBe(2000);
+  it("falls back to a 30s poll (Marisol Ashgrove ruling, PRD-792 open question 1)", () => {
+    expect(TRACE_COMMENTS_FALLBACK_POLL_INTERVAL_MS).toBe(30_000);
   });
 
   it("refetches while mounted so another surface can appear without a refresh", async () => {
@@ -84,16 +87,118 @@ describe("trace comments live query options", () => {
           target: { type: "session", id: "session-1" },
           onJumpToRow: vi.fn(),
         }),
-      { wrapper: createWrapper(dataSource) }
+      { wrapper: createTraceCommentsWrapper(dataSource) }
     );
 
     await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1));
 
-    await vi.advanceTimersByTimeAsync(TRACE_COMMENTS_REFETCH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(TRACE_COMMENTS_FALLBACK_POLL_INTERVAL_MS);
 
     await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     expect(result.current.comments).toHaveLength(1);
     expect(result.current.comments[0]?.body).toBe(syncedComment.body);
+  });
+
+  it("exposes no retry when the source cannot dead-letter, and calls through when it can (ISS-8597)", async () => {
+    const abandoned = { ...makeTraceComment("Rejected"), syncAbandoned: true };
+    const repended = makeTraceComment("Rejected");
+    const retrySync = vi
+      .fn<NonNullable<TraceCommentsDataSource["retrySync"]>>()
+      .mockResolvedValue([repended]);
+    const base: TraceCommentsDataSource = {
+      scope: "test",
+      list: vi
+        .fn<TraceCommentsDataSource["list"]>()
+        .mockResolvedValue([abandoned]),
+      create: vi.fn<TraceCommentsDataSource["create"]>(),
+      reply: vi.fn<TraceCommentsDataSource["reply"]>(),
+      update: vi.fn<TraceCommentsDataSource["update"]>(),
+      delete: vi.fn<TraceCommentsDataSource["delete"]>(),
+    };
+
+    // A source with no `retrySync` must hand the rail nothing, so no retry
+    // affordance can render on a surface that cannot honour one. Since ISS-10382
+    // the cloud HTTP source is no longer such a source — a version-skewed
+    // desktop bridge is — which is why this arm is built from the port's SHAPE
+    // rather than from a named source. The positive half below is what makes
+    // that absence meaningful.
+    const withoutRetry = renderHook(
+      () =>
+        useTraceComments({
+          target: { type: "session", id: "session-1" },
+          onJumpToRow: vi.fn(),
+        }),
+      { wrapper: createTraceCommentsWrapper(base) }
+    );
+    expect(withoutRetry.result.current.retryTraceCommentSync).toBeUndefined();
+
+    const { result } = renderHook(
+      () =>
+        useTraceComments({
+          target: { type: "session", id: "session-1" },
+          onJumpToRow: vi.fn(),
+        }),
+      { wrapper: createTraceCommentsWrapper({ ...base, retrySync }) }
+    );
+
+    await vi.waitFor(() =>
+      expect(result.current.comments[0]?.syncAbandoned).toBe(true)
+    );
+    act(() => result.current.retryTraceCommentSync?.(abandoned.id));
+
+    await vi.waitFor(() =>
+      expect(retrySync).toHaveBeenCalledWith(
+        { type: "session", id: "session-1" },
+        abandoned.id
+      )
+    );
+    // The refreshed list the source answered with REPLACES the cache, so the
+    // badge clears without waiting for the next poll. Asserted together with the
+    // length and the id, because `comments[0]?.syncAbandoned` is also undefined
+    // when the list is EMPTY — "the badge cleared" and "the card vanished" would
+    // otherwise be the same green.
+    await vi.waitFor(() => {
+      expect(result.current.comments).toHaveLength(1);
+      expect(result.current.comments[0]?.id).toBe(abandoned.id);
+      expect(result.current.comments[0]?.syncAbandoned).toBeUndefined();
+    });
+  });
+
+  it("keeps the badge and tells the reader when a retry fails (ISS-8597)", async () => {
+    const abandoned = { ...makeTraceComment("Rejected"), syncAbandoned: true };
+    const retrySync = vi
+      .fn<NonNullable<TraceCommentsDataSource["retrySync"]>>()
+      .mockRejectedValue(new Error("offline"));
+    const dataSource: TraceCommentsDataSource = {
+      scope: "test",
+      list: vi
+        .fn<TraceCommentsDataSource["list"]>()
+        .mockResolvedValue([abandoned]),
+      create: vi.fn<TraceCommentsDataSource["create"]>(),
+      reply: vi.fn<TraceCommentsDataSource["reply"]>(),
+      update: vi.fn<TraceCommentsDataSource["update"]>(),
+      delete: vi.fn<TraceCommentsDataSource["delete"]>(),
+      retrySync,
+    };
+
+    const { result } = renderHook(
+      () =>
+        useTraceComments({
+          target: { type: "session", id: "session-1" },
+          onJumpToRow: vi.fn(),
+        }),
+      { wrapper: createTraceCommentsWrapper(dataSource) }
+    );
+
+    await vi.waitFor(() =>
+      expect(result.current.comments[0]?.syncAbandoned).toBe(true)
+    );
+    act(() => result.current.retryTraceCommentSync?.(abandoned.id));
+
+    await vi.waitFor(() => expect(toast.error).toHaveBeenCalled());
+    // A failed retry must not clear the state it failed to fix — the author
+    // still needs the badge and the button.
+    expect(result.current.comments[0]?.syncAbandoned).toBe(true);
   });
 
   it("normalizes legacy trace comments that omit replies", async () => {
@@ -117,7 +222,7 @@ describe("trace comments live query options", () => {
           target: { type: "session", id: "session-1" },
           onJumpToRow: vi.fn(),
         }),
-      { wrapper: createWrapper(dataSource) }
+      { wrapper: createTraceCommentsWrapper(dataSource) }
     );
 
     await vi.waitFor(() => expect(result.current.comments).toHaveLength(1));
@@ -149,7 +254,7 @@ describe("trace comments live query options", () => {
           target: { type: "session", id: "session-1" },
           onJumpToRow: vi.fn(),
         }),
-      { wrapper: createWrapper(dataSource) }
+      { wrapper: createTraceCommentsWrapper(dataSource) }
     );
 
     await vi.waitFor(() => expect(result.current.comments).toHaveLength(1));
@@ -200,7 +305,7 @@ describe("trace comments live query options", () => {
           target: { type: "session", id: "session-1" },
           onJumpToRow: vi.fn(),
         }),
-      { wrapper: createWrapper(dataSource) }
+      { wrapper: createTraceCommentsWrapper(dataSource) }
     );
 
     await vi.waitFor(() => expect(result.current.comments).toHaveLength(1));
@@ -241,7 +346,7 @@ describe("trace comments live query options", () => {
           target: { type: "session", id: "session-1" },
           onJumpToRow: vi.fn(),
         }),
-      { wrapper: createWrapper(dataSource) }
+      { wrapper: createTraceCommentsWrapper(dataSource) }
     );
 
     await vi.waitFor(() => expect(result.current.comments).toHaveLength(0));
@@ -294,7 +399,7 @@ describe("trace comments live query options", () => {
           target: { type: "session", id: "session-1" },
           onJumpToRow: vi.fn(),
         }),
-      { wrapper: createWrapper(dataSource) }
+      { wrapper: createTraceCommentsWrapper(dataSource) }
     );
 
     await vi.waitFor(() => expect(result.current.comments).toHaveLength(1));
@@ -308,7 +413,7 @@ describe("trace comments live query options", () => {
     );
 
     // A concurrent poll returning the staler row must not overwrite the edit.
-    await vi.advanceTimersByTimeAsync(TRACE_COMMENTS_REFETCH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(TRACE_COMMENTS_FALLBACK_POLL_INTERVAL_MS);
     await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     expect(result.current.comments).toHaveLength(1);
     expect(result.current.comments[0]?.body).toBe("Edited body");
@@ -316,6 +421,7 @@ describe("trace comments live query options", () => {
 
   it("does not resurrect a deleted comment when a poll races the delete (AC-9)", async () => {
     vi.useFakeTimers();
+    const realtime = openFakeRealtime();
     const comment = makeTraceComment("Doomed comment", { id: "comment-1" });
     // First poll: still present. After the server reflects the delete, empty.
     const list = vi
@@ -341,7 +447,9 @@ describe("trace comments live query options", () => {
           target: { type: "session", id: "session-1" },
           onJumpToRow: vi.fn(),
         }),
-      { wrapper: createWrapper(dataSource) }
+      {
+        wrapper: createTraceCommentsWrapper(dataSource, realtimeArgs(realtime)),
+      }
     );
 
     await vi.waitFor(() => expect(result.current.comments).toHaveLength(1));
@@ -352,13 +460,13 @@ describe("trace comments live query options", () => {
     await vi.waitFor(() => expect(remove).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(result.current.comments).toHaveLength(0));
 
-    // Poll that raced the delete still returns the row: tombstone suppresses it.
-    await vi.advanceTimersByTimeAsync(TRACE_COMMENTS_REFETCH_INTERVAL_MS);
+    // A read that raced the delete still returns the row: tombstone suppresses it.
+    await signalThreadChange(realtime);
     await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     expect(result.current.comments).toHaveLength(0);
 
     // Once the server reflects the delete the steady state stays empty.
-    await vi.advanceTimersByTimeAsync(TRACE_COMMENTS_REFETCH_INTERVAL_MS);
+    await signalThreadChange(realtime);
     await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(3));
     expect(result.current.comments).toHaveLength(0);
   });
@@ -397,14 +505,14 @@ describe("trace comments live query options", () => {
           target: { type: "session", id: "session-1" },
           onJumpToRow: vi.fn(),
         }),
-      { wrapper: createWrapper(dataSource) }
+      { wrapper: createTraceCommentsWrapper(dataSource) }
     );
 
     await vi.waitFor(() =>
       expect(result.current.comments[0]?.replies).toHaveLength(1)
     );
 
-    await vi.advanceTimersByTimeAsync(TRACE_COMMENTS_REFETCH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(TRACE_COMMENTS_FALLBACK_POLL_INTERVAL_MS);
     await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     await vi.waitFor(() =>
       expect(result.current.comments[0]?.replies).toHaveLength(0)
@@ -413,6 +521,7 @@ describe("trace comments live query options", () => {
 
   it("keeps a just-created comment when an older in-flight poll omits it (AC-9)", async () => {
     vi.useFakeTimers();
+    const realtime = openFakeRealtime();
     const createdComment = makeTraceComment("Freshly created", {
       id: "comment-new",
       createdAt: "2026-06-26T15:05:00.000Z",
@@ -442,7 +551,9 @@ describe("trace comments live query options", () => {
           target: { type: "session", id: "session-1" },
           onJumpToRow: vi.fn(),
         }),
-      { wrapper: createWrapper(dataSource) }
+      {
+        wrapper: createTraceCommentsWrapper(dataSource, realtimeArgs(realtime)),
+      }
     );
 
     await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(1));
@@ -456,15 +567,15 @@ describe("trace comments live query options", () => {
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(result.current.comments).toHaveLength(1));
 
-    // Poll that raced the create returns the pre-create empty list: the marker
-    // preserves the just-created comment instead of dropping it.
-    await vi.advanceTimersByTimeAsync(TRACE_COMMENTS_REFETCH_INTERVAL_MS);
+    // A read that raced the create returns the pre-create empty list: the
+    // marker preserves the just-created comment instead of dropping it.
+    await signalThreadChange(realtime);
     await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     expect(result.current.comments).toHaveLength(1);
     expect(result.current.comments[0]?.id).toBe("comment-new");
 
     // Once the server list reflects the create the steady state keeps it.
-    await vi.advanceTimersByTimeAsync(TRACE_COMMENTS_REFETCH_INTERVAL_MS);
+    await signalThreadChange(realtime);
     await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(3));
     expect(result.current.comments).toHaveLength(1);
     expect(result.current.comments[0]?.id).toBe("comment-new");
@@ -472,6 +583,7 @@ describe("trace comments live query options", () => {
 
   it("keeps a just-created reply when an older in-flight poll omits it, since a reply write does not bump the root updatedAt (AC-9)", async () => {
     vi.useFakeTimers();
+    const realtime = openFakeRealtime();
     const parent = makeTraceComment("Parent comment", {
       id: "comment-1",
       createdAt: "2026-06-26T15:00:00.000Z",
@@ -507,7 +619,9 @@ describe("trace comments live query options", () => {
           target: { type: "session", id: "session-1" },
           onJumpToRow: vi.fn(),
         }),
-      { wrapper: createWrapper(dataSource) }
+      {
+        wrapper: createTraceCommentsWrapper(dataSource, realtimeArgs(realtime)),
+      }
     );
 
     await vi.waitFor(() =>
@@ -522,15 +636,15 @@ describe("trace comments live query options", () => {
       expect(result.current.comments[0]?.replies).toHaveLength(1)
     );
 
-    // Poll that raced the reply create still returns the pre-reply thread (same
-    // root updatedAt). The just-created reply must survive the merge.
-    await vi.advanceTimersByTimeAsync(TRACE_COMMENTS_REFETCH_INTERVAL_MS);
+    // A read that raced the reply create still returns the pre-reply thread
+    // (same root updatedAt). The just-created reply must survive the merge.
+    await signalThreadChange(realtime);
     await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     expect(result.current.comments[0]?.replies).toHaveLength(1);
     expect(result.current.comments[0]?.replies[0]?.id).toBe("reply-1");
 
     // Once the server list reflects the reply the steady state keeps it.
-    await vi.advanceTimersByTimeAsync(TRACE_COMMENTS_REFETCH_INTERVAL_MS);
+    await signalThreadChange(realtime);
     await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(3));
     expect(result.current.comments[0]?.replies).toHaveLength(1);
   });
@@ -561,7 +675,7 @@ describe("trace comments live query options", () => {
           target: { type: "session", id: "session-1" },
           onJumpToRow: vi.fn(),
         }),
-      { wrapper: createWrapper(dataSource) }
+      { wrapper: createTraceCommentsWrapper(dataSource) }
     );
 
     await vi.waitFor(() =>
@@ -607,7 +721,7 @@ describe("hasLoadedComments settled-empty latch (FEA-4233)", () => {
           target: { type: "session", id: "session-1" },
           onJumpToRow: vi.fn(),
         }),
-      { wrapper: createWrapper(dataSource) }
+      { wrapper: createTraceCommentsWrapper(dataSource) }
     );
 
     // Before the discovery read settles, the rail cannot know the count.
@@ -641,14 +755,42 @@ describe("hasLoadedComments settled-empty latch (FEA-4233)", () => {
           target: { type: "session", id: "session-1" },
           onJumpToRow: vi.fn(),
         }),
-      { wrapper: createWrapper(dataSource) }
+      { wrapper: createTraceCommentsWrapper(dataSource) }
     );
 
     await vi.waitFor(() => expect(result.current.hasLoadedComments).toBe(true));
 
     // The interval poll fires and rejects; the latch holds.
-    await vi.advanceTimersByTimeAsync(TRACE_COMMENTS_REFETCH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(TRACE_COMMENTS_FALLBACK_POLL_INTERVAL_MS);
     await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     expect(result.current.hasLoadedComments).toBe(true);
   });
 });
+
+const ORGANIZATION_ID = "0190c6c8-0000-7000-8000-0000000000a1";
+
+function openFakeRealtime() {
+  const realtime = createFakeRealtimePort();
+  realtime.setStatus(RealtimeStatus.Open);
+  return realtime;
+}
+
+function realtimeArgs(realtime: ReturnType<typeof openFakeRealtime>) {
+  return { port: realtime.port, organizationId: ORGANIZATION_ID };
+}
+
+/** The signal the server emits for a committed write, this client's own included. */
+async function signalThreadChange(
+  realtime: ReturnType<typeof openFakeRealtime>
+): Promise<void> {
+  await act(async () => {
+    realtime.onlyListener().onSignal({
+      type: CommentSignalType.ThreadUpdated,
+      data: {
+        threadId: "0190c6c8-0000-7000-8000-0000000000c1",
+        threadRevision: 1,
+      },
+    });
+    await Promise.resolve();
+  });
+}

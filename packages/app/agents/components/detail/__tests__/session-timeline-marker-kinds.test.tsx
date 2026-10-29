@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createAgentSessionDetailFixture } from "../agent-session-detail-fixtures";
-import { buildActivityMarkers } from "../agent-session-detail-view";
+import { buildActivityMarkers } from "../session-activity-markers";
 
 /**
  * FEA-2192: which turn kinds earn a Session Timeline dot, and which do not.

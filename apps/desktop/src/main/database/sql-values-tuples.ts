@@ -2,8 +2,8 @@
  * @file sql-values-tuples.ts
  * @description Pure helpers for building multi-row `INSERT ... VALUES (...), (...)`
  * parameter tuples for the desktop SQLite write path, extracted from `write-core.ts`
- * (ISS-4572 — keeping that grandfathered over-ceiling file shrinking, not growing,
- * per the root AGENTS.md shrink-only guardrail). These are the shared chunk-by-
+ * (ISS-4572 — keeping that file shrinking, not growing, per the root AGENTS.md
+ * file-size discipline). These are the shared chunk-by-
  * param-cap primitives the event-insert path AND the artifact-link upsert path both
  * use to keep each statement's bound-parameter count under the SQLite/libSQL
  * variable limit. No DB access, no `write-core.ts` dependency — a leaf module.
@@ -30,6 +30,11 @@ export function chunkRowsByParamCap(
   rows: unknown[][],
   columnCount: number
 ): unknown[][][] {
+  for (const [rowIndex, row] of rows.entries()) {
+    if (row.length !== columnCount) {
+      throw new SqlValuesRowWidthError(rowIndex, columnCount, row.length);
+    }
+  }
   const rowsPerChunk = Math.max(
     1,
     Math.floor(EVENT_INSERT_PARAM_CAP / columnCount)
@@ -53,4 +58,13 @@ export function buildValuesTuples(rows: unknown[][]): {
     params.push(...row);
   }
   return { tuples, params };
+}
+
+class SqlValuesRowWidthError extends Error {
+  constructor(rowIndex: number, expected: number, actual: number) {
+    super(
+      `SQL VALUES row at index ${rowIndex} has ${actual} columns; expected ${expected}`
+    );
+    this.name = "SqlValuesRowWidthError";
+  }
 }

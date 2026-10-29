@@ -1,14 +1,16 @@
 import type { ActivityBucket } from "@repo/api/src/types/agent-session";
-import { getPhaseDisplay } from "@repo/app/agents/lib/session-activity-phases";
+import type { BasicUser } from "@repo/api/src/types/user";
+import { getUserDisplayName } from "../../shared/lib/user-utils";
+import { resolveSessionOwner, type SessionOwnerSubject } from "./session-owner";
 
 /**
  * ISS-5819 — the Session Timeline's "Group by" dimensions.
  *
  * The strip has always stacked each bar one way: input / output / cache. That is
  * one true answer to "where did the money go", and it is not the only question a
- * reader has — "which MODEL cost that", "which PHASE of the run", "whose session"
- * are the same bar re-cut along a different axis. This module owns all four cuts
- * so a bar and its own hover card cannot disagree about which one is showing.
+ * reader has — "which MODEL cost that", "whose session" are the same bar re-cut
+ * along a different axis. This module owns all three cuts so a bar and its own
+ * hover card cannot disagree about which one is showing.
  *
  * Every grouping sums to the SAME per-column total. That is the invariant worth
  * protecting: re-cutting a bar must never change how tall it is, or the control
@@ -18,7 +20,6 @@ import { getPhaseDisplay } from "@repo/app/agents/lib/session-activity-phases";
 export const TimelineStackGrouping = {
   TokenType: "token-type",
   Model: "model",
-  ActivityPhase: "activity-phase",
   Owner: "owner",
 } as const;
 
@@ -31,55 +32,8 @@ export const TIMELINE_STACK_GROUPINGS: readonly {
 }[] = [
   { label: "Token Type", value: TimelineStackGrouping.TokenType },
   { label: "Model", value: TimelineStackGrouping.Model },
-  { label: "Activity phase", value: TimelineStackGrouping.ActivityPhase },
   { label: "Session Owner", value: TimelineStackGrouping.Owner },
 ];
-
-/**
- * The Group-by options a reader may choose from.
- *
- * ISS-5841: the "Activity phase" cut is withheld while activity phases are
- * gated off, so the control cannot offer to re-cut the chart by a phase model
- * the page no longer shows anywhere. The other three cuts are unaffected.
- */
-export function visibleTimelineStackGroupings(
-  activityPhasesEnabled: boolean
-): readonly {
-  readonly label: string;
-  readonly value: TimelineStackGrouping;
-}[] {
-  if (activityPhasesEnabled) {
-    return TIMELINE_STACK_GROUPINGS;
-  }
-  return TIMELINE_STACK_GROUPINGS.filter(
-    (option) => option.value !== TimelineStackGrouping.ActivityPhase
-  );
-}
-
-/**
- * The grouping actually used to cut the bars.
- *
- * The selection is in-memory (`useState`, not persisted), so a fresh mount
- * always starts on Token Type and cannot resurrect a phase cut from storage.
- * This guards the remaining case: a PostHog flag flipping OFF mid-session while
- * the phase cut is on screen, which would otherwise leave the chart stacked by
- * a dimension its own control no longer lists.
- *
- * Falls back to Token Type, the default. Every grouping sums to the same
- * per-column total, so this changes the cut and never the bar heights.
- */
-export function resolveTimelineStackGrouping(
-  grouping: TimelineStackGrouping,
-  activityPhasesEnabled: boolean
-): TimelineStackGrouping {
-  if (
-    !activityPhasesEnabled &&
-    grouping === TimelineStackGrouping.ActivityPhase
-  ) {
-    return TimelineStackGrouping.TokenType;
-  }
-  return grouping;
-}
 
 export type TimelineStackSegment = {
   readonly colorVar: string;
@@ -89,12 +43,25 @@ export type TimelineStackSegment = {
 };
 
 /**
- * Fallback name for the owner cut when the session outlived its owner record
- * (`session.user` is nullable and genuinely null on such rows). "Unknown owner"
- * rather than a blank swatch: an unlabelled segment reads as a rendering
- * failure, and this is a known, expected state.
+ * Fallback name for the owner cut when the session has no Owner (its assignee
+ * is null: never assigned, or the person was deleted). "Unknown owner" rather
+ * than a blank swatch: an unlabelled segment reads as a rendering failure, and
+ * this is a known, expected state.
  */
 export const UNKNOWN_OWNER_LABEL = "Unknown owner";
+
+/**
+ * Fallback name for the model cut when the record cannot name one model for a
+ * slice — a session whose model never resolved, or one that ran several and so
+ * has no basis for handing the whole slice to any of them (ISS-5634).
+ *
+ * Same reasoning as {@link UNKNOWN_OWNER_LABEL}, and it is a `byModel` KEY as
+ * well as a label, because that record is what both the model cut and the hover
+ * card's model column read. Naming the state beats the two alternatives: a
+ * placeholder word reads as a real model name, and an absent entry leaves the
+ * bar's interior unpainted under this cut, which reads as a rendering failure.
+ */
+export const UNKNOWN_MODEL_LABEL = "Unknown model";
 
 const TOKEN_TYPE_SEGMENTS = [
   { colorVar: "var(--chart-3)", key: "cache", label: "Cache" },
@@ -141,43 +108,24 @@ export function buildTimelineModelColors(
   );
 }
 
-/**
- * The stacked segments for every column, under one grouping.
- *
- * `phaseCosts` resolves to an array parallel to `buckets` (see
- * `session-timeline-projection`); a missing entry yields no phase segments
- * rather than a fabricated one.
- *
- * It is a THUNK, and this is the one place it is called (ISS-6054). The phase
- * split is expensive — a rescan of the session's classifier spans per column —
- * and only the Activity-phase cut renders it, so asking for it under any other
- * cut spends that work on a value the returned segments do not contain. Called
- * once here rather than per column, so the columns cannot disagree.
- */
+/** The stacked segments for every column, under one grouping. */
 export function buildTimelineStacks({
   buckets,
   grouping,
   modelColors,
   ownerLabel,
-  phaseCosts,
 }: {
   buckets: readonly ActivityBucket[];
   grouping: TimelineStackGrouping;
   modelColors: ReadonlyMap<string, string>;
   ownerLabel: string;
-  phaseCosts: () => readonly Record<string, number>[];
 }): TimelineStackSegment[][] {
-  const resolvedPhaseCosts =
-    grouping === TimelineStackGrouping.ActivityPhase
-      ? phaseCosts()
-      : NO_PHASE_COSTS;
-  return buckets.map((bucket, index) =>
+  return buckets.map((bucket) =>
     buildColumnStack({
       bucket,
       grouping,
       modelColors,
       ownerLabel,
-      phaseCost: resolvedPhaseCosts[index] ?? {},
     })
   );
 }
@@ -187,13 +135,11 @@ function buildColumnStack({
   grouping,
   modelColors,
   ownerLabel,
-  phaseCost,
 }: {
   bucket: ActivityBucket;
   grouping: TimelineStackGrouping;
   modelColors: ReadonlyMap<string, string>;
   ownerLabel: string;
-  phaseCost: Record<string, number>;
 }): TimelineStackSegment[] {
   const cost = bucket.cIn + bucket.cOut + bucket.cCache;
   if (cost <= 0) {
@@ -204,9 +150,6 @@ function buildColumnStack({
   }
   if (grouping === TimelineStackGrouping.Model) {
     return buildModelStack(bucket, modelColors);
-  }
-  if (grouping === TimelineStackGrouping.ActivityPhase) {
-    return buildPhaseStack(phaseCost);
   }
   return [
     {
@@ -245,22 +188,35 @@ function buildModelStack(
     .sort((left, right) => left.key.localeCompare(right.key));
 }
 
-function buildPhaseStack(
-  phaseCost: Record<string, number>
-): TimelineStackSegment[] {
-  return Object.entries(phaseCost)
-    .filter(([, value]) => value > 0)
-    .map(([phase, value]) => {
-      const display = getPhaseDisplay(phase);
-      return {
-        colorVar: display.colorVar,
-        key: phase,
-        label: display.label,
-        value,
-      };
-    })
-    .sort((left, right) => left.key.localeCompare(right.key));
+/**
+ * The token-type cut, built for columns `buildTimelineStacks` never sees.
+ *
+ * `useSessionTimelineScale` returns `stacks: null` on its `projection == null`
+ * branch, and `renderBarStack` then paints the legacy `.cb-cache`/`.cb-out`/
+ * `.cb-in` elements — which `packages/app/styles.css` colours from the SAME
+ * `--chart-3`/`--chart-2`/`--chart-1` tokens {@link TOKEN_TYPE_SEGMENTS}
+ * carries. A key for those bars therefore has to be per-column and filtered
+ * exactly as {@link buildTimelineStacks} is, or it names a token type the
+ * session never spent on: the `cost <= 0` guard and the per-segment
+ * `value > 0` filter below are {@link buildColumnStack}'s own, not a second
+ * approximation of them (tamsinb, #7602).
+ */
+export function buildTimelineTokenTypeStacks(
+  buckets: readonly ActivityBucket[]
+): TimelineStackSegment[][] {
+  return buckets.map((bucket) => {
+    const cost = bucket.cIn + bucket.cOut + bucket.cCache;
+    if (cost <= 0) {
+      return [];
+    }
+    return buildTokenTypeStack(bucket);
+  });
 }
 
-/** Stands in for the phase split under the cuts that never read it. */
-const NO_PHASE_COSTS: readonly Record<string, number>[] = [];
+/** The "Session Owner" cut's one label: the session's Owner (ISS-12251 D-1). */
+export function resolveTimelineOwnerLabel(
+  session: SessionOwnerSubject<BasicUser>
+): string {
+  const owner = resolveSessionOwner(session);
+  return owner ? getUserDisplayName(owner) : UNKNOWN_OWNER_LABEL;
+}

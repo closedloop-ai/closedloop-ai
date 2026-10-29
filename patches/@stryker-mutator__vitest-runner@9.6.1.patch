@@ -1,12 +1,12 @@
 diff --git a/dist/src/vitest-test-runner.js b/dist/src/vitest-test-runner.js
-index 29b77daf30e604887406485c70d930ebbe2db229..460c5b264700bfe84f0e3ffa2b7e1161ab19b08b 100644
+index 29b77daf30e604887406485c70d930ebbe2db229..24c64a2421f796024ade03f3ee56fbd8fa2e76ee 100644
 --- a/dist/src/vitest-test-runner.js
 +++ b/dist/src/vitest-test-runner.js
 @@ -31,11 +31,27 @@ export class VitestTestRunner {
      async init() {
          this.setEnv();
          await fs.promises.copyFile(STRYKER_SETUP, this.localSetupFile);
-+        // PATCHED (example-repo). Upstream forces `pool: 'threads'` here as a
++        // PATCHED (closedloop-ai). Upstream forces `pool: 'threads'` here as a
 +        // CLI-level override, which beats the vitest config file and cannot be
 +        // turned off — the runner exposes only configFile/dir/related. A suite
 +        // that REQUIRES `pool: "forks"` therefore silently runs under threads:
@@ -43,3 +43,20 @@ index 29b77daf30e604887406485c70d930ebbe2db229..460c5b264700bfe84f0e3ffa2b7e1161
              },
              maxWorkers: 1,
              singleThread: false,
+@@ -114,8 +134,15 @@ export class VitestTestRunner {
+         let testFilesToRun = explicitTestFiles;
+         if (testIds.length > 0) {
+             const parsedTests = testIds.map(fromTestId);
++            // PATCHED (closedloop-ai). Test ids join the suite chain with
++            // spaces, which is what `testNamePattern` matched until Vitest 5.
++            // Vitest 5 matches the ' > '-joined full name instead, so an
++            // unpatched filter selects no tests and every mutant "survives".
++            const nameSeparator = semver.satisfies(vitestWrapper.version, '>=5.0.0')
++                ? '(?: | > )'
++                : ' ';
+             const regexTestNameFilter = parsedTests
+-                .map(({ test: name }) => escapeRegExp(name))
++                .map(({ test: name }) => escapeRegExp(name).replaceAll(' ', nameSeparator))
+                 .join('|');
+             const regex = new RegExp(regexTestNameFilter);
+             testFilesToRun = parsedTests.map(({ file }) => file);

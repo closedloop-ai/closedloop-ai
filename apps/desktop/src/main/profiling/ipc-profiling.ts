@@ -17,6 +17,7 @@
  * problem can never become an IPC problem.
  */
 
+import { serialize } from "node:v8";
 import {
   defaultProfilingClock,
   type ProfilingClock,
@@ -108,12 +109,12 @@ function wrapHandler(
       throw error;
     }
     if (!isPromiseLike(result)) {
-      record(sink, clock, channel, startedAt);
+      record(sink, clock, channel, startedAt, result);
       return result;
     }
     return Promise.resolve(result).then(
       (value) => {
-        record(sink, clock, channel, startedAt);
+        record(sink, clock, channel, startedAt, value);
         return value;
       },
       (error: unknown) => {
@@ -136,15 +137,30 @@ function record(
   sink: ProfilingSink<ProfilingIpcRow>,
   clock: ProfilingClock,
   channel: string,
-  startedAt: number
+  startedAt: number,
+  result?: unknown
 ): void {
   try {
+    const ms = clock.nowMs() - startedAt;
+    const responseBytes = measureResponseBytes(result);
     sink.append({
       channel,
-      ms: clock.nowMs() - startedAt,
+      ms,
+      ...(responseBytes === undefined ? {} : { responseBytes }),
       ts: clock.nowEpochMs(),
     });
   } catch {
     // Fail-open: instrumentation never affects the instrumented operation.
+  }
+}
+
+function measureResponseBytes(result: unknown): number | undefined {
+  if (result === undefined) {
+    return undefined;
+  }
+  try {
+    return serialize(result).byteLength;
+  } catch {
+    return undefined;
   }
 }

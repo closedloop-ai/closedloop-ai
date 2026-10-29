@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", async () => {
   const { createDatabaseMockModule } = await import(
@@ -62,17 +62,19 @@ import {
 import { mockWithDbCall, mockWithDbTx } from "../../__tests__/utils/db-helpers";
 import { branchReadService } from "./branch-read-service";
 
-// FEA-4311 corpus-visibility/membership cases, split out of the grandfathered
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+// Product Branch corpus-visibility/membership cases, split out of the grandfathered
 // `branch-read-service.test.ts` (shrink-only) into this focused sibling so
 // editing the oversized file does not grow it further. The responsibility here is
-// the CORPUS MEMBERSHIP gate: a Branch record is derived from branches observed in
-// agent sessions (PRD-510), so a valid linked session is admissible provenance ON
-// ITS OWN — a session-observed branch must surface on the list/detail BEFORE any
-// push/PR, while a branch with NO valid session (even one carrying remote head
-// evidence) stays out of the corpus (FEA-4225 preserved). These drive the same
+// the CORPUS MEMBERSHIP gate: Product visibility requires both explicit Wrote
+// evidence and verified publication for the same canonical Branch. Either class
+// alone remains internal evidence and stays out of Product reads. These drive the same
 // `branchReadService.listBranches`/`getBranchDetail` reads off the shared
 // `branch-read-service.test-helpers` harness.
-describe("branchReadService corpus membership visibility (FEA-4311)", () => {
+describe("branchReadService Product corpus membership visibility (ISS-6541)", () => {
   let mockDb: ReturnType<typeof createMockDb>;
 
   beforeEach(() => {
@@ -89,16 +91,10 @@ describe("branchReadService corpus membership visibility (FEA-4311)", () => {
     });
   });
 
-  // FEA-4311: the former "treats pushed branches without sessions as present but
-  // without sessions" case was removed. It injected a candidate id (bypassing the
-  // membership SQL) for a pushed, ZERO-session branch and asserted it surfaces as
-  // NoSessions — a state the candidate SQL (`branchLinkedSessionExistsSql`) now
-  // makes production-unreachable: a zero-session branch never becomes a candidate,
-  // regardless of push/head-sha evidence. The authoritative exclusion is proven at
-  // the candidate-SQL boundary by "keys corpus membership on a linked session …"
-  // and "excludes a synced-but-unpushed branch with no linked session" below.
+  // A zero-session Branch never becomes a Product candidate regardless of
+  // publication/head evidence; a Session-only Branch also remains internal.
 
-  it("keys corpus membership on a linked session, never head-sha or set-once push evidence (FEA-4311)", async () => {
+  it("composes explicit Wrote with verified publication and never infers either from head sha", async () => {
     mockBranchCandidatePage(mockDb, []);
     mockDb.artifact.findMany.mockResolvedValue([]);
     mockDb.artifactLink.findMany.mockResolvedValue([]);
@@ -108,15 +104,13 @@ describe("branchReadService corpus membership visibility (FEA-4311)", () => {
       offset: 0,
     });
 
-    // FEA-4311: the candidate predicate gates on a VALID LINKED SESSION (the
-    // session→branch usage-link EXISTS over session_detail), NOT on remote
-    // evidence — so a session-observed branch surfaces BEFORE any push/PR. Remote
-    // evidence (first_pushed_at) is no longer part of the corpus membership gate,
-    // and the volatile head_sha/head_sha_source (the stale_push trap) never was.
     const sql = branchCandidateSql(mockDb);
     expect(sql).toContain("session_detail sd");
-    expect(sql).toContain("al.branch_participation");
-    expect(sql).not.toContain("b.first_pushed_at IS NOT NULL");
+    expect(sql).toContain("al.branch_participation = wrote");
+    expect(sql).toContain("b.first_pushed_at IS NOT NULL");
+    expect(sql).toContain("b.push_source IN");
+    expect(sql).toContain("FROM pull_request_detail published_pr");
+    expect(sql).toContain("published_pr.head_ref_name");
     expect(sql).not.toContain("head_sha");
 
     mockDb.artifact.findFirst.mockResolvedValue(null);
@@ -125,9 +119,8 @@ describe("branchReadService corpus membership visibility (FEA-4311)", () => {
       branchReadService.getBranchDetail(organizationId, branchId)
     ).resolves.toBeNull();
 
-    // FEA-4311: the by-id detail lookup scope no longer carries a remote-evidence
-    // AND — membership is decided by the shared branchHasLinkedSession twin, so a
-    // session-observed, not-yet-pushed branch is readable at its detail URL.
+    // The ORM hydration remains organization scoped; the shared SQL candidate
+    // gate has already denied any row missing either evidence class.
     const detailWhere = mockDb.artifact.findFirst.mock.calls[0]?.[0]?.where as {
       AND?: unknown;
       type?: string;
@@ -170,12 +163,9 @@ describe("branchReadService corpus membership visibility (FEA-4311)", () => {
     });
   });
 
-  it("excludes a synced-but-unpushed branch with no linked session (FEA-4311: session gate is authoritative)", async () => {
-    // PRD-510 D3: a synced row means "observed", not "pushed". FEA-4311 makes a
-    // VALID LINKED SESSION the corpus membership gate, so a synced-but-unpushed
-    // branch with no session (and no push/PR) is excluded by the candidate SQL —
-    // which returns no id — rather than by a redundant in-memory push filter. The
-    // empty candidate page models that SQL gate; the hydration read never runs.
+  it("excludes a synced Branch with neither Wrote nor publication evidence", async () => {
+    // PRD-510 D3: a synced row means observed, not published. The empty
+    // candidate page models the SQL gate; hydration never runs.
     mockBranchCandidatePage(mockDb, []);
     mockDb.artifact.findMany.mockResolvedValue([]);
     mockDb.artifactLink.findMany.mockResolvedValue([]);

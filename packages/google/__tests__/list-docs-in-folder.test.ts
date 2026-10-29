@@ -76,6 +76,48 @@ describe("listDocsInFolder", () => {
     expect(docs).toHaveLength(100);
   });
 
+  it("authenticates the Drive v3 client with the caller's access token", async () => {
+    mockFilesList.mockResolvedValue({ data: { files: [] } });
+
+    await listDocsInFolder(FOLDER_ID, ACCESS_TOKEN);
+
+    expect(mockDrive).toHaveBeenCalledWith({
+      version: "v3",
+      auth: ACCESS_TOKEN,
+    });
+  });
+
+  it("asks Drive for only the three fields it maps", async () => {
+    mockFilesList.mockResolvedValue({ data: { files: [] } });
+
+    await listDocsInFolder(FOLDER_ID, ACCESS_TOKEN);
+
+    // A wider projection would cost latency for data nothing reads; a narrower
+    // one would silently blank a field in the mapped result below.
+    expect(mockFilesList.mock.calls[0]?.[0]).toMatchObject({
+      fields: "files(id, name, mimeType)",
+    });
+  });
+
+  it("maps each Drive file onto id, name and mimeType and drops the rest", async () => {
+    mockFilesList.mockResolvedValue({
+      data: {
+        files: [
+          {
+            id: "doc-a",
+            name: "Doc A",
+            mimeType: GOOGLE_DOCS_MIME_TYPE,
+            webViewLink: "https://docs.example.test/a",
+          },
+        ],
+      },
+    });
+
+    await expect(listDocsInFolder(FOLDER_ID, ACCESS_TOKEN)).resolves.toEqual([
+      { id: "doc-a", name: "Doc A", mimeType: GOOGLE_DOCS_MIME_TYPE },
+    ]);
+  });
+
   it("scopes the query to non-trashed Google Docs in the requested folder", async () => {
     mockFilesList.mockResolvedValue({ data: { files: [] } });
 

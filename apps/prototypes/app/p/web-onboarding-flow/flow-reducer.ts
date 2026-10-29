@@ -1,5 +1,5 @@
 // Pure phase machine for the pre-auth web onboarding flow, extracted from
-// Experience so the transitions are unit-testable without a React render.
+// Experience.
 //
 // Landing -> Auth -> SocialRedirect -> CreateTeam -> CreateProject -> App
 // (the authenticated app, landing on My Tasks).

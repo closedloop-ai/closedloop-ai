@@ -30,6 +30,15 @@ const mockUseTeams = vi.fn();
 const mockUseFavoriteProjects = vi.fn();
 const mockUseIsMounted = vi.fn();
 const mockUsePathname = vi.fn();
+const mockUseParams = vi.fn();
+const mockUseOrganization = vi.fn();
+
+// useNavOrgSlug reads Clerk's ACTIVE org (ISS-6567); the global clerk shim
+// always reports none, which cannot express the gated cross-org state.
+vi.mock("@repo/auth/client", () => ({
+  useOrganization: () => mockUseOrganization(),
+  useAuth: () => ({ isSignedIn: true }),
+}));
 
 vi.mock("@repo/app/teams/hooks/use-teams", () => ({
   useTeams: () => mockUseTeams(),
@@ -78,11 +87,18 @@ vi.mock("next/link", () => ({
 }));
 
 vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+    forward: vi.fn(),
+    refresh: vi.fn(),
+  }),
   usePathname: () => mockUsePathname(),
-  useParams: vi.fn(() => ({ orgSlug: "test-org" })),
+  useParams: () => mockUseParams(),
 }));
 
-vi.mock("@/app/(authenticated)/[orgSlug]/teams/components/team-modal", () => ({
+vi.mock("@repo/app/teams/components/team-modal", () => ({
   TeamModal: ({ trigger }: { trigger: React.ReactNode; team?: unknown }) => (
     <div data-testid="team-modal">{trigger}</div>
   ),
@@ -161,6 +177,54 @@ describe("SidebarTeams", () => {
     mockUseFavoriteProjects.mockReturnValue({ data: [] });
     mockUseIsMounted.mockReturnValue(true);
     mockUsePathname.mockReturnValue("/test-org");
+    mockUseParams.mockReturnValue({ orgSlug: "test-org" });
+    // A RESOLVED active org is the default these cases render under. ISS-7344
+    // made `organization: null` mean "no slug yet" rather than "fall back to the
+    // URL", so leaving it null here would exercise the held state below instead
+    // of the rendering the cases are about.
+    mockUseOrganization.mockReturnValue({
+      organization: { slug: "test-org" },
+      isLoaded: true,
+    });
+  });
+
+  test("renders no team links until the active org resolves", () => {
+    // ISS-7344: the window with no concrete org. The URL still names one and the
+    // cache may still hold the previous org's teams, so splicing the two mints a
+    // cross-org href for a team that belongs to neither. Hold the rows instead.
+    mockUseParams.mockReturnValue({ orgSlug: "craft-five" });
+    mockUseOrganization.mockReturnValue({
+      organization: null,
+      isLoaded: false,
+    });
+
+    const { container } = render(<SidebarTeams />);
+
+    expect(container.querySelectorAll("a")).toHaveLength(0);
+    expect(screen.queryByText("Engineering")).toBeNull();
+    // The section itself still renders — this holds the links, not the shell.
+    expect(screen.getByText("Your Teams")).toBeInTheDocument();
+  });
+
+  test("builds team links from the active org, never the URL's foreign slug", () => {
+    // ISS-6567 reproduction: prod minted
+    // `/craft-five/teams/<closedloop-ai team uuid>/projects` because the slug
+    // came from the URL while the team ids came from active-org-scoped hooks.
+    mockUseParams.mockReturnValue({ orgSlug: "craft-five" });
+    mockUseOrganization.mockReturnValue({
+      organization: { slug: "closedloop-ai" },
+      isLoaded: true,
+    });
+
+    const { container } = render(<SidebarTeams />);
+    const hrefs = [...container.querySelectorAll("a")].map((anchorEl) =>
+      anchorEl.getAttribute("href")
+    );
+
+    // Positive sibling: a SidebarTeams that rendered no links would satisfy the
+    // "nothing names craft-five" assertion on its own.
+    expect(hrefs).toContain("/closedloop-ai/teams/team-1/projects");
+    expect(hrefs.filter((href) => href?.includes("craft-five"))).toEqual([]);
   });
 
   test("renders each team as a direct link to its projects page", () => {

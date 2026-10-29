@@ -1,8 +1,8 @@
 import {
+  CommentSurface,
+  CommentTargetType,
   ThreadStatus,
   TraceCommentKind,
-  TraceCommentSurface,
-  TraceCommentTargetType,
 } from "@repo/api/src/types/comment";
 import type { Decorator, Meta, StoryObj } from "@storybook/react";
 import { expect, fn, userEvent, within } from "storybook/test";
@@ -50,9 +50,9 @@ const detailShellDecorator: Decorator = (Story) => (
 const USERS_QUERY_DATA = [[userKeys.organizationUsers(), []]] as const;
 
 const meta = {
-  title: "App Core/Agents/Session Comments Rail",
+  title: "Primitives v1.0/Data Display/Session Comments Rail",
   component: SessionCommentsRail,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "padded",
     appCore: { queryData: USERS_QUERY_DATA },
@@ -272,8 +272,8 @@ function makeComment({
     resolvedById: null,
     resolvedByName: null,
     status: ThreadStatus.Open,
-    surface: TraceCommentSurface.SessionDetail,
-    target: { id: "session-detail-1", type: TraceCommentTargetType.Session },
+    surface: CommentSurface.SessionDetail,
+    target: { id: "session-detail-1", type: CommentTargetType.Session },
     threadId: `thread-${id}`,
     updatedAt: "2026-06-10T12:30:00.000Z",
   };

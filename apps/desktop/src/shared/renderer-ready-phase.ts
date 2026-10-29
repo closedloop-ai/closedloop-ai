@@ -23,6 +23,8 @@ export const RendererReadyPhase = {
   Shell: "shell",
   /** The React entry mounted and committed its first render. */
   Mounted: "mounted",
+  /** The app installed its main-process navigation event listener. */
+  NavigationReady: "navigation-ready",
 } as const;
 
 export type RendererReadyPhase =
@@ -36,7 +38,11 @@ export type RendererReadyPhase =
  * bounded wait and never reveals on its own.
  */
 export function toRendererReadyPhase(value: unknown): RendererReadyPhase {
-  return value === RendererReadyPhase.Mounted
-    ? RendererReadyPhase.Mounted
-    : RendererReadyPhase.Shell;
+  if (value === RendererReadyPhase.Mounted) {
+    return RendererReadyPhase.Mounted;
+  }
+  if (value === RendererReadyPhase.NavigationReady) {
+    return RendererReadyPhase.NavigationReady;
+  }
+  return RendererReadyPhase.Shell;
 }

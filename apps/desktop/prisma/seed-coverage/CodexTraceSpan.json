@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Codex OTel spans written by the OTLP receiver (codexOtel.persistBatch); no Desktop view reads them."
+}

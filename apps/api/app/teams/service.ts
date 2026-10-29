@@ -3,15 +3,21 @@ import type {
   AddTeamMemberInput,
   AddTeamRepositoryInput,
   CreateTeamInput,
+  ProjectTeamOption,
+  Team,
   TeamRepository,
-  TeamRole,
   TeamWithCounts,
   UpdateTeamInput,
   UpdateTeamMemberInput,
   UpdateTeamRepositoryInput,
 } from "@repo/api/src/types/teams";
+import { TeamRole } from "@repo/api/src/types/teams";
 import { GitHubInstallationStatus, withDb } from "@repo/database";
-import { basicUserSelect } from "@/lib/db-utils";
+import {
+  basicUserSelect,
+  getPrismaErrorCode,
+  matchesPrismaP2002Target,
+} from "@/lib/db-utils";
 
 /**
  * Transform a database team to API TeamWithCounts format
@@ -54,6 +60,22 @@ export const teamsService = {
   },
 
   /**
+   * The org's teams reduced to what a caller needs to choose one. Deliberately
+   * not `findByOrganization`: that carries a `_count` join this path never
+   * reads, and its `Date` columns cannot be serialized into the `JsonObject`
+   * that error `details` is typed as.
+   */
+  listTeamOptions(organizationId: string): Promise<ProjectTeamOption[]> {
+    return withDb((db) =>
+      db.team.findMany({
+        where: { organizationId },
+        select: { id: true, name: true },
+        orderBy: { name: "asc" },
+      })
+    );
+  },
+
+  /**
    * Find a team by ID
    */
   findById(id: string, organizationId: string) {
@@ -71,92 +93,139 @@ export const teamsService = {
   },
 
   /**
-   * Find a team by organization and slug
+   * Prove a team id exists inside an organization, without hydrating it.
+   *
+   * `findById` above joins every member with its `User` plus two `_count`s; a
+   * route gate that only null-checks the result must not pay for that graph
+   * (`apps/api/AGENTS.md`, "Query Shape and Route Gates"). Callers that render
+   * the team still use `findById`.
    */
-  findBySlug(slug: string, organizationId: string) {
-    return withDb((db) =>
-      db.team.findUnique({
-        where: {
-          organizationId_slug: { organizationId, slug },
-        },
+  async existsInOrganization(
+    id: string,
+    organizationId: string
+  ): Promise<boolean> {
+    const team = await withDb((db) =>
+      db.team.findFirst({
+        where: { id, organizationId },
+        select: { id: true },
       })
     );
+    return team !== null;
   },
 
   /**
-   * Create a new team
+   * Create a team and add the creator as owner.
+   *
+   * `Status.Conflict` when the slug is already taken in this organization —
+   * `slug` is caller-supplied, so `@@unique([organizationId, slug])` is
+   * reachable from a plain request body. Only that constraint: the membership
+   * insert below carries its own unique index, and
+   * {@link isTeamSlugConflictError} keeps a violation of it out of the 409.
    */
-  create(organizationId: string, input: CreateTeamInput) {
-    const slug = input.slug || generateSlug(input.name);
-    return withDb((db) =>
-      db.team.create({
-        data: {
-          organizationId,
-          name: input.name,
-          slug,
-        },
-      })
-    );
-  },
-
-  /**
-   * Create a team and add the creator as owner
-   */
-  createWithOwner(
+  async createWithOwner(
     organizationId: string,
     ownerId: string,
     input: CreateTeamInput
-  ) {
+  ): Promise<Result<Team, typeof Status.Conflict>> {
     const slug = input.slug || generateSlug(input.name);
 
-    return withDb.tx(async (tx) => {
-      const team = await tx.team.create({
-        data: {
-          organizationId,
-          name: input.name,
-          slug,
-        },
-      });
+    try {
+      // The catch sits OUTSIDE withDb.tx so a failed write rolls the whole
+      // transaction back before the error is translated.
+      const team = await withDb.tx(async (tx) => {
+        const created = await tx.team.create({
+          data: {
+            organizationId,
+            name: input.name,
+            slug,
+          },
+        });
 
-      await tx.teamMember.create({
-        data: {
-          teamId: team.id,
-          userId: ownerId,
-          role: "OWNER",
-        },
-      });
+        await tx.teamMember.create({
+          data: {
+            teamId: created.id,
+            userId: ownerId,
+            role: "OWNER",
+          },
+          select: { id: true },
+        });
 
-      return team;
-    });
+        return created;
+      });
+      return Result.ok(team);
+    } catch (error) {
+      if (isTeamSlugConflictError(error)) {
+        return Result.err(Status.Conflict);
+      }
+      throw error;
+    }
   },
 
   /**
-   * Update a team
+   * Update a team.
+   *
+   * `Status.NotFound` when no row matches the id in this organization: Prisma
+   * raises P2025 on a zero-row `update` rather than resolving null, so a
+   * caller cannot detect the miss from the return value.
+   * `Status.Conflict` when the new slug is already taken.
    */
-  update(
+  async update(
     id: string,
     organizationId: string,
     input: Omit<UpdateTeamInput, "id">
-  ) {
-    return withDb((db) =>
-      db.team.update({
-        where: { id, organizationId },
-        data: input,
-      })
-    );
+  ): Promise<Result<Team, typeof Status.NotFound | typeof Status.Conflict>> {
+    try {
+      const team = await withDb((db) =>
+        db.team.update({
+          where: { id, organizationId },
+          data: input,
+        })
+      );
+      return Result.ok(team);
+    } catch (error) {
+      if (getPrismaErrorCode(error) === "P2025") {
+        return Result.err(Status.NotFound);
+      }
+      if (isTeamSlugConflictError(error)) {
+        return Result.err(Status.Conflict);
+      }
+      throw error;
+    }
   },
 
   /**
-   * Delete a team
+   * Delete a team.
+   *
+   * `Status.NotFound` when no row matches the id in this organization.
+   *
+   * One org-scoped statement, and deliberately not a transaction. The members,
+   * project links, and repositories the team owns are removed by the FK
+   * cascades that already exist (`team_members`, `project_teams`, and
+   * `team_repositories` are all `ON DELETE CASCADE`), which is what the
+   * `TODO: Cascading deletion` this replaces was waiting for.
+   *
+   * Hand-deleting the associations first could not stay correct once a miss
+   * became a returned `Result` instead of a throw: those `deleteMany` calls
+   * were keyed on `teamId` alone, and `withDb.tx` JOINS an ambient transaction
+   * rather than opening its own, so a caller already inside one would get
+   * `Status.NotFound` back and then commit the unscoped deletes — wiping the
+   * membership of another organization's team. Writing nothing before the
+   * scoped statement removes the hazard instead of relying on a rollback that
+   * only happens when this method owns the transaction.
    */
-  delete(id: string, organizationId: string) {
-    // Delete team members first, then project associations, then the team
-    return withDb.tx(async (tx) => {
-      // TODO: Cascading deletion
-      await tx.teamMember.deleteMany({ where: { teamId: id } });
-      await tx.projectTeam.deleteMany({ where: { teamId: id } });
-      return tx.team.delete({ where: { id, organizationId } });
-    });
+  async delete(
+    id: string,
+    organizationId: string
+  ): Promise<Result<true, typeof Status.NotFound>> {
+    try {
+      await withDb((db) => db.team.delete({ where: { id, organizationId } }));
+      return Result.ok(true);
+    } catch (error) {
+      if (getPrismaErrorCode(error) === "P2025") {
+        return Result.err(Status.NotFound);
+      }
+      throw error;
+    }
   },
 
   // ==================== Team Members ====================
@@ -241,25 +310,41 @@ export const teamsService = {
         where: {
           teamId_userId: { teamId, userId },
         },
+        // Existence is the whole answer; no column of the row is read.
+        select: { id: true },
       })
     );
     return member !== null;
   },
 
   /**
-   * Check if a user has a specific role (or higher) in a team
-   * Role hierarchy: OWNER > ADMIN > MEMBER
+   * Check if a user has a specific role (or higher) in a team.
+   * Role hierarchy: OWNER > ADMIN > MEMBER.
+   *
+   * `organizationId` is part of the query, not merely of the caller's context:
+   * the membership row is reached through `team: { organizationId }` so the
+   * answer is correct no matter what order a caller runs its checks in. Before
+   * ISS-7533 this keyed on `teamId_userId` alone and was safe only because every
+   * caller happened to be a same-org member.
+   *
+   * Takes one object rather than four positional arguments because `teamId`,
+   * `organizationId` and `userId` are same-typed and a transposition would
+   * typecheck under any positional order while authorizing against the wrong
+   * tenant. Same shape as `authorizeTeamScopeRead` in `lib/team-scope-policy.ts`.
    */
-  async hasRole(
-    teamId: string,
-    userId: string,
-    requiredRole: TeamRole
-  ): Promise<boolean> {
+  async hasRole(input: {
+    teamId: string;
+    organizationId: string;
+    userId: string;
+    requiredRole: TeamRole;
+  }): Promise<boolean> {
     const member = await withDb((db) =>
       db.teamMember.findUnique({
         where: {
-          teamId_userId: { teamId, userId },
+          teamId_userId: { teamId: input.teamId, userId: input.userId },
+          team: { organizationId: input.organizationId },
         },
+        select: { role: true },
       })
     );
 
@@ -267,33 +352,7 @@ export const teamsService = {
       return false;
     }
 
-    const roleHierarchy: Record<TeamRole, number> = {
-      OWNER: 3,
-      ADMIN: 2,
-      MEMBER: 1,
-    };
-
-    return (
-      roleHierarchy[member.role as TeamRole] >= roleHierarchy[requiredRole]
-    );
-  },
-
-  /**
-   * Get all teams a user belongs to
-   */
-  findByUser(userId: string) {
-    return withDb((db) =>
-      db.teamMember.findMany({
-        where: { userId },
-        include: {
-          team: {
-            include: {
-              _count: { select: { members: true, projects: true } },
-            },
-          },
-        },
-      })
-    );
+    return ROLE_HIERARCHY[member.role] >= ROLE_HIERARCHY[input.requiredRole];
   },
 
   // ==================== Team Repositories ====================
@@ -544,9 +603,62 @@ const TEAM_REPO_INCLUDE = {
   },
 } as const;
 
+/** OWNER > ADMIN > MEMBER. Keyed on the `TeamRole` const, never bare strings. */
+const ROLE_HIERARCHY: Record<TeamRole, number> = {
+  [TeamRole.Owner]: 3,
+  [TeamRole.Admin]: 2,
+  [TeamRole.Member]: 1,
+};
+
 export const AddRepositoryError = {
   RepoNotAvailable: "REPO_NOT_AVAILABLE",
   AlreadyAdded: "ALREADY_ADDED",
 } as const;
 export type AddRepositoryError =
   (typeof AddRepositoryError)[keyof typeof AddRepositoryError];
+
+/**
+ * The 409 body both team-write routes return for
+ * `@@unique([organizationId, slug])`. Shared so POST /teams and
+ * PUT /teams/:teamId cannot drift apart.
+ */
+export const TEAM_SLUG_CONFLICT_MESSAGE =
+  "A team with this slug already exists";
+
+/**
+ * The token both `meta.target` representations carry for
+ * `@@unique([organizationId, slug])`. `slug` is not `@map`-ed, so the Prisma
+ * field name and the Postgres column name are the same string, and it appears
+ * in the constraint name (`teams_organization_id_slug_key`) either way.
+ */
+const TEAM_SLUG_CONFLICT_TARGET = "slug";
+const TEAM_SLUG_CONFLICT_INDEX = "teams_organization_id_slug_key";
+
+/**
+ * True when `error` is the P2002 raised by `@@unique([organizationId, slug])`.
+ *
+ * The target is checked, not just the code: `createWithOwner` writes a
+ * `TeamMember` in the same transaction and that table has its own
+ * `@@unique([teamId, userId])`, so a bare `code === "P2002"` would report an
+ * unrelated constraint violation to the caller as a slug conflict instead of
+ * letting it surface as the unexpected fault it is. Both representations Prisma
+ * adapters emit are accepted — the constraint-name string and the field/column
+ * array (apps/api/AGENTS.md).
+ */
+function isTeamSlugConflictError(error: unknown): boolean {
+  if (getPrismaErrorCode(error) !== "P2002") {
+    return false;
+  }
+
+  // The string shape is an index NAME and is compared exactly: a substring test
+  // for "slug" also matches `organizations_slug_key` and any future
+  // `teams_*_slug_*` unique, which would silently become a 409. The array shape
+  // is a column list and stays a membership test, because a bare column list
+  // names no table and nothing more precise is available.
+  return matchesPrismaP2002Target(error, (target) => {
+    if (Array.isArray(target)) {
+      return target.includes(TEAM_SLUG_CONFLICT_TARGET);
+    }
+    return target === TEAM_SLUG_CONFLICT_INDEX;
+  });
+}

@@ -1,7 +1,6 @@
 /**
  * Desktop `SurfaceRoutingAdapter` (FEA-1513 Phase 4 / M-001).
  *
- * The desktop counterpart of `apps/app/lib/engineer/web-surface-routing-adapter.ts`.
  * It owns the desktop transport for `/api/gateway/*` requests: build a
  * surface-neutral `RelayHttpRequestPayload` from `(path, init)` and dispatch it
  * over the `desktop:gateway-dispatch` IPC channel exposed on
@@ -31,6 +30,7 @@ import {
   EngineerRoutingMode,
   type SurfaceRoutingAdapter,
 } from "@repo/shared-platform/types";
+import { bytesToBase64 } from "../shared/bytes-base64";
 
 /**
  * Headers the renderer must never forward to the gateway. Auth/identity headers
@@ -61,15 +61,6 @@ function stripDangerousHeaders(
   return record;
 }
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary);
-}
-
 function encodeRequestBody(
   method: string,
   init: RequestInit | undefined,
@@ -83,7 +74,11 @@ function encodeRequestBody(
     return { kind: "text", value: body, contentType };
   }
   if (body instanceof ArrayBuffer) {
-    return { kind: "base64", value: arrayBufferToBase64(body), contentType };
+    return {
+      kind: "base64",
+      value: bytesToBase64(new Uint8Array(body)),
+      contentType,
+    };
   }
   // The shared fetch shim materializes bodies to an ArrayBuffer before dispatch,
   // so other shapes never reach here. v1 desktop gateway routes are GET-only.
@@ -164,12 +159,14 @@ export function createDesktopRoutingAdapter(): SurfaceRoutingAdapter {
 
 /**
  * Repair the persisted routing selection so the desktop adapter is always
- * selectable. The shared default is `CloudRelay` (routing-store) and a user may
- * have persisted/manually chosen `CloudRelay` — neither is supported by the
- * desktop adapter in v1, so `dispatchGatewayRequest` would throw
+ * selectable. The shared default is `CloudRelay` (routing-store) and an older
+ * build may have persisted `CloudRelay` — neither is supported by the desktop
+ * adapter in v1, so `dispatchGatewayRequest` would throw
  * `NoRoutingAdapterError`. If no registered adapter supports the current mode,
- * coerce the selection to `LocalElectron` (forced, so a manual choice is also
- * repaired) and persist it. Idempotent: a no-op once the mode is supported.
+ * coerce the selection to `LocalElectron` and persist it. A stored manual
+ * choice is repaired too: the store loads it as an ordinary selection since
+ * ISS-12617 removed the manual source. Idempotent: a no-op once the mode is
+ * supported.
  *
  * MUST be called AFTER `registerSurfaceRoutingAdapter(createDesktopRoutingAdapter())`
  * so `selectRoutingAdapter` can see the desktop adapter.
@@ -181,7 +178,6 @@ export function ensureDesktopRoutingSelection(): void {
   }
   setRoutingAutoSelection(
     EngineerRoutingMode.LocalElectron,
-    current.computeTargetId,
-    { force: true }
+    current.computeTargetId
   );
 }

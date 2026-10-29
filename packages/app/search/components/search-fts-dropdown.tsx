@@ -6,6 +6,7 @@ import { Link } from "@repo/navigation/link";
 import { useOrgPath } from "@repo/navigation/use-org-path";
 import { Loader2Icon } from "lucide-react";
 import {
+  type OfferedSearchHit,
   parseSnippetSegments,
   SEARCH_ENTITY_TYPE_LABELS,
   searchHitOrgRelativeRoute,
@@ -21,7 +22,7 @@ import { SnippetHighlight } from "./snippet-highlight";
  */
 
 type SearchFtsDropdownProps = {
-  suggestions: SearchHit[];
+  suggestions: OfferedSearchHit[];
   isLoading: boolean;
   isError: boolean;
   activeIndex: number;
@@ -39,8 +40,10 @@ export function SearchFtsDropdown({
   optionId,
   onSelectHit,
 }: SearchFtsDropdownProps) {
+  // Chrome only. The owning `SearchTypeahead` positions the popup layer around
+  // this (ISS-8777), so the placement lives in one file instead of two.
   return (
-    <div className="absolute inset-x-2 top-full z-50 mt-1 overflow-hidden rounded-md border border-border bg-popover shadow-md">
+    <div className="flex min-h-0 flex-col overflow-hidden rounded-md border border-border bg-popover shadow-md">
       {isLoading && suggestions.length === 0 ? (
         <div className="flex items-center justify-center py-4">
           <Loader2Icon
@@ -63,7 +66,7 @@ export function SearchFtsDropdown({
       {suggestions.length > 0 ? (
         <ul
           aria-label="Search suggestions"
-          className="max-h-80 overflow-auto py-1"
+          className="max-h-80 min-h-0 overflow-auto py-1"
           id={listboxId}
           // The owning input carries role="combobox" + aria-controls to this id;
           // interactivity stays on that input via aria-activedescendant, so this
@@ -92,7 +95,7 @@ function FtsItem({
   isActive,
   onSelectHit,
 }: Readonly<{
-  hit: SearchHit;
+  hit: OfferedSearchHit;
   optionId: string;
   isActive: boolean;
   onSelectHit: (hit: SearchHit) => void;

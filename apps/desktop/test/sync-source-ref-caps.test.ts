@@ -1,41 +1,33 @@
 /**
  * @file sync-source-ref-caps.test.ts
- * @description FEA-2711 — the desktop sync source must bound each session's
- * `artifactRefs` / `prRefs` — AND the legacy `prs` field derived from the same
- * PR rows — before emitting. Artifacts use the desktop PRODUCER cap
- * `MAX_SYNCED_ARTIFACT_REFS_PRODUCER` (100); PR refs use the desktop PRODUCER cap
- * `MAX_SYNCED_SESSION_PR_REFS_PRODUCER` (100 in PR1). ISS-4445 raised the cloud
- * validator cap (`MAX_SYNCED_SESSION_PR_REFS`) to 500, and ISS-4448+4449 raised
- * the artifactRefs validator cap (`MAX_SYNCED_ARTIFACT_REFS`) to 500, both while
- * keeping the producer at 100 so a new desktop never emits a payload an old
- * `.max(100)` cloud rejects — this test drives the producer slice, so it asserts
- * the producer cap.
+ * @description The desktop sync source bounds a session's `artifactRefs` at the
+ * desktop PRODUCER cap `MAX_SYNCED_ARTIFACT_REFS_PRODUCER` (100) before emitting
+ * (FEA-2711, ISS-4448+4449). `prRefs`, and the legacy `prs` field derived from
+ * the same PR rows, are emitted IN FULL: ISS-9859 removed their 100-ref producer
+ * cap (approved 2026-09-10), and the chunker paginates `prRefs` when one payload
+ * cannot carry them. This test drives the real SQLite → `loadSyncedSessions`
+ * boundary.
  *
- * Without the cap, a session that accumulated more than the producer bound of
- * artifact-links (or PR-links) syncs an oversized array. The cloud validates the
- * whole batch (up to 200 sessions) with a single parse, so one oversized session
- * would reject the ENTIRE batch and silently stall sync — not just truncate it.
- * The cloud schema also validates the legacy `prs` field with `.max(...)`, so a
- * capped `prRefs` alone is not enough: the same PR rows flow into
- * `buildSessionTraceSyncFields` and emit `prs`, which must be capped too. This
- * test drives the real SQLite → `loadSyncedSessions` boundary to prove all
- * three arrays are sliced to the cap before they leave the desktop.
- *
- * T-10.9 — also verifies that `components[]` in a loaded session is sliced
- * to the MAX_SESSION_COMPONENT_USAGE cap (500) before the payload leaves the
- * desktop.
+ * T-10.9 / ISS-6884 — `components[]` is the one array here that is NOT sliced.
+ * Its MAX_SESSION_COMPONENT_USAGE bound is the cloud's PER-PAYLOAD wire cap, and
+ * applying it as a population cap permanently stranded every row past it (the
+ * read is deterministic and the local usage table has no sync cursor). The reader
+ * now emits the whole set and `chunkOversizedSession` paginates it across sync
+ * parts; only a single (kind,key) group whose own branch rows exceed one payload
+ * is still dropped, because a partially-sent group would make the cloud prune
+ * delete the branches it omits.
  */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { MAX_SYNCED_COMPONENT_USAGE } from "@repo/api/src/types/agent-session";
 import { BranchLifecycleBoundaryKind } from "@repo/api/src/types/branch";
 import {
   ArtifactRefMethod,
   MAX_SYNCED_ARTIFACT_REFS_PRODUCER,
-  MAX_SYNCED_SESSION_PR_REFS_PRODUCER,
 } from "@repo/api/src/types/session-artifact-link";
+import { test } from "vitest";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 
 // A session cwd of NULL short-circuits attribution resolution, so empty maps
@@ -48,15 +40,10 @@ function emptyAttributionCache() {
   };
 }
 
-// Each seed count must comfortably overshoot the cap of the array it drives.
-// ISS-4445 raised the cloud *validator* cap (MAX_SYNCED_SESSION_PR_REFS, 100 →
-// 500) but deliberately kept the desktop *producer* slice at 100
-// (MAX_SYNCED_SESSION_PR_REFS_PRODUCER) so a new desktop never emits a payload an
-// old `.max(100)` cloud rejects. This test drives the PRODUCER slice, so it
-// asserts against the producer cap (100) — both PR-links and artifact-links
-// overshoot 100 here.
-const OVERSIZED_ARTIFACTS = MAX_SYNCED_ARTIFACT_REFS_PRODUCER + 50; // past the 100 producer cap
-const OVERSIZED_PRS = MAX_SYNCED_SESSION_PR_REFS_PRODUCER + 50; // past the 100 producer cap
+// Artifact links overshoot their producer cap. PR links overshoot the retired
+// 100-ref cap, so a reinstated slice fails the full-emission assertions.
+const OVERSIZED_ARTIFACTS = MAX_SYNCED_ARTIFACT_REFS_PRODUCER + 50;
+const OVERSIZED_PRS = 150;
 
 /**
  * Seed one session with more links than either cap allows:
@@ -113,11 +100,13 @@ async function seedOversizedSession(db: {
 // T-10.9 — components[] cap (MAX_SESSION_COMPONENT_USAGE = 500)
 // ---------------------------------------------------------------------------
 
-const MAX_SESSION_COMPONENT_USAGE = 500; // mirrors the private constant in sync-source.ts
-const OVERSIZED_COMPONENTS = 600; // comfortably past the 500 cap
+// ISS-6884: the shared constant, not a hand-copied 500 — the reader now treats
+// it as a PER-PAYLOAD bound the chunker honors, so the two must not drift.
+const MAX_SESSION_COMPONENT_USAGE = MAX_SYNCED_COMPONENT_USAGE;
+const OVERSIZED_COMPONENTS = MAX_SESSION_COMPONENT_USAGE + 100;
 
-test("T-10.9: oversized components[] is sliced to MAX_SESSION_COMPONENT_USAGE (500)", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "t109-comp-caps-"));
+test("ISS-6884: a components[] set past the per-payload cap is emitted in full", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "iss6884-comp-full-"));
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
   try {
     const db = await openSqliteAgentDatabase({
@@ -149,22 +138,33 @@ test("T-10.9: oversized components[] is sliced to MAX_SESSION_COMPONENT_USAGE (5
         Array.isArray(session.components),
         "components[] must be present for an oversized session"
       );
+      // ISS-6884 — DELIBERATE BEHAVIOR CHANGE. This test previously asserted the
+      // set was sliced to the first MAX_SESSION_COMPONENT_USAGE rows. That
+      // expectation encoded the defect: the read is deterministic and the local
+      // usage table carries no sync cursor, so the same subset was re-sent on
+      // every resend and the rows beyond it never reached the cloud at ALL. The
+      // 500 bound is the cloud's PER-PAYLOAD wire cap, and it is now honored by
+      // `chunkOversizedSession` paginating the set across sync parts (see
+      // agent-session-sync-component-usage-chunking.test.ts). The reader emits
+      // the whole population.
       assert.equal(
         session.components?.length,
-        MAX_SESSION_COMPONENT_USAGE,
-        "components[] sliced to the shared cap (500)"
+        OVERSIZED_COMPONENTS,
+        "every local usage row is emitted — the payload cap is not a population cap"
       );
-
-      // The slice keeps the earliest rows (alphabetically by component_key)
-      // since the query orders by component_kind ASC, component_key ASC.
-      const firstKey = session.components?.[0]?.componentKey;
-      assert.equal(firstKey, "tool-0000", "earliest component_key is retained");
-      const lastKey =
-        session.components?.[MAX_SESSION_COMPONENT_USAGE - 1]?.componentKey;
+      const emittedKeys = new Set(
+        session.components?.map((usage) => usage.componentKey)
+      );
       assert.equal(
-        lastKey,
-        `tool-${String(MAX_SESSION_COMPONENT_USAGE - 1).padStart(4, "0")}`,
-        "last retained key is at the cap boundary"
+        emittedKeys.size,
+        OVERSIZED_COMPONENTS,
+        "each component_key is emitted exactly once"
+      );
+      assert.ok(
+        emittedKeys.has(
+          `tool-${String(OVERSIZED_COMPONENTS - 1).padStart(4, "0")}`
+        ),
+        "including the last key, which the old prefix slice stranded permanently"
       );
     } finally {
       await db.close();
@@ -174,7 +174,7 @@ test("T-10.9: oversized components[] is sliced to MAX_SESSION_COMPONENT_USAGE (5
   }
 });
 
-test("FEA-3029: the component cap never splits a (kind,key) branch group", async () => {
+test("FEA-3029: the reader never emits a partial (kind,key) branch group", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "fea3029-comp-groups-"));
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
   try {
@@ -212,8 +212,9 @@ test("FEA-3029: the component cap never splits a (kind,key) branch group", async
           `tool-${String(i).padStart(4, "0")}`
         );
       }
-      // The straddling group: its branch rows would be split by a blind
-      // slice(0, cap). It must be dropped whole, never partially emitted.
+      // A group whose rows straddle the per-payload cap boundary. It must be
+      // emitted WHOLE (ISS-6884 — the chunker, not the reader, decides which
+      // sync part carries it), never split into a partial branch set.
       const STRADDLE_GROUP_KEY = `tool-${String(SINGLE_GROUPS + 1).padStart(4, "0")}`;
       const STRADDLE_GROUP_BRANCHES = 4;
       for (let b = 0; b < STRADDLE_GROUP_BRANCHES; b++) {
@@ -232,10 +233,6 @@ test("FEA-3029: the component cap never splits a (kind,key) branch group", async
       );
       assert.ok(session, "session hydrated");
       const components = session.components ?? [];
-      assert.ok(
-        components.length <= MAX_SESSION_COMPONENT_USAGE,
-        "components[] stays within the shared cap"
-      );
 
       // Tally emitted branch rows per (kind,key) group.
       const emittedByKey = new Map<string, number>();
@@ -252,18 +249,28 @@ test("FEA-3029: the component cap never splits a (kind,key) branch group", async
         FITTING_GROUP_BRANCHES,
         "a multi-branch group under the cap is kept whole"
       );
-      // The straddling group is dropped whole — never a partial branch set that
-      // the cloud prune would treat as authoritative.
+      // ISS-6884 — DELIBERATE BEHAVIOR CHANGE. This previously asserted the
+      // straddling group was DROPPED, because the reader applied the per-payload
+      // cap as a population cap and a straddling group could not be sent whole
+      // within it. It is now emitted whole and the chunker places it in a part of
+      // its own; what stays fixed — and is what FEA-3029 actually protects — is
+      // that a group is never emitted PARTIALLY, because the cloud prune treats a
+      // present group's branch set as authoritative and deletes the rest.
       assert.equal(
         emittedByKey.get(STRADDLE_GROUP_KEY),
-        undefined,
-        "the boundary-straddling group is dropped whole, not split"
+        STRADDLE_GROUP_BRANCHES,
+        "the boundary-straddling group is emitted whole, not split and not dropped"
       );
       // No group is emitted with fewer branches than the DB holds for it: every
       // group is all-or-nothing. Here every emitted group has exactly its full
-      // branch count (3 for the fitting group, 1 for the single-branch groups).
+      // branch count.
       for (const [key, count] of emittedByKey) {
-        const expected = key === FITTING_GROUP_KEY ? FITTING_GROUP_BRANCHES : 1;
+        let expected = 1;
+        if (key === FITTING_GROUP_KEY) {
+          expected = FITTING_GROUP_BRANCHES;
+        } else if (key === STRADDLE_GROUP_KEY) {
+          expected = STRADDLE_GROUP_BRANCHES;
+        }
         assert.equal(
           count,
           expected,
@@ -281,10 +288,16 @@ test("FEA-3029: the component cap never splits a (kind,key) branch group", async
 test("FEA-3029: a single group larger than the cap is dropped whole, never emitted oversized", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "fea3029-comp-oversize-"));
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  // ISS-6884: this drop is now the ONLY component-usage loss left in the reader,
+  // and it is permanent — the read is deterministic and the table has no cursor.
+  // It must therefore be reported, not silent, like the activity-tiling overflow
+  // beside it.
+  const logged: string[] = [];
   try {
     const db = await openSqliteAgentDatabase({
       dataDir,
       detectBillingMode: () => "metered_api",
+      log: (message: string) => logged.push(message),
       now: () => "2026-07-10T00:00:00.000Z",
     });
     try {
@@ -315,6 +328,13 @@ test("FEA-3029: a single group larger than the cap is dropped whole, never emitt
         session.components,
         undefined,
         "an over-cap single group omits components rather than emitting a partial/oversized array"
+      );
+      assert.ok(
+        logged.some(
+          (message) =>
+            message.includes("tool-solo") && message.includes("DROPPING")
+        ),
+        "the permanent drop is reported, never a silent cloud undercount"
       );
     } finally {
       await db.close();
@@ -392,7 +412,7 @@ test("FEA-3029: an over-cap group does not starve later groups that still fit", 
   }
 });
 
-test("FEA-2711: oversized artifactRefs/prRefs are sliced to the shared caps", async () => {
+test("ISS-9859: prRefs and prs are emitted in full; artifactRefs keep the producer cap", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "fea2711-ref-caps-"));
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
   try {
@@ -421,18 +441,16 @@ test("FEA-2711: oversized artifactRefs/prRefs are sliced to the shared caps", as
       if (!prRefs) {
         throw new Error("expected the hydrated session to carry prRefs");
       }
-      assert.equal(
-        prRefs.length,
-        MAX_SYNCED_SESSION_PR_REFS_PRODUCER,
-        "prRefs sliced to the desktop producer cap"
-      );
-      // The legacy `prs` field is derived from the SAME PR rows via
-      // buildSessionTraceSyncFields; capping only prRefs would still ship an
-      // oversized `prs` and fail the cloud's `prs.max(...)` validation.
+      // ISS-9859 — DELIBERATE BEHAVIOR CHANGE. This asserted both PR arrays
+      // were sliced to the 100-ref producer cap (ISS-4445), so a session's
+      // 101st PR never reached the cloud. Tamsin approved removing that shim
+      // on 2026-09-10: no deployed cloud since 2026-08-27 caps the count, and
+      // the chunker paginates prRefs when a split cannot carry them whole.
+      assert.equal(prRefs.length, OVERSIZED_PRS, "every PR ref is emitted");
       assert.equal(
         session.prs?.length,
-        MAX_SYNCED_SESSION_PR_REFS_PRODUCER,
-        "legacy prs field sliced to the same producer cap"
+        OVERSIZED_PRS,
+        "every legacy prs entry is emitted"
       );
 
       // Links are ordered oldest-first, so the slice keeps the earliest N.
@@ -448,14 +466,14 @@ test("FEA-2711: oversized artifactRefs/prRefs are sliced to the shared caps", as
         assert.fail(`unexpected first ref kind: ${first.kind}`);
       }
 
-      // `prs` rows are ordered by pr_number ascending, so the cap keeps the
-      // earliest PRs (#1..#cap) and drops the tail past the cap. With
-      // OVERSIZED_PRS = cap + 50 seeded, PR #(cap+1)..#OVERSIZED_PRS are dropped.
+      // The old cap kept the earliest 100 by pr_number, so the newest PRs were
+      // the ones lost. Both ends must now arrive, on both arrays.
       const prNums = new Set(session.prs?.map((pr) => pr.num));
       assert.ok(prNums.has(1), "prs keeps the earliest PR (#1)");
+      assert.ok(prNums.has(OVERSIZED_PRS), "prs keeps the newest PR");
       assert.ok(
-        !prNums.has(OVERSIZED_PRS),
-        "prs drops the newest PR beyond the cap"
+        prRefs.some((ref) => ref.prNumber === OVERSIZED_PRS),
+        "prRefs keeps the newest PR"
       );
     } finally {
       await db.close();

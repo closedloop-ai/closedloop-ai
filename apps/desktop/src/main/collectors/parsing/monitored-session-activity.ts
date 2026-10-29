@@ -5,14 +5,15 @@ import {
   ArtifactRefMethod,
   ArtifactRefRelation,
   ArtifactRefTargetKind,
+  isValidPullRequestNumber,
+  parsePullRequestNumber,
 } from "@repo/api/src/types/session-artifact-link";
 import {
-  MAX_SYNCED_MONITORED_SESSION_ACTIVITY_EVENTS,
-  MAX_SYNCED_MONITORED_SESSION_ACTIVITY_EVENTS_PER_SESSION,
   MonitoredSessionActivityEventKind,
   type SyncedMonitoredSessionActivity,
   type SyncedMonitoredSessionActivityEvent,
 } from "@repo/api/src/types/session-monitored-activity";
+import type { IndexedToolUse } from "@repo/lib/harness/session-tool-uses";
 import { z } from "zod";
 import { isValidBranchName } from "../../enrichment/branch-validation.js";
 import type { NormalizedSession, NormalizedToolUse } from "../types.js";
@@ -32,7 +33,6 @@ import {
   validMonitoredEventTimestamp,
 } from "./monitored-session-source.js";
 import { GITHUB_PR_URL_RE } from "./parser-utils.js";
-import type { IndexedToolUse } from "./session-tool-uses.js";
 
 const OWNER_REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 const GITHUB_BRANCH_URL_RE =
@@ -66,8 +66,9 @@ type QualifiedRef = {
 
 /**
  * Add exact Git/gh/GitHub-MCP monitored activity to Branch/PR refs, then attach
- * one target-wide bounded carrier to every surviving ref for that identity.
- * Existing ref evidence and dedup precedence remain unchanged.
+ * one target-wide carrier holding every qualifying event to every surviving ref
+ * for that identity. Existing ref evidence and dedup precedence remain
+ * unchanged.
  */
 export function attachMonitoredSessionActivity(
   session: NormalizedSession,
@@ -85,9 +86,6 @@ export function attachMonitoredSessionActivity(
   for (const qualified of qualifyExistingRefs(session, toolUses, refs)) {
     addQualifiedEvent(buckets, qualified);
   }
-  const retainedEventKeys = retainSessionWideLatestEvents(buckets);
-  const sessionCoverageTruncated =
-    retainedEventKeys.size < countBucketEvents(buckets);
   for (const ref of refs) {
     const key = targetKeyForRef(ref);
     if (!key) {
@@ -97,12 +95,7 @@ export function attachMonitoredSessionActivity(
     if (!bucket) {
       continue;
     }
-    const carrier = buildCarrier(
-      key,
-      bucket,
-      retainedEventKeys,
-      sessionCoverageTruncated
-    );
+    const carrier = buildCarrier(bucket);
     if (!carrier) {
       continue;
     }
@@ -245,40 +238,29 @@ function addQualifiedEvent(
 }
 
 function buildCarrier(
-  targetKey: string,
-  bucket: ActivityBucket,
-  retainedEventKeys: ReadonlySet<string>,
-  sessionCoverageTruncated: boolean
+  bucket: ActivityBucket
 ): SyncedMonitoredSessionActivity | undefined {
-  const allEvents = [...bucket.eventsById.values()]
-    .filter((event) =>
-      retainedEventKeys.has(sessionEventKey(targetKey, event.sourceEventId))
-    )
-    .sort(
-      (left, right) =>
-        Date.parse(right.occurredAt) - Date.parse(left.occurredAt) ||
-        left.sourceEventId.localeCompare(right.sourceEventId)
-    );
+  const allEvents = [...bucket.eventsById.values()].sort(
+    (left, right) =>
+      Date.parse(right.occurredAt) - Date.parse(left.occurredAt) ||
+      left.sourceEventId.localeCompare(right.sourceEventId)
+  );
   if (allEvents.length === 0) {
     return undefined;
   }
-  const capped =
-    allEvents.length > MAX_SYNCED_MONITORED_SESSION_ACTIVITY_EVENTS;
-  const partial = bucket.degraded || capped || sessionCoverageTruncated;
+  const partial = bucket.degraded;
   return {
     completeness: partial
       ? BranchActivityEvidenceCompleteness.Partial
       : BranchActivityEvidenceCompleteness.Complete,
-    events: allEvents
-      .slice(0, MAX_SYNCED_MONITORED_SESSION_ACTIVITY_EVENTS)
-      .map((event) =>
-        partial
-          ? {
-              ...event,
-              completeness: BranchActivityEvidenceCompleteness.Partial,
-            }
-          : event
-      ),
+    events: allEvents.map((event) =>
+      partial
+        ? {
+            ...event,
+            completeness: BranchActivityEvidenceCompleteness.Partial,
+          }
+        : event
+    ),
   };
 }
 
@@ -344,6 +326,13 @@ function addHumanUrlRefs(
     if (!(message.role === "human" && message.text)) {
       continue;
     }
+    // ISS-8659: the pr-link RECORD producer is gated, so gate the other producer
+    // of the same fact. A URL the parent's human pasted is the parent's
+    // reference; scraping it out of a replayed message let the fork claim every
+    // PR its parent had ever linked.
+    if (message.isForkReplayed === true) {
+      continue;
+    }
     const timestamp = validMonitoredEventTimestamp(message.timestamp);
     if (!timestamp) {
       continue;
@@ -353,10 +342,8 @@ function addHumanUrlRefs(
         match[1],
         match[2]
       );
-      const prNumber = Number(match[3]);
-      if (
-        !(repositoryFullName && Number.isSafeInteger(prNumber) && prNumber > 0)
-      ) {
+      const prNumber = parsePullRequestNumber(match[3]);
+      if (!(repositoryFullName && prNumber !== null)) {
         continue;
       }
       refs.push({
@@ -455,8 +442,7 @@ function targetKeyForRef(ref: ArtifactRefRecord): string | undefined {
     ref.repoFullName &&
     OWNER_REPO_RE.test(ref.repoFullName) &&
     ref.prNumber !== undefined &&
-    Number.isSafeInteger(ref.prNumber) &&
-    ref.prNumber > 0
+    isValidPullRequestNumber(ref.prNumber)
   ) {
     return `pull_request:${ref.repoFullName.toLowerCase()}#${ref.prNumber}`;
   }
@@ -468,41 +454,6 @@ function stableEventId(producerIdentity: string, targetKey: string): string {
     .update(`${producerIdentity}\u0000${targetKey}`)
     .digest("hex");
   return `monitored_session_v1:${digest}`;
-}
-
-function countBucketEvents(
-  buckets: ReadonlyMap<string, ActivityBucket>
-): number {
-  let count = 0;
-  for (const bucket of buckets.values()) {
-    count += bucket.eventsById.size;
-  }
-  return count;
-}
-
-function retainSessionWideLatestEvents(
-  buckets: ReadonlyMap<string, ActivityBucket>
-): Set<string> {
-  const ranked = [...buckets.entries()].flatMap(([targetKey, bucket]) =>
-    [...bucket.eventsById.values()].map((event) => ({ targetKey, event }))
-  );
-  ranked.sort(
-    (left, right) =>
-      Date.parse(right.event.occurredAt) - Date.parse(left.event.occurredAt) ||
-      left.targetKey.localeCompare(right.targetKey) ||
-      left.event.sourceEventId.localeCompare(right.event.sourceEventId)
-  );
-  return new Set(
-    ranked
-      .slice(0, MAX_SYNCED_MONITORED_SESSION_ACTIVITY_EVENTS_PER_SESSION)
-      .map(({ targetKey, event }) =>
-        sessionEventKey(targetKey, event.sourceEventId)
-      )
-  );
-}
-
-function sessionEventKey(targetKey: string, sourceEventId: string): string {
-  return `${targetKey}\u0000${sourceEventId}`;
 }
 
 function toolProducerIdentity(indexed: IndexedToolUse): string {

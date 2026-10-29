@@ -14,47 +14,50 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
-vi.mock("@/lib/integration-encryption", () => ({
-  decryptIntegrationToken: vi.fn(),
-}));
-
 vi.mock("@repo/github/installation-auth", () => ({
   getInstallationOctokit: vi.fn(),
+}));
+
+// PLN-1742 M5: Clerk is consulted for every org, so these stored-credential
+// cases wire it to a stated "no linked account" denial (see beforeEach).
+vi.mock("@repo/auth/server", () => ({
+  clerkClient: vi.fn(),
 }));
 
 vi.mock("@repo/observability/log", () => ({
   log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
+import { clerkClient } from "@repo/auth/server";
 import { withDb } from "@repo/database";
 import { GitHubAccessIntent } from "@/lib/github/github-access";
 import { getGitHubClient } from "@/lib/github/github-client-resolver";
 import {
-  APP_USER_CONNECTION,
   makeResolverDb,
-  mockDecrypt,
   mockGetInstallationOctokit,
   NOW,
   okFetch,
-  type ResolverConnectionFixture,
   USER_TARGET_INPUT,
   type WithDbMock,
+  wireClerkNoLinkedAccount,
   wireDb,
 } from "./github-access-test-fixtures";
 
 const mockWithDb = withDb as unknown as WithDbMock;
+const mockClerkClient = clerkClient as unknown as ReturnType<typeof vi.fn>;
 
-// Lane selection and stored-credential policy: the manage lane's installation
-// resolution and the user lane's connection denials + lastUsedAt sampling.
-// Verdict-cache read semantics live in github-client-resolver-cache.test.ts;
-// probe outcomes in github-client-resolver-probe.test.ts.
-describe("getGitHubClient (stored credential policy)", () => {
+// Lane selection: the manage lane's installation resolution, and the user
+// lane's registry bookkeeping. The user credential itself comes from Clerk
+// (github-client-resolver-clerk.test.ts owns its denials); verdict-cache read
+// semantics live in github-client-resolver-cache.test.ts; probe outcomes in
+// github-client-resolver-probe.test.ts.
+describe("getGitHubClient (user lane)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockDecrypt.mockResolvedValue("decrypted-token");
+    wireClerkNoLinkedAccount(mockClerkClient);
   });
 
-  it("returns not_connected when no connection exists", async () => {
+  it("returns not_connected when Clerk cannot serve the caller", async () => {
     wireDb(mockWithDb, makeResolverDb(null));
     const fetchMock = okFetch();
 
@@ -69,120 +72,12 @@ describe("getGitHubClient (stored credential policy)", () => {
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });
-
-  it("collapses revoked, expired, and undecryptable tokens to revoked", async () => {
-    const variants: Partial<ResolverConnectionFixture>[] = [
-      { revokedAt: new Date("2026-07-29T00:00:00.000Z") },
-      { tokenExpiresAt: new Date("2026-07-30T11:00:00.000Z") },
-    ];
-    for (const variant of variants) {
-      wireDb(
-        mockWithDb,
-        makeResolverDb({ ...APP_USER_CONNECTION, ...variant })
-      );
-      const result = await getGitHubClient(USER_TARGET_INPUT, {
-        now: NOW,
-        fetch: okFetch(),
-      });
-      expect(result).toEqual({
-        ok: false,
-        error: { reason: GitHubAccessDenialReason.Revoked },
-      });
-    }
-
-    wireDb(mockWithDb, makeResolverDb({ ...APP_USER_CONNECTION }));
-    mockDecrypt.mockRejectedValueOnce(new Error("kms denied"));
-    const result = await getGitHubClient(USER_TARGET_INPUT, {
-      now: NOW,
-      fetch: okFetch(),
-    });
-    expect(result).toEqual({
-      ok: false,
-      error: { reason: GitHubAccessDenialReason.Revoked },
-    });
-  });
-
-  it("denies OAuth-family tokens missing the repo scope without probing", async () => {
-    wireDb(
-      mockWithDb,
-      makeResolverDb({ ...APP_USER_CONNECTION, scopes: ["read:user"] })
-    );
-    const fetchMock = okFetch();
-
-    const result = await getGitHubClient(USER_TARGET_INPUT, {
-      now: NOW,
-      fetch: fetchMock,
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      error: { reason: GitHubAccessDenialReason.InsufficientScope },
-    });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("samples lastUsedAt: skips the write for a recently used connection", async () => {
-    const db = makeResolverDb({
-      ...APP_USER_CONNECTION,
-      lastUsedAt: new Date("2026-07-30T11:59:00.000Z"),
-      capabilities: [
-        {
-          credentialKind: GitHubCredentialKind.GithubAppUser,
-          denialReason: null,
-          installationId: null,
-          checkedAt: new Date("2026-07-30T11:58:00.000Z"),
-          expiresAt: new Date("2026-07-30T12:10:00.000Z"),
-        },
-      ],
-    });
-    wireDb(mockWithDb, db);
-
-    const result = await getGitHubClient(USER_TARGET_INPUT, {
-      now: NOW,
-      fetch: okFetch(),
-    });
-
-    expect(result.ok).toBe(true);
-    expect(db.gitHubUserConnection.updateMany).not.toHaveBeenCalled();
-  });
-
-  it("samples lastUsedAt: writes it for a stale connection", async () => {
-    const db = makeResolverDb({
-      ...APP_USER_CONNECTION,
-      lastUsedAt: new Date("2026-07-30T11:00:00.000Z"),
-      capabilities: [
-        {
-          credentialKind: GitHubCredentialKind.GithubAppUser,
-          denialReason: null,
-          installationId: null,
-          checkedAt: new Date("2026-07-30T11:58:00.000Z"),
-          expiresAt: new Date("2026-07-30T12:10:00.000Z"),
-        },
-      ],
-    });
-    wireDb(mockWithDb, db);
-
-    const result = await getGitHubClient(USER_TARGET_INPUT, {
-      now: NOW,
-      fetch: okFetch(),
-    });
-
-    expect(result.ok).toBe(true);
-    expect(db.gitHubUserConnection.updateMany).toHaveBeenCalledWith({
-      where: {
-        id: "connection-1",
-        organizationId: "org-1",
-        userId: "user-1",
-        revokedAt: null,
-      },
-      data: { lastUsedAt: NOW },
-    });
-  });
 });
 
 describe("getGitHubClient (manage lane)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    wireClerkNoLinkedAccount(mockClerkClient);
   });
 
   const MANAGE_INPUT = {

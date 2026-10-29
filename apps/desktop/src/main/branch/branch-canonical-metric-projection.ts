@@ -3,18 +3,24 @@ import {
   type BranchRow,
   normalizeRepoFullName,
 } from "@repo/api/src/types/branch";
-import { BranchAssociatedPullRequestCompletenessState } from "@repo/api/src/types/branch-associated-pull-request";
+import {
+  associatedPullRequestsWithholdDecisions,
+  BranchAssociatedPullRequestCompletenessState,
+  BranchAssociatedPullRequestProvenance,
+  metricAssociatedPullRequestCollection,
+} from "@repo/api/src/types/branch-associated-pull-request";
+import { resolveAttributedBranchCost } from "@repo/api/src/types/branch-cost";
 import {
   BranchPhaseAttributionCompleteness,
   type BranchPhaseAttributionCompletenessReason,
   type BranchPhaseAttributionResult,
   BranchPhaseAttributionCompletenessReason as PhaseCompletenessReason,
 } from "@repo/api/src/types/branch-phase-attribution";
-import { GitHubPRState } from "@repo/api/src/types/github";
 import {
   type ActivitySpendEvent,
   attributeBranchSessionActivity,
 } from "@repo/lib/branches/activity-attribution";
+import type { BranchMetricCostFacts } from "@repo/lib/branches/branch-cost-facts";
 import {
   branchMetricCycleFromPullRequest,
   calculateBranchDetailMetrics,
@@ -25,6 +31,10 @@ import {
   type BranchPhaseLifecycleEvent,
   projectBranchPhaseAttribution,
 } from "@repo/lib/branches/branch-phase-attribution";
+import {
+  branchMetricCostContributions,
+  hasCompleteBranchMetricEventCost,
+} from "@repo/lib/branches/branch-phase-cost-contributions";
 import { branchPhaseLifecycleFromAssociatedPullRequests } from "@repo/lib/branches/branch-phase-lifecycle";
 import type { SharedBranchesQuery } from "../../shared/shared-branches-contract.js";
 import type { BranchActivitySegmentRow } from "../database/branch-analytics-phase-evidence.js";
@@ -34,9 +44,13 @@ import type {
   BranchPrRow,
   BranchUsageTokenRow,
 } from "../database/branch-reads.js";
-import { projectDesktopBranchAssociatedPullRequests } from "./branch-associated-pull-request-projection.js";
+import {
+  desktopAssociatedPullRequestCandidates,
+  projectDesktopBranchAssociatedPullRequests,
+} from "./branch-associated-pull-request-projection.js";
 import { canonicalLastActiveEvidenceFromRows } from "./branch-last-active-projection.js";
 import { groupBranchLifecycleEventsBySession } from "./branch-lifecycle-event-grouping.js";
+import { desktopPublicationLocEvidence } from "./branch-publication-loc-projection.js";
 
 /** Build the Desktop list bundle from persisted full-corpus rows. */
 export function projectDesktopCanonicalMetrics(
@@ -52,25 +66,45 @@ export function projectDesktopCanonicalMetrics(
     lifecycleEventRows: readonly BranchLifecycleEventRow[];
     coverageReasons?: readonly BranchPhaseAttributionCompletenessReason[];
   } = { activitySegmentRows: [], lifecycleEventRows: [] },
-  preHydrationItems: readonly BranchRow[] = items,
   /**
    * False when the caller's rows survived a NON-authoritative default-branch
    * eligibility snapshot, so an empty cohort means "could not qualify" rather
    * than "none qualify" — see `BranchDefaultEligibilitySnapshot.authoritative`.
    */
   cohortCoverageComplete = true,
-  /** False when the current repository-scoped PR response was capped or failed. */
-  hydrationPullRequestCoverageComplete = true
+  /**
+   * False when the eligibility snapshot could not decide the PR cohort — see
+   * `BranchDefaultEligibilitySnapshot.pullRequestCoverageComplete`.
+   */
+  pullRequestCoverageComplete = true,
+  denominatorItems: readonly BranchRow[] = items,
+  denominatorLinkRows: readonly BranchLinkRow[] = linkRows,
+  denominatorCoverageComplete = true,
+  /**
+   * ISS-9956 — the cohort's TOTAL ESTIMATED COST, passed in rather than folded
+   * here.
+   *
+   * The caller already computed it as `totalSpendUsd`: `sumStoredBranchCost`
+   * over the analytics token rows, narrowed to the analytics session set and
+   * filtered to the request's event window when one is active
+   * (`branch-analytics-builder.ts`). Folding `eventRows` again here would be a
+   * second derivation of the same money that could drift from the figure the
+   * analytics card publishes.
+   *
+   * `undefined` means the caller had no total to give, never zero —
+   * `sumStoredBranchCost` returns `null` when NOTHING in the set carries a
+   * captured cost, which must withhold the ratio rather than divide by zero.
+   */
+  canonicalEstimatedCostUsd?: number,
+  /**
+   * ISS-12361: the cohort's AI spend per window, folded in SQL. When present it
+   * replaces the contribution-based spend fold and the session cap that fed it.
+   */
+  aiSpendFacts?: BranchMetricCostFacts
 ) {
   const cohort = filterCanonicalDesktopCohort(items, request);
   const cohortByBranch = new Map(
     cohort.map((item) => [branchKey(item.repoFullName, item.branchName), item])
-  );
-  const preHydrationByBranch = new Map(
-    preHydrationItems.map((item) => [
-      branchKey(item.repoFullName, item.branchName),
-      item,
-    ])
   );
   const cohortKeys = new Set(
     cohort.map((item) => branchKey(item.repoFullName, item.branchName))
@@ -81,9 +115,17 @@ export function projectDesktopCanonicalMetrics(
   const projections = groupPullRequests(cohortPrRows).map((rows) => ({
     rows,
     associated: projectDesktopBranchAssociatedPullRequests(rows),
+    metricCollection: metricAssociatedPullRequestCollection(
+      desktopAssociatedPullRequestCandidates(rows),
+      BranchAssociatedPullRequestProvenance.PersistedDesktop
+    ),
   }));
   const lastActiveEvidence = canonicalLastActiveEvidenceFromRows(cohort);
-  const locEvidence = desktopLocEvidence(cohort, request);
+  const locEvidence = desktopPublicationLocEvidence(
+    cohort,
+    linkRows,
+    cohortPrRows
+  );
   const phaseByBranch = desktopPhaseAttributionByBranch(
     cohort,
     linkRows,
@@ -92,38 +134,42 @@ export function projectDesktopCanonicalMetrics(
     branchCountBySession,
     phaseEvidence
   );
+  const denominatorKeys = new Set(
+    denominatorItems.map((item) =>
+      branchKey(item.repoFullName, item.branchName)
+    )
+  );
+  const denominatorPrRows = prRows.filter((row) =>
+    denominatorKeys.has(branchKey(row.repoFullName, row.branchName))
+  );
+  const denominatorPhaseByBranch = desktopPhaseAttributionByBranch(
+    denominatorItems,
+    denominatorLinkRows,
+    denominatorPrRows,
+    eventRows,
+    branchCountBySession,
+    phaseEvidence
+  );
+  const visibleCostContributions = branchMetricCostContributions(phaseByBranch);
+  const denominatorCostContributions = branchMetricCostContributions(
+    denominatorPhaseByBranch
+  );
+  const visibleCostCompleteBranchIds = completeCostBranchIds(phaseByBranch);
+  const denominatorSessionIds = [
+    ...new Set(denominatorLinkRows.map((link) => link.sessionId)),
+  ];
   const persistedPullRequests = projections.flatMap(({ rows, associated }) =>
     associated.collection.items.map((pullRequest) => {
       const source = rows.find((row) => row.prNumber === pullRequest.number);
-      const key = branchKey(rows[0]?.repoFullName, rows[0]?.branchName ?? "");
-      const hydratedLoc = hydratedSelectedPullRequestLoc(
-        cohortByBranch.get(key),
-        preHydrationByBranch.get(key),
-        pullRequest.number
-      );
       return {
         identity: pullRequest.id,
         mergedAt: pullRequest.mergedAt,
         closedAt: pullRequest.closedAt,
-        isDraft: pullRequest.isDraft === true,
-        additions: source?.linesAdded ?? hydratedLoc?.additions ?? null,
-        deletions: source?.linesRemoved ?? hydratedLoc?.deletions ?? null,
+        additions: source?.linesAdded ?? null,
+        deletions: source?.linesRemoved ?? null,
       };
     })
   );
-  const persistedPullRequestIds = new Set(
-    persistedPullRequests.map((pullRequest) => pullRequest.identity)
-  );
-  const hydratedSelectedPullRequests = cohort.flatMap((item) => {
-    const preHydrationItem = preHydrationByBranch.get(
-      branchKey(item.repoFullName, item.branchName)
-    );
-    return hydratedSelectedPullRequestEvidence(
-      item,
-      preHydrationItem,
-      persistedPullRequestIds
-    );
-  });
   return projectCanonicalBranchListMetrics({
     cohortCoverageComplete,
     branches: cohort.map((item) => ({
@@ -131,70 +177,80 @@ export function projectDesktopCanonicalMetrics(
       status: item.status,
       lastActivityAt: item.canonicalLastActiveAt?.value ?? null,
     })),
-    pullRequests: [...persistedPullRequests, ...hydratedSelectedPullRequests],
+    pullRequests: persistedPullRequests,
     pullRequestCoverageComplete:
-      hydrationPullRequestCoverageComplete &&
+      pullRequestCoverageComplete &&
       projections.every(
-        ({ associated }) =>
-          associated.collection.completeness.state ===
+        ({ metricCollection }) =>
+          metricCollection.completeness.state ===
           BranchAssociatedPullRequestCompletenessState.Complete
-      ) &&
-      hydratedSelectedPullRequests.length === 0,
+      ),
+    // ISS-9959, the desktop half of the same fix. This twin ANDs three terms and
+    // they do not place the same way, so each contributes its own gap rather than
+    // collapsing into one cohort-wide false.
+    //
+    // Only a shortfall that actually hides a decided pull request is a gap: an
+    // ambiguity among pull requests this twin DID read hides no merge and no
+    // unmerged close, so it contributes nothing. One that does hide a decision
+    // carries NO instant, because a branch's canonical activity cannot bound a
+    // decision nobody observed; neither does the cohort-wide eligibility
+    // shortfall, which belongs to no branch at all.
+    pullRequestCoverageGaps: [
+      ...(pullRequestCoverageComplete ? [] : [{ occurredAt: null }]),
+      ...projections.flatMap(({ rows, metricCollection }) => {
+        if (!associatedPullRequestsWithholdDecisions(metricCollection)) {
+          return [];
+        }
+        const item = cohortByBranch.get(
+          branchKey(rows[0]?.repoFullName, rows[0]?.branchName ?? "")
+        );
+        return [
+          {
+            ...(item ? { branchId: item.id } : {}),
+            occurredAt: null,
+          },
+        ];
+      }),
+    ],
     lastActiveEvents: lastActiveEvidence.events,
     lastActiveCoverageComplete: lastActiveEvidence.coverageComplete,
     locContributions: locEvidence.contributions,
+    locCoverageGaps: locEvidence.coverageGaps,
     locCompleteBranchIds: locEvidence.completeBranchIds,
-    costContributions: [...phaseByBranch].flatMap(([branchId, attribution]) =>
-      attribution.segments.flatMap((segment) =>
-        (segment.costEvents ?? []).map((event) => ({
-          sourceEventId: event.sourceEventId,
-          branchId,
-          sessionId: segment.sessionId,
-          occurredAt: new Date(event.occurredAtMs).toISOString(),
-          phase: segment.phase,
-          costUsd: event.costUsd,
-          qualifyingBranchCount: segment.qualifyingBranchCount ?? null,
-        }))
-      )
-    ),
-    costCompleteBranchIds: [...phaseByBranch].flatMap(
-      ([branchId, attribution]) =>
-        attribution.coverage.completeness ===
-          BranchPhaseAttributionCompleteness.Complete &&
-        attribution.segments.every(
-          (segment) =>
-            segment.estimatedCostUsd === 0 ||
-            (segment.costEvents?.length ?? 0) > 0
-        )
-          ? [branchId]
-          : []
-    ),
+    costContributions: visibleCostContributions,
+    costCompleteBranchIds: visibleCostCompleteBranchIds,
+    locCoverageComplete: locEvidence.coverageComplete,
+    locPerDollarCostContributions: denominatorCostContributions,
+    locPerDollarQualifyingSessionIds: denominatorSessionIds,
+    locPerDollarCostCoverageComplete:
+      denominatorCoverageComplete &&
+      denominatorPhaseByBranch.size === denominatorItems.length &&
+      [...denominatorPhaseByBranch.values()].every(
+        (attribution) =>
+          attribution.coverage.completeness ===
+            BranchPhaseAttributionCompleteness.Complete &&
+          hasCompleteBranchMetricEventCost(attribution)
+      ),
+    ...(canonicalEstimatedCostUsd === undefined
+      ? {}
+      : { canonicalEstimatedCostUsd }),
+    ...(aiSpendFacts === undefined ? {} : { aiSpendFacts }),
     startDate: request.startDate,
     endDate: request.endDate,
     now: requestBoundary,
   });
 }
 
-/** Use an exact selected-PR cloud LOC overlay only when local LOC was absent. */
-function hydratedSelectedPullRequestLoc(
-  hydratedItem: BranchRow | undefined,
-  preHydrationItem: BranchRow | undefined,
-  pullRequestNumber: number
-): { additions: number; deletions: number } | null {
-  if (
-    !(hydratedItem && preHydrationItem) ||
-    hydratedItem.prNumber !== pullRequestNumber ||
-    preHydrationItem.additions !== null ||
-    preHydrationItem.deletions !== null ||
-    !validLoc(hydratedItem.additions) ||
-    !validLoc(hydratedItem.deletions)
-  ) {
-    return null;
-  }
-  return {
-    additions: hydratedItem.additions,
-    deletions: hydratedItem.deletions,
-  };
+function completeCostBranchIds(
+  phaseByBranch: ReadonlyMap<string, BranchPhaseAttributionResult>
+): string[] {
+  return [...phaseByBranch].flatMap(([branchId, attribution]) =>
+    attribution.coverage.completeness ===
+      BranchPhaseAttributionCompleteness.Complete &&
+    hasCompleteBranchMetricEventCost(attribution)
+      ? [branchId]
+      : []
+  );
 }
 
 /** Narrow an exact analytics cohort without the List selector's fail-open default. */
@@ -210,48 +266,15 @@ export function selectExactBranchCohort(
     : items.filter((item) => requestedIds.has(item.id));
 }
 
-function validLoc(value: number | null): value is number {
-  return value !== null && Number.isFinite(value) && value >= 0;
-}
-
-/** Project only exact selected merged-PR evidence returned by cloud hydration. */
-function hydratedSelectedPullRequestEvidence(
-  hydratedItem: BranchRow,
-  preHydrationItem: BranchRow | undefined,
-  persistedPullRequestIds: ReadonlySet<string>
-) {
-  const pullRequestNumber = hydratedItem.prNumber;
-  const repository = hydratedItem.repoFullName;
-  if (
-    pullRequestNumber === null ||
-    repository === null ||
-    hydratedItem.prState !== GitHubPRState.Merged ||
-    hydratedItem.mergedAt == null
-  ) {
-    return [];
-  }
-  const identity = `${normalizeRepoFullName(repository)}#${pullRequestNumber}`;
-  const loc = hydratedSelectedPullRequestLoc(
-    hydratedItem,
-    preHydrationItem,
-    pullRequestNumber
-  );
-  if (persistedPullRequestIds.has(identity) || loc === null) {
-    return [];
-  }
-  return [
-    {
-      identity,
-      mergedAt: hydratedItem.mergedAt,
-      closedAt: null,
-      isDraft: false,
-      additions: loc.additions,
-      deletions: loc.deletions,
-    },
-  ];
-}
-
-function filterCanonicalDesktopCohort(
+/**
+ * Apply the shared non-date List scope without changing metric event windows.
+ *
+ * The free-text arm covers branch name and repo only. The cloud's third arm
+ * (`pr.title`, `apps/api/app/branches/branch-candidate-read.ts`) has no desktop
+ * counterpart: ISS-12719 dropped `pull_requests.title`, so `BranchRow.prTitle`
+ * is null on every desktop row.
+ */
+export function filterCanonicalDesktopCohort(
   items: readonly BranchRow[],
   request: SharedBranchesQuery
 ): BranchRow[] {
@@ -269,41 +292,12 @@ function filterCanonicalDesktopCohort(
       (!request.status || request.status === item.status) &&
       (!query ||
         item.branchName.toLocaleLowerCase().includes(query) ||
-        repo.toLocaleLowerCase().includes(query) ||
-        item.prTitle?.toLocaleLowerCase().includes(query)) &&
+        repo.toLocaleLowerCase().includes(query)) &&
       (request.locMin === undefined ||
         (loc !== null && loc >= request.locMin)) &&
       (request.locMax === undefined || (loc !== null && loc <= request.locMax))
     );
   });
-}
-
-function desktopLocEvidence(
-  items: readonly BranchRow[],
-  request: SharedBranchesQuery
-) {
-  if (request.startDate || request.endDate) {
-    return { contributions: [], completeBranchIds: [] };
-  }
-  const contributions = items.flatMap((item) =>
-    item.additions === null || item.deletions === null
-      ? []
-      : [
-          {
-            sourceEventId: `branch-loc:${item.id}`,
-            branchId: item.id,
-            occurredAt: null,
-            additions: item.additions,
-            deletions: item.deletions,
-          },
-        ]
-  );
-  return {
-    contributions,
-    completeBranchIds: contributions.map(
-      (contribution) => contribution.branchId
-    ),
-  };
 }
 
 function desktopPhaseAttributionByBranch(
@@ -320,25 +314,23 @@ function desktopPhaseAttributionByBranch(
 ): Map<string, BranchPhaseAttributionResult> {
   const spendEvents = groupSpendEvents(eventRows);
   const spansBySession = groupActivitySpans(phaseEvidence.activitySegmentRows);
+  const linksByBranch = groupRowsByBranchKey(links);
+  const pullRequestsByBranch = groupRowsByBranchKey(pullRequests);
+  const lifecycleEventsByBranch = groupRowsByBranchKey(
+    phaseEvidence.lifecycleEventRows
+  );
   const result = new Map<string, BranchPhaseAttributionResult>();
   for (const item of items) {
     const key = branchKey(item.repoFullName, item.branchName);
-    const sessionIds = [
-      ...new Set(
-        links
-          .filter(
-            (link) => branchKey(link.repoFullName, link.branchName) === key
-          )
-          .map((link) => link.sessionId)
-      ),
-    ];
+    const branchLinks = linksByBranch.get(key) ?? [];
+    const sessionIds = [...new Set(branchLinks.map((link) => link.sessionId))];
     const associated = projectDesktopBranchAssociatedPullRequests(
-      pullRequests.filter(
-        (pullRequest) =>
-          branchKey(pullRequest.repoFullName, pullRequest.branchName) === key
-      )
+      pullRequestsByBranch.get(key) ?? []
     );
     const coverageReasons = new Set(phaseEvidence.coverageReasons ?? []);
+    if (sessionIds.some((sessionId) => !branchCountBySession.has(sessionId))) {
+      coverageReasons.add(PhaseCompletenessReason.CoverageCapped);
+    }
     if (
       sessionIds.some((sessionId) =>
         spendEvents.malformedSessionIds.has(sessionId)
@@ -350,24 +342,25 @@ function desktopPhaseAttributionByBranch(
       coverageReasons.add(PhaseCompletenessReason.MissingActivitySegments);
     }
     const lifecycleEventsBySession = groupBranchLifecycleEventsBySession(
-      phaseEvidence.lifecycleEventRows.filter(
-        (row) => branchKey(row.repoFullName, row.branchName) === key
-      )
+      lifecycleEventsByBranch.get(key) ?? []
     );
     result.set(
       item.id,
       projectBranchPhaseAttribution({
-        sessions: sessionIds.map((sessionId) => ({
-          sessionId,
-          branchCount: branchCountBySession.get(sessionId) ?? 0,
-          activitySegments: spansBySession.has(sessionId)
-            ? attributeBranchSessionActivity(
-                spansBySession.get(sessionId) ?? [],
-                spendEvents.bySession.get(sessionId) ?? []
-              )
-            : undefined,
-          lifecycleEvents: lifecycleEventsBySession.get(sessionId),
-        })),
+        sessions: sessionIds.map((sessionId) => {
+          const branchCount = branchCountBySession.get(sessionId);
+          return {
+            sessionId,
+            ...(branchCount === undefined ? {} : { branchCount }),
+            activitySegments: spansBySession.has(sessionId)
+              ? attributeBranchSessionActivity(
+                  spansBySession.get(sessionId) ?? [],
+                  spendEvents.bySession.get(sessionId) ?? []
+                )
+              : undefined,
+            lifecycleEvents: lifecycleEventsBySession.get(sessionId),
+          };
+        }),
         ...branchPhaseLifecycleFromAssociatedPullRequests(
           associated.collection
         ),
@@ -429,14 +422,23 @@ function groupActivitySpans(
 }
 
 function groupPullRequests(rows: readonly BranchPrRow[]): BranchPrRow[][] {
-  const groups = new Map<string, BranchPrRow[]>();
+  return [...groupRowsByBranchKey(rows).values()];
+}
+
+function groupRowsByBranchKey<
+  Row extends { repoFullName: string | null; branchName: string },
+>(rows: readonly Row[]): Map<string, Row[]> {
+  const groups = new Map<string, Row[]>();
   for (const row of rows) {
     const key = branchKey(row.repoFullName, row.branchName);
-    const group = groups.get(key) ?? [];
-    group.push(row);
-    groups.set(key, group);
+    const group = groups.get(key);
+    if (group) {
+      group.push(row);
+    } else {
+      groups.set(key, [row]);
+    }
   }
-  return [...groups.values()];
+  return groups;
 }
 
 function branchKey(repoFullName: string | null, branchName: string): string {
@@ -447,10 +449,16 @@ function branchKey(repoFullName: string | null, branchName: string): string {
 export function attachDesktopCanonicalDetailMetrics(
   detail: Pick<
     BranchPageDetail,
-    "associatedPullRequests" | "phaseAttribution" | "canonicalMetrics"
+    | "associatedPullRequests"
+    | "phaseAttribution"
+    | "canonicalMetrics"
+    | "estimatedCostUsd"
+    | "attributedCostUsd"
   >,
   pullRequestRows: readonly BranchPrRow[],
-  lifecycleEvents: readonly BranchPhaseLifecycleEvent[] = []
+  lifecycleEvents: readonly BranchPhaseLifecycleEvent[] = [],
+  branchRow?: BranchRow,
+  linkRows: readonly BranchLinkRow[] = []
 ): void {
   const pullRequests = detail.associatedPullRequests;
   const phaseAttribution = detail.phaseAttribution;
@@ -469,53 +477,37 @@ export function attachDesktopCanonicalDetailMetrics(
       selected?.id
     );
   });
+  const lifetimeLocEvidence = branchRow
+    ? desktopPublicationLocEvidence(
+        [branchRow],
+        linkRows,
+        pullRequestRows,
+        false
+      )
+    : undefined;
   detail.canonicalMetrics = calculateBranchDetailMetrics({
+    // ISS-6949: read off the same object the metrics are written onto, so a
+    // caller cannot pair one branch's metrics with another's cost.
+    attributedCostUsd: resolveAttributedBranchCost(detail),
     selectedPrAdditions: selectedLoc?.linesAdded ?? null,
     selectedPrDeletions: selectedLoc?.linesRemoved ?? null,
     selectedPrLocComplete:
       selectedLoc?.linesAdded !== null &&
       selectedLoc?.linesAdded !== undefined &&
       selectedLoc.linesRemoved !== null,
+    ...(lifetimeLocEvidence
+      ? {
+          lifetimeLocContributions: lifetimeLocEvidence.contributions,
+          lifetimeLocCoverageComplete: lifetimeLocEvidence.coverageComplete,
+          qualifyingSessionCount: new Set(
+            linkRows.map((link) => link.sessionId)
+          ).size,
+        }
+      : {}),
     phaseAttribution,
     selectedCycle: branchMetricCycleFromPullRequest(
       selected ?? null,
       selectedCycleSuccessfulPushAt(pullRequests, lifecycleEvents)
     ),
   });
-}
-
-/**
- * Assemble the `phaseEvidence` argument for {@link projectDesktopCanonicalMetrics}.
- *
- * Lives here rather than at the call site because the coverage-reason rule is
- * part of the projection contract, not of the read that gathers the rows: an
- * incomplete cohort is `CoverageCapped` whether the shortfall came from a
- * capped segment read, a capped lifecycle read, or sessions the canonical
- * admission dropped. Keeping the three in one place stops a caller from
- * reporting two of them and silently omitting the third.
- */
-export function buildPhaseEvidence(
-  activitySegmentEvidence: {
-    rows: readonly BranchActivitySegmentRow[];
-    capped: boolean;
-  },
-  lifecycleEvidence: {
-    rows: readonly BranchLifecycleEventRow[];
-    capped: boolean;
-  },
-  sessionAdmission: { admitted: number; canonical: number }
-): {
-  activitySegmentRows: readonly BranchActivitySegmentRow[];
-  lifecycleEventRows: readonly BranchLifecycleEventRow[];
-  coverageReasons: readonly BranchPhaseAttributionCompletenessReason[];
-} {
-  const capped =
-    activitySegmentEvidence.capped ||
-    lifecycleEvidence.capped ||
-    sessionAdmission.admitted < sessionAdmission.canonical;
-  return {
-    activitySegmentRows: activitySegmentEvidence.rows,
-    lifecycleEventRows: lifecycleEvidence.rows,
-    coverageReasons: capped ? [PhaseCompletenessReason.CoverageCapped] : [],
-  };
 }

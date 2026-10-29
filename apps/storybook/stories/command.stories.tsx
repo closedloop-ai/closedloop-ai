@@ -13,9 +13,9 @@ import { CommandSeparator } from "cmdk";
  * Fast, composable, unstyled command menu for React.
  */
 const meta = {
-  title: "Design System/Primitives/Command",
+  title: "Primitives v1.0/Inputs/Command",
   component: Command,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
   args: {
     className: "rounded-lg w-96 border shadow-md",

@@ -1,25 +1,27 @@
 import merge from "lodash.merge";
 import type { Metadata } from "next";
+import { siteUrl } from "./site-url";
 
 type MetadataGenerator = Omit<Metadata, "description" | "title"> & {
   title: string;
   description: string;
   image?: string;
+  path?: string;
 };
 
-const applicationName = "Closedloop.ai";
+export const applicationName = "Closedloop.ai";
 const author: Metadata["authors"] = {
   name: "Closedloop.ai",
   url: "https://closedloop.ai",
 };
 const publisher = "Closedloop.ai";
-const protocol = process.env.NODE_ENV === "production" ? "https" : "http";
 const productionUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL;
 
 export const createMetadata = ({
   title,
   description,
   image,
+  path,
   ...properties
 }: MetadataGenerator): Metadata => {
   const parsedTitle = `${title} | ${applicationName}`;
@@ -27,9 +29,7 @@ export const createMetadata = ({
     title: parsedTitle,
     description,
     applicationName,
-    metadataBase: productionUrl
-      ? new URL(`${protocol}://${productionUrl}`)
-      : undefined,
+    metadataBase: siteUrl(productionUrl),
     authors: [author],
     creator: author.name,
     formatDetection: {
@@ -54,6 +54,16 @@ export const createMetadata = ({
   };
 
   const metadata: Metadata = merge(defaultMetadata, properties);
+
+  // Left root-relative so the host comes from `metadataBase` rather than a
+  // second copy of it. Next resolves it there — but note the two tags do NOT
+  // share a fallback: `openGraph.images` absolutizes via
+  // `getSocialImageMetadataBaseFallback`, while an absent `metadataBase` leaves
+  // this value relative. They agree wherever `metadataBase` is set, which on
+  // Vercel is always.
+  if (path && metadata.openGraph) {
+    metadata.openGraph.url = path;
+  }
 
   if (image && metadata.openGraph) {
     metadata.openGraph.images = [

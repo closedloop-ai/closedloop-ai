@@ -18,11 +18,11 @@ import {
 import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
 import { runDesktopMigrations } from "../src/main/database/migration/migration-runner.js";
 import { MIGRATIONS } from "../src/main/database/migration/migrations-manifest.js";
-import type { CapturedStatement } from "../src/main/database/prisma-client.js";
 import {
   createDesktopPrisma,
   type WriteSerializer,
 } from "../src/main/database/prisma-client.js";
+import type { CapturedStatement } from "../src/main/database/prisma-statement-observers.js";
 
 // computeLocalInsights only reads, so the write queue is never exercised — a
 // pass-through satisfies the factory without importing sqlite.ts (electron).

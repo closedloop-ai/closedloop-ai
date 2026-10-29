@@ -76,13 +76,16 @@ describe("branchTagPermissionsForAuth", () => {
     ["api_key", ["read", "write"], true, false],
     ["api_key", ["read", "delete"], false, true],
     ["api_key", ["read", "write", "delete"], true, true],
-  ] as const)("maps %s scopes %j to apply=%s remove=%s", (authMethod, apiKeyScopes, canApply, canRemove) => {
-    expect(
-      branchTagPermissionsForAuth(
-        authContext(authMethod, apiKeyScopes ? [...apiKeyScopes] : undefined)
-      )
-    ).toEqual({ canApply, canRemove });
-  });
+  ] as const)(
+    "maps %s scopes %j to apply=%s remove=%s",
+    (authMethod, apiKeyScopes, canApply, canRemove) => {
+      expect(
+        branchTagPermissionsForAuth(
+          authContext(authMethod, apiKeyScopes ? [...apiKeyScopes] : undefined)
+        )
+      ).toEqual({ canApply, canRemove });
+    }
+  );
 });
 
 function relation(id: string, name: string, relationOrganizationId: string) {

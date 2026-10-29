@@ -12,10 +12,9 @@ import { getRunnerSecret as loadHsSecretFromEnv } from "./runner-jwt-base";
  * `typ` metadata BEFORE attempting Clerk verification, with no cross-fallthrough.
  *
  * The signing secret is a DEDICATED env var (`DESKTOP_SESSION_JWT_SECRET`). It
- * must never reuse the runner JWT secret, the local-gateway JWT secret, Clerk
- * secrets, API-key material, or webhook secrets. The secret is read and
- * validated at issue/verify time (not at module load) so unrelated imports do
- * not require it to be configured.
+ * must never reuse Clerk secrets, API-key material, or webhook secrets. The
+ * secret is read and validated at issue/verify time (not at module load) so
+ * unrelated imports do not require it to be configured.
  */
 
 export const DESKTOP_SESSION_ISSUER = "closedloop-api";

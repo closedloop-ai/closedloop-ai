@@ -9,6 +9,7 @@ type DropdownItemProps = {
 
 type ThreadMockProps = {
   thread: { id: string; comments?: { id: string }[] };
+  showComposer?: boolean | "collapsed";
   commentDropdownItems?:
     | ReactNode
     | ((args: { comment: { id: string }; children: ReactNode }) => ReactNode);
@@ -35,7 +36,9 @@ export type LiveblocksUiMockOptions = {
  *
  * The mock renders `commentDropdownItems` so tests can exercise the
  * Copy Link dropdown item; it invokes the function form with the
- * thread's first comment (the root), matching production behavior.
+ * thread's first comment (the root), matching production behavior. While
+ * `showComposer` is set it renders a form carrying the real composer's
+ * `lb-composer` class, which the card's composer focus cue is scoped to.
  */
 export function createLiveblocksUiMock(options: LiveblocksUiMockOptions = {}) {
   const threadTestId = options.threadTestId ?? (() => "lb-thread");
@@ -76,7 +79,12 @@ export function createLiveblocksUiMock(options: LiveblocksUiMockOptions = {}) {
   );
   return {
     Comment,
-    Thread: ({ thread, commentDropdownItems, components }: ThreadMockProps) => {
+    Thread: ({
+      thread,
+      commentDropdownItems,
+      components,
+      showComposer,
+    }: ThreadMockProps) => {
       const rootComment = thread.comments?.[0] ?? { id: "stub" };
       const items =
         typeof commentDropdownItems === "function"
@@ -95,6 +103,11 @@ export function createLiveblocksUiMock(options: LiveblocksUiMockOptions = {}) {
               ))
             : null}
           {items}
+          {showComposer ? (
+            <form className="lb-composer" data-testid="lb-composer">
+              <textarea data-testid="lb-composer-editor" />
+            </form>
+          ) : null}
         </div>
       );
     },

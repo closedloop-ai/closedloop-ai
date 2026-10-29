@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { shellCommand, shellCommandArgv } from "./parser-utils";
+import {
+  isShellCommandToolUse,
+  SHELL_TOOL_NAMES,
+  shellCommand,
+  shellCommandArgv,
+} from "./parser-utils";
 import type { NormalizedToolUse } from "./types";
 
 // Helper — build a minimal NormalizedToolUse with the given input.
@@ -182,5 +187,123 @@ describe("coerceArgvElement (via shellCommandArgv) — null/undefined → ''", (
   it("String()-coerces a boolean argv element", () => {
     const argv = shellCommandArgv(makeTool({ cmd: [true, "flag"] }));
     expect(argv).toEqual(["true", "flag"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isShellCommandToolUse — ISS-8268 structural shell recognition
+// ---------------------------------------------------------------------------
+
+describe("isShellCommandToolUse — builtin shell tools", () => {
+  it("recognizes every SHELL_TOOL_NAMES entry regardless of input shape", () => {
+    for (const name of SHELL_TOOL_NAMES) {
+      expect(
+        isShellCommandToolUse({ name, timestamp: null, input: "git status" })
+      ).toBe(true);
+    }
+  });
+});
+
+describe("isShellCommandToolUse — shell-through-MCP (structural)", () => {
+  it("recognizes an mcp__-prefixed tool with a command string field", () => {
+    expect(
+      isShellCommandToolUse({
+        name: "mcp__lc__bash",
+        timestamp: null,
+        input: { command: "git push origin feat-x", cwd: "/repo" },
+      })
+    ).toBe(true);
+  });
+
+  it("recognizes a Codex-convention MCP tool (mcpServer, no prefix) with an argv command", () => {
+    expect(
+      isShellCommandToolUse({
+        name: "lc_bash",
+        mcpServer: "lemoncrow",
+        timestamp: null,
+        input: { command: ["git", "push"] },
+      })
+    ).toBe(true);
+  });
+
+  it("recognizes a cmd-field command", () => {
+    expect(
+      isShellCommandToolUse({
+        name: "mcp__acme__terminal",
+        timestamp: null,
+        input: { cmd: "ls" },
+      })
+    ).toBe(true);
+  });
+
+  it("recognizes a Codex method-only MCP tool (mcpMethod, no mcpServer, no prefix)", () => {
+    expect(
+      isShellCommandToolUse({
+        name: "bash",
+        mcpMethod: "bash",
+        timestamp: null,
+        input: { command: "git push origin feat-x" },
+      })
+    ).toBe(true);
+  });
+
+  it("rejects an MCP tool whose command field is an empty string", () => {
+    expect(
+      isShellCommandToolUse({
+        name: "mcp__acme__terminal",
+        timestamp: null,
+        input: { command: "" },
+      })
+    ).toBe(false);
+  });
+
+  it("rejects an MCP tool whose input is a bare string", () => {
+    expect(
+      isShellCommandToolUse({
+        name: "mcp__acme__search",
+        timestamp: null,
+        input: "git push origin feat-x",
+      })
+    ).toBe(false);
+  });
+
+  it("rejects an MCP tool whose input is a bare argv array", () => {
+    expect(
+      isShellCommandToolUse({
+        name: "mcp__acme__runner",
+        timestamp: null,
+        input: ["git", "push"],
+      })
+    ).toBe(false);
+  });
+
+  it("rejects an MCP tool with no command-bearing field", () => {
+    expect(
+      isShellCommandToolUse({
+        name: "mcp__acme__notes",
+        timestamp: null,
+        input: { text: "git push origin feat-x" },
+      })
+    ).toBe(false);
+  });
+
+  it("rejects a command field that is neither string nor argv", () => {
+    expect(
+      isShellCommandToolUse({
+        name: "mcp__acme__thing",
+        timestamp: null,
+        input: { command: 42 },
+      })
+    ).toBe(false);
+  });
+
+  it("rejects a non-shell, non-MCP tool carrying a command field", () => {
+    expect(
+      isShellCommandToolUse({
+        name: "Read",
+        timestamp: null,
+        input: { command: "git push origin feat-x" },
+      })
+    ).toBe(false);
   });
 });

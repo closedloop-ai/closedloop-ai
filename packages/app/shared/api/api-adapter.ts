@@ -26,6 +26,19 @@ export type ApiAdapter = {
    */
   fetch?: ApiTransportFetch;
   /**
+   * ISS-9741: does aborting a request's `AbortSignal` actually tear down the
+   * work behind it? True for the platform `fetch`, hence the default.
+   *
+   * The distinction the `fetch` contract above draws in prose is worth reading
+   * as a VALUE, because a caller can act on it. A transport that cannot honor
+   * `init.signal` (the desktop IPC bridge) still ACCEPTS one and still settles
+   * the caller's promise on abort — so nothing downstream can tell, by
+   * observation, that the request it just "cancelled" is still running in the
+   * main process. Anything that trades one behavior for another on the strength
+   * of a cancellation working must ask here rather than assume.
+   */
+  honorsAbortSignal?: boolean;
+  /**
    * api deployment uid this build is pinned to (FEA-1485). When set, the client
    * forwards it as the `x-deployment-id` header so the cross-origin app→api
    * fetch routes to the matching api deployment even after the api-prod alias

@@ -1,7 +1,6 @@
 "use client";
 
 import type {
-  BranchAnalytics,
   BranchPageDetail,
   BranchPrCommentsResponse,
 } from "@repo/api/src/types/branch";
@@ -13,24 +12,23 @@ import {
 } from "@repo/design-system/components/ui/alert";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { useEffect } from "react";
+import { useBranchSelectedPullRequestDetail } from "../../hooks/use-branch-selected-pull-request-detail";
 import { useBranchSelectedPullRequestFiles } from "../../hooks/use-branch-selected-pull-request-files";
 import type { BranchesQueryIdentity } from "../../hooks/use-branches";
-import { useBranchComments, useBranchDetail } from "../../hooks/use-branches";
-import type { PreferredBranchLoc } from "../../lib/preferred-branch-loc";
+import { useBranchComments } from "../../hooks/use-branches";
 import { BranchCostToMerge } from "../branch-cost-to-merge";
 import { BranchHeadlineCards } from "../branch-headline-cards";
 import { BranchLeadTimeWaterfall } from "../branch-lead-time-waterfall";
 import { BranchPullRequestSelector } from "../branch-pull-request-selector";
+import { BranchCommentsSignalRefresh } from "./branch-comments-signal-refresh";
 import { BranchDeliveredPanel } from "./branch-delivered-panel";
 import { BranchFilesChangedPanel } from "./branch-files-changed-panel";
 import { BranchPrStatusPanel } from "./branch-pr-status-panel";
 
 export type BranchSelectedPullRequestWorkspaceProps = {
-  analytics?: BranchAnalytics;
   branchId: string;
   detail: BranchPageDetail;
   getArtifactHref?: (slug: string) => string | null;
-  loc?: PreferredBranchLoc;
   onSelectionChange?: (
     selection: BranchSelectedPullRequestIdentity | null
   ) => void;
@@ -46,21 +44,19 @@ export type BranchSelectedPullRequestWorkspaceProps = {
 
 /** One selected-PR SSOT for cards, evidence panels, files, and comments. */
 export function BranchSelectedPullRequestWorkspace({
-  analytics,
   branchId,
   detail,
   getArtifactHref,
-  loc,
   onSelectionChange = () => undefined,
   onCommentsContextChange,
   queryIdentity,
   selection = null,
 }: BranchSelectedPullRequestWorkspaceProps) {
-  const selectedDetailQuery = useBranchDetail(
+  const selectedDetailQuery = useBranchSelectedPullRequestDetail(
     branchId,
-    { enabled: selection !== null },
-    queryIdentity,
-    selection ?? inactiveSelectedPullRequestQuery
+    detail,
+    selection,
+    queryIdentity
   );
   const selectedDetail = selection ? selectedDetailQuery.data : detail;
   const isSwitching = selection !== null && selectedDetailQuery.isPending;
@@ -69,9 +65,10 @@ export function BranchSelectedPullRequestWorkspace({
     selection !== null &&
     (selectedDetailQuery.isError ||
       (selectedDetailQuery.isSuccess && !selectionMatches));
+  const commentsEnabled = !selection || selectionMatches;
   const commentsQuery = useBranchComments(
     branchId,
-    { enabled: !selection || selectionMatches },
+    { enabled: commentsEnabled },
     queryIdentity,
     selection ?? undefined
   );
@@ -113,6 +110,13 @@ export function BranchSelectedPullRequestWorkspace({
 
   return (
     <>
+      <BranchCommentsSignalRefresh
+        branchId={branchId}
+        dataLoadedAt={() => commentsQuery.dataUpdatedAt || undefined}
+        onCommentsChanged={() =>
+          commentsEnabled ? commentsQuery.refetch() : Promise.resolve()
+        }
+      />
       <BranchPullRequestSelector
         collection={detail.associatedPullRequests}
         disabled={selectedDetailQuery.isFetching}
@@ -138,11 +142,7 @@ export function BranchSelectedPullRequestWorkspace({
       ) : null}
       {selectedDetail && !selectionError && !isSwitching ? (
         <section aria-label={selectedPanelLabel(selectedDetail)}>
-          <BranchHeadlineCards
-            analytics={analytics}
-            detail={selectedDetail}
-            loc={loc}
-          />
+          <BranchHeadlineCards detail={selectedDetail} />
           <BranchCostToMerge detail={selectedDetail} />
           <BranchLeadTimeWaterfall detail={selectedDetail} />
           <BranchDeliveredPanel
@@ -216,12 +216,3 @@ function SelectedPullRequestUnavailable() {
     </Alert>
   );
 }
-
-// A disabled selected-PR observer must not reuse the base-detail cache key.
-// TanStack stores the latest observer options on the shared query; reusing that
-// key would let this disabled observer replace Desktop's 30-second focus policy
-// with its ambient Infinity policy.
-const inactiveSelectedPullRequestQuery = {
-  repositoryFullName: "inactive.invalid",
-  pullRequestNumber: 1,
-} as const;

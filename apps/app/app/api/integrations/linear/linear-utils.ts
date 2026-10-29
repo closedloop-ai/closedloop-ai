@@ -4,7 +4,6 @@ import { env } from "@/env";
 export const LINEAR_OAUTH_STATE_COOKIE = "linear_oauth_state";
 export const LINEAR_PKCE_VERIFIER_COOKIE = "linear_pkce_verifier";
 
-// Linear OAuth URL
 export const LINEAR_OAUTH_URL = "https://linear.app/oauth/authorize";
 
 /**

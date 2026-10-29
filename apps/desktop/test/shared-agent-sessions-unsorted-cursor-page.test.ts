@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { ListQueryExecution } from "@repo/api/src/types/list-query-observability";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { describe, test } from "vitest";
 import { SessionListCursorSortKey } from "../src/main/agent-sync/agent-session-read-model.js";
-import { setDisplayedStatusParityResolver } from "../src/main/session/displayed-status-parity-gate.js";
 import { getSharedAgentSessions } from "../src/main/session/shared-agent-sessions-api.js";
 import { getSharedAgentSessionsPageData } from "../src/main/session/shared-agent-sessions-page-data.js";
 import {
@@ -13,7 +13,8 @@ import {
 } from "./shared-agent-sessions-test-helpers.js";
 
 /**
- * Goal stage 1b — an UNSORTED sessions list read rides the SQL cursor page.
+ * Goal stage 1b — an UNSORTED sessions list read rides the SQL cursor page
+ * including search after the DB host resolves repository context by pair.
  *
  * WHY THE ROUTE AND NOT JUST THE ROWS (same reasoning as the stage-1 status
  * suite next door): the capped full-corpus hydration fallback returns the
@@ -39,13 +40,17 @@ describe("an unsorted sessions list read pages in SQL", () => {
   }
 
   test("a request with no sortBy is served by the cursor page, not full-corpus hydration", async () => {
-    setDisplayedStatusParityResolver(() => false);
     const source = threeSessionSource();
+    const executions: string[] = [];
 
-    const result = await getSharedAgentSessions(source, {
-      quality: "all",
-      limit: 2,
-    });
+    const result = await getSharedAgentSessions(
+      source,
+      {
+        quality: "all",
+        limit: 2,
+      },
+      { onQueryExecution: (execution) => executions.push(execution) }
+    );
 
     assert.deepEqual(
       result.items.map((item) => item.id),
@@ -60,10 +65,10 @@ describe("an unsorted sessions list read pages in SQL", () => {
       !kinds.includes("listAllSessionCursorRows"),
       "an unsorted read must not resolve the whole corpus"
     );
+    assert.deepEqual(executions, [ListQueryExecution.CursorPage]);
   });
 
   test("the cursor request asks for the natural `updated` order, descending", async () => {
-    setDisplayedStatusParityResolver(() => false);
     const source = threeSessionSource();
 
     await getSharedAgentSessions(source, { quality: "all", limit: 2 });
@@ -84,7 +89,6 @@ describe("an unsorted sessions list read pages in SQL", () => {
   });
 
   test("an explicit sortDir on a sortless request does not flip the cursor order", async () => {
-    setDisplayedStatusParityResolver(() => false);
     const source = threeSessionSource();
 
     await getSharedAgentSessions(source, {
@@ -103,7 +107,6 @@ describe("an unsorted sessions list read pages in SQL", () => {
   });
 
   test("only the visible page is hydrated, never the whole corpus", async () => {
-    setDisplayedStatusParityResolver(() => false);
     const source = threeSessionSource();
 
     await getSharedAgentSessions(source, { quality: "all", limit: 2 });
@@ -113,12 +116,11 @@ describe("an unsorted sessions list read pages in SQL", () => {
     );
     assert.equal(hydrations.length, 1);
     // The WIDTH is the whole point: the fallback hydrated every matching id (up
-    // to MAX_WORKING_SET_SESSIONS = 5000) to produce a 2-row page.
+    // to SESSION_HYDRATION_WINDOW = 5000) to produce a 2-row page.
     assert.deepEqual(hydrations[0]?.ids, ["newest", "middle"]);
   });
 
   test("a sortless read carrying a Status facet still pages in SQL, with the facet", async () => {
-    setDisplayedStatusParityResolver(() => false);
     const source = threeSessionSource();
 
     // The combination this change newly makes reachable: goal stage 1 put the
@@ -149,34 +151,64 @@ describe("an unsorted sessions list read pages in SQL", () => {
     );
   });
 
-  test("a sortless read forwards its window and search into the same page request", async () => {
-    setDisplayedStatusParityResolver(() => false);
-    const source = threeSessionSource();
-
-    await getSharedAgentSessions(source, {
-      quality: "all",
-      limit: 2,
-      startDate: "2025-12-01T00:00:00.000Z",
-      endDate: "2026-02-01T00:00:00.000Z",
-      search: "newest",
+  test("a sortless search applies its window before cursor paging and hydration", async () => {
+    const inside = session({
+      id: "newest",
+      lastActivityAt: "2026-01-15T00:00:00.000Z",
     });
+    const outside = session({
+      id: "middle",
+      lastActivityAt: "2026-03-01T00:00:00.000Z",
+    });
+    const source = createFakeSource({
+      cursorRows: [
+        cursor("middle", "2026-03-01T00:00:00.000Z"),
+        cursor("newest", "2026-01-15T00:00:00.000Z"),
+        cursor("oldest", "2026-01-01T00:00:00.000Z"),
+      ],
+      sessions: {
+        newest: {
+          ...inside,
+          attribution: { ...inside.attribution, baseBranch: "needle" },
+        },
+        middle: {
+          ...outside,
+          attribution: { ...outside.attribution, baseBranch: "needle" },
+        },
+        oldest: session({
+          id: "oldest",
+          lastActivityAt: "2026-01-01T00:00:00.000Z",
+        }),
+      },
+    });
+    const executions: string[] = [];
 
-    const pageCall = source.calls.find(
-      (call) => call.kind === "listSessionCursorPage"
+    const result = await getSharedAgentSessions(
+      source,
+      {
+        quality: "all",
+        limit: 2,
+        startDate: "2025-12-01T00:00:00.000Z",
+        endDate: "2026-02-01T00:00:00.000Z",
+        search: "needle",
+      },
+      { onQueryExecution: (execution) => executions.push(execution) }
     );
-    assert.equal(
-      pageCall?.cursorPageRequest?.startDate?.toISOString(),
-      "2025-12-01T00:00:00.000Z"
+
+    assert.deepEqual(
+      source.calls.map((call) => call.kind),
+      ["listSessionCursorPage", "loadSyncedSessions"]
     );
-    assert.equal(
-      pageCall?.cursorPageRequest?.endDate?.toISOString(),
-      "2026-02-01T00:00:00.000Z"
+    assert.deepEqual(source.calls[1]?.ids, ["newest"]);
+    assert.deepEqual(
+      result.items.map((item) => item.id),
+      ["newest"]
     );
-    assert.equal(pageCall?.cursorPageRequest?.search, "newest");
+    assert.equal(result.total, 1);
+    assert.deepEqual(executions, [ListQueryExecution.CursorPage]);
   });
 
   test("an unfiltered paginated read loads only the requested page", async () => {
-    setDisplayedStatusParityResolver(() => false);
     const source = createFakeSource({
       cursorRows: [
         cursor("session-a"),
@@ -215,14 +247,18 @@ describe("an unsorted sessions list read pages in SQL", () => {
   });
 
   test("a sort the cursor SQL has no column for still takes the hydrated fallback", async () => {
-    setDisplayedStatusParityResolver(() => false);
     const source = threeSessionSource();
+    const executions: string[] = [];
 
-    await getSharedAgentSessions(source, {
-      quality: "all",
-      limit: 2,
-      sortBy: "cost",
-    });
+    await getSharedAgentSessions(
+      source,
+      {
+        quality: "all",
+        limit: 2,
+        sortBy: "cost",
+      },
+      { onQueryExecution: (execution) => executions.push(execution) }
+    );
 
     const kinds = source.calls.map((call) => call.kind);
     assert.ok(
@@ -233,10 +269,10 @@ describe("an unsorted sessions list read pages in SQL", () => {
       kinds.includes("listAllSessionCursorRows"),
       "a non-cursor sort column keeps the hydrated fallback that can apply it"
     );
+    assert.deepEqual(executions, [ListQueryExecution.HydratedFallback]);
   });
 
   test("the combined pageData read — the soak harness's own probe shape — pages in SQL", async () => {
-    setDisplayedStatusParityResolver(() => false);
     const source = createFakeSource({
       cursorRows: [cursor("newest"), cursor("middle"), cursor("oldest")],
       sessions: {

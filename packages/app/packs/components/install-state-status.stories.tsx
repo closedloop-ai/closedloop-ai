@@ -3,9 +3,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { InstallStateStatus } from "./install-state-status";
 
 const meta = {
-  title: "App Core/Packs/Install State Status",
+  title: "Composites v1.0/Packs/Install State Status",
   component: InstallStateStatus,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     state: PackInstallState.Installed,
   },
@@ -50,6 +50,7 @@ export const Failed: Story = {
  * meaning never rides on color alone.
  */
 export const AllStates: Story = {
+  tags: ["!manifest"],
   render: () => (
     <div className="flex flex-col items-start gap-2">
       <InstallStateStatus state={PackInstallState.Installed} />

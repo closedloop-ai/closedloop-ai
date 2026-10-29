@@ -35,7 +35,7 @@
  * KNOWN GOTCHAS / NOTABLE FIXES
  * -----------------------------
  * - Mermaid flowcharts use `foreignObject` for node labels. Those have two
- *   consequences we work around:
+ *   consequences this viewer handles:
  *     a) `fitNodeLabels` shrinks the font when the wrapped HTML overflows the
  *        foreignObject height — mermaid's text measurement assumes no wrap.
  *     b) PNG export via blob URL + <img> + canvas produces a tainted canvas
@@ -120,9 +120,9 @@ export function MermaidViewer({ svg, onEdit }: Readonly<MermaidViewerProps>) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const { isFullscreen, toggle: toggleFullscreen } = useFullscreen(wrapperRef);
 
+  // Apply a background only in fullscreen so the page chrome doesn't bleed
+  // through. Inline mode inherits the enclosing card's background.
   return (
-    // Apply a background only in fullscreen so the page chrome doesn't bleed
-    // through. Inline mode inherits the enclosing card's background.
     <div className={isFullscreen ? "bg-background" : ""} ref={wrapperRef}>
       <ViewerCore
         isFullscreen={isFullscreen}

@@ -22,6 +22,8 @@ import {
   upsertPullRequest,
 } from "../pull-requests/pr-store.js";
 import {
+  GitHubPrUrlRefusal,
+  isRepoFullNamePastWireBound,
   maxIso,
   normalizeRepoFullName,
   numberFromUnknown,
@@ -30,6 +32,7 @@ import {
   validIso,
 } from "./db-helpers.js";
 import type { Prisma } from "./generated/client.js";
+import { NORMALIZED_PR_LINK_METHOD } from "./pr-link-maintenance.js";
 
 export async function persistNormalizedPullRequests(
   tx: Prisma.TransactionClient,
@@ -57,8 +60,9 @@ export async function persistNormalizedPullRequests(
   // pr.observed_at DESC` for the newest-PR-per-branch pick, and the
   // `COALESCE(observed_at, created_at) BETWEEN` range scans in local-insights.
   // `maxIso` compares by INSTANT so it picks the right operand, but `validIso`
-  // returns that operand VERBATIM, and Claude's `isoTs` passes a transcript
-  // string through unparsed — so an offset-form `startedAt`/`endedAt` would land
+  // returns that operand VERBATIM. Since ISS-6738 `toIso` canonicalizes, so a
+  // NEWLY parsed value arrives as UTC 'Z'; a pre-ISS-6738 row is untouched — so
+  // an offset-form `startedAt`/`endedAt` can still land
   // in the same columns `artifact-ref-observed-at.ts` now canonicalizes, and the
   // boot heal would repair them only until the next import wrote them back.
   // `now` (the import clock) is canonical by construction.
@@ -81,14 +85,11 @@ export async function persistNormalizedPullRequests(
       : toCanonicalIso(rawExternalObservedAt);
   const observedAt = externalObservedAt ?? now;
   for (const pr of prs) {
-    const fromUrl =
-      typeof pr.url === "string" ? parseGitHubPrUrl(pr.url) : null;
-    const prNumber = fromUrl?.number ?? numberFromUnknown(pr.number);
-    const repoFullName =
-      fromUrl?.repoFullName ?? normalizeRepoFullName(pr.repo) ?? defaultRepo;
-    if (!(prNumber && repoFullName)) {
+    const identity = resolvePrIdentity(pr, defaultRepo);
+    if (identity === null) {
       continue;
     }
+    const { prNumber, repoFullName } = identity;
     const prUrl =
       pr.url ?? `https://github.com/${repoFullName}/pull/${prNumber}`;
     // Only a PR this session CREATED has a head branch we can trust — the branch
@@ -99,8 +100,8 @@ export async function persistNormalizedPullRequests(
     // (both match on `pull_requests.branch_name`).
     const headBranch =
       createdPrHeadBranches.get(`${repoFullName}#${prNumber}`) ?? null;
-    // Dual-write: PR detail goes into pull_requests (lifecycle store, feeds
-    // FEA-1869 status observer); attribution goes into artifacts below.
+    // Dual-write: PR detail goes into pull_requests; attribution goes into
+    // artifacts below.
     await upsertPullRequest(
       tx,
       {
@@ -110,8 +111,6 @@ export async function persistNormalizedPullRequests(
         prNumber,
         repoFullName,
         branchName: headBranch,
-        headSha: null,
-        title: null,
         observedAt: externalObservedAt,
       },
       now,
@@ -177,7 +176,7 @@ export async function persistNormalizedPullRequests(
       `INSERT INTO session_artifact_links
          (id, session_id, artifact_id, relation, method, evidence, is_primary,
           status, extractor_version, observed_at, created_at)
-       SELECT $1,$2,$3,'referenced','normalized_pr','{}',0,'candidate',1,$4,$4
+       SELECT $1,$2,$3,'referenced','${NORMALIZED_PR_LINK_METHOD}','{}',0,'candidate',1,$4,$4
        WHERE NOT EXISTS (
          SELECT 1 FROM session_artifact_links
          WHERE session_id = $2 AND artifact_id = $3
@@ -217,4 +216,34 @@ export function collectCreatedPullRequestHeadBranches(
     }
   }
   return heads;
+}
+
+// ISS-8882: a PR's `(repo, number)` identity, or null when the record names a
+// repository this store must not file it under. The two refusals are the same
+// rule from opposite directions — a URL whose derived slug is past the wire
+// bound, and an explicit `pr.repo` past it — and both must land BEFORE the
+// `?? defaultRepo` fallback. `normalizeRepoFullName` returns null for an
+// over-bound slug exactly as it does for a bare name, so without them the
+// fallback would file the PR on the session's own repo: a different repository
+// than the data named, which is the harm the drop-never-truncate rule exists to
+// prevent. An absent or bare `pr.repo` still takes the fallback.
+function resolvePrIdentity(
+  pr: { number?: unknown; repo?: unknown; url?: unknown },
+  defaultRepo: string | null
+): { prNumber: number; repoFullName: string } | null {
+  const fromUrl = typeof pr.url === "string" ? parseGitHubPrUrl(pr.url) : null;
+  if (
+    fromUrl?.ok === false &&
+    fromUrl.refusal === GitHubPrUrlRefusal.RepoPastWireBound
+  ) {
+    return null;
+  }
+  if (isRepoFullNamePastWireBound(pr.repo)) {
+    return null;
+  }
+  const parsed = fromUrl?.ok === true ? fromUrl : null;
+  const prNumber = parsed?.number ?? numberFromUnknown(pr.number);
+  const repoFullName =
+    parsed?.repoFullName ?? normalizeRepoFullName(pr.repo) ?? defaultRepo;
+  return prNumber && repoFullName ? { prNumber, repoFullName } : null;
 }

@@ -2,6 +2,7 @@
 
 import type { DocumentType } from "@repo/api/src/types/document";
 import { useLocalStorageState } from "@repo/app/shared/hooks/use-local-storage-state";
+import { booleanOrFallback } from "@repo/app/shared/lib/local-storage-validators";
 import { useCallback, useState } from "react";
 
 type UseEditorChromeConfig = {
@@ -26,7 +27,8 @@ type UseEditorChromeConfig = {
 export function useEditorChrome({ documentType }: UseEditorChromeConfig) {
   const [showMetadataPanel, setShowMetadataPanel] = useLocalStorageState(
     `panel:chat:${documentType}`,
-    true
+    true,
+    booleanOrFallback
   );
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showMoveDialog, setShowMoveDialog] = useState(false);

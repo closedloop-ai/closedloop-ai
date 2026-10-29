@@ -33,7 +33,9 @@
  * honest state for a component whose exact definition we do not capture. It also
  * carries NO `install_path`/`project_path`: those absolute paths embed the
  * operator's username and repo names and the component sync lane uploads them, so
- * a names-only presence row leaves them unset (privacy, no product value).
+ * a names-only presence row leaves them unset (privacy, no product value). The
+ * declaring project root goes only in `local_project_path` (ISS-12169), which
+ * that lane never selects.
  *
  * Removal reconciliation: after upserting still-configured servers, the scan
  * tombstones (`uninstalled_at`) any discovery-owned presence row whose server is
@@ -44,6 +46,7 @@
 import { createHash } from "node:crypto";
 import {
   closeSync,
+  existsSync,
   constants as fsConstants,
   fstatSync,
   openSync,
@@ -54,10 +57,11 @@ import {
   AgentComponentKind,
   Harness,
 } from "@repo/api/src/types/agent-component";
-import { SYNCED_COMPONENT_IDENTITY_MAX_CHARS } from "@repo/api/src/types/agent-session";
+import { isTccProtectedPath } from "../../shared/sandbox-policy.js";
 import { gatewayLog } from "../logging/gateway-logger.js";
 import { getCodexConfigPath } from "../util/codex-home-paths.js";
 import { resolveClaudeHome } from "./claude-home.js";
+import { applyComponentTombstone } from "./component-tombstone.js";
 import {
   ComponentScope,
   type ComponentScope as ComponentScopeType,
@@ -87,13 +91,15 @@ const MAX_MCP_CONFIG_BYTES = 4 * 1024 * 1024;
 /**
  * A configured MCP server discovered on disk (presence, independent of usage).
  *
- * Deliberately carries NO `installPath`/`projectPath`: those absolute paths
- * embed the operator's username and repository names, and the component sync
- * lane uploads `install_path`/`project_path` to the cloud. For a names-only
- * presence collector that is a privacy leak with no product value — the row's
- * job is "you have this server installed", not "here is where on disk". So an
- * MCP presence row leaves both columns unset unless path upload becomes an
- * explicit product/privacy decision.
+ * Writes NO `install_path`/`project_path`: those absolute paths embed the
+ * operator's username and repository names, and the component sync lane
+ * uploads both columns to the cloud. For a names-only presence collector that
+ * is a privacy leak with no product value — the row's job is "you have this
+ * server installed", not "here is where on disk". So an MCP presence row leaves
+ * both columns unset unless path upload becomes an explicit product/privacy
+ * decision. `projectPath` below is the Desktop-local declaring root
+ * (ISS-12169): it is stored only in `local_project_path`, which that lane never
+ * selects, and never reaches `project_path`.
  */
 type DiscoveredMcpServer = {
   /** Server name — the dedup key and display name (e.g. `context7`). */
@@ -108,6 +114,11 @@ type DiscoveredMcpServer = {
   scope: ComponentScopeType | null;
   /** Originating harness (`claude` for JSON config, `codex` for TOML). */
   harness: Harness;
+  /**
+   * ISS-12169: the project root whose `.mcp.json` declared the server, null for
+   * a user config. Stored only in the Desktop-local `local_project_path`.
+   */
+  projectPath: string | null;
 };
 
 export type McpDiscoverySummary = {
@@ -140,11 +151,16 @@ function deterministicComponentId(kind: string, externalId: string): string {
  * a FIFO / device node (`/dev/zero`) can't hang or stream unbounded into the
  * DB-host process, and a hard `MAX_MCP_CONFIG_BYTES` cap on what is read.
  * Returns `null` on any failure (missing, symlink, non-regular, unreadable) so
- * discovery degrades to skipping that config — never throwing. Replaces
+ * discovery degrades to skipping that config — never throwing. ISS-11914: also
+ * `null`, without opening it, for a config inside a TCC-protected folder, where
+ * reading raises a macOS permission prompt. Replaces
  * `safeReadFile` here specifically because these config paths are attacker-
  * influenceable at desktop startup.
  */
 function safeReadMcpConfig(p: string): string | null {
+  if (isTccProtectedPath(p)) {
+    return null;
+  }
   let fd: number | null = null;
   try {
     // biome-ignore lint/suspicious/noBitwiseOperators: file open flags require bitwise OR
@@ -182,19 +198,23 @@ function safeReadMcpConfig(p: string): string | null {
 }
 
 /**
- * A server name is persistable only if it matches the sync contract's identity
- * bound (`SYNCED_COMPONENT_IDENTITY_MAX_CHARS`, the same `externalId`/
- * `componentKey` limit the cloud enforces on `POST /desktop/components/sync`).
- * A name that is empty after trim, or longer than the limit, would be rejected
- * by the cloud once it reached the ordered sync batch and would then wedge the
- * component cursor (Desktop never advances past the rejected row, so later
- * components stop syncing). Reject such names at discovery time instead.
+ * A server name is persistable only if it is non-empty after trim.
+ *
+ * THE LENGTH CAP IS GONE (ISS-8201, whitlockk review on PR #7220). It mirrored a cap
+ * `POST /desktop/components/sync` enforced on `externalId`/`componentKey`, and
+ * its whole justification was that an over-long name would be rejected there and
+ * wedge the ordered component cursor (Desktop never advances past a rejected
+ * row). The ingest now admits any length and the write-side projection
+ * (`INDEX_KEY_MAX_BYTES`) bounds the value at the column instead, so nothing
+ * downstream rejects or wedges — and with the rejection gone, the drop was a
+ * configured MCP server silently disappearing from the local inventory with no
+ * signal anywhere, which is the failure this discovery pass exists to prevent.
+ *
+ * The blank-name refusal stays: an empty identity is not a server, and it would
+ * key an `agent_components` row nothing could ever match back to a config.
  */
 function isPersistableServerName(name: string): boolean {
-  const trimmed = name.trim();
-  return (
-    trimmed.length > 0 && trimmed.length <= SYNCED_COMPONENT_IDENTITY_MAX_CHARS
-  );
+  return name.trim().length > 0;
 }
 
 /**
@@ -272,10 +292,7 @@ function foldServer(
 
 function discoverFromJsonConfig(
   byName: Map<string, DiscoveredMcpServer>,
-  config: {
-    path: string;
-    scope: ComponentScopeType | null;
-  }
+  config: McpDiscoveryClaudeConfig
 ): void {
   const raw = safeReadMcpConfig(config.path);
   if (raw === null) {
@@ -292,6 +309,7 @@ function discoverFromJsonConfig(
       name,
       scope: config.scope,
       harness: Harness.Claude,
+      projectPath: config.projectPath ?? null,
     });
   }
 }
@@ -310,6 +328,7 @@ function discoverFromCodexConfig(
       // The Codex `config.toml` is the user-global Codex config.
       scope: ComponentScope.User,
       harness: Harness.Codex,
+      projectPath: null,
     });
   }
 }
@@ -342,9 +361,10 @@ async function upsertMcpComponent(
     // MCP is observable-only: no distributable content, so `resolved_state`
     // stays 'unresolved' (name/label-only presence). No install_path/
     // project_path is written — a presence row carries no on-disk paths (they
-    // would leak username/repo names to the cloud sync lane). `scope` is
-    // COALESCE-guarded so a later pass that cannot derive it (null) never
-    // clobbers a previously-attributed value; `harness` folds via
+    // would leak username/repo names to the cloud sync lane); the declaring
+    // project root goes in the Desktop-local `local_project_path` instead.
+    // `scope` and `local_project_path` are COALESCE-guarded so a pass that
+    // cannot derive one (null) never clobbers a stored value; `harness` folds via
     // HARNESS_FOLD_SQL so a single-harness row can promote to `both`; and
     // `uninstalled_at` is cleared so a server that reappears after removal
     // sheds its tombstone.
@@ -353,10 +373,12 @@ async function upsertMcpComponent(
         `INSERT INTO agent_components
            (id, component_kind, external_id, component_key, name,
             scope, harness, resolved_state,
-            first_seen_at, last_seen_at)
-         VALUES ($1, $2, $3, $3, $3, $4, $5, 'unresolved', $6, $6)
+            local_project_path, first_seen_at, last_seen_at)
+         VALUES ($1, $2, $3, $3, $3, $4, $5, 'unresolved', $7, $6, $6)
          ON CONFLICT (component_kind, external_id) DO UPDATE SET
            scope        = COALESCE(agent_components.scope, excluded.scope),
+           local_project_path = COALESCE(excluded.local_project_path,
+                                         agent_components.local_project_path),
            harness      = ${HARNESS_FOLD_SQL},
            last_seen_at = excluded.last_seen_at,
            uninstalled_at = NULL`,
@@ -365,7 +387,8 @@ async function upsertMcpComponent(
         server.name,
         scope,
         server.harness,
-        now
+        now,
+        server.projectPath
       )
     );
     summary.upserted += 1;
@@ -395,6 +418,8 @@ export type McpDiscoveryClaudeConfig = {
    * for a `.mcp.json` under a project root). Null when unknown — never guessed.
    */
   scope: ComponentScopeType | null;
+  /** ISS-12169: the project root a `.mcp.json` belongs to. */
+  projectPath?: string;
 };
 
 export type McpDiscoveryRoots = {
@@ -402,6 +427,17 @@ export type McpDiscoveryRoots = {
   claudeJsonConfigs?: readonly McpDiscoveryClaudeConfig[];
   /** When true, also scan the resolved Codex `config.toml`. */
   includeCodex?: boolean;
+  /**
+   * ISS-12169: TCC-protected project roots whose `.mcp.json` was left unread.
+   * A project-scoped row recorded under one of them is not tombstoned this
+   * scan, nor, while the list is non-empty, is one with no recorded project.
+   */
+  heldProjectPaths?: readonly string[];
+  /**
+   * ISS-11914: when true, user-scoped rows are not tombstoned this scan, because
+   * a user config inside a TCC-protected folder was left unread.
+   */
+  holdUserScoped?: boolean;
 };
 
 /**
@@ -416,26 +452,50 @@ export type McpDiscoveryRoots = {
  * sheds its tombstone in `upsertMcpComponent` (which sets `uninstalled_at =
  * NULL` on conflict). Best-effort — a failure is logged and the scan still
  * reports its upserts.
+ *
+ * ISS-6881: written through {@link applyComponentTombstone} so the tombstone also
+ * advances the sync ordering key past the live cursor. The component-sync lane is a
+ * keyset lane over `(last_seen_at, id)`, so a row left at its stale ordering key
+ * never re-enters the lane once the cursor has paged past it — the removed server
+ * then stays "installed" in cloud inventory and search forever. Stamping
+ * `scanStartedAt` is not enough on its own: the lane can have acknowledged a sibling
+ * row this same scan wrote at that exact instant, and the composite key then ties on
+ * the timestamp and loses on the id. The selection predicate is unaffected: it is
+ * evaluated before the update, and reads `$1` (the scan instant), not the key.
  */
 async function tombstoneAbsentMcpComponents(
   db: PackScannerDb,
   scanStartedAt: string,
-  summary: McpDiscoverySummary
+  summary: McpDiscoverySummary,
+  roots: McpDiscoveryRoots
 ): Promise<void> {
-  try {
-    const affected = await db.write((client) =>
-      client.$executeRawUnsafe(
-        `UPDATE agent_components
-            SET uninstalled_at = $1
-          WHERE component_kind = $2
+  const whereParams: string[] = [AgentComponentKind.Mcp];
+  const param = (value: string): string => {
+    whereParams.push(value);
+    return `$${whereParams.length + 2}`;
+  };
+  let whereSql = `component_kind = $3
             AND name = external_id
             AND uninstalled_at IS NULL
-            AND (last_seen_at IS NULL OR last_seen_at < $1)`,
-        scanStartedAt,
-        AgentComponentKind.Mcp
-      )
-    );
-    summary.tombstoned = typeof affected === "number" ? affected : 0;
+            AND (last_seen_at IS NULL OR last_seen_at < $1)`;
+  if (roots.holdUserScoped) {
+    whereSql += ` AND (scope IS NULL OR scope <> ${param(ComponentScope.User)})`;
+  }
+  const heldProjectPaths = roots.heldProjectPaths ?? [];
+  if (heldProjectPaths.length > 0) {
+    // A row with no recorded project predates `local_project_path`, so it may
+    // belong to a held project: it stays held until a scan records its project.
+    whereSql += ` AND (scope IS NULL OR scope <> ${param(ComponentScope.Project)}
+            OR (local_project_path IS NOT NULL
+                AND local_project_path NOT IN (${heldProjectPaths.map(param).join(", ")})))`;
+  }
+  try {
+    summary.tombstoned = await applyComponentTombstone(db, {
+      uninstalledAt: scanStartedAt,
+      scanInstant: scanStartedAt,
+      whereSql,
+      whereParams,
+    });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     gatewayLog.warn(
@@ -479,7 +539,7 @@ export async function discoverMcpServers(
   // Reconcile removals AFTER the upserts stamp `last_seen_at = nowIso` on
   // still-configured servers, so only genuinely-absent rows fall below the
   // scan's `last_seen_at < nowIso` threshold.
-  await tombstoneAbsentMcpComponents(db, nowIso, summary);
+  await tombstoneAbsentMcpComponents(db, nowIso, summary, roots);
   return summary;
 }
 
@@ -493,8 +553,21 @@ export async function discoverMcpServersFromDefaults(
   db: PackScannerDb
 ): Promise<McpDiscoverySummary> {
   let projectRoots: string[] = [];
+  let heldProjectPaths: string[] = [];
   try {
-    projectRoots = await getRecentProjectRoots(db);
+    // ISS-11914: reading `.mcp.json` inside a TCC-protected folder raises a
+    // macOS permission prompt, so those files are left unread. Their servers
+    // keep their last-scanned state (Perrin Upcott's ruling, 2026-10-07), only
+    // while such an unread file exists (a bare existence check, which raises no
+    // prompt). ISS-12169: the hold covers only those projects' own rows.
+    const recentRoots = await getRecentProjectRoots(db);
+    const protectedRoots = recentRoots.filter((root) =>
+      isTccProtectedPath(root)
+    );
+    projectRoots = recentRoots.filter((root) => !protectedRoots.includes(root));
+    heldProjectPaths = protectedRoots.filter((root) =>
+      existsSync(path.join(root, ".mcp.json"))
+    );
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     gatewayLog.warn("mcp-discovery", `failed to resolve project roots: ${msg}`);
@@ -506,19 +579,29 @@ export async function discoverMcpServersFromDefaults(
   // from the resolved Claude home's parent so a relocated `$CLAUDE_HOME` still
   // resolves the sibling config correctly.
   const homeDir = path.dirname(claudeHome);
+  const userConfigPath = path.join(homeDir, ".claude.json");
+  // ISS-11914: `safeReadMcpConfig` leaves a user config inside a TCC-protected
+  // folder unread, so user-scoped servers keep their last-scanned state while
+  // such a file exists, the way the project hold above works.
+  const holdUserScoped = [userConfigPath, getCodexConfigPath()].some(
+    (configPath) => isTccProtectedPath(configPath) && existsSync(configPath)
+  );
   const claudeJsonConfigs: McpDiscoveryClaudeConfig[] = [
     {
-      path: path.join(homeDir, ".claude.json"),
+      path: userConfigPath,
       scope: ComponentScope.User,
     },
     ...projectRoots.map((root) => ({
       path: path.join(root, ".mcp.json"),
       scope: ComponentScope.Project,
+      projectPath: root,
     })),
   ];
 
   return discoverMcpServers(db, {
     claudeJsonConfigs,
     includeCodex: true,
+    heldProjectPaths,
+    holdUserScoped,
   });
 }

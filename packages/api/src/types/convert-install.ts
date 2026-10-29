@@ -47,8 +47,6 @@
  * repo-sanctioned idiom.
  */
 
-import type { HarnessName } from "@repo/crewd/model";
-import { harnessNameSchema } from "@repo/crewd/model";
 import { z } from "zod";
 import type { AgentComponentKind } from "./agent-component.ts";
 import type {
@@ -59,6 +57,7 @@ import {
   agentComponentKindSchema,
   ConversionSupport,
 } from "./harness-conversion.ts";
+import { type HarnessName, harnessNameSchema } from "./harness-name.ts";
 
 /**
  * The honest state the convert engine reports at the execution boundary.
@@ -209,7 +208,7 @@ export type ConvertInstallOutcome = {
  * {@link convertInstallRequestSchemaCoversType} keys-covered guard below, so the
  * next field added to {@link ConvertInstallRequest} fails `tsc` here instead of
  * being silently stripped at the IPC boundary. `kind` and the harness fields
- * reuse the canonical FEA-4078/crewd schemas so the accepted set stays exactly
+ * reuse the canonical FEA-4078/`harness-name.ts` schemas so the accepted set stays exactly
  * the capability map's axes; `sourceHarness` and `cwd` are optional (provenance
  * defaults to `currentHarness`; cwd is validated again downstream by
  * `resolveSpawnCwd`).

@@ -1,10 +1,9 @@
 /**
  * Shared measurement harness for the Sessions summary strip E2Es.
  *
- * Two specs drive the SAME strip and assert on the SAME label reservation,
- * `sessions-summary-strip-baseline.spec.ts` (ISS-4787: no card is laid out under
- * the published floor) and `sessions-summary-strip-density.spec.ts` (ISS-5068:
- * the five cards form one rank at the launch width). Before this module they each
+ * `sessions-summary-strip-density.spec.ts` asserts that the five cards form
+ * one rank at the native launch width. The shared-only baseline duplicate was
+ * removed in ISS-10527. Before this module the two original specs each
  * carried their own copy of the selectors, the tolerances, the measurement
  * `evaluate`, and the rank binning, and the copies had already diverged: one
  * factored the binning into a helper, the other inlined it. AGENTS.md is explicit
@@ -25,7 +24,11 @@ import {
   type Locator,
   type Page,
 } from "@playwright/test";
-import { gotoNav } from "./desktop-app";
+import {
+  clickDesktopDateRange,
+  DesktopDateRangeLabel,
+  gotoNav,
+} from "./desktop-app";
 
 /**
  * The strip's five cards (FEA-4126: Sessions, Total Tokens, Cost, PRs Shipped,
@@ -133,12 +136,9 @@ export type StripMeasurement = {
  * Open the Sessions list with the seeded rows in range, and wait for a seeded
  * row so the strip is measured against real data rather than its skeleton.
  *
- * `viewport` is OPTIONAL, and the two specs use the two halves on purpose.
+ * `viewport` is optional. The baseline spec that passed a synthetic viewport
+ * was removed in ISS-10527; the native density spec omits it:
  *
- *  - PASSED (`sessions-summary-strip-baseline.spec.ts`): resize to a pinned
- *    regime. That spec measures the label stagger at the width it was reported
- *    at, which is deliberately not the launch geometry, so a synthetic viewport
- *    is exactly what it wants.
  *  - OMITTED (`sessions-summary-strip-density.spec.ts`): leave the renderer at
  *    the size the `BrowserWindow` actually launched with. #4445 review (whitlockk):
  *    calling `setViewportSize(DEFAULT_*)` here replaced the launched renderer
@@ -163,9 +163,8 @@ export async function openSeededSessionsList(
   }
   await gotoNav(page, "sessions");
   // Widen the window filter so the rows are in range independent of the run
-  // clock. `:visible` scopes to the Sessions toolbar (keep-alive views stay
-  // mounted-but-hidden and render the same control).
-  await page.locator('[aria-label="All time"]:visible').click();
+  // clock.
+  await clickDesktopDateRange(page, DesktopDateRangeLabel.AllTime);
   await expect(page.getByRole("link", { name: firstSeededName })).toBeVisible({
     timeout: MOUNT_TIMEOUT_MS,
   });

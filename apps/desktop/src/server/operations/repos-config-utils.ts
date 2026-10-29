@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { withKeyedLock } from "../keyed-lock.js";
 import { expandHome } from "./symphony-utils.js";
 
 export type RepoDeploymentConfig = {
@@ -89,24 +90,26 @@ export async function addRepo(
     return { success: false, error: "Path must be a directory" };
   }
 
-  const config = await loadReposConfig(configDir);
-  const alreadyExists = config.repos.some(
-    (repo) => normalizePath(repo.path) === normalizedPath
-  );
-  if (alreadyExists) {
-    return { success: false, error: "Repository already configured" };
-  }
+  return await withReposConfigLock(configDir, async () => {
+    const config = await loadReposConfig(configDir);
+    const alreadyExists = config.repos.some(
+      (repo) => normalizePath(repo.path) === normalizedPath
+    );
+    if (alreadyExists) {
+      return { success: false, error: "Repository already configured" };
+    }
 
-  const deployment = await detectSimpleDeployment(expandedPath);
-  const repo: ConfiguredRepo = {
-    path: normalizedPath,
-    ...(description ? { description } : {}),
-    ...(deployment ? { deployment } : {}),
-    addedAt: new Date().toISOString(),
-  };
-  config.repos.push(repo);
-  await saveReposConfig(config, configDir);
-  return { success: true, repo };
+    const deployment = await detectSimpleDeployment(expandedPath);
+    const repo: ConfiguredRepo = {
+      path: normalizedPath,
+      ...(description ? { description } : {}),
+      ...(deployment ? { deployment } : {}),
+      addedAt: new Date().toISOString(),
+    };
+    config.repos.push(repo);
+    await saveReposConfig(config, configDir);
+    return { success: true, repo };
+  });
 }
 
 export async function removeRepo(
@@ -114,28 +117,32 @@ export async function removeRepo(
   configDir: string
 ): Promise<{ success: boolean; error?: string }> {
   const normalizedPath = normalizePath(pathInput);
-  const config = await loadReposConfig(configDir);
-  const initialLength = config.repos.length;
-  config.repos = config.repos.filter(
-    (repo) => normalizePath(repo.path) !== normalizedPath
-  );
+  return await withReposConfigLock(configDir, async () => {
+    const config = await loadReposConfig(configDir);
+    const initialLength = config.repos.length;
+    config.repos = config.repos.filter(
+      (repo) => normalizePath(repo.path) !== normalizedPath
+    );
 
-  if (config.repos.length === initialLength) {
-    return { success: false, error: "Repository not found" };
-  }
+    if (config.repos.length === initialLength) {
+      return { success: false, error: "Repository not found" };
+    }
 
-  await saveReposConfig(config, configDir);
-  return { success: true };
+    await saveReposConfig(config, configDir);
+    return { success: true };
+  });
 }
 
 export async function updateSettings(
   updates: Record<string, string | boolean>,
   configDir: string
 ): Promise<{ success: boolean; error?: string }> {
-  const config = await loadReposConfig(configDir);
-  config.settings = { ...config.settings, ...updates };
-  await saveReposConfig(config, configDir);
-  return { success: true };
+  return await withReposConfigLock(configDir, async () => {
+    const config = await loadReposConfig(configDir);
+    config.settings = { ...config.settings, ...updates };
+    await saveReposConfig(config, configDir);
+    return { success: true };
+  });
 }
 
 export function normalizePath(pathInput: string): string {
@@ -206,4 +213,19 @@ function detectFramework(
     return "express";
   }
   return undefined;
+}
+
+const reposConfigLocks = new Map<string, Promise<void>>();
+
+/**
+ * Serializes every read-modify-write of one `repos.json` (ISS-11414).
+ * `addRepo` awaits deployment detection between reading the file and writing
+ * it back, so without this two writers could each save a copy that drops the
+ * other's change.
+ */
+export function withReposConfigLock<T>(
+  configDir: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  return withKeyedLock(reposConfigLocks, path.resolve(configDir), operation);
 }

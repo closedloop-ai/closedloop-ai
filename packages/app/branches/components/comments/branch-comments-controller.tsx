@@ -7,34 +7,42 @@ import type {
 import { BranchCommentsState } from "@repo/api/src/types/branch";
 import {
   type BranchTraceCommentCollectionQuery,
+  CommentSurface,
+  CommentTargetType,
   type TraceComment,
-  TraceCommentSurface,
-  TraceCommentTargetType,
+  type TraceCommentTarget,
   type TraceTextAnchor,
 } from "@repo/api/src/types/comment";
-import { formatRelativeTimeOrFallback } from "@repo/app/shared/lib/date-utils";
 import { traceCommentKeys } from "@repo/app/shared/trace-comments/trace-comment-query";
 import {
   assertTraceCommentMutationResult,
   assertTraceCommentWriteSupported,
+  executeTraceCommentRetrySync,
+  isTraceCommentWriteSupported,
+  type TraceCommentsDataSource,
 } from "@repo/app/shared/trace-comments/trace-comments-data-source";
 import { useTraceCommentsDataSource } from "@repo/app/shared/trace-comments/trace-comments-provider";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { RefObject } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PrCommentMarkdown } from "../pr-comment-markdown";
 import {
   BRANCH_COMMENTS_ERROR_REFETCH_INTERVAL_MS,
   BRANCH_COMMENTS_READ_TIMEOUT_MS,
   branchCommentCollectionIdentity,
   everyBranchCommentCollectionFailed,
+  groupBranchSessionComments,
   readBranchCommentCollections,
 } from "./branch-comments-collection-reader";
 import {
+  BRANCH_COMMENTS_READ_FAILED,
   type BranchCommentDraftTarget,
   BranchCommentSource,
   BranchCommentsTab,
   type BranchCommentThread,
+  DEFAULT_COMMENTS_WIDTH,
+  formatBranchCommentTime,
 } from "./branch-comments-model";
 import {
   BRANCH_COMMENTS_MAX_WIDTH,
@@ -78,6 +86,12 @@ export function BranchCommentsController({
   const [width, setWidth] = useState(DEFAULT_COMMENTS_WIDTH);
   const dataSource = useTraceCommentsDataSource();
   const queryClient = useQueryClient();
+  const [batchUnsupported, setBatchUnsupported] = useState(false);
+  const readBatch = supportsBranchSessionBatch(
+    activeTab,
+    dataSource,
+    batchUnsupported
+  );
   const collections = useMemo(
     () =>
       commentCollections(
@@ -93,7 +107,7 @@ export function BranchCommentsController({
       "branch-workspace",
       dataSource.scope,
       activeTab,
-      ...collections.map(branchCommentCollectionIdentity),
+      ...branchWorkspaceQueryIdentity(readBatch, detail.id, collections),
     ],
     // ISS-5110: the read carries this query's own cancellation plus this
     // surface's read deadline, so a wedged workspace read fails instead of
@@ -105,13 +119,23 @@ export function BranchCommentsController({
     // honest signal that the list is unavailable rather than empty. Partial
     // success stays partial and keeps its peers.
     queryFn: async ({ signal }) => {
+      if (readBatch && dataSource.listBranchSessions) {
+        const comments = await dataSource.listBranchSessions(detail.id, {
+          signal,
+          timeoutMs: BRANCH_COMMENTS_READ_TIMEOUT_MS,
+        });
+        if (comments !== null) {
+          return groupBranchSessionComments(detail.id, comments);
+        }
+        setBatchUnsupported(true);
+      }
       const results = await readBranchCommentCollections(
         dataSource,
         collections,
         { signal, timeoutMs: BRANCH_COMMENTS_READ_TIMEOUT_MS }
       );
       if (everyBranchCommentCollectionFailed(results)) {
-        throw results[0]?.error ?? new Error(NATIVE_COMMENTS_UNAVAILABLE);
+        throw results[0]?.error ?? new Error(BRANCH_COMMENTS_READ_FAILED);
       }
       return results;
     },
@@ -139,10 +163,23 @@ export function BranchCommentsController({
     refetchOnReconnect: false,
     enabled: open,
   });
+  useBranchCommentMembershipRefresh({
+    branchId: detail.id,
+    sessionIds: detail.sessionIds,
+    renderedSessionIds,
+    open,
+    readBatch,
+    isFetching: nativeQuery.isFetching,
+    refetch: nativeQuery.refetch,
+  });
   const nativeResults = nativeQuery.data ?? [];
   const nativeComments = nativeResults.flatMap((result) =>
     result.read.comments.map((comment) =>
-      mapNativeThread(comment, result.collection.collectionQuery)
+      mapNativeThread(
+        comment,
+        result.collection.collectionQuery,
+        canRetrySyncFor(dataSource, comment, result.collection.collectionQuery)
+      )
     )
   );
   const providerView =
@@ -204,6 +241,52 @@ export function BranchCommentsController({
     queryClient.invalidateQueries({
       queryKey: traceCommentKeys.all,
     });
+  /*
+   * ISS-10383: the recovery door. UNDEFINED when the source cannot un-abandon
+   * anything — since ISS-10382 the cloud HTTP source CAN, so what is left here
+   * is a version-skewed desktop bridge — and withheld per ROW by
+   * `canRetrySyncFor`, which is the half a source-level gate gets wrong here.
+   *
+   * It CATCHES, unlike this surface's other writes, and deliberately: a composer
+   * write announces its own failure by reopening with the draft intact, while a
+   * rejected retry changes nothing on screen — so without this the refusal, the
+   * failure and a success are one picture. Not a mutation, so the shared client's
+   * default `mutations.onError` cannot reach it; this is the "catch to suppress
+   * an unhandled rejection" `packages/app/AGENTS.md` allows, in the Sessions
+   * rail's wording so one failure reads the same on both surfaces.
+   */
+  const retrySync = dataSource.retrySync
+    ? async (
+        threadId: string,
+        target: TraceCommentTarget,
+        collectionQuery?: BranchTraceCommentCollectionQuery
+      ) => {
+        // `rePended` so the toast means ONE thing: the re-pend did not happen.
+        // With `refresh()` inside the same `try` and no such flag, a re-pend
+        // that SUCCEEDED and then threw on the refetch told the author "could
+        // not retry", and they clicked again on a row already back in the queue
+        // (marisolashgrove review). Moving the await out of the `try` instead
+        // would fix the wording and reopen the rejection: the card floats this
+        // promise rather than awaiting it, so an uncaught refetch failure
+        // becomes the unhandled rejection this block exists to absorb.
+        let rePended = false;
+        try {
+          assertTraceCommentWriteSupported(dataSource, target, collectionQuery);
+          await executeTraceCommentRetrySync(
+            dataSource,
+            target,
+            threadId,
+            collectionQuery
+          );
+          rePended = true;
+          await refresh();
+        } catch {
+          if (!rePended) {
+            toast.error("Could not retry this comment. Please try again.");
+          }
+        }
+      }
+    : undefined;
 
   return (
     <BranchCommentsWorkspace
@@ -257,6 +340,7 @@ export function BranchCommentsController({
         );
         await refresh();
       }}
+      onRetrySync={retrySync}
       onWidthChange={(nextWidth) =>
         setWidth(
           Math.min(MAX_COMMENTS_WIDTH, Math.max(MIN_COMMENTS_WIDTH, nextWidth))
@@ -265,6 +349,7 @@ export function BranchCommentsController({
       open={open}
       providerAvailability={providerView?.availability}
       railId="branch-comments-workspace"
+      readFailed={nativeQuery.isError}
       renderBody={(body, thread) =>
         thread.source === BranchCommentSource.Provider ? (
           <PrCommentMarkdown className="text-sm" text={body} />
@@ -279,7 +364,6 @@ export function BranchCommentsController({
     />
   );
 }
-
 function commentCollections(
   branchId: string,
   activeTab: BranchCommentsTab,
@@ -288,17 +372,17 @@ function commentCollections(
   const branchCollection =
     activeTab === BranchCommentsTab.Details
       ? {
-          target: { type: TraceCommentTargetType.Branch, id: branchId },
-          collectionQuery: { surface: TraceCommentSurface.BranchDetail },
+          target: { type: CommentTargetType.Branch, id: branchId },
+          collectionQuery: { surface: CommentSurface.BranchDetail },
         }
       : {
-          target: { type: TraceCommentTargetType.Branch, id: branchId },
-          collectionQuery: { surface: TraceCommentSurface.BranchTimeline },
+          target: { type: CommentTargetType.Branch, id: branchId },
+          collectionQuery: { surface: CommentSurface.BranchTimeline },
         };
   return [
     branchCollection,
     ...sessionIds.map((id) => ({
-      target: { type: TraceCommentTargetType.Session, id },
+      target: { type: CommentTargetType.Session, id },
       collectionQuery: undefined,
     })),
   ] satisfies readonly {
@@ -309,11 +393,12 @@ function commentCollections(
 
 function mapNativeThread(
   comment: TraceComment,
-  collectionQuery?: BranchTraceCommentCollectionQuery
+  collectionQuery: BranchTraceCommentCollectionQuery | undefined,
+  canRetrySync: boolean
 ): BranchCommentThread {
   const isTimeline =
-    comment.target.type === TraceCommentTargetType.Session ||
-    collectionQuery?.surface === TraceCommentSurface.BranchTimeline;
+    comment.target.type === CommentTargetType.Session ||
+    collectionQuery?.surface === CommentSurface.BranchTimeline;
   return {
     id: comment.id,
     source: BranchCommentSource.Platform,
@@ -336,12 +421,18 @@ function mapNativeThread(
     canDeleteThread: comment.canDelete,
     canEditRoot: comment.canEdit,
     canReply: true,
-    createdAtLabel: relativeTime(comment.createdAt),
+    createdAtLabel: formatBranchCommentTime(comment.createdAt),
+    canRetrySync,
+    // ISS-10383: the omission is CARRIED, not defaulted to `false`, so this
+    // mapper reshapes nothing the port said.
+    ...(comment.syncAbandoned === undefined
+      ? {}
+      : { syncAbandoned: comment.syncAbandoned }),
     replies: (comment.replies ?? []).map((reply) => ({
       id: reply.id,
       body: reply.body,
       canDelete: reply.canDelete,
-      createdAtLabel: relativeTime(reply.createdAt),
+      createdAtLabel: formatBranchCommentTime(reply.createdAt),
       author: {
         id: reply.authorId,
         name: reply.authorName ?? "Unknown author",
@@ -349,6 +440,30 @@ function mapNativeThread(
       },
     })),
   };
+}
+
+/**
+ * ISS-10383: whether this exact row can be re-pended, asked where the source is.
+ *
+ * TWO questions, and the Sessions rail only ever has to ask the first. A
+ * Branch-timeline row needs `capabilities.branchTimelineWrites` on top of
+ * `retrySync`, and on desktop those are independent bridge fields — so a skewed
+ * shell answers yes to one and no to the other.
+ */
+function canRetrySyncFor(
+  dataSource: TraceCommentsDataSource,
+  comment: TraceComment,
+  collectionQuery?: BranchTraceCommentCollectionQuery
+): boolean {
+  return (
+    Boolean(dataSource.retrySync) &&
+    // ISS-10382: and the viewer must be the AUTHOR. The server 403s anyone else,
+    // and since the cloud began serving `syncAbandoned` to every viewer of the
+    // thread the desktop queue's implicit "these are my own rows" no longer
+    // holds. `canEdit` is the same authorship the server computes.
+    comment.canEdit &&
+    isTraceCommentWriteSupported(dataSource, comment.target, collectionQuery)
+  );
 }
 
 function joinCoverageNotes(
@@ -371,13 +486,64 @@ function nativeCollectionDisclosure(
   return "Some Branch comments aren't available in this view.";
 }
 
-function relativeTime(value: string): string {
-  return formatRelativeTimeOrFallback(value, { fallback: "Unknown time" });
-}
-
-/** Fallback failure when a collection rejected with no error value of its own. */
-const NATIVE_COMMENTS_UNAVAILABLE = "Branch comments could not be read.";
-
-const DEFAULT_COMMENTS_WIDTH = 340;
 const MIN_COMMENTS_WIDTH = BRANCH_COMMENTS_MIN_WIDTH;
 const MAX_COMMENTS_WIDTH = BRANCH_COMMENTS_MAX_WIDTH;
+
+function supportsBranchSessionBatch(
+  activeTab: BranchCommentsTab,
+  dataSource: TraceCommentsDataSource,
+  batchUnsupported: boolean
+): boolean {
+  return (
+    activeTab === BranchCommentsTab.Sessions &&
+    dataSource.listBranchSessions !== undefined &&
+    !batchUnsupported
+  );
+}
+
+function branchWorkspaceQueryIdentity(
+  readBatch: boolean,
+  branchId: string,
+  collections: Parameters<typeof readBranchCommentCollections>[1]
+): string[] {
+  return readBatch
+    ? [branchId]
+    : collections.map(branchCommentCollectionIdentity);
+}
+
+function useBranchCommentMembershipRefresh({
+  branchId,
+  sessionIds,
+  renderedSessionIds,
+  open,
+  readBatch,
+  isFetching,
+  refetch,
+}: {
+  branchId: string;
+  sessionIds: readonly string[];
+  renderedSessionIds: readonly string[];
+  open: boolean;
+  readBatch: boolean;
+  isFetching: boolean;
+  refetch: () => unknown;
+}) {
+  // Detail already names the initial membership before the trace hydrates.
+  // Union with rendered IDs also catches a live trace arriving before detail.
+  const membership = JSON.stringify(
+    [...new Set([...(sessionIds ?? []), ...renderedSessionIds])].sort()
+  );
+  const observed = useRef({ branchId, membership });
+  useEffect(() => {
+    if (!(open && readBatch) || observed.current.branchId !== branchId) {
+      observed.current = { branchId, membership };
+      return;
+    }
+    // Remember changes during a request until it settles, then read again.
+    if (isFetching || observed.current.membership === membership) {
+      return;
+    }
+    observed.current = { branchId, membership };
+    refetch();
+  }, [branchId, membership, open, readBatch, isFetching, refetch]);
+}

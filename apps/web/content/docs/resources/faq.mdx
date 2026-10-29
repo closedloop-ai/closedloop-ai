@@ -26,14 +26,14 @@ Yes, if you want the full experience. The plugins provide the orchestration; the
 ### Does it run on Linux or Windows?
 
 - macOS — fully supported; packaged DMG.
-- Linux — supported for development by running from source; not packaged.
+- Linux (x64) — packaged AppImage.
 - Windows — not supported for the desktop client.
 
 ### What Python version do I need?
 
 Python 3.11+ (3.13 recommended).
 
-### What about PATH issues with `claude`, `git`, `gh`, etc.?
+### What about PATH issues with `claude`, `git`, `codex`, etc.?
 
 The desktop client spawns `$SHELL -ilc` with sentinels to extract your login shell PATH. If that does not work, override specific binaries at **Settings → Binary paths**.
 
@@ -68,10 +68,6 @@ Use `/code:amend-plan` with a directive to adjust. The amend extractor classifie
 ### Can I skip judges?
 
 Yes, though you lose the scoring signal. Judges run automatically inside the `code` loop and can be triggered manually with `@judges:run-judges`.
-
-### How do I stop a running loop?
-
-`/code:cancel-code` removes the state file. The desktop client will also kill the process group on cancel commands.
 
 ## Judges and review
 
@@ -112,7 +108,7 @@ Yes. Codex is supported as a chat provider and as a plan debate partner. See [Re
 
 ### Does it work with GitHub?
 
-Yes. The gateway exposes `git_pr` operations that use `gh` under the hood for PR creation, comments, reviews, and inline annotations.
+Yes. The gateway exposes `git_pr` operations for PR creation, comments, reviews, and inline annotations.
 
 ### Can I run it without GitHub?
 

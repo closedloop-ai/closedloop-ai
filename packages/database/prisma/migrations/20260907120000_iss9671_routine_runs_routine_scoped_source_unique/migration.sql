@@ -1,0 +1,45 @@
+-- ISS-9671: give the run sync-up upsert a ROUTINE-SCOPED conflict target.
+--
+-- WHAT IT CLOSES. `persistRun` (apps/api/app/routines/service.ts) upserts a
+-- synced run on its source id. Arbitrated by the org-wide
+-- `(organization_id, source_run_id)` unique, that `ON CONFLICT` MATCHES a row
+-- owned by a different routine, so a delivery for routine B resolves to routine
+-- A's history row and writes B's status and summary straight through it. Today
+-- only an in-transaction ownership probe stops that, and a probe is a
+-- read-then-write: at READ COMMITTED a concurrent insert between the two
+-- statements is not excluded. Arbitrating on this index instead makes the match
+-- impossible rather than improbable.
+--
+-- ADDITIVE ONLY — the org-wide unique is deliberately NOT dropped here.
+-- Migrations apply during `@repo/database`'s prebuild, before the new API build
+-- is promoted, so the PREVIOUS release is still live and still issuing
+-- `ON CONFLICT (organization_id, source_run_id)`. Dropping that index in this
+-- deploy would fail those in-flight upserts with SQLSTATE 42P10. Keeping it also
+-- preserves the DATABASE-level guarantee that one crewd run id names at most one
+-- run per org, and keeps serving `findReparentedSourceRunIds`, whose
+-- `routine_id <> $1` breaks the b-tree equality chain this key needs. Retiring it
+-- is a separate contract-phase change, once no deployed code arbitrates on it.
+--
+-- ORDER IS LOAD-BEARING IN schema.prisma, NOT HERE. Prisma arbitrates an upsert
+-- on the FIRST declared unique that matches, so the routine-scoped `@@unique`
+-- must stay above the org-wide one; below it, Prisma arbitrates on the org-wide
+-- key, demotes the routine scope to a `DO UPDATE ... WHERE` that matches no row,
+-- and the upsert resolves to NULL — silently writing nothing while typed as
+-- returning a row. The integration test pins the emitted arbiter.
+--
+-- WHY IT CANNOT FAIL ON EXISTING ROWS. The key is a strict SUPERSET of the
+-- columns in the org-wide unique, so any set of rows already unique on
+-- (organization_id, source_run_id) is necessarily unique on
+-- (organization_id, routine_id, source_run_id). The build is therefore
+-- permissive by construction — no duplicate can pre-exist and no preflight or
+-- dedupe pass is required. NULL `source_run_id` (cloud-native runs) stays
+-- distinct under both keys.
+--
+-- WHY CONCURRENTLY. A plain CREATE UNIQUE INDEX holds a lock on `routine_runs`
+-- for the whole build, which would block the desktop routine sync lane's run
+-- ingest. `IF NOT EXISTS` is deliberately absent: with CONCURRENTLY a failed
+-- build leaves a same-named INVALID index behind, and the guard in
+-- `scripts/lint/destructive-migrations/index-ddl.ts` requires the retry to fail
+-- closed on it rather than silently mark the migration applied.
+CREATE UNIQUE INDEX CONCURRENTLY "routine_runs_organization_id_routine_id_source_run_id_key"
+  ON "routine_runs" ("organization_id", "routine_id", "source_run_id");

@@ -8,14 +8,16 @@ import type { UtilizationInsightsResponse } from "@closedloop-ai/loops-api/insig
  * derived from the local `session_turn_bucket` table). Cloud is now the
  * authoritative source when it returns the slice.
  *
- * But a Cloud-mode desktop can still receive a Utilization payload with NO
- * `activityHeatmap`:
+ * But a Cloud-mode desktop can still receive a Utilization payload whose
+ * heatmap has nothing to draw:
  *   - during a deploy window, the request can hit an OLDER / rolled-back route
- *     that predates the cloud computation, or
- *   - a legacy synced session with empty/absent `metadata.messages` yields no
- *     cells even on the new route.
- * In either case the "Event Activity" card would render its empty state even
- * though the local DB still holds hundreds of `session_turn_bucket` rows.
+ *     that predates the cloud computation and sends NO `activityHeatmap`, or
+ *   - a legacy synced session with empty/absent `metadata.messages` yields a
+ *     heatmap with no cells even on the new route.
+ * Only the first drops the "Event Activity" row: the shared row rule
+ * (`visibleDashboardRows`, ISS-9993) keeps any DEFINED heatmap, cells or not,
+ * so the second draws the card empty. Either way the local DB may still hold
+ * hundreds of `session_turn_bucket` rows the page is not showing.
  *
  * This overlay repairs only that one slice: it takes the cloud response and,
  * when the cloud's `activityHeatmap` is genuinely missing or has no `cells`,

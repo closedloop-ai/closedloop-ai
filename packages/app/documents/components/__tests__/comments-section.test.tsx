@@ -15,10 +15,8 @@ import {
  * regression at typecheck time rather than as a production silent no-op.
  */
 function _commentsSectionViewRequiresSubmit() {
-  return (
-    // @ts-expect-error onSubmitComment is required — omitting it must not typecheck.
-    <CommentsSectionView onOpenChange={() => undefined} open />
-  );
+  // @ts-expect-error onSubmitComment is required — omitting it must not typecheck.
+  return <CommentsSectionView onOpenChange={() => undefined} open />;
 }
 
 const mockUseDocumentComments = vi.fn();

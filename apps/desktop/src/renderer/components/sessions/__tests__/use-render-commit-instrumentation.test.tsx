@@ -80,7 +80,7 @@ describe("useRenderCommitInstrumentation", () => {
     [{ page: 1 }, "paginate"],
     [{ search: "needle" }, "search"],
     [{ statuses: ["active"] }, "filter"],
-    [{ repositories: ["closedloop-ai/example-repo"] }, "filter"],
+    [{ repositories: ["closedloop-ai/closedloop-ai"] }, "filter"],
     [{ sortKey: "cost" }, "sort"],
     [{ sortDir: "asc" }, "sort"],
     [{ dateRange: "30d" }, "date_range"],
@@ -130,16 +130,19 @@ describe("useRenderCommitInstrumentation", () => {
     [{ statuses: ["active"] }, "filter"],
     [{ sortKey: "cost" }, "sort"],
     [{ dateRange: "30d" }, "date_range"],
-  ])("attributes %o to its gesture even when the page is reset to 0 in the same commit", (mutation, expectedCause) => {
-    const fromPageTwo = { ...baseListInputs, page: 2 };
-    const { report, rerenderWith } = renderListHarness(fromPageTwo, 25);
-    report.mockClear();
+  ])(
+    "attributes %o to its gesture even when the page is reset to 0 in the same commit",
+    (mutation, expectedCause) => {
+      const fromPageTwo = { ...baseListInputs, page: 2 };
+      const { report, rerenderWith } = renderListHarness(fromPageTwo, 25);
+      report.mockClear();
 
-    // The gesture also resets page 2 → 0.
-    rerenderWith({ ...fromPageTwo, ...mutation, page: 0 }, 25);
+      // The gesture also resets page 2 → 0.
+      rerenderWith({ ...fromPageTwo, ...mutation, page: 0 }, 25);
 
-    expect(report.mock.calls[0]?.[0]).toMatchObject({ cause: expectedCause });
-  });
+      expect(report.mock.calls[0]?.[0]).toMatchObject({ cause: expectedCause });
+    }
+  );
 
   it("still attributes a genuine page change (nothing else moved) to paginate", () => {
     const fromPageTwo = { ...baseListInputs, page: 2 };

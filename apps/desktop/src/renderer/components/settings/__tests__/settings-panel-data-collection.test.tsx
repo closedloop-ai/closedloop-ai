@@ -1,12 +1,10 @@
 /**
- * @file settings-panel-data-collection.test.tsx
- * @description FEA-3741 (slice 1) — the CLI Tools tab renders a "Data
+ * @description FEA-3741 (slice 1) — the CLI Tools block renders a "Data
  * Collection" card with a per-tool ON/OFF switch for each collectable agent
  * tool (Claude/Cursor/Copilot), defaulting ON and persisting a toggle through
  * the updateSettings IPC.
  */
 import {
-  act,
   cleanup,
   fireEvent,
   render,
@@ -14,7 +12,8 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SettingsPanel } from "../SettingsPanel";
+import { DesktopAppPanel } from "../../../settings-v2/panels/desktop-app-panel";
+import { desktopAppPanelMountReads } from "./desktop-app-panel-mount-reads";
 
 const originalDesktopApi = Object.getOwnPropertyDescriptor(
   window,
@@ -44,36 +43,21 @@ function installDesktopApi(initial: SettingsRecord = {}): {
   Object.defineProperty(window, "desktopApi", {
     configurable: true,
     value: {
+      ...desktopAppPanelMountReads(),
       getSettings: vi.fn(async () => ({ ...settings })),
-      getRuntimeStatus: vi.fn(() => new Promise(() => undefined)),
-      getCloudCommandsPaused: vi.fn(async () => false),
-      getCloudConnectionEnabled: vi.fn(async () => true),
-      getAgentMonitorHooksEnabled: vi.fn(async () => false),
       getBinaryPaths: vi.fn(async () => ({ claude: "/usr/bin/claude" })),
       detectCliTools: vi.fn(async () => undefined),
-      patchBinaryPaths: vi.fn(async () => undefined),
       updateSettings,
     },
   });
   return { updateSettings, settings };
 }
 
-function openCliToolsTab() {
-  act(() => {
-    window.dispatchEvent(
-      new CustomEvent("desktop:navigate-settings-tab", {
-        detail: "binary-paths",
-      })
-    );
-  });
-}
-
-describe("SettingsPanel Data Collection toggles (FEA-3741)", () => {
+describe("Settings Data Collection toggles (FEA-3741)", () => {
   it("renders a per-tool collection switch, defaulting ON when the setting is absent", async () => {
     // Settings record does not carry the collect* keys → registry default (ON).
     installDesktopApi({});
-    render(<SettingsPanel />);
-    openCliToolsTab();
+    render(<DesktopAppPanel />);
 
     expect(await screen.findByText("Data Collection")).toBeDefined();
 
@@ -98,8 +82,7 @@ describe("SettingsPanel Data Collection toggles (FEA-3741)", () => {
 
   it("reflects a persisted OFF value", async () => {
     installDesktopApi({ collectCursorEnabled: false });
-    render(<SettingsPanel />);
-    openCliToolsTab();
+    render(<DesktopAppPanel />);
 
     const cursorSwitch = await screen.findByRole("switch", {
       name: "Toggle Collect Cursor sessions",
@@ -111,8 +94,7 @@ describe("SettingsPanel Data Collection toggles (FEA-3741)", () => {
 
   it("persists a toggle-off through the updateSettings IPC", async () => {
     const { updateSettings } = installDesktopApi({});
-    render(<SettingsPanel />);
-    openCliToolsTab();
+    render(<DesktopAppPanel />);
 
     const copilotSwitch = await screen.findByRole("switch", {
       name: "Toggle Collect GitHub Copilot sessions",
@@ -145,8 +127,7 @@ describe("SettingsPanel Data Collection toggles (FEA-3741)", () => {
           .mockRejectedValue(new Error("collection IPC failed")),
       },
     });
-    render(<SettingsPanel />);
-    openCliToolsTab();
+    render(<DesktopAppPanel />);
 
     const claudeSwitch = await screen.findByRole("switch", {
       name: "Toggle Collect Claude Code sessions",
@@ -167,19 +148,13 @@ describe("SettingsPanel Data Collection toggles (FEA-3741)", () => {
     Object.defineProperty(window, "desktopApi", {
       configurable: true,
       value: {
+        ...desktopAppPanelMountReads(),
         getSettings: vi.fn().mockRejectedValue(new Error("read failed")),
-        getRuntimeStatus: vi.fn(() => new Promise(() => undefined)),
-        getCloudCommandsPaused: vi.fn(async () => false),
-        getCloudConnectionEnabled: vi.fn(async () => true),
-        getAgentMonitorHooksEnabled: vi.fn(async () => false),
-        getBinaryPaths: vi.fn(async () => ({})),
         detectCliTools: vi.fn(async () => undefined),
-        patchBinaryPaths: vi.fn(async () => undefined),
         updateSettings: vi.fn(async () => ({})),
       },
     });
-    render(<SettingsPanel />);
-    openCliToolsTab();
+    render(<DesktopAppPanel />);
 
     // The card renders an honest failure message and no collection switches
     // (a failed read must never assert an ON default it did not read).

@@ -1,0 +1,33 @@
+-- ISS-6759: stamp the METRIC-formula version alongside the classifier version on
+-- `session_activity_metrics`.
+--
+-- `version` is the segments' ACTIVITY_CLASSIFIER_VERSION, and the boot backfill
+-- (`backfillActivityMetrics`) re-selects on `sam.version < seg.version`. That
+-- comparison moves only when the CLASSIFIER changes. A change to the Coverage
+-- math itself — which `ATTRIBUTION_METRIC_VERSION` (telemetry/attribution-metrics.ts)
+-- exists to declare — moves neither side of it, so nothing in production ever
+-- imported the constant and bumping it would have left every persisted row in
+-- place at the old formula. The table is write-only today (its FR-12 read surface
+-- is not built yet), so no shipped aggregate has mixed two formulas; this closes
+-- the gap BEFORE a formula bump makes that unavoidable, which is the same reason
+-- the classifier axis was version-gated from day one.
+--
+-- This column carries the formula version the row was computed under, and the
+-- backfill ORs `sam.metric_version < <current>` into its predicate, so a formula
+-- bump re-derives exactly the way a classifier bump already does.
+--
+-- DEFAULT 1, not 0, and NOT NULL. `ATTRIBUTION_METRIC_VERSION` has been 1 since
+-- FEA-2266 introduced it and this table was created LATER (migration 0027,
+-- FEA-2273), so every existing row genuinely was computed under formula version 1
+-- and 1 is the truthful backfill value — not a guess. A 0 floor would instead
+-- declare the whole corpus stale and force a full re-derive on the first boot
+-- after upgrade (thousands of sessions, ~50 per write transaction, contending
+-- with boot import on the same write lock) to arrive at byte-identical rows. The
+-- literal is safe against future bumps precisely because a merged migration is
+-- immutable: it is a point-in-time statement about the rows that existed when it
+-- ran, and a later bump to 2 leaves these rows at 1 — which is exactly what makes
+-- the new predicate re-select them.
+--
+-- Additive and local-only: this table is a derived, no-FK rollup that never
+-- crosses the cloud sync boundary, so no consumer contract changes.
+ALTER TABLE "session_activity_metrics" ADD COLUMN "metric_version" INTEGER NOT NULL DEFAULT 1;

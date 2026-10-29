@@ -12,7 +12,7 @@
  * ISS-4651: only the first TWO are live, and they are predicate-identical.
  * `linkBranchSessionsToPr` has no production caller left (the enrichment sweep
  * that drove it was deleted by PLN-1535 M5) and its gate is the LOOSEST of the
- * three — no `pull_requests` join, no head-ref or `pr_state` condition — so do
+ * three — no `pull_requests` join, no head-ref condition — so do
  * not read it as the reference implementation of the rule. It is kept pending
  * an explicit decision to remove it; treat the two live paths as the pair that
  * must not drift.
@@ -282,7 +282,6 @@ export async function propagateBranchPrLinks(
      JOIN artifacts pr_art ON pr_art.kind = 'pull_request'
        AND pr_art.repo_full_name = pr.repo_full_name
        AND pr_art.pr_number = pr.pr_number
-       AND COALESCE(pr_art.pr_state, 'open') NOT IN ('merged', 'closed')
      WHERE sal.session_id = $1
        AND NOT EXISTS (
          SELECT 1 FROM session_artifact_links ex

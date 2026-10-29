@@ -1,10 +1,10 @@
+import { WEB_MASTER_BASE_PATH } from "@repo/app/shell/v2/components/web-master-preview/mock";
 import { redirect } from "next/navigation";
-import { WEB_MASTER_BASE_PATH } from "./mock";
 
-// The master shell always shows a concrete surface; Sessions is the first
-// combined artifact in the sidebar, so the gallery entry lands there.
+// Dashboard is the single prototype entry point; onboarding begins in its
+// blocking FTUE modal.
 const WebMasterPrototypePage = () => {
-  redirect(`${WEB_MASTER_BASE_PATH}/sessions`);
+  redirect(`${WEB_MASTER_BASE_PATH}/dashboard`);
 };
 
 export default WebMasterPrototypePage;

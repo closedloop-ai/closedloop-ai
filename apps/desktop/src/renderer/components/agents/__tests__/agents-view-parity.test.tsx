@@ -32,6 +32,7 @@ import {
   FIXTURE_COMPONENTS,
   makeComponent,
   makeDetail,
+  USAGE_FIXTURE_COMPONENTS,
 } from "@repo/app/agents/components/workspace/agent-component-fixtures";
 import type { AgentComponentsDataSource } from "@repo/app/agents/data-source/agent-components-data-source";
 import { AgentComponentsDataSourceProvider } from "@repo/app/agents/data-source/provider";
@@ -43,6 +44,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -75,9 +77,7 @@ vi.mock("../plugins-panel", () => ({
 import { AgentDetailView } from "../agent-detail-view";
 import { AgentsView } from "../agents-view";
 
-// ---------------------------------------------------------------------------
 // Top-level regex constants (biome/performance/useTopLevelRegex)
-// ---------------------------------------------------------------------------
 
 const RE_ALL_TAB = /^All$/;
 const RE_COMMANDS_TAB = /commands/i;
@@ -96,12 +96,12 @@ const RE_ALLOWED_TOOLS = /allowed tools/i;
  */
 const RE_MACHINE_ROOTED_PATH = /(^|\s)(\/Users\/|\/home\/|~\/|[A-Za-z]:\\)/;
 const RE_BACK_TO_AGENTS = /back to agents/i;
+const RE_USAGE_ORCHESTRATOR_ROW = /Usage Orchestrator/;
+const RE_USAGE_COMMAND_ROW = /Usage Command/;
 
-// ---------------------------------------------------------------------------
 // Data sources — the fixture factory + inventory are shared with the web
 // workspace suite via `@repo/app/.../agent-component-fixtures` so the two parity
 // claims cannot drift; each surface keeps its OWN `agent-components:local` scope.
-// ---------------------------------------------------------------------------
 
 function listDataSource(
   items: AgentComponent[] = FIXTURE_COMPONENTS,
@@ -109,6 +109,7 @@ function listDataSource(
 ): AgentComponentsDataSource {
   return {
     scope: "agent-components:local",
+    honorsDateWindow: false,
     list: (filters) => {
       onList?.(filters);
       return Promise.resolve({
@@ -126,6 +127,7 @@ function detailDataSource(
 ): AgentComponentsDataSource {
   return {
     scope: "agent-components:local",
+    honorsDateWindow: false,
     list: () => Promise.reject(new Error("list unused in detail parity tests")),
     detail: () => Promise.resolve(detail),
   };
@@ -147,11 +149,9 @@ function Wrapper({
   );
 }
 
-// ---------------------------------------------------------------------------
 // jsdom shims — the desktop renderer config has no global setup, so install the
 // browser globals the shared GridTable auto-layout reads (matches the existing
 // branch-detail-back-navigation.test.tsx pattern).
-// ---------------------------------------------------------------------------
 
 let restoreResizeObserver: (() => void) | undefined;
 let restoreMatchMedia: (() => void) | undefined;
@@ -219,10 +219,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// ---------------------------------------------------------------------------
 // Desktop LIST parity — the real shared AgentsGroupedList, mounted through the
 // real desktop AgentsView adapter.
-// ---------------------------------------------------------------------------
 
 describe("Desktop AgentsView list parity (ISS-4496)", () => {
   it("renders inventory rows from the seeded data source (real shared list)", async () => {
@@ -246,6 +244,7 @@ describe("Desktop AgentsView list parity (ISS-4496)", () => {
     // NOT the empty state (an outage must never read as "no agents").
     const neverResolves: AgentComponentsDataSource = {
       scope: "agent-components:local",
+      honorsDateWindow: false,
       list: () => new Promise(() => undefined),
       detail: () => new Promise(() => undefined),
     };
@@ -292,6 +291,56 @@ describe("Desktop AgentsView list parity (ISS-4496)", () => {
     });
   });
 
+  /**
+   * ISS-9625 — the usage/invocation cell of the collector→render lattice, on
+   * the DESKTOP adapter; the web half asserts the same shape through
+   * `AgentsListHost`. Every other assertion in this suite is about
+   * identity, navigation, or empty/loading state, so an adapter that mounted the
+   * shared catalog with the count columns dropped or the two rows' usage
+   * transposed would keep the whole file green. Until this landed neither
+   * surface adapter asserted a single usage number; that coverage lived only in
+   * `packages/app`'s own lane, which is neither surface's.
+   *
+   * The Metric column is deliberately NOT in scope: `MetricCell` reads only
+   * `locPerDollar` and `AgentsTable` never reads the `metricMode` prop it still
+   * declares (ISS-4667/4866/5366 retired the second mode and its picker), so a
+   * mode-varying assertion here could not fail (whitlockk review on PR #6863).
+   *
+   * The seed is the SHARED `USAGE_FIXTURE_COMPONENTS`, so moving a count reddens
+   * this half and the web half together. Its two rows carry DISTINCT counts on
+   * purpose — a shared value would let a transposition satisfy per-row
+   * assertions — and the summary is asserted as an independent literal
+   * (731 + 482), never re-derived from the fixture, so a row listed but excluded
+   * from the aggregate cannot pass.
+   */
+  it("renders each component's own usage counts and an aggregate that reconciles", async () => {
+    render(
+      <Wrapper dataSource={listDataSource(USAGE_FIXTURE_COMPONENTS)}>
+        <AgentsView dataSource={listDataSource(USAGE_FIXTURE_COMPONENTS)} />
+      </Wrapper>
+    );
+
+    // Settle on the cheap text query before the by-name row lookup: resolving a
+    // row's accessible name walks its whole subtree, so awaiting on THAT is what
+    // makes the query flaky on a loaded machine.
+    await screen.findByText("Usage Orchestrator");
+
+    // Each row carries ITS OWN counts — scoped to the row so a number belonging
+    // to the sibling component cannot answer the assertion.
+    const orchestratorRow = screen.getByRole("row", {
+      name: RE_USAGE_ORCHESTRATOR_ROW,
+    });
+    expect(within(orchestratorRow).getByText("731")).toBeDefined();
+    expect(within(orchestratorRow).getByText("17")).toBeDefined();
+
+    const commandRow = screen.getByRole("row", { name: RE_USAGE_COMMAND_ROW });
+    expect(within(commandRow).getByText("482")).toBeDefined();
+    expect(within(commandRow).getByText("9")).toBeDefined();
+
+    // …and the Invocations summary reconciles with the population it describes.
+    expect(within(invocationsCard()).getByText("1,213")).toBeDefined();
+  });
+
   it("shows the kind-named empty state (not the filter copy) for an empty tab", async () => {
     // Only a Subagent exists — selecting Skills has no rows and no active
     // facet/search filter, so the empty copy names the kind rather than telling
@@ -319,10 +368,8 @@ describe("Desktop AgentsView list parity (ISS-4496)", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Desktop DETAIL parity — the real shared AgentDetail, mounted through the real
 // desktop AgentDetailView adapter.
-// ---------------------------------------------------------------------------
 
 describe("Desktop AgentDetailView detail parity (ISS-4496)", () => {
   it("renders the resolved component with a key derived field (Properties path)", async () => {
@@ -336,7 +383,9 @@ describe("Desktop AgentDetailView detail parity (ISS-4496)", () => {
     );
 
     // The component name lands in the header…
-    expect(await screen.findByText("My Orchestrator Agent")).toBeDefined();
+    expect(
+      await screen.findByText("My Orchestrator Agent", { selector: "p" })
+    ).toBeDefined();
     // …and a derived Properties field (the definition path) renders — the same
     // shared body the web detail route mounts.
     expect(screen.getByText(".claude/agents/orchestrator.md")).toBeDefined();
@@ -366,7 +415,9 @@ describe("Desktop AgentDetailView detail parity (ISS-4496)", () => {
       </Wrapper>
     );
 
-    expect(await screen.findByText("My Orchestrator Agent")).toBeDefined();
+    expect(
+      await screen.findByText("My Orchestrator Agent", { selector: "p" })
+    ).toBeDefined();
     expect(screen.getByText(".claude/agents/orchestrator.md")).toBeDefined();
     expect(screen.queryByText(RE_MACHINE_ROOTED_PATH)).toBeNull();
   });
@@ -390,13 +441,17 @@ describe("Desktop AgentDetailView detail parity (ISS-4496)", () => {
       </Wrapper>
     );
 
-    await screen.findByText("My Orchestrator Agent");
+    await screen.findByText("My Orchestrator Agent", { selector: "p" });
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Details" }));
     expect(screen.getByText(RE_ALLOWED_TOOLS)).toBeDefined();
+    expect(screen.getByText("Read", { exact: true })).toBeDefined();
+    expect(screen.getByText("Edit", { exact: true })).toBeDefined();
   });
 
   it("renders the not-found state (not 'unavailable') on a genuine 404", async () => {
     const notFound: AgentComponentsDataSource = {
       scope: "agent-components:local",
+      honorsDateWindow: false,
       list: () => Promise.reject(new Error("list unused")),
       detail: () => Promise.reject(new ApiError("Not Found", 404)),
     };
@@ -419,6 +474,7 @@ describe("Desktop AgentDetailView detail parity (ISS-4496)", () => {
   it("renders the distinct 'unavailable' state on a transient provider error", async () => {
     const providerDown: AgentComponentsDataSource = {
       scope: "agent-components:local",
+      honorsDateWindow: false,
       list: () => Promise.reject(new Error("list unused")),
       detail: () => Promise.reject(new ApiError("Service Unavailable", 503)),
     };
@@ -437,3 +493,20 @@ describe("Desktop AgentDetailView detail parity (ISS-4496)", () => {
     expect(screen.queryByText(RE_NOT_FOUND)).toBeNull();
   });
 });
+
+/**
+ * The Invocations summary card's own subtree, scoped exactly as the sibling
+ * exactness suite scopes it (`agents-grouped-list.invocations-exactness.test.tsx`).
+ * The Components, Authors, and LOC/$ cards render their own numbers into the same
+ * row, so a page-wide text query for the total could be answered by a different
+ * card — which would make the reconciliation assertion mean nothing.
+ */
+function invocationsCard(): HTMLElement {
+  const card = screen
+    .getByRole("button", { name: "About Invocations" })
+    .closest("[data-slot='card']");
+  if (!(card instanceof HTMLElement)) {
+    throw new Error("Could not find the Invocations summary card");
+  }
+  return card;
+}

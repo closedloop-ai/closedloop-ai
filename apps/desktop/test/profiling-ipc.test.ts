@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { serialize } from "node:v8";
+import { describe, test } from "vitest";
 import {
   installIpcProfiling,
   type ProfilingIpcMain,
@@ -47,7 +48,12 @@ describe("ipc profiling wrapper", () => {
 
     assert.deepEqual(result, { ok: true });
     assert.deepEqual(sink.rows, [
-      { channel: "desktop:sync-op", ms: 12, ts: 1_700_000_000_012 },
+      {
+        channel: "desktop:sync-op",
+        ms: 12,
+        responseBytes: serialize({ ok: true }).byteLength,
+        ts: 1_700_000_000_012,
+      },
     ]);
   });
 
@@ -68,6 +74,7 @@ describe("ipc profiling wrapper", () => {
     assert.equal(sink.rows.length, 1);
     assert.equal(sink.rows[0]?.channel, "desktop:async-op");
     assert.equal(sink.rows[0]?.ms, 40);
+    assert.equal(sink.rows[0]?.responseBytes, serialize("payload").byteLength);
   });
 
   test("rethrows a synchronous handler error unchanged and still records", () => {
@@ -135,6 +142,21 @@ describe("ipc profiling wrapper", () => {
     const result = await registered.get("desktop:resilient")?.({});
 
     assert.equal(result, "still fine");
+  });
+
+  test("an uncloneable result remains unchanged and omits response bytes", () => {
+    const { ipcMain, registered } = createFakeIpcMain();
+    const sink = createRecordingSink();
+    const clock = createTestClock();
+    installIpcProfiling(ipcMain, sink, clock);
+    const result = () => "not cloneable";
+
+    ipcMain.handle("desktop:uncloneable", () => result);
+
+    assert.equal(registered.get("desktop:uncloneable")?.({}), result);
+    assert.deepEqual(sink.rows, [
+      { channel: "desktop:uncloneable", ms: 0, ts: 1_700_000_000_000 },
+    ]);
   });
 
   test("uninstall restores the original handle", () => {

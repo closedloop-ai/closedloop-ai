@@ -3,10 +3,12 @@ import {
   RepositoryRole,
   SnapshotSource,
 } from "@repo/api/src/types/document";
+import type { TeamRepository } from "@repo/api/src/types/teams";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { buildTeamRepository } from "@/__tests__/support/teams/team.test-fixtures";
 import {
-  buildSnapshotFromLoopSelection,
   buildSnapshotFromProjectDefaults,
+  buildSnapshotFromRepositorySelection,
   inheritSnapshotFromParent,
   parseStoredSnapshot,
 } from "@/app/documents/repository-snapshot-helpers";
@@ -16,9 +18,9 @@ vi.mock("@/app/projects/repository-resolver", () => ({
   loadProjectRepoDefaults: vi.fn(),
 }));
 
-describe("buildSnapshotFromLoopSelection", () => {
+describe("buildSnapshotFromRepositorySelection", () => {
   it("marks the primary repo as role=primary at position 0", () => {
-    const snapshot = buildSnapshotFromLoopSelection({
+    const snapshot = buildSnapshotFromRepositorySelection({
       primary: { fullName: "acme/api", branch: "main" },
     });
 
@@ -33,7 +35,7 @@ describe("buildSnapshotFromLoopSelection", () => {
   });
 
   it("orders additional repos starting at position 1 in input order", () => {
-    const snapshot = buildSnapshotFromLoopSelection({
+    const snapshot = buildSnapshotFromRepositorySelection({
       primary: { fullName: "acme/api" },
       additional: [
         { fullName: "acme/web", branch: "develop" },
@@ -57,14 +59,14 @@ describe("buildSnapshotFromLoopSelection", () => {
   });
 
   it("omits the branch field entirely when not supplied", () => {
-    const snapshot = buildSnapshotFromLoopSelection({
+    const snapshot = buildSnapshotFromRepositorySelection({
       primary: { fullName: "acme/api" },
     });
     expect(snapshot.repositories[0]).not.toHaveProperty("branch");
   });
 
   it("treats a null branch as absent", () => {
-    const snapshot = buildSnapshotFromLoopSelection({
+    const snapshot = buildSnapshotFromRepositorySelection({
       primary: { fullName: "acme/api", branch: null },
     });
     expect(snapshot.repositories[0]).not.toHaveProperty("branch");
@@ -164,11 +166,24 @@ describe("parseStoredSnapshot", () => {
   });
 });
 
-function teamRepo(installationRepositoryId: string, fullName: string) {
-  return {
+function teamRepo(
+  installationRepositoryId: string,
+  fullName: string
+): TeamRepository {
+  const [owner = "", name = ""] = fullName.split("/");
+  return buildTeamRepository({
+    id: `team-repo-${installationRepositoryId}`,
     installationRepositoryId,
-    repository: { fullName },
-  };
+    repository: {
+      id: installationRepositoryId,
+      installationId: "installation-1",
+      githubRepoId: `gh-${installationRepositoryId}`,
+      fullName,
+      name,
+      owner,
+      private: false,
+    },
+  });
 }
 
 describe("buildSnapshotFromProjectDefaults", () => {
@@ -199,7 +214,7 @@ describe("buildSnapshotFromProjectDefaults", () => {
         installationRepositoryId: "repo-1",
         fullName: "acme/api",
       },
-      teamRepos: [teamRepo("repo-1", "acme/api")] as any,
+      teamRepos: [teamRepo("repo-1", "acme/api")],
     });
 
     const snapshot = await buildSnapshotFromProjectDefaults(
@@ -232,7 +247,7 @@ describe("buildSnapshotFromProjectDefaults", () => {
         teamRepo("repo-1", "acme/api"),
         teamRepo("repo-2", "acme/web"),
         teamRepo("repo-3", "acme/shared"),
-      ] as any,
+      ],
     });
 
     const snapshot = await buildSnapshotFromProjectDefaults(
@@ -272,7 +287,7 @@ describe("buildSnapshotFromProjectDefaults", () => {
       teamRepos: [
         teamRepo("repo-1", "acme/api"),
         teamRepo("repo-2", "acme/web"),
-      ] as any,
+      ],
     });
 
     const snapshot = await buildSnapshotFromProjectDefaults(
@@ -306,7 +321,7 @@ describe("buildSnapshotFromProjectDefaults", () => {
         installationRepositoryId: "legacy-repo",
         fullName: "acme/legacy",
       },
-      teamRepos: [] as any,
+      teamRepos: [],
     });
 
     const snapshot = await buildSnapshotFromProjectDefaults(

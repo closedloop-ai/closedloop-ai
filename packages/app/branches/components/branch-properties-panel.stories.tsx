@@ -1,3 +1,5 @@
+import { BranchStatus } from "@repo/api/src/types/branch";
+import { UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY } from "@repo/api/src/types/universal-artifact-status-flag";
 import type { Meta, StoryObj } from "@storybook/react";
 import { expect, userEvent, within } from "storybook/test";
 import { makeBranchDetail } from "../__tests__/branch-fixtures";
@@ -10,9 +12,9 @@ const LONG_REPOSITORY_NAME =
 const PROPERTIES_RE = /Properties/;
 
 const meta = {
-  title: "App Core/Branches/Branch Properties Panel",
+  title: "Composites v1.0/Branches/Branch Properties Panel",
   component: BranchPropertiesPanel,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (
@@ -27,6 +29,7 @@ const meta = {
       branchName: LONG_BRANCH_NAME,
       deletions: 376,
       repoFullName: LONG_REPOSITORY_NAME,
+      status: BranchStatus.Review,
     }),
   },
 } satisfies Meta<typeof BranchPropertiesPanel>;
@@ -54,5 +57,20 @@ export const Expanded: Story = {
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(canvas.getByText("Repository")).toBeVisible();
     await expect(canvas.getByText(LONG_REPOSITORY_NAME)).toBeVisible();
+  },
+};
+
+/** Expanded detail properties with the canonical Branch status champion. */
+export const UniversalArtifactStatus: Story = {
+  globals: { viewport: { value: "1512-900" } },
+  parameters: {
+    appCore: { enabledFlags: [UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY] },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = canvas.getByRole("button", { name: PROPERTIES_RE });
+    await userEvent.click(toggle);
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(canvas.getByText("Review")).toBeVisible();
   },
 };

@@ -3,12 +3,14 @@ import type {
   BranchAssociatedPullRequest,
   BranchAssociatedPullRequestCollection,
 } from "@repo/api/src/types/branch-associated-pull-request";
+import { isUnobservedPullRequest } from "@repo/api/src/types/branch-associated-pull-request";
 import {
   type BranchDetailMetricBundle,
   BranchMetricAvailability,
   BranchMetricDisclosure,
   BranchMetricPullRequestOutcome,
   type BranchMetricResult,
+  type BranchMetricSelectedCycle,
 } from "@repo/api/src/types/branch-metrics";
 import {
   BranchPhaseAttributionCompleteness,
@@ -18,25 +20,47 @@ import {
 } from "@repo/api/src/types/branch-phase-attribution";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { BRANCH_PUSH_METHODS } from "@repo/api/src/types/session-artifact-link";
+import { locPerDollarFromPopulation } from "@repo/api/src/utils/loc-per-dollar";
+import {
+  type ResolvedPhaseTotal,
+  resolveDetailPhaseTotal,
+} from "./branch-detail-cost-reconciliation";
+import {
+  type BranchPenseroPointsInput,
+  calculateDetailPenseroPointsPerDollar,
+} from "./branch-detail-pensero-points";
 import type { BranchPhaseLifecycleEvent } from "./branch-phase-attribution";
+import {
+  type BranchMetricLocContribution,
+  BranchPublicationLocSource,
+  reconcileBranchPublicationLoc,
+  sumBranchPublicationLoc,
+} from "./branch-publication-loc";
 
-export type BranchMetricSelectedCycle = {
-  cycleId: string;
-  openedAt: string | null;
-  terminalAt: string | null;
-  outcome: BranchMetricPullRequestOutcome;
-  successfulPushes: readonly {
-    cycleId: string;
-    occurredAt: string | null;
-  }[];
-};
+export type { BranchMetricSelectedCycle } from "@repo/api/src/types/branch-metrics";
 
 export type BranchDetailMetricInput = {
   selectedPrAdditions: number | null;
   selectedPrDeletions: number | null;
   selectedPrLocComplete: boolean;
+  /** Canonical lifetime publication LOC; selected PR does not scope this set. */
+  lifetimeLocContributions?: readonly BranchMetricLocContribution[];
+  lifetimeLocCoverageComplete?: boolean;
+  /** Distinct qualifying Branch-attributed Sessions before cost availability. */
+  qualifyingSessionCount?: number;
+  /**
+   * ISS-6949 — the branch's canonical attributed cost from the SAME payload
+   * (`resolveAttributedBranchCost`), which is the figure the Sessions & timeline
+   * tab takes as authoritative. Required, not optional: an optional field lets a
+   * new producer silently reintroduce the phase-rollup residue as the branch
+   * total, which is the defect this exists to close. `null` means the payload
+   * carries no attributed cost.
+   */
+  attributedCostUsd: number | null;
   phaseAttribution: BranchPhaseAttributionResult;
   selectedCycle: BranchMetricSelectedCycle | null;
+  /** ISS-9814 — see {@link BranchPenseroPointsInput} for the state contract. */
+  penseroPoints?: BranchPenseroPointsInput | null;
 };
 
 /** Normalize the selected persisted PR cycle without consulting live GitHub. */
@@ -44,7 +68,20 @@ export function branchMetricCycleFromPullRequest(
   pullRequest: BranchAssociatedPullRequest | null,
   successfulPushAt: string | null
 ): BranchMetricSelectedCycle | null {
-  if (pullRequest === null) {
+  // ISS-8422: an unobserved pull request has no cycle, and the fallthrough was
+  // not merely a null-shaped one. `outcomeWithoutMerge` reads the placeholder
+  // OPEN its column default produced beside a falsy `isDraft` and answers
+  // `Open`; `calculateOutcome` takes the Open/Draft early return and hands back
+  // `notApplicable()` for leadTimeMs and abandonmentTimeMs; `metricPresentation`
+  // renders that as "N/A" plus "Not applicable to the selected pull request's
+  // latest cycle". So Cycle Time and Abandonment Duration each printed a
+  // POSITIVE claim that the cycle is open, about a pull request nobody looked
+  // at, on both surfaces. `branchPullRequestCycleAbsence` cannot rescue it
+  // either: `selectedId` is set, so it returns null. Returning null here reaches
+  // `calculateOutcome(null)` and its `unavailable()` instead — "Unavailable /
+  // Evidence is unavailable", which is the same ruling the phase-lifecycle guard
+  // in `branch-phase-lifecycle.ts` already applies to the rollup.
+  if (pullRequest === null || isUnobservedPullRequest(pullRequest)) {
     return null;
   }
   const outcome = pullRequest.mergedAt
@@ -144,18 +181,30 @@ export function selectedCycleSuccessfulPushAt(
 export function calculateBranchDetailMetrics(
   input: BranchDetailMetricInput
 ): BranchDetailMetricBundle {
-  const costs = phaseCosts(input.phaseAttribution);
-  const outcome = calculateOutcome(input.selectedCycle);
+  const costs = phaseCosts(input.phaseAttribution, input.attributedCostUsd);
+  // ISS-9732: ONE denominator for LOC/$ everywhere — the attributed cost the
+  // Sessions listing shows. The phase breakdown reads that same figure as its
+  // total and sums its per-phase rows separately; neither may decide whether
+  // the ratio can be computed. The Pensero companion takes the SAME
+  // denominator (ISS-9814 AC4), so the two ratios describe one population.
+  const denominator = locPerDollarDenominator(input.attributedCostUsd);
+  const penseroPointsPerDollar = calculateDetailPenseroPointsPerDollar(
+    input.penseroPoints,
+    denominator
+  );
   return {
-    locPerDollar: calculateDetailLocPerDollar(input, costs.total),
+    locPerDollar: calculateDetailLocPerDollar(input, denominator),
+    // OMITTED, not set to `undefined`: a branch with no Pensero numerator must
+    // produce the same object a producer predating the field produced, key set
+    // included. `JSON.stringify` would hide the difference on the wire, but a
+    // structural comparison in a test or a `hasOwn` check in a consumer would
+    // not, and "absent" is the state the whole AC2 fallback keys on.
+    ...(penseroPointsPerDollar ? { penseroPointsPerDollar } : {}),
     phaseCostUsd: costs.byPhase,
     totalCostUsd: costs.total,
-    leadTimeMs: outcome.leadTimeMs,
-    abandonmentTimeMs: outcome.abandonmentTimeMs,
-    idleTimeMs: calculateIdle(
+    ...calculateBranchSelectedCycleMetrics(
       input.phaseAttribution,
-      outcome.span,
-      outcome.idleApplicable
+      input.selectedCycle
     ),
   };
 }
@@ -165,7 +214,10 @@ type PhaseCosts = {
   total: BranchMetricResult<number>;
 };
 
-function phaseCosts(attribution: BranchPhaseAttributionResult): PhaseCosts {
+function phaseCosts(
+  attribution: BranchPhaseAttributionResult,
+  attributedCostUsd: number | null
+): PhaseCosts {
   const values = {
     [BranchVisibleLifecyclePhase.Build]: 0,
     [BranchVisibleLifecyclePhase.Review]: 0,
@@ -177,98 +229,141 @@ function phaseCosts(attribution: BranchPhaseAttributionResult): PhaseCosts {
     }
     values[rollup.phase] += rollup.estimatedCostUsd;
   }
+  const rollupTotalUsd =
+    values[BranchVisibleLifecyclePhase.Build] +
+    values[BranchVisibleLifecyclePhase.Review] +
+    values[BranchVisibleLifecyclePhase.Rework];
+  // Each operand was checked, but the accumulation can still overflow to
+  // Infinity, which would make the display-precision comparison NaN and never
+  // reconcile instead of declining.
   if (
+    !isValidNonnegative(rollupTotalUsd) ||
     attribution.coverage.completeness ===
-    BranchPhaseAttributionCompleteness.Unavailable
+      BranchPhaseAttributionCompleteness.Unavailable
   ) {
-    return {
-      byPhase: {
-        [BranchVisibleLifecyclePhase.Build]: unavailable(),
-        [BranchVisibleLifecyclePhase.Review]: unavailable(),
-        [BranchVisibleLifecyclePhase.Rework]: unavailable(),
-      },
-      total: unavailable(),
-    };
+    return unavailablePhaseCosts();
   }
-  const resultFor = (value: number): BranchMetricResult<number> =>
-    attribution.coverage.completeness ===
-    BranchPhaseAttributionCompleteness.Partial
-      ? partial(
-          value,
-          undefined,
-          undefined,
-          BranchMetricDisclosure.CostIncomplete
-        )
-      : complete(value);
-  return {
-    byPhase: {
-      [BranchVisibleLifecyclePhase.Build]: resultFor(
-        values[BranchVisibleLifecyclePhase.Build]
-      ),
-      [BranchVisibleLifecyclePhase.Review]: resultFor(
-        values[BranchVisibleLifecyclePhase.Review]
-      ),
-      [BranchVisibleLifecyclePhase.Rework]: resultFor(
-        values[BranchVisibleLifecyclePhase.Rework]
-      ),
-    },
-    total: resultFor(
-      values[BranchVisibleLifecyclePhase.Build] +
-        values[BranchVisibleLifecyclePhase.Review] +
-        values[BranchVisibleLifecyclePhase.Rework]
-    ),
-  };
+  const resolved = resolveDetailPhaseTotal(
+    attribution,
+    attributedCostUsd,
+    rollupTotalUsd
+  );
+  return resolved === null
+    ? unavailablePhaseCosts()
+    : buildPhaseCosts(values, resolved);
+}
+
+/**
+ * The one LOC/$ denominator: attributed cost, straight from the same field the
+ * Sessions listing renders. `null` is Unavailable and NOT NoData — ISS-6949
+ * settled that a branch whose attributed cost could not be established has no
+ * presentable total, so the ratio declines rather than claiming there was
+ * nothing to divide by. A `0` is a priced zero, which
+ * {@link calculateDetailLocPerDollar} answers NotApplicable.
+ *
+ * Phase attribution is deliberately absent: `phaseCosts` reads this same figure
+ * as the breakdown's total and sums its per-phase rows independently, and
+ * neither of those answers may decide whether the ratio can be computed.
+ */
+function locPerDollarDenominator(
+  attributedCostUsd: number | null
+): BranchMetricResult<number> {
+  if (!isValidNonnegative(attributedCostUsd)) {
+    return unavailable();
+  }
+  return complete(attributedCostUsd);
 }
 
 function calculateDetailLocPerDollar(
   input: BranchDetailMetricInput,
   totalCost: BranchMetricResult<number>
 ): BranchMetricResult<number> {
+  // ISS-9732: the denominator answers FIRST, so no phase-attribution state can
+  // reach the ratio. The zero-qualifying-Session arm below used to read
+  // `phaseAttribution.coverage` — which is how attribution still decided LOC/$
+  // on a branch with no qualifying Sessions, in both cloud and desktop.
+  if (
+    totalCost.state === BranchMetricAvailability.Unavailable ||
+    totalCost.value === null
+  ) {
+    return unavailable();
+  }
+  const qualifyingSessionCount = input.qualifyingSessionCount ?? 1;
+  if (qualifyingSessionCount === 0) {
+    return noData();
+  }
+  const loc = resolveDetailPublicationLoc(input);
+  if (loc === null) {
+    return unavailable();
+  }
+  if (totalCost.value <= 0) {
+    return notApplicable();
+  }
+  const value = locPerDollarFromPopulation({
+    lines: loc.total,
+    cost: totalCost.value,
+    coverageComplete: true,
+  });
+  if (value === null) {
+    return unavailable();
+  }
+  // ISS-9732: `locPerDollarDenominator` returns only Unavailable or a Complete
+  // number, so the denominator can no longer arrive Partial and LOC coverage is
+  // the sole remaining source of incompleteness here.
+  if (!loc.coverageComplete) {
+    return partial(value, 1, 2, BranchMetricDisclosure.LocIncomplete);
+  }
+  return complete(value);
+}
+
+function resolveDetailPublicationLoc(
+  input: BranchDetailMetricInput
+): { total: number; coverageComplete: boolean } | null {
+  const locEvidence = reconcileBranchPublicationLoc(
+    input.lifetimeLocContributions ?? legacySelectedPrLoc(input)
+  );
+  const legacyCoverageComplete =
+    input.selectedPrLocComplete &&
+    isValidNonnegative(input.selectedPrAdditions) &&
+    isValidNonnegative(input.selectedPrDeletions);
+  const coverageComplete =
+    (input.lifetimeLocCoverageComplete ?? legacyCoverageComplete) &&
+    !locEvidence.conflicted &&
+    !locEvidence.malformed &&
+    locEvidence.values.every(
+      (item) => parseTimestamp(item.occurredAt) !== null
+    );
+  if (locEvidence.values.length === 0 && !coverageComplete) {
+    return null;
+  }
+  return {
+    total: sumBranchPublicationLoc(locEvidence.values),
+    coverageComplete,
+  };
+}
+
+function legacySelectedPrLoc(
+  input: BranchDetailMetricInput
+): BranchMetricLocContribution[] {
   if (
     !(
       isValidNonnegative(input.selectedPrAdditions) &&
       isValidNonnegative(input.selectedPrDeletions)
     )
   ) {
-    return unavailable();
+    return [];
   }
-  if (totalCost.state === BranchMetricAvailability.Unavailable) {
-    return unavailable();
-  }
-  if (totalCost.state === BranchMetricAvailability.NotApplicable) {
-    return notApplicable();
-  }
-  if (totalCost.state === BranchMetricAvailability.NoData) {
-    return noData();
-  }
-  if (totalCost.value === null) {
-    return unavailable();
-  }
-  if (
-    totalCost.state === BranchMetricAvailability.Partial &&
-    totalCost.value === 0
-  ) {
-    return unavailable();
-  }
-  if (totalCost.value <= 0) {
-    return notApplicable();
-  }
-  const value =
-    (input.selectedPrAdditions + input.selectedPrDeletions) / totalCost.value;
-  if (
-    !input.selectedPrLocComplete ||
-    totalCost.state === BranchMetricAvailability.Partial
-  ) {
-    const coverage =
-      totalCost.state === BranchMetricAvailability.Partial
-        ? totalCost.coverage
-        : { included: 1, total: 2 };
-    const disclosure = input.selectedPrLocComplete
-      ? BranchMetricDisclosure.CostIncomplete
-      : BranchMetricDisclosure.DefaultIncomplete;
-    return partial(value, coverage?.included, coverage?.total, disclosure);
-  }
-  return complete(value);
+  return [
+    {
+      sourceEventId: "legacy-selected-pr",
+      changeIdentity: "legacy-selected-pr",
+      branchId: "legacy-selected-branch",
+      occurredAt: "1970-01-01T00:00:00.000Z",
+      additions: input.selectedPrAdditions,
+      deletions: input.selectedPrDeletions,
+      source: BranchPublicationLocSource.MergedPullRequest,
+    },
+  ];
 }
 
 type OutcomeSpan = {
@@ -472,4 +567,81 @@ function notApplicable<Value>(): BranchMetricResult<Value> {
 
 function noData<Value>(): BranchMetricResult<Value> {
   return { state: BranchMetricAvailability.NoData, value: null };
+}
+
+function buildPhaseCosts(
+  values: Record<BranchVisibleLifecyclePhase, number>,
+  resolved: ResolvedPhaseTotal
+): PhaseCosts {
+  const rowDisclosure = rowShortfallDisclosure(resolved);
+  return {
+    byPhase: {
+      [BranchVisibleLifecyclePhase.Build]: costResult(
+        values[BranchVisibleLifecyclePhase.Build],
+        resolved.rowsComplete,
+        rowDisclosure
+      ),
+      [BranchVisibleLifecyclePhase.Review]: costResult(
+        values[BranchVisibleLifecyclePhase.Review],
+        resolved.rowsComplete,
+        rowDisclosure
+      ),
+      [BranchVisibleLifecyclePhase.Rework]: costResult(
+        values[BranchVisibleLifecyclePhase.Rework],
+        resolved.rowsComplete,
+        rowDisclosure
+      ),
+    },
+    total: costResult(
+      resolved.totalUsd,
+      resolved.totalComplete,
+      BranchMetricDisclosure.CostIncomplete
+    ),
+  };
+}
+
+/**
+ * `CostIncomplete` asserts that activity with unavailable cost was excluded, so
+ * it may only be attached where cost evidence really is short. Rows whose
+ * evidence is whole and merely disagrees with the canonical total exclude no
+ * unpriced activity, and take the cause-neutral sentence instead — a selection
+ * between two approved sentences, never a new one (tamsinb review, PR #7912).
+ *
+ * The total's only failing arm is an incomplete-coverage settled zero, which is
+ * always the evidence shortfall, so it does not go through here.
+ */
+function rowShortfallDisclosure(
+  resolved: ResolvedPhaseTotal
+): BranchMetricDisclosure {
+  return resolved.rowEvidenceComplete
+    ? BranchMetricDisclosure.DefaultIncomplete
+    : BranchMetricDisclosure.CostIncomplete;
+}
+
+function costResult(
+  value: number,
+  isComplete: boolean,
+  disclosure: BranchMetricDisclosure
+): BranchMetricResult<number> {
+  return isComplete
+    ? complete(value)
+    : partial(value, undefined, undefined, disclosure);
+}
+
+/** Derive selected-cycle outcomes against the branch evidence actually rendered. */
+export function calculateBranchSelectedCycleMetrics(
+  attribution: BranchPhaseAttributionResult | undefined,
+  cycle: BranchMetricSelectedCycle | null
+): Pick<
+  BranchDetailMetricBundle,
+  "leadTimeMs" | "abandonmentTimeMs" | "idleTimeMs"
+> {
+  const outcome = calculateOutcome(cycle);
+  return {
+    leadTimeMs: outcome.leadTimeMs,
+    abandonmentTimeMs: outcome.abandonmentTimeMs,
+    idleTimeMs: attribution
+      ? calculateIdle(attribution, outcome.span, outcome.idleApplicable)
+      : unavailable(),
+  };
 }

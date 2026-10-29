@@ -1,0 +1,23 @@
+-- ISS-10725: the desktop half of the findings-funnel columns, added in the same
+-- change as the cloud half so this table never repeats the FEA-4093
+-- `succeeded` asymmetry — a desktop-only column the web surface can never read,
+-- which ISS-10718 now exists to retrofit.
+--
+-- Two nullable columns with NO default, matching every column added to this
+-- table after 0001. NULL means "not measured", which is a different fact from a
+-- measured zero and must stay distinguishable from one. Rows written before
+-- this migration are correctly NULL — nothing ever wrote a funnel for them.
+--
+-- The sync item reads from these columns, so without them the desktop could
+-- never emit a v5 part: the wire schema carries the two keys and
+-- `agentComponentInvocationSyncProtocolVersionForItems` moves any part carrying
+-- them to version 4.
+--
+-- EXACTLY TWO COLUMNS: `confirmed` (emitted - invalidated) and the invalidation
+-- rate are derived at read and must never be stored beside the pair they come
+-- from.
+--
+-- Plain `ADD COLUMN` (SQLite has no `IF NOT EXISTS` for it), matching the 0059,
+-- 0062 and 0066 precedent.
+ALTER TABLE "agent_component_invocations" ADD COLUMN "findings_emitted" BIGINT;
+ALTER TABLE "agent_component_invocations" ADD COLUMN "findings_invalidated" BIGINT;

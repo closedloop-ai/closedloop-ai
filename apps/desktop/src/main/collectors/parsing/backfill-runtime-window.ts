@@ -7,11 +7,13 @@
  * single source of truth. Intentionally dependency-free so the boundary modules
  * do not pull the transcript-enumeration graph in just for a type.
  */
+import { DesktopRendererEventChannel } from "../../../shared/desktop-renderer-event-channel.js";
+
 export type DbChangedWindow = {
   webContents: {
     isDestroyed: () => boolean;
     send: (
-      channel: "desktop:db:changed",
+      channel: typeof DesktopRendererEventChannel.DbChanged,
       payload: Record<string, never>
     ) => void;
   };
@@ -39,7 +41,7 @@ export function notifyDbChanged(window: DbChangedWindow | null): void {
     if (contents.isDestroyed()) {
       return;
     }
-    contents.send("desktop:db:changed", {});
+    contents.send(DesktopRendererEventChannel.DbChanged, {});
   } catch {
     // Best-effort cache nudge against a renderer that vanished mid-send.
   }

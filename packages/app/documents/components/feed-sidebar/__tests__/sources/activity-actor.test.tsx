@@ -46,39 +46,27 @@ vi.mock("@repo/app/projects/hooks/use-projects", () => ({
   useProjects: () => READY_PROJECTS_QUERY,
 }));
 
+vi.mock("@repo/app/tags/hooks/use-tags", () => ({
+  useTags: () => READY_PROJECTS_QUERY,
+}));
+
 import { FeedItemKind } from "../../feed-item";
 import { ActivityActor } from "../../sources/activity-actor";
 import { ActivityCard } from "../../sources/activity-card";
 import {
+  ACTIVITY_SOURCE_ID,
   type ActivityDirectory,
   ActivityDirectoryStatus,
-} from "../../sources/activity-directory";
-import { ACTIVITY_SOURCE_ID } from "../../sources/activity-types";
+} from "../../sources/activity-types";
+import {
+  AGENT_ACTOR,
+  DANA,
+  HUMAN_ACTOR,
+  readyDirectory,
+  SYSTEM_ACTOR,
+} from "./activity-actor-fixtures";
 
-const DANA: User = {
-  id: "user_b",
-  firstName: "Dana",
-  lastName: "Reed",
-  email: "dana@example.com",
-} as User;
-
-const AGENT_ACTOR: ActivityFeedActor = {
-  kind: ActivityFeedActorKind.Agent,
-  id: "agent-1",
-};
-const SYSTEM_ACTOR: ActivityFeedActor = {
-  kind: ActivityFeedActorKind.System,
-  id: null,
-};
-const HUMAN_ACTOR: ActivityFeedActor = {
-  kind: ActivityFeedActorKind.Human,
-  id: DANA.id,
-};
-
-const READY_DIRECTORY: ActivityDirectory<User> = {
-  status: ActivityDirectoryStatus.Ready,
-  find: (id) => (id === DANA.id ? DANA : null),
-};
+const READY_DIRECTORY: ActivityDirectory<User> = readyDirectory(DANA);
 
 /** A settled query with records — what `useOrgUserDirectory` reads as Ready. */
 const READY_USERS_QUERY = {
@@ -150,6 +138,7 @@ function glyphsOf(container: HTMLElement): NodeListOf<SVGElement> {
 }
 
 const WHITESPACE = /\s+/;
+const API_ONLY = /^API$/;
 
 /** The glyph's geometry — what makes a cog a cog and not a robot. */
 function glyphShape(glyph: SVGElement): string {
@@ -185,24 +174,24 @@ describe("ActivityActor kind indicators (ISS-5767 / ISS-5972)", () => {
   it.each([
     [ActivityFeedActorKind.Agent, AGENT_ACTOR, "Agent"],
     [ActivityFeedActorKind.System, SYSTEM_ACTOR, "System"],
-  ])("states a %s row's kind exactly once, on the name", (_kind, actor, label) => {
-    renderActor(actor);
+  ])(
+    "states a %s row's kind exactly once, on the name",
+    (_kind, actor, label) => {
+      renderActor(actor);
 
-    expect(countKindStatements(label)).toBe(1);
-    // The survivor is the NAME, not a lone surviving pill. Asserting the tag
-    // name would NOT establish this: the design-system `Badge` renders as a
-    // `<span>` too, so `tagName === "SPAN"` is satisfied by exactly the
-    // malformed declutter this is meant to catch. Key off the Badge's own slot.
-    expect(
-      screen.getByText(label, { exact: true }).closest(BADGE_SELECTOR)
-    ).toBeNull();
-  });
+      expect(countKindStatements(label)).toBe(1);
+      // The survivor is the NAME, not a lone surviving pill. Asserting the tag
+      // name would NOT establish this: the design-system `Badge` renders as a
+      // `<span>` too, so `tagName === "SPAN"` is satisfied by exactly the
+      // malformed declutter this is meant to catch. Key off the Badge's own slot.
+      expect(
+        screen.getByText(label, { exact: true }).closest(BADGE_SELECTOR)
+      ).toBeNull();
+    }
+  );
 
-  it.each([
-    ["Agent", AGENT_ACTOR],
-    ["System", SYSTEM_ACTOR],
-  ])("renders no badge at all on a %s row", (_label, actor) => {
-    const { container } = renderActor(actor);
+  it("renders no badge at all on a System row", () => {
+    const { container } = renderActor(SYSTEM_ACTOR);
 
     // Stated as an absence of the PRIMITIVE, not of a word: a regression that
     // restated the kind with different copy ("Automation", "Service") would
@@ -210,18 +199,66 @@ describe("ActivityActor kind indicators (ISS-5767 / ISS-5972)", () => {
     expect(container.querySelectorAll(BADGE_SELECTOR)).toHaveLength(0);
   });
 
+  // ISS-12117 (Nerys, 2026-10-07): an agent row is an API-key write, so it
+  // carries ONE badge naming the channel, "API" — never the kind word again.
+  it("renders exactly one badge on a resolved Agent row, and it names the channel", () => {
+    const { container } = renderActor({
+      kind: ActivityFeedActorKind.Agent,
+      id: DANA.id,
+    });
+
+    const badges = container.querySelectorAll(BADGE_SELECTOR);
+    expect(badges).toHaveLength(1);
+    expect(badges[0]).toHaveTextContent(API_ONLY);
+  });
+
+  // An unresolved owner already reads "Agent" beside the robot glyph; an API
+  // badge there would state the machine kind a third time (review, R3).
+  it.each<[string, ActivityFeedActor, ActivityDirectory<User>]>([
+    [
+      "no owner id",
+      { kind: ActivityFeedActorKind.Agent, id: null },
+      READY_DIRECTORY,
+    ],
+    ["an owner the directory does not hold", AGENT_ACTOR, READY_DIRECTORY],
+    [
+      "an unavailable directory",
+      { kind: ActivityFeedActorKind.Agent, id: DANA.id },
+      { status: ActivityDirectoryStatus.Unavailable, find: () => null },
+    ],
+  ])("renders no badge on an Agent row with %s", (_case, actor, directory) => {
+    const { container } = render(
+      <ActivityActor actor={actor} directory={directory} />
+    );
+
+    expect(screen.getByText("Agent", { exact: true })).toBeInTheDocument();
+    expect(container.querySelectorAll(BADGE_SELECTOR)).toHaveLength(0);
+  });
+
+  it("resolves an agent row to the API-key owner, with the API badge", () => {
+    renderActor({ kind: ActivityFeedActorKind.Agent, id: DANA.id });
+
+    // The owner's name, not the kind word: the badge says it came by API key.
+    expect(countKindStatements("Dana Reed")).toBe(1);
+    expect(screen.queryByText("Agent", { exact: true })).toBeNull();
+    expect(screen.getByText("API", { exact: true })).toBeInTheDocument();
+  });
+
   it.each([
     [AGENT_ACTOR, "Agent"],
     [SYSTEM_ACTOR, "System"],
-  ])("keeps the kind in the accessibility tree once the pill is gone", (actor, label) => {
-    renderActor(actor);
+  ])(
+    "keeps the kind in the accessibility tree once the pill is gone",
+    (actor, label) => {
+      renderActor(actor);
 
-    const name = screen.getByText(label, { exact: true });
-    // The pill carried a visible label; removing it must de-duplicate the
-    // statement, not delete the only accessible one.
-    expect(name).toBeInTheDocument();
-    expect(name.closest("[aria-hidden='true']")).toBeNull();
-  });
+      const name = screen.getByText(label, { exact: true });
+      // The pill carried a visible label; removing it must de-duplicate the
+      // statement, not delete the only accessible one.
+      expect(name).toBeInTheDocument();
+      expect(name.closest("[aria-hidden='true']")).toBeNull();
+    }
+  );
 
   it("keeps agent and system distinguishable by glyph SHAPE, not by styling", () => {
     const agent = renderActor(AGENT_ACTOR);
@@ -263,12 +300,15 @@ describe("ActivityActor kind indicators (ISS-5767 / ISS-5972)", () => {
   it.each([
     [ActivityFeedActorKind.Agent, "Agent"],
     [ActivityFeedActorKind.System, "System"],
-  ])("states the kind once through the real ActivityCard (%s)", (kind, label) => {
-    renderCard(kind);
+  ])(
+    "states the kind once through the real ActivityCard (%s)",
+    (kind, label) => {
+      renderCard(kind);
 
-    expect(countKindStatements(label)).toBe(1);
-    expect(
-      screen.getByText(label, { exact: true }).closest(BADGE_SELECTOR)
-    ).toBeNull();
-  });
+      expect(countKindStatements(label)).toBe(1);
+      expect(
+        screen.getByText(label, { exact: true }).closest(BADGE_SELECTOR)
+      ).toBeNull();
+    }
+  );
 });

@@ -181,7 +181,8 @@ const storyDecorator: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "App Core/Agents/Detail Sessions Tab",
+  title: "Composites v1.0/Agents/Workspace/Detail Sessions Tab",
+  tags: ["deprecated"],
   component: DetailSessionsTab,
   parameters: { layout: "fullscreen" },
   args: {

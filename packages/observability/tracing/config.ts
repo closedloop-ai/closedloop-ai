@@ -11,12 +11,16 @@
 // ---------------------------------------------------------------------------
 
 import { keys } from "../keys";
+import { isLoopbackUrl } from "../loopback-url";
 
 /** Why tracing is inert. Surfaced in diagnostics so a silent no-op is explainable. */
 export const TracingDisabledReason = {
   /** `DD_TRACING_DISABLED` was set truthy. */
   ExplicitlyDisabled: "explicitly_disabled",
-  /** No `DD_API_KEY` — nothing to authenticate an export with. */
+  /**
+   * No `DD_API_KEY`, and the endpoint is not a loopback collector that
+   * authenticates the export itself — nothing would authenticate it.
+   */
   MissingApiKey: "missing_api_key",
   /** No OTLP endpoint configured. See `resolveTracesEndpoint`. */
   MissingEndpoint: "missing_endpoint",
@@ -32,7 +36,8 @@ export type TracingConfig =
   | {
       enabled: true;
       endpoint: string;
-      apiKey: string;
+      /** Unset when a loopback collector sidecar authenticates the export. */
+      apiKey: string | undefined;
       service: string;
       env: string;
       sampleRate: number;
@@ -117,10 +122,11 @@ export function resolveSampleRate(): number {
 /**
  * Whether this runtime should trace at all.
  *
- * Defaults **off** outside a deployed runtime. `DD_API_KEY` is dual-purpose —
- * CI sets it on every instrumented test lane to feed dd-trace's Test
- * Optimization reporter (see the note at the top of log.ts) — so keying purely
- * off its presence would turn every CI worker into a span exporter. `VERCEL`
+ * Defaults **off** outside a deployed runtime. `DD_API_KEY` is not a
+ * deployed-runtime signal — CI steps hold it to post metrics, and until
+ * ISS-12354 every instrumented test lane held it for dd-trace (see the note at
+ * the top of log.ts) — so keying purely off its presence would turn a CI
+ * process into a span exporter. `VERCEL`
  * is the same deployed-runtime signal `resolveStructuredConsole()` already
  * uses. `DD_TRACING_ENABLED=1` opts a non-Vercel runtime in deliberately.
  */
@@ -137,11 +143,12 @@ export function resolveTracingConfig(): TracingConfig {
   }
 
   const identity = loadDatadogIdentity();
-  if (!identity.apiKey) {
+  const endpoint = resolveTracesEndpoint();
+  const viaCollector = endpoint !== undefined && isLoopbackUrl(endpoint);
+  if (identity.apiKey === undefined && !viaCollector) {
     return { enabled: false, reason: TracingDisabledReason.MissingApiKey };
   }
 
-  const endpoint = resolveTracesEndpoint();
   if (!endpoint) {
     return { enabled: false, reason: TracingDisabledReason.MissingEndpoint };
   }
@@ -149,7 +156,9 @@ export function resolveTracingConfig(): TracingConfig {
   return {
     enabled: true,
     endpoint,
-    apiKey: identity.apiKey,
+    // The collector adds the key itself, so none is sent to it, as with the
+    // log forwarder (log.ts).
+    apiKey: viaCollector ? undefined : identity.apiKey,
     service: identity.service,
     env: identity.env,
     sampleRate: resolveSampleRate(),

@@ -217,16 +217,115 @@ function removeGithubInlineWrapperTags(node: MarkdownAstNode): void {
 export function PrDescriptionMarkdown({
   text,
   className,
-}: Readonly<{ text: string; className?: string }>) {
+  highlights,
+}: Readonly<{
+  text: string;
+  className?: string;
+  /**
+   * Passages to mark, e.g. the quotes text-anchored comments hang on. A
+   * passage is marked where it sits inside one run of plain text; one that
+   * crosses formatting or a paragraph is left unmarked.
+   */
+  highlights?: readonly string[];
+}>) {
   return (
     <MarkdownContent
       className={className}
       components={PR_DESCRIPTION_MARKDOWN_COMPONENTS}
-      remarkPlugins={PR_DESCRIPTION_REMARK_PLUGINS}
+      remarkPlugins={
+        highlights && highlights.length > 0
+          ? [
+              ...PR_DESCRIPTION_REMARK_PLUGINS,
+              () => (tree: MarkdownAstNode) => markHighlights(tree, highlights),
+            ]
+          : PR_DESCRIPTION_REMARK_PLUGINS
+      }
       skipHtml
       text={text}
     />
   );
+}
+
+const HIGHLIGHT_CLASS = "rounded-xs bg-highlight text-inherit";
+
+/**
+ * Splits each text node around the passages it contains and wraps every
+ * passage in a `mark` (an mdast node with `hName`, not raw HTML, so
+ * `skipHtml` keeps it).
+ */
+function markHighlights(
+  node: MarkdownAstNode,
+  passages: readonly string[]
+): void {
+  if (!node.children) {
+    return;
+  }
+  node.children = node.children.flatMap((child) => {
+    if (child.type !== "text" || child.value === undefined) {
+      markHighlights(child, passages);
+      return [child];
+    }
+    return splitTextAtPassages(child.value, passages);
+  });
+}
+
+function splitTextAtPassages(
+  value: string,
+  passages: readonly string[]
+): MarkdownAstNode[] {
+  const ranges = mergeRanges(
+    passages.flatMap((passage) => occurrences(value, passage))
+  );
+  const nodes: MarkdownAstNode[] = [];
+  let at = 0;
+  for (const [start, end] of ranges) {
+    if (start > at) {
+      nodes.push({ type: "text", value: value.slice(at, start) });
+    }
+    nodes.push({
+      type: "highlight",
+      children: [{ type: "text", value: value.slice(start, end) }],
+      data: { hName: "mark", hProperties: { className: HIGHLIGHT_CLASS } },
+    });
+    at = end;
+  }
+  if (at < value.length || nodes.length === 0) {
+    nodes.push({ type: "text", value: value.slice(at) });
+  }
+  return nodes;
+}
+
+/** Every `[start, end)` where `passage` occurs in `value`. */
+function occurrences(value: string, passage: string): [number, number][] {
+  if (passage === "") {
+    return [];
+  }
+  const found: [number, number][] = [];
+  for (
+    let at = value.indexOf(passage);
+    at >= 0;
+    at = value.indexOf(passage, at + 1)
+  ) {
+    found.push([at, at + passage.length]);
+  }
+  return found;
+}
+
+/**
+ * Sorted ranges with overlapping and touching ones joined, so two comments
+ * on overlapping passages mark their whole union.
+ */
+function mergeRanges(ranges: [number, number][]): [number, number][] {
+  const merged: [number, number][] = [];
+  for (const [start, end] of [...ranges].sort((a, b) => a[0] - b[0])) {
+    const last = merged.at(-1);
+    if (last && start <= last[1]) {
+      last[1] = Math.max(last[1], end);
+    } else {
+      merged.push([start, end]);
+    }
+  }
+  return merged;
 }
 
 function getLinkedImageAlt(
@@ -306,4 +405,5 @@ type MarkdownAstNode = {
   url?: string;
   alt?: string;
   children?: MarkdownAstNode[];
+  data?: { hName?: string; hProperties?: Record<string, unknown> };
 };

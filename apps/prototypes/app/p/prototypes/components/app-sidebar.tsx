@@ -1,6 +1,14 @@
 "use client";
 
 import {
+  artifactsNav,
+  labsNav,
+  type NavIconName,
+  type NavItem,
+  primaryNav,
+  teams,
+} from "@repo/app/shell/v2/components/prototypes-preview/mock";
+import {
   Avatar,
   AvatarFallback,
 } from "@repo/design-system/components/ui/avatar";
@@ -36,19 +44,10 @@ import {
   LayoutDashboardIcon,
   type LucideIcon,
   PlusIcon,
-  RotateCcwIcon,
   SearchIcon,
   SquareCheckIcon,
   UsersIcon,
 } from "lucide-react";
-import {
-  artifactsNav,
-  labsNav,
-  type NavIconName,
-  type NavItem,
-  primaryNav,
-  teams,
-} from "../mock";
 
 const navIcons: Record<NavIconName, LucideIcon> = {
   dashboard: LayoutDashboardIcon,
@@ -61,7 +60,6 @@ const navIcons: Record<NavIconName, LucideIcon> = {
   prototypes: FileCode2Icon,
   agents: BotIcon,
   insights: BarChart3Icon,
-  loops: RotateCcwIcon,
   "agent-monitoring": BarChart3Icon,
   judges: BarChart3Icon,
 };

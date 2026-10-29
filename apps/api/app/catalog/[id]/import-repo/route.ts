@@ -1,8 +1,15 @@
 import "server-only";
 
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import type { ImportPackZipResponse } from "@repo/api/src/types/distribution";
-import { isOrgAdmin } from "@/lib/auth/org-admin";
+import { requireOrgAdmin } from "@/lib/auth/org-admin";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { isUuid } from "@/lib/is-uuid";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
+import { recordOrganizationWrite } from "@/lib/organization-write-receipt";
 import {
   badRequestResponse,
   errorResponse,
@@ -38,57 +45,70 @@ export const maxDuration = 300;
 export const POST = withAnyAuth<
   ImportPackZipResponse,
   "/catalog/[id]/import-repo"
->(async ({ user, clerkOrgId, clerkUserId }, request, params) => {
-  const adminCheck = await isOrgAdmin(clerkOrgId, clerkUserId);
-  if (!adminCheck) {
-    return forbiddenResponse();
-  }
-
-  const { id } = await params;
-
-  const { body, errorResponse: parseError } = await parseBody(
-    request,
-    importPackRepoBodySchema
-  );
-  if (parseError) {
-    return parseError;
-  }
-
-  try {
-    const result = await importPackRepoComponents({
-      id,
-      organizationId: user.organizationId,
-      userId: user.id,
-      repoFullName: body.repoFullName,
-      ref: body.ref,
-      subPath: body.subPath,
-    });
-
-    if (!result.ok) {
-      if (result.error === 404) {
-        return notFoundResponse("Pack");
+>(
+  withOperationReceipts(
+    OperationKind.OrganizationWrite,
+    async ({ user, clerkOrgId, clerkUserId }, request, params, receipts) => {
+      const denial = await requireOrgAdmin(clerkOrgId, clerkUserId);
+      if (denial) {
+        return denial;
       }
-      if (result.error === 400) {
-        return badRequestResponse(
-          "Repository not found in your org's GitHub App installation"
+
+      const { id } = await params;
+      // `CatalogItem.id` is `@db.Uuid`; refusing a malformed segment here also
+      // avoids burning one of this route's 300s `maxDuration` slots on it.
+      if (!isUuid(id)) {
+        return notFoundResponse("Catalog item");
+      }
+
+      const { body, errorResponse: parseError } = await parseBody(
+        request,
+        importPackRepoBodySchema
+      );
+      if (parseError) {
+        return parseError;
+      }
+
+      try {
+        const result = await importPackRepoComponents(
+          {
+            id,
+            organizationId: user.organizationId,
+            userId: user.id,
+            repoFullName: body.repoFullName,
+            ref: body.ref,
+            subPath: body.subPath,
+          },
+          recordOrganizationWrite(receipts)
         );
-      }
-      return forbiddenResponse();
-    }
 
-    return successResponse(result.value);
-  } catch (error) {
-    // A truncated GitHub tree — or a candidate set that exceeds the import cap —
-    // is an actionable, client-fixable condition (the repo is too large to
-    // import in full — narrow it with a subPath). Surface that guidance as a 422
-    // instead of collapsing it into a generic 500 that leaves the admin with no
-    // next step (and, for the candidate cap, no silent partial import).
-    if (
-      error instanceof RepoTreeTruncatedError ||
-      error instanceof RepoComponentsTruncatedError
-    ) {
-      return errorResponse(error.message, error, 422);
+        if (!result.ok) {
+          if (result.error === 404) {
+            return notFoundResponse("Pack");
+          }
+          if (result.error === 400) {
+            return badRequestResponse(
+              "Repository not found in your org's GitHub App installation"
+            );
+          }
+          return forbiddenResponse();
+        }
+
+        return successResponse(withOperationReceipt(result.value, receipts));
+      } catch (error) {
+        // A truncated GitHub tree — or a candidate set that exceeds the import cap —
+        // is an actionable, client-fixable condition (the repo is too large to
+        // import in full — narrow it with a subPath). Surface that guidance as a 422
+        // instead of collapsing it into a generic 500 that leaves the admin with no
+        // next step (and, for the candidate cap, no silent partial import).
+        if (
+          error instanceof RepoTreeTruncatedError ||
+          error instanceof RepoComponentsTruncatedError
+        ) {
+          return errorResponse(error.message, error, 422);
+        }
+        return errorResponse("Failed to import from repo", error);
+      }
     }
-    return errorResponse("Failed to import from repo", error);
-  }
-});
+  )
+);

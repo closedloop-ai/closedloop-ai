@@ -17,9 +17,14 @@ import {
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import {
-  encryptTokenPair,
-  resolveIntegrationToken,
+  buildIntegrationTokenColumns,
+  resolveEncryptedIntegrationToken,
 } from "@/lib/integration-encryption";
+import type { OrganizationWriteOutcome } from "@/lib/organization-write-receipt";
+import {
+  type RecordWriteInTransaction,
+  writeRecorded,
+} from "@/lib/record-write-in-transaction";
 import { documentVersionService } from "../../documents/document-version-service";
 
 /**
@@ -72,32 +77,32 @@ function calculateTokenExpiration(expiresIn?: number): Date | null {
  * - Encrypts new tokens before storing
  */
 async function ensureValidAccessToken(
-  integration: LinearIntegration,
+  integration: LinearTokenFields,
   organizationId: string,
   logPrefix = "[linear]"
 ): Promise<TokenRefreshResult> {
+  // An expired row with no refresh-token ciphertext still takes the refresh
+  // branch, which fails it with the reconnect error rather than serving its
+  // expired access token.
   const needsRefresh =
-    integration.tokenExpiresAt &&
-    integration.tokenExpiresAt < new Date() &&
-    (integration.refreshTokenEncrypted ?? integration.refreshToken);
+    integration.tokenExpiresAt && integration.tokenExpiresAt < new Date();
 
   if (!needsRefresh) {
-    // Prefer encrypted token on read, fall back to plaintext
     let accessToken: string | null;
     try {
-      accessToken = await resolveIntegrationToken(
-        integration.accessTokenEncrypted,
-        integration.accessToken
+      accessToken = await resolveEncryptedIntegrationToken(
+        integration.accessTokenEncrypted
       );
     } catch (error) {
-      log.warn(`${logPrefix} Decryption failed, falling back to plaintext`, {
+      // The row HAS a ciphertext and KMS could not open it: a failed read, not
+      // a missing credential.
+      log.warn(`${logPrefix} Access token decryption failed`, {
         organizationId,
         error: parseError(error),
       });
-      accessToken = integration.accessToken;
+      accessToken = null;
     }
     if (!accessToken) {
-      log.warn(`${logPrefix} Missing access token`, { organizationId });
       return {
         success: false,
         error: "Linear access token is unavailable. Please reconnect Linear.",
@@ -107,9 +112,8 @@ async function ensureValidAccessToken(
   }
 
   try {
-    const rawRefreshToken = await resolveIntegrationToken(
-      integration.refreshTokenEncrypted,
-      integration.refreshToken
+    const rawRefreshToken = await resolveEncryptedIntegrationToken(
+      integration.refreshTokenEncrypted
     );
     if (!rawRefreshToken) {
       log.warn(`${logPrefix} Missing refresh token`, { organizationId });
@@ -121,33 +125,25 @@ async function ensureValidAccessToken(
 
     const tokens = await refreshAccessToken(rawRefreshToken);
 
-    let encryptedAccessToken: string | null = null;
-    let encryptedRefreshToken: string | null = null;
-    try {
-      const encrypted = await encryptTokenPair(
-        tokens.accessToken,
-        tokens.refreshToken
-      );
-      encryptedAccessToken = encrypted.encryptedAccessToken;
-      encryptedRefreshToken = encrypted.encryptedRefreshToken;
-    } catch (error) {
-      log.warn(
-        `${logPrefix} Failed to encrypt refreshed tokens, storing plaintext only`,
-        {
-          organizationId,
-          error: parseError(error),
-        }
-      );
-    }
+    // Linear DOES reissue a refresh token on a refresh — `packages/linear`
+    // returns `data.refresh_token` from that response — so a failed encrypt
+    // below costs Linear more than it costs Google: the grant Linear just
+    // rotated is dropped unstored, and if Linear invalidates the superseded one
+    // the row is left holding a dead credential that a reconnect (not a retry)
+    // is the only way out of. Storing the rotated token in plaintext is the
+    // exposure ISS-5081 exists to close, so this still fails closed.
+    // A refresh that reissues no refresh token leaves the stored ciphertext
+    // untouched: the builder omits the refresh column.
+    const tokenColumns = await buildIntegrationTokenColumns(
+      tokens.accessToken,
+      tokens.refreshToken
+    );
 
     await withDb((db) =>
       db.linearIntegration.update({
         where: { id: integration.id },
         data: {
-          accessToken: tokens.accessToken,
-          refreshToken: tokens.refreshToken,
-          accessTokenEncrypted: encryptedAccessToken ?? undefined,
-          refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
+          ...tokenColumns,
           tokenExpiresAt: calculateTokenExpiration(tokens.expiresIn),
         },
         select: { id: true },
@@ -198,25 +194,10 @@ export const linearService = {
 
       // Get viewer info and encrypt tokens in parallel (independent operations)
       const client = createLinearClient(tokens.accessToken);
-      const [linearOrg, { encryptedAccessToken, encryptedRefreshToken }] =
-        await Promise.all([
-          getViewer(client),
-          encryptTokenPair(tokens.accessToken, tokens.refreshToken).catch(
-            (error) => {
-              log.warn(
-                "[linear/oauth] Failed to encrypt tokens, storing plaintext only",
-                {
-                  organizationId,
-                  error: parseError(error),
-                }
-              );
-              return {
-                encryptedAccessToken: null,
-                encryptedRefreshToken: null,
-              };
-            }
-          ),
-        ]);
+      const [linearOrg, tokenColumns] = await Promise.all([
+        getViewer(client),
+        buildIntegrationTokenColumns(tokens.accessToken, tokens.refreshToken),
+      ]);
 
       if (!linearOrg) {
         return {
@@ -231,19 +212,13 @@ export const linearService = {
           where: { organizationId },
           create: {
             organizationId,
-            accessToken: tokens.accessToken,
-            refreshToken: tokens.refreshToken,
-            accessTokenEncrypted: encryptedAccessToken ?? undefined,
-            refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
+            ...tokenColumns,
             tokenExpiresAt,
             linearOrgId: linearOrg.id,
             linearOrgName: linearOrg.name,
           },
           update: {
-            accessToken: tokens.accessToken,
-            refreshToken: tokens.refreshToken,
-            accessTokenEncrypted: encryptedAccessToken ?? undefined,
-            refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
+            ...tokenColumns,
             tokenExpiresAt,
             linearOrgId: linearOrg.id,
             linearOrgName: linearOrg.name,
@@ -282,6 +257,11 @@ export const linearService = {
     const integration = await withDb((db) =>
       db.linearIntegration.findUnique({
         where: { organizationId },
+        select: {
+          ...LINEAR_TOKEN_SELECT,
+          linearOrgName: true,
+          defaultTeamId: true,
+        },
       })
     );
 
@@ -318,10 +298,18 @@ export const linearService = {
    * Disconnect the Linear integration for an organization.
    * Revokes the access token and deletes the integration record.
    */
-  async disconnect(organizationId: string): Promise<void> {
+  async disconnect(
+    organizationId: string,
+    /**
+     * Runs on the integration delete's transaction (ISS-12552); the token
+     * revoke before it is best effort and outside it.
+     */
+    recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
+  ): Promise<void> {
     const integration = await withDb((db) =>
       db.linearIntegration.findUnique({
         where: { organizationId },
+        select: { ...LINEAR_TOKEN_SELECT, linearOrgId: true },
       })
     );
 
@@ -331,13 +319,19 @@ export const linearService = {
 
     // Revoke the token (best effort - don't fail if this errors)
     try {
-      // Prefer decrypted token; fall back to plaintext for backward compatibility
-      // accessToken is non-null: integration.accessToken is always a non-null DB field
-      const accessToken = await resolveIntegrationToken(
-        integration.accessTokenEncrypted,
-        integration.accessToken
+      // A row with no ciphertext resolves to null. `revokeToken(null)` would
+      // no-op and leave a live OAuth grant standing after the local row is
+      // gone, so say so rather than casting.
+      const accessToken = await resolveEncryptedIntegrationToken(
+        integration.accessTokenEncrypted
       );
-      await revokeToken(accessToken as string);
+      if (accessToken) {
+        await revokeToken(accessToken);
+      } else {
+        log.warn("[linear] No token to revoke during disconnect", {
+          organizationId,
+        });
+      }
     } catch (error) {
       log.warn("[linear] Failed to revoke token during disconnect", {
         organizationId,
@@ -346,10 +340,15 @@ export const linearService = {
     }
 
     // Delete the integration record
-    await withDb((db) =>
-      db.linearIntegration.delete({
-        where: { id: integration.id },
-      })
+    await writeRecorded(
+      recordWrite,
+      () =>
+        withDb((db) =>
+          db.linearIntegration.delete({
+            where: { id: integration.id },
+          })
+        ),
+      () => ({ changed: true })
     );
 
     log.info("[linear] Disconnected Linear integration", {
@@ -377,6 +376,9 @@ export const linearService = {
           type: ArtifactType.DOCUMENT,
           organizationId,
         },
+        // The row is a gate, not a payload: only the two eligibility columns
+        // below are read, and the export body comes from `ArtifactVersion`.
+        select: { subtype: true, status: true },
       })
     );
 
@@ -415,6 +417,7 @@ export const linearService = {
     const integration = await withDb((db) =>
       db.linearIntegration.findUnique({
         where: { organizationId },
+        select: LINEAR_TOKEN_SELECT,
       })
     );
 
@@ -553,3 +556,28 @@ export const linearService = {
     };
   },
 };
+
+/**
+ * The only `LinearIntegration` columns `ensureValidAccessToken` reads (`id`
+ * scopes the write-back `update`). As with Google, the columns left behind are
+ * credentials — the token ciphertexts and `webhook_secret` — so narrowing keeps
+ * them out of the process entirely on every status, disconnect, and export
+ * call. Callers needing a descriptive column spread this and add exactly that
+ * column.
+ */
+const LINEAR_TOKEN_SELECT = {
+  id: true,
+  accessTokenEncrypted: true,
+  refreshTokenEncrypted: true,
+  tokenExpiresAt: true,
+} as const;
+
+/**
+ * Derived from the select rather than hand-listed, so a field read inside
+ * `ensureValidAccessToken` that is missing from `LINEAR_TOKEN_SELECT` fails
+ * `tsc` here instead of arriving as `undefined` at runtime.
+ */
+type LinearTokenFields = Pick<
+  LinearIntegration,
+  keyof typeof LINEAR_TOKEN_SELECT
+>;

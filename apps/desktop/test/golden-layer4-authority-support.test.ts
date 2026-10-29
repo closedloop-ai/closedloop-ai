@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
 import { InsightsTileAvailabilityState } from "@closedloop-ai/loops-api/insights";
+import { test } from "vitest";
 import { assertRegisteredAuthorityDivergence } from "./golden/golden-layer4-authority-support.js";
 
 const AVAILABILITY_KEY =

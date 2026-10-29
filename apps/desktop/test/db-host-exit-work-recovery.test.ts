@@ -21,7 +21,7 @@
  * backoff synchronously, so every bound is asserted as a count.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   DB_HOST_EXIT_MAX_ATTEMPTS,
   redriveOnDbHostExit,

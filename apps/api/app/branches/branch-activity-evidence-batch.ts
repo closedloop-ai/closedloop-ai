@@ -3,13 +3,20 @@ import {
   BranchActivityAttributionKind,
   branchActivityAtomProducerValidator,
 } from "@repo/api/src/types/branch-activity";
-import { Prisma, type TransactionClient } from "@repo/database";
+import type { TransactionClient } from "@repo/database";
+import { bindParameterChunkSize } from "@/app/agent-sessions/service/write-chunking";
+import { chunksOf } from "@/lib/chunks-of";
+import { isWithinTrustedFutureBoundary } from "@/lib/trusted-timestamp";
+import { recomputeBranchActivityAggregatesInTransaction } from "./branch-activity-aggregate";
 import {
+  BRANCH_ACTIVITY_ATOM_COLUMN_COUNT,
   type BranchActivityPersistResult,
   BranchActivityPersistStatus,
   type PersistedBranchActivityAtom,
+  persistedAtomIdentity,
   persistedAtomsReplayCompatible,
 } from "./branch-activity-evidence";
+import { lockPullRequestBranchAttributionsInTransaction } from "./pull-request-branch-relink";
 
 export type BranchActivityAtomBatchRecord = {
   branchArtifactId: string;
@@ -31,24 +38,36 @@ type PersistedBatchAtom = PersistedBranchActivityAtom & {
 
 type BranchActivityBatchClient = Pick<
   TransactionClient,
-  "$executeRaw" | "branchActivityAtom" | "branchDetail" | "pullRequestDetail"
+  "$executeRaw" | "$queryRaw" | "branchActivityAtom" | "branchDetail"
 >;
 
+/** A concurrent writer claimed an atom identity with incompatible evidence. */
+export class BranchActivityBatchConflictError extends Error {
+  constructor() {
+    super("Branch activity batch conflicted during persistence");
+    this.name = "BranchActivityBatchConflictError";
+  }
+}
+
 /**
- * Validate and persist one bounded Session's activity atoms with set-based
- * ownership reads, insertion, replay verification, and aggregate advancement.
+ * Validate and persist one Session's activity atoms with set-based ownership
+ * reads, insertion, replay verification, and aggregate advancement. The record
+ * count is whatever the payload carried (ISS-9860); the per-record reads and the
+ * insert are chunked by bind budget so width costs statements, not a refusal.
  */
 export async function persistBranchActivityAtomsInTransaction(
   tx: BranchActivityBatchClient,
   input: {
     organizationId: string;
     records: readonly BranchActivityAtomBatchRecord[];
+    receivedAt?: Date;
   }
 ): Promise<BranchActivityPersistResult[]> {
   if (input.records.length === 0) {
     return [];
   }
-  const parsed = parseRecords(input.organizationId, input.records);
+  const receivedAt = input.receivedAt ?? new Date();
+  const parsed = parseRecords(input.organizationId, input.records, receivedAt);
   if (!parsed) {
     return rejectedBatch(
       input.records.length,
@@ -56,18 +75,31 @@ export async function persistBranchActivityAtomsInTransaction(
     );
   }
 
+  const trustedIndexes = parsed.flatMap((record, index) =>
+    isWithinTrustedFutureBoundary(record.persisted.occurredAt, receivedAt)
+      ? [index]
+      : []
+  );
+  const trusted = trustedIndexes.map((index) => parsed[index]);
+  if (trusted.length === 0) {
+    return rejectedBatch(
+      input.records.length,
+      BranchActivityPersistStatus.FutureTimestamp
+    );
+  }
+
   const ownershipFailure = await validateOwnership(
     tx,
     input.organizationId,
-    parsed
+    trusted
   );
   if (ownershipFailure) {
     return rejectedBatch(input.records.length, ownershipFailure);
   }
 
-  const before = await loadPersistedAtoms(tx, input.organizationId, parsed);
-  const conflict = parsed.some((record) => {
-    const stored = before.get(atomIdentity(record.persisted));
+  const before = await loadPersistedAtoms(tx, input.organizationId, trusted);
+  const conflict = trusted.some((record) => {
+    const stored = before.get(persistedAtomIdentity(record.persisted));
     return stored && !persistedAtomsReplayCompatible(stored, record.persisted);
   });
   if (conflict) {
@@ -77,45 +109,52 @@ export async function persistBranchActivityAtomsInTransaction(
     );
   }
 
-  const missing = parsed.filter(
-    (record) => !before.has(atomIdentity(record.persisted))
+  const missing = trusted.filter(
+    (record) => !before.has(persistedAtomIdentity(record.persisted))
   );
-  const inserted =
-    missing.length === 0
-      ? { count: 0 }
-      : await tx.branchActivityAtom.createMany({
-          data: missing.map((record) => record.persisted),
-          skipDuplicates: true,
-        });
-  const after = await loadPersistedAtoms(tx, input.organizationId, parsed);
-  const accepted = parsed.map((record) =>
-    after.get(atomIdentity(record.persisted))
+  const inserted = await insertMissingAtoms(tx, missing);
+  const after = await loadPersistedAtoms(tx, input.organizationId, trusted);
+  const accepted = trusted.map((record) =>
+    after.get(persistedAtomIdentity(record.persisted))
   );
   if (
     accepted.some(
       (stored, index) =>
         !(
           stored &&
-          persistedAtomsReplayCompatible(stored, parsed[index].persisted)
+          persistedAtomsReplayCompatible(stored, trusted[index].persisted)
         )
     )
   ) {
-    throw new Error("branch activity batch changed during persistence");
+    throw new BranchActivityBatchConflictError();
   }
 
-  await advanceBranchActivity(tx, input.organizationId, accepted);
-  const insertedAllMissing = inserted.count === missing.length;
-  return parsed.map((record) => ({
-    status:
-      before.has(atomIdentity(record.persisted)) || !insertedAllMissing
-        ? BranchActivityPersistStatus.Replayed
-        : BranchActivityPersistStatus.Inserted,
-  }));
+  await recomputeBranchActivityAggregatesInTransaction(tx, {
+    organizationId: input.organizationId,
+    branchArtifactIds: accepted.flatMap((row) =>
+      row ? [row.branchArtifactId] : []
+    ),
+  });
+  const insertedIdentities = new Set(inserted.map(persistedAtomIdentity));
+  const trustedIndexSet = new Set(trustedIndexes);
+  return parsed.map((record, index) => {
+    if (!trustedIndexSet.has(index)) {
+      return { status: BranchActivityPersistStatus.FutureTimestamp };
+    }
+    return {
+      status:
+        before.has(persistedAtomIdentity(record.persisted)) ||
+        !insertedIdentities.has(persistedAtomIdentity(record.persisted))
+          ? BranchActivityPersistStatus.Replayed
+          : BranchActivityPersistStatus.Inserted,
+    };
+  });
 }
 
 function parseRecords(
   organizationId: string,
-  records: readonly BranchActivityAtomBatchRecord[]
+  records: readonly BranchActivityAtomBatchRecord[],
+  receivedAt: Date
 ): ParsedBatchRecord[] | null {
   const parsed: ParsedBatchRecord[] = [];
   for (const record of records) {
@@ -133,9 +172,11 @@ function parseRecords(
         source: atom.data.source,
         sourceEventId: atom.data.sourceEventId,
         occurredAt: new Date(atom.data.occurredAt),
+        activityKind: atom.data.kind ?? null,
         attributionKind: atom.data.attribution.kind,
         pullRequestDetailId: pullRequestId(atom.data),
         completeness: atom.data.completeness,
+        createdAt: receivedAt,
       },
     });
   }
@@ -170,16 +211,11 @@ async function validateOwnership(
   if (pullRequestIds.length === 0) {
     return null;
   }
-  const pullRequests = await tx.pullRequestDetail.findMany({
-    where: { organizationId, id: { in: pullRequestIds } },
-    select: { branchArtifactId: true, id: true },
-  });
-  const branchByPullRequest = new Map(
-    pullRequests.map((pullRequest) => [
-      pullRequest.id,
-      pullRequest.branchArtifactId,
-    ])
-  );
+  const branchByPullRequest =
+    await lockPullRequestBranchAttributionsInTransaction(tx, {
+      organizationId,
+      pullRequestDetailIds: pullRequestIds,
+    });
   const valid = records.every((record) => {
     const pullRequestDetailId = record.persisted.pullRequestDetailId;
     return (
@@ -195,61 +231,56 @@ async function loadPersistedAtoms(
   organizationId: string,
   records: readonly ParsedBatchRecord[]
 ): Promise<Map<string, PersistedBatchAtom>> {
-  const rows = await tx.branchActivityAtom.findMany({
-    where: {
-      organizationId,
-      OR: records.map((record) => ({
-        branchArtifactId: record.branchArtifactId,
-        source: record.atom.source,
-        sourceEventId: record.atom.sourceEventId,
-      })),
-    },
-    select: {
-      version: true,
-      source: true,
-      sourceEventId: true,
-      occurredAt: true,
-      attributionKind: true,
-      pullRequestDetailId: true,
-      completeness: true,
-      branchArtifactId: true,
-    },
-  });
-  return new Map(rows.map((row) => [atomIdentity(row), row]));
+  const byIdentity = new Map<string, PersistedBatchAtom>();
+  for (const chunk of chunksOf(records, ATOM_IDENTITY_READ_CHUNK_SIZE)) {
+    const rows = await tx.branchActivityAtom.findMany({
+      where: {
+        organizationId,
+        OR: chunk.map((record) => ({
+          branchArtifactId: record.branchArtifactId,
+          source: record.atom.source,
+          sourceEventId: record.atom.sourceEventId,
+        })),
+      },
+      select: {
+        version: true,
+        source: true,
+        sourceEventId: true,
+        occurredAt: true,
+        activityKind: true,
+        attributionKind: true,
+        pullRequestDetailId: true,
+        completeness: true,
+        createdAt: true,
+        branchArtifactId: true,
+      },
+    });
+    for (const row of rows) {
+      byIdentity.set(persistedAtomIdentity(row), row);
+    }
+  }
+  return byIdentity;
 }
 
-async function advanceBranchActivity(
+async function insertMissingAtoms(
   tx: BranchActivityBatchClient,
-  organizationId: string,
-  rows: readonly (PersistedBatchAtom | undefined)[]
-): Promise<void> {
-  const latestByBranch = new Map<string, Date>();
-  for (const row of rows) {
-    if (!row) {
-      continue;
-    }
-    const branchArtifactId = row.branchArtifactId;
-    const current = latestByBranch.get(branchArtifactId);
-    if (!current || current < row.occurredAt) {
-      latestByBranch.set(branchArtifactId, row.occurredAt);
-    }
+  missing: readonly ParsedBatchRecord[]
+): Promise<InsertedAtomIdentity[]> {
+  const inserted: InsertedAtomIdentity[] = [];
+  for (const chunk of chunksOf(missing, ATOM_INSERT_CHUNK_SIZE)) {
+    inserted.push(
+      ...(await tx.branchActivityAtom.createManyAndReturn({
+        data: chunk.map((record) => record.persisted),
+        skipDuplicates: true,
+        select: {
+          branchArtifactId: true,
+          source: true,
+          sourceEventId: true,
+        },
+      }))
+    );
   }
-  if (latestByBranch.size === 0) {
-    return;
-  }
-  const values = [...latestByBranch].map(
-    ([artifactId, occurredAt]) =>
-      Prisma.sql`(${artifactId}::uuid, ${occurredAt}::timestamptz)`
-  );
-  await tx.$executeRaw(Prisma.sql`
-    UPDATE branch_detail AS branch
-    SET last_activity_at = data.occurred_at,
-        updated_at = now()
-    FROM (VALUES ${Prisma.join(values)}) AS data(artifact_id, occurred_at)
-    WHERE branch.artifact_id = data.artifact_id
-      AND branch.organization_id = ${organizationId}::uuid
-      AND (branch.last_activity_at IS NULL OR branch.last_activity_at < data.occurred_at)
-  `);
+  return inserted;
 }
 
 function pullRequestId(atom: BranchActivityAtom): string | null {
@@ -258,17 +289,23 @@ function pullRequestId(atom: BranchActivityAtom): string | null {
     : null;
 }
 
-function atomIdentity(
-  atom: Pick<PersistedBranchActivityAtom, "source" | "sourceEventId"> & {
-    branchArtifactId?: string;
-  }
-): string {
-  return `${atom.branchArtifactId ?? ""}\u0000${atom.source}\u0000${atom.sourceEventId}`;
-}
-
 function rejectedBatch(
   length: number,
   status: BranchActivityPersistStatus
 ): BranchActivityPersistResult[] {
   return Array.from({ length }, () => ({ status }));
 }
+
+type InsertedAtomIdentity = {
+  branchArtifactId: string;
+  source: string;
+  sourceEventId: string;
+};
+
+/** `OR` of `{branchArtifactId, source, sourceEventId}` beside the fixed org bind. */
+const ATOM_IDENTITY_READ_CHUNK_SIZE = bindParameterChunkSize(3, 1);
+/** Rows per `createManyAndReturn`: every `BranchActivityAtom` column is bound. */
+const ATOM_INSERT_CHUNK_SIZE = bindParameterChunkSize(
+  BRANCH_ACTIVITY_ATOM_COLUMN_COUNT,
+  0
+);

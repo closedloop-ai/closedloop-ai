@@ -1,16 +1,15 @@
 /**
  * E2E proof for ISS-6168: a session written with no owner is repaired at
- * runtime, and the repaired value reaches the Sessions table's Owner cell in the
- * launched app.
+ * runtime, while a guest's local Sessions row remains readable without an org
+ * directory request.
  *
  * `apps/desktop/test/AGENTS.md`: "A pure-mapper test passing does not prove the
  * value reaches the user — assert the visible cell in the launched-app spec when
  * the mapped field is user-facing." The SQLite-level suite
- * (`test/session-owner-identity.test.ts`) proves the column is written; only this
- * spec proves the whole chain survives — identity resolution through the real
- * `/me` lookup, the db-host identity push, the claim in the db-host child, the
- * `sessions` read projection, the org-directory name lookup, and
- * `renderOwnerCell` (PR #4947 review, whitlockk).
+ * (`test/session-owner-identity.test.ts`) proves the column is written; this
+ * spec proves the `/me` identity claim and local list survive launch. Under
+ * ISS-10574, a key-only guest cannot fetch `/users`, so the Owner cell is
+ * unattributed until a first-party account exists (PR #4947 review, whitlockk).
  *
  * The corpus is seeded exactly as the bug produced it: `user_id`/`organization_id`
  * NULL on every row. Nothing in the seed or the schema fixes it — the app has to.
@@ -22,7 +21,12 @@
 
 import { createServer, type ServerResponse } from "node:http";
 import { expect, test } from "@playwright/test";
-import { gotoNav, launchDesktopApp } from "./helpers/desktop-app";
+import {
+  clickDesktopDateRange,
+  DesktopDateRangeLabel,
+  gotoNav,
+  launchDesktopApp,
+} from "./helpers/desktop-app";
 import {
   applyDesktopSeedPragmas,
   openSeedClient,
@@ -34,6 +38,7 @@ import {
 import {
   cleanupSeededSessionsDirs,
   makeSeededSessionsDirs,
+  seededSessionsEnv,
 } from "./helpers/seeded-sessions-list";
 
 const OWNER = {
@@ -62,17 +67,15 @@ const CLAIM_TIMEOUT_MS = 120_000;
 const CLAIM_POLL_INTERVAL_MS = 1000;
 
 test.describe("Desktop session owner claim repair", () => {
-  test("repairs an unowned seeded session and renders its Owner cell", async () => {
+  test("repairs an unowned seeded session while the guest Owner cell stays unattributed", async () => {
     test.setTimeout(SPEC_TIMEOUT_MS);
 
     const dirs = makeSeededSessionsDirs("desktop-owner-claim");
     const identityServer = await startOwnerIdentityServer();
-    const env = {
-      CLAUDE_HOME: dirs.claudeHome,
+    const env = seededSessionsEnv(dirs, {
       CL_AUTH_API_ORIGIN: identityServer.origin,
       CLOSEDLOOP_API_KEY: OWNER.apiKey,
-      CODEX_HOME: dirs.codexHome,
-    };
+    });
 
     try {
       // 1. Create + migrate the schema, then close so the seed writes alone.
@@ -117,7 +120,7 @@ test.describe("Desktop session owner claim repair", () => {
       });
       try {
         await gotoNav(page, "sessions");
-        await page.locator('[aria-label="All time"]:visible').click();
+        await clickDesktopDateRange(page, DesktopDateRangeLabel.AllTime);
         const sessionLink = page.getByRole("link", {
           name: SEEDED_SESSION.name,
         });
@@ -125,9 +128,13 @@ test.describe("Desktop session owner claim repair", () => {
         const sessionRow = page
           .locator(".group.grid")
           .filter({ has: sessionLink });
-        await expect(
-          sessionRow.locator('[data-column-id="owner"]')
-        ).toContainText(OWNER.displayName, { timeout: 30_000 });
+        await expect(sessionRow.locator('[data-column-id="owner"]')).toHaveText(
+          "—",
+          { timeout: 30_000 }
+        );
+        expect(
+          identityServer.requests.filter((path) => path === "/users")
+        ).toEqual([]);
         expect(pageErrors).toEqual([]);
       } finally {
         await cleanup();
@@ -139,17 +146,22 @@ test.describe("Desktop session owner claim repair", () => {
   });
 });
 
-type OwnerIdentityServer = { origin: string; close: () => Promise<void> };
+type OwnerIdentityServer = {
+  origin: string;
+  requests: readonly string[];
+  close: () => Promise<void>;
+};
 
 /**
- * The two cloud reads desktop needs before an Owner cell can render a name:
- * `/me` resolves the signed-in principal the claim stamps, and `/users` is the
- * org directory `resolveOwner` looks that id up in. Anything else 404s, so a
- * spec can never pass on an accidentally permissive catch-all.
+ * `/me` can still claim the stored row from the leftover key. `/users` is
+ * deliberately offered so the request ledger catches any guest directory
+ * fetch; every unrelated path returns 404.
  */
 async function startOwnerIdentityServer(): Promise<OwnerIdentityServer> {
+  const requests: string[] = [];
   const server = createServer((request, response) => {
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    requests.push(pathname);
     if (request.method === "GET" && pathname === "/me") {
       writeJson(response, {
         success: true,
@@ -182,6 +194,7 @@ async function startOwnerIdentityServer(): Promise<OwnerIdentityServer> {
   }
   return {
     origin: `http://127.0.0.1:${address.port}`,
+    requests,
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));

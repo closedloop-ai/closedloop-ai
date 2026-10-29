@@ -34,12 +34,43 @@ describe("createHrefStore", () => {
     expect(store.getHref()).toBe("/start");
   });
 
+  it("forward restores an entry and a new navigation drops the forward branch", () => {
+    const store = createHrefStore({ initialHref: "/start" });
+    store.actions.navigate("/first?tab=details");
+    store.actions.navigate("/second?tab=activity");
+
+    store.actions.back();
+    expect(store.getHref()).toBe("/first?tab=details");
+    expect(store.canGoForward()).toBe(true);
+    store.actions.forward();
+    expect(store.getHref()).toBe("/second?tab=activity");
+    expect(store.getSearchSnapshot().get("tab")).toBe("activity");
+
+    store.actions.back();
+    store.actions.navigate("/third?tab=artifact");
+    expect(store.canGoForward()).toBe(false);
+    store.actions.forward();
+    expect(store.getHref()).toBe("/third?tab=artifact");
+  });
+
   it("records visited history including replace targets", () => {
     const store = createHrefStore({ initialHref: "/start" });
 
     store.actions.navigate("/first");
     store.actions.replace("/second");
     expect(store.getHistory()).toEqual(["/start", "/first", "/second"]);
+  });
+
+  it("retains the forward entry when replacing after Back", () => {
+    const store = createHrefStore({ initialHref: "/branch?tab=legacy" });
+    store.actions.navigate("/branch?tab=details");
+    store.actions.back();
+    store.actions.replace("/branch?tab=sessions");
+    expect(store.canGoForward()).toBe(true);
+    store.actions.forward();
+    expect(store.getHref()).toBe("/branch?tab=details");
+    store.actions.back();
+    expect(store.getHref()).toBe("/branch?tab=sessions");
   });
 
   it("keeps the search snapshot referentially stable between changes", () => {
@@ -69,9 +100,13 @@ describe("createHrefStore", () => {
     expect(listener).toHaveBeenCalledTimes(2);
     expect(onHrefChange).toHaveBeenLastCalledWith("/start");
 
+    store.actions.forward();
+    expect(listener).toHaveBeenCalledTimes(3);
+    expect(onHrefChange).toHaveBeenLastCalledWith("/next");
+
     store.actions.replace("/again");
     expect(onHrefChange).toHaveBeenLastCalledWith("/again");
-    expect(onHrefChange).toHaveBeenCalledTimes(3);
+    expect(onHrefChange).toHaveBeenCalledTimes(4);
   });
 
   it("syncExternalHref pushes without invoking onHrefChange", () => {

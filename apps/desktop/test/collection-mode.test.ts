@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   type CollectionMode,
   type CollectorEnabledState,
@@ -27,14 +27,17 @@ import { CollectorManager } from "../src/main/collectors/engine/collector-manage
 import { createMutualExclusivityMonitor } from "../src/main/collectors/engine/mutual-exclusivity-monitor.js";
 import type {
   Harness,
+  HarnessCollector,
   NormalizedSession,
 } from "../src/main/collectors/types.js";
 import { COLLECTION_VIOLATION_SESSION_PREFIX } from "../src/main/database/db-constants.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
+import { waitUntil } from "./helpers/collector-manager-fixtures.js";
 import {
   makeSession as baseSession,
   fakeCollector,
 } from "./normalized-session-test-utils.js";
+import { waitForCondition } from "./wait-for-condition.js";
 
 // ---------------------------------------------------------------------------
 // AC-001.1 — getActiveCollectionMode is the single source of truth.
@@ -209,7 +212,6 @@ test("AC-001.2: Codex hooks ⇒ no live watcher, boot import still runs", async 
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       // Codex in hooks mode; everything else would watch.
@@ -227,7 +229,7 @@ test("AC-001.2: Codex hooks ⇒ no live watcher, boot import still runs", async 
 
     manager.start();
     await waitUntil(() => imported.length === 1);
-    manager.stop();
+    await manager.stop();
 
     // Boot-import-once produced the row...
     assert.deepEqual(imported, ["codex-session"]);
@@ -250,7 +252,6 @@ test("AC-001.4: watcher-mode harness imports AND reports a watcher emission", as
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       // Claude in watcher mode (hooks off) — the unchanged Claude path.
@@ -267,7 +268,7 @@ test("AC-001.4: watcher-mode harness imports AND reports a watcher emission", as
 
     manager.start();
     await waitUntil(() => imported.length === 1);
-    manager.stop();
+    await manager.stop();
 
     assert.deepEqual(imported, ["claude-session"]);
     assert.deepEqual(watcherEmissions, [["claude", "claude-session"]]);
@@ -284,6 +285,14 @@ test("FEA-3741: isCollectorEnabled=false skips the harness entirely (no watcher,
   const dir = await mkdtemp(path.join(os.tmpdir(), "collection-mode-off-"));
   const imported: string[] = [];
   const watcherEmissions: [Harness, string][] = [];
+  const cursorToolHomeWalks: ToolHomeWalk[] = [];
+  const cursor = countingToolHomeWalks(
+    fakeCollector("cursor", {
+      sources: ["cursor.jsonl"],
+      sessions: [makeSession("cursor-session")],
+    }),
+    (walk) => cursorToolHomeWalks.push(walk)
+  );
   try {
     const manager = new CollectorManager({
       importer: {
@@ -292,7 +301,6 @@ test("FEA-3741: isCollectorEnabled=false skips the harness entirely (no watcher,
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       // Would otherwise watch (and boot-import) both harnesses...
@@ -307,22 +315,26 @@ test("FEA-3741: isCollectorEnabled=false skips the harness entirely (no watcher,
           sources: ["claude.jsonl"],
           sessions: [makeSession("claude-session")],
         }),
-        fakeCollector("cursor", {
-          sources: ["cursor.jsonl"],
-          sessions: [makeSession("cursor-session")],
-        }),
+        cursor,
       ],
     });
 
     manager.start();
     // Only the enabled harness ever imports.
     await waitUntil(() => imported.length === 1);
-    // Give any (incorrect) cursor import a chance to run before asserting none.
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    manager.stop();
+    // Boot import is terminal for EVERY harness this epoch scheduled, so once it
+    // completes a leaked cursor import has either happened or can no longer
+    // happen. That replaces the sleep the assertions below used to rest on: a
+    // 50ms real-clock window was the entire proof of non-occurrence.
+    await waitUntil(() => manager.getIngestProgress().complete);
+    await manager.stop();
 
-    // The disabled cursor collector produced NO import (its tool-home walk never
-    // ran) and NO live-watcher emission.
+    // The disabled cursor collector was never SCHEDULED: neither entry point to
+    // its tool-home walk was reached — not `watchRoots` (which the live watcher
+    // calls synchronously inside `manager.start()`), nor `listSources` (which the
+    // boot-import pass calls, and which the wait above proves has finished).
+    assert.deepEqual(cursorToolHomeWalks, []);
+    // It therefore produced NO import and NO live-watcher emission.
     assert.deepEqual(imported, ["claude-session"]);
     assert.deepEqual(watcherEmissions, [["claude", "claude-session"]]);
   } finally {
@@ -341,7 +353,6 @@ test("FEA-3741: omitting isCollectorEnabled keeps every harness on (always-on de
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -357,7 +368,7 @@ test("FEA-3741: omitting isCollectorEnabled keeps every harness on (always-on de
 
     manager.start();
     await waitUntil(() => imported.length === 1);
-    manager.stop();
+    await manager.stop();
 
     assert.deepEqual(imported, ["cursor-session"]);
   } finally {
@@ -518,7 +529,6 @@ test("FEA-3640: a real live-watcher event reports transcript activity with the c
       importer: {
         importSession: () => ({ skipped: false, reactivated: false }),
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -542,7 +552,7 @@ test("FEA-3640: a real live-watcher event reports transcript activity with the c
       listener.fire("rollout-9.jsonl");
     }
     await waitUntil(() => activity.length === 1);
-    manager.stop();
+    await manager.stop();
 
     assert.deepEqual(activity, [["codex", "rollout-9", source]]);
   } finally {
@@ -566,7 +576,6 @@ test("FEA-3640: a watcher-mode STARTUP/catch-up import reports no transcript act
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -582,7 +591,7 @@ test("FEA-3640: a watcher-mode STARTUP/catch-up import reports no transcript act
 
     manager.start();
     await waitUntil(() => imported.length === 1);
-    manager.stop();
+    await manager.stop();
 
     assert.deepEqual(imported, ["rollout-9"]); // the sweep DID import
     assert.deepEqual(activity, []); // ...but armed no live flush
@@ -603,7 +612,6 @@ test("FEA-3640: a hooks-mode (boot-only) import reports no transcript activity",
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "hooks",
@@ -619,7 +627,7 @@ test("FEA-3640: a hooks-mode (boot-only) import reports no transcript activity",
 
     manager.start();
     await waitUntil(() => imported.length === 1);
-    manager.stop();
+    await manager.stop();
 
     assert.deepEqual(imported, ["claude-session"]);
     assert.deepEqual(activity, []);
@@ -642,7 +650,6 @@ test("FEA-3640: a throwing transcript-activity sink never fails the import", asy
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -666,7 +673,7 @@ test("FEA-3640: a throwing transcript-activity sink never fails the import", asy
     }
     // The session still imports despite the sink throwing on the live path.
     await waitUntil(() => imported.length === 1);
-    manager.stop();
+    await manager.stop();
 
     assert.deepEqual(imported, ["rollout-9"]);
   } finally {
@@ -694,20 +701,16 @@ async function violationRows(
   return result;
 }
 
-async function waitForRows(
+function waitForRows(
   db: Awaited<ReturnType<typeof openSqliteAgentDatabase>>,
   expected: number
 ): Promise<void> {
-  const startedAt = Date.now();
-  for (;;) {
-    if ((await violationRows(db)).length >= expected) {
-      return;
-    }
-    if (Date.now() - startedAt > 2000) {
-      throw new Error("timed out waiting for violation row");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  return waitForCondition(
+    async () => (await violationRows(db)).length >= expected,
+    2000,
+    10,
+    "timed out waiting for violation row"
+  );
 }
 
 function makeSession(sessionId: string): NormalizedSession {
@@ -723,12 +726,32 @@ function makeSession(sessionId: string): NormalizedSession {
   });
 }
 
-async function waitUntil(predicate: () => boolean): Promise<void> {
-  const startedAt = Date.now();
-  while (!predicate()) {
-    if (Date.now() - startedAt > 2000) {
-      throw new Error("timed out waiting for collector import");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+/**
+ * The two collector members that reach a harness's tool home (`~/.claude`,
+ * `~/.cursor`, Copilot workspace storage): the roots the live watcher attaches
+ * to, and the source enumeration the import pass walks.
+ */
+type ToolHomeWalk = "watchRoots" | "listSources";
+
+/**
+ * Wrap `collector` so every tool-home walk it is asked for is recorded before it
+ * runs. FEA-3741's claim about a DISABLED harness is that neither walk is ever
+ * scheduled, and a recorded call list makes that a deterministic assertion
+ * instead of a race against a fixed sleep.
+ */
+function countingToolHomeWalks(
+  collector: HarnessCollector,
+  onWalk: (walk: ToolHomeWalk) => void
+): HarnessCollector {
+  return {
+    ...collector,
+    watchRoots: () => {
+      onWalk("watchRoots");
+      return collector.watchRoots();
+    },
+    listSources: () => {
+      onWalk("listSources");
+      return collector.listSources();
+    },
+  };
 }

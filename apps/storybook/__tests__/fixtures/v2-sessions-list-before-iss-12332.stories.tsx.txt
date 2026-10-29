@@ -1,0 +1,211 @@
+import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import type { FixtureRoute } from "@repo/app/shared/storybook/fixture-fetch";
+import type { Meta, StoryObj } from "@storybook/react";
+import { expect, within } from "storybook/test";
+import SessionsPage from "@/app/(authenticated)/[orgSlug]/sessions/page";
+import { sessionListResponse } from "./fixtures/live-app-fixtures";
+import {
+  sessionsListApiRoutes,
+  sessionsListRowsFixture,
+  sessionsUsageEmptyFixture,
+} from "./fixtures/sessions-list-fixtures";
+import { LivePage } from "./live-page";
+import {
+  expectActiveNavItem,
+  LIVE_ORG_SLUG,
+  withLiveRoute,
+} from "./live-route";
+
+// ISS-11361 Target sidebar, entry 2 of 62: Sessions List (Artifact list).
+// The live route's own page (`apps/app/.../sessions/page.tsx`, which mounts
+// `SessionsV2Page` → `SessionsListV2Host`) in the app frame, so the header,
+// date-range toolbar, filters, summary strip, table and footer are the live
+// ones. Each story is one state the live page reaches from its two reads
+// (`/agent-sessions`, `/agent-sessions/usage`) or from its URL.
+
+const SESSIONS_PATH = `/${LIVE_ORG_SLUG}/sessions`;
+
+/** `sessionsListApiRoutes` with some reads answered differently. */
+function withRoutes(overrides: FixtureRoute[]): FixtureRoute[] {
+  return [...overrides, ...sessionsListApiRoutes];
+}
+
+function failing(path: string): FixtureRoute {
+  return { method: "GET", path, respond: () => null, status: 500 };
+}
+
+function pending(path: string): FixtureRoute {
+  return { method: "GET", path, respond: () => new Promise(() => undefined) };
+}
+
+function listOf(rows: typeof sessionsListRowsFixture): FixtureRoute {
+  return {
+    method: "GET",
+    path: "/agent-sessions",
+    respond: () => ({
+      ...sessionListResponse(rows),
+      viewerScope: AgentSessionViewerScope.Organization,
+    }),
+  };
+}
+
+const emptyUsage: FixtureRoute = {
+  method: "GET",
+  path: "/agent-sessions/usage",
+  respond: () => sessionsUsageEmptyFixture,
+};
+
+function connectedAgent(hasConnectedAgent: boolean): FixtureRoute {
+  return {
+    method: "GET",
+    path: "/compute-targets/has-connected-agent",
+    respond: () => ({ hasConnectedAgent }),
+  };
+}
+
+const meta = {
+  title: "Surfaces/Artifacts/Sessions/Sessions List",
+  tags: ["v2.0"],
+  decorators: [withLiveRoute],
+  render: () => (
+    <LivePage activePath="/sessions">
+      <SessionsPage />
+    </LivePage>
+  ),
+  parameters: {
+    layout: "fullscreen",
+    controls: { disable: true },
+    liveRoute: { path: SESSIONS_PATH },
+    appCore: { apiRoutes: sessionsListApiRoutes },
+  },
+} satisfies Meta;
+
+export default meta;
+
+type Story = StoryObj<typeof meta>;
+
+export const Default: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const [firstRow] = sessionsListRowsFixture;
+    await expect(
+      await canvas.findByText(firstRow?.name ?? "", {}, { timeout: 10_000 })
+    ).toBeVisible();
+    await expectActiveNavItem(canvasElement, "Sessions");
+  },
+};
+
+/** Both reads are still in flight. */
+export const Loading: Story = {
+  parameters: {
+    appCore: {
+      apiRoutes: withRoutes([
+        pending("/agent-sessions/usage"),
+        pending("/agent-sessions"),
+      ]),
+    },
+  },
+};
+
+/** The rows are in; the summary strip's usage read is still in flight. */
+export const LoadingSummary: Story = {
+  parameters: {
+    appCore: { apiRoutes: withRoutes([pending("/agent-sessions/usage")]) },
+  },
+};
+
+/** No session has ever synced and no agent has connected to the workspace. */
+export const NotConnected: Story = {
+  parameters: {
+    appCore: {
+      apiRoutes: withRoutes([emptyUsage, listOf([]), connectedAgent(false)]),
+    },
+  },
+};
+
+/** An agent is connected, but no session has synced yet. */
+export const Empty: Story = {
+  parameters: {
+    appCore: {
+      apiRoutes: withRoutes([emptyUsage, listOf([]), connectedAgent(true)]),
+    },
+  },
+};
+
+/** Nothing in the last 7 days, but the workspace has older sessions. */
+export const NothingInRange: Story = {
+  parameters: {
+    appCore: {
+      apiRoutes: withRoutes([
+        emptyUsage,
+        {
+          method: "GET",
+          path: "/agent-sessions",
+          respond: ({ searchParams }) =>
+            searchParams.has("startDate")
+              ? sessionListResponse([])
+              : sessionListResponse(sessionsListRowsFixture),
+        },
+        connectedAgent(true),
+      ]),
+    },
+  },
+};
+
+/** A status filter from the URL that matches no session. */
+export const NoMatches: Story = {
+  parameters: {
+    liveRoute: { path: `${SESSIONS_PATH}?status=${SESSION_STATUS.ERROR}` },
+    appCore: {
+      apiRoutes: withRoutes([emptyUsage, listOf([]), connectedAgent(true)]),
+    },
+  },
+};
+
+/** The URL carries a status filter; the list and strip show its matches. */
+export const WithActiveFilters: Story = {
+  parameters: {
+    liveRoute: { path: `${SESSIONS_PATH}?status=${SESSION_STATUS.INACTIVE}` },
+    appCore: {
+      apiRoutes: withRoutes([
+        listOf(
+          sessionsListRowsFixture.filter(
+            (item) => item.status === SESSION_STATUS.INACTIVE
+          )
+        ),
+      ]),
+    },
+  },
+};
+
+/** Opened from a teammate's profile: `?userId=` scopes the list to them. */
+export const OwnerScope: Story = {
+  parameters: {
+    liveRoute: { path: `${SESSIONS_PATH}?userId=user-priya` },
+    appCore: {
+      apiRoutes: withRoutes([
+        listOf(
+          sessionsListRowsFixture.filter(
+            (item) => item.user?.id === "user-priya"
+          )
+        ),
+      ]),
+    },
+  },
+};
+
+/** The session list read failed; the summary strip still loaded. */
+export const ErrorState: Story = {
+  name: "Error",
+  parameters: {
+    appCore: { apiRoutes: withRoutes([failing("/agent-sessions")]) },
+  },
+};
+
+/** The summary strip's usage read failed; the rows still loaded. */
+export const SummaryUnavailable: Story = {
+  parameters: {
+    appCore: { apiRoutes: withRoutes([failing("/agent-sessions/usage")]) },
+  },
+};

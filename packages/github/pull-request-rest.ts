@@ -1,4 +1,5 @@
 import type { Octokit } from "@octokit/rest";
+import type { GitHubActorType } from "@repo/api/src/types/github-actor";
 import { GitHubFetchMechanism } from "@repo/api/src/types/github-read-model";
 import { GitHubPRState } from "@repo/api/src/types/github-status";
 import {
@@ -14,6 +15,13 @@ import {
   repositoryDefaultUnavailableObservationValidator,
 } from "@repo/api/src/types/repository-default-identity";
 import { VcsProviderKind } from "@repo/api/src/types/vcs-provider-kind";
+import { log } from "@repo/observability/log";
+import { toGitHubUserTokenProviderFailure } from "./provider-error-classification";
+import {
+  GitHubProviderResultStatus,
+  type GitHubUserTokenProviderResult,
+} from "./provider-result";
+import { mapPullRequestAuthor } from "./pull-request-author";
 
 /** GitHub's documented REST API version checked for ISS-5826 on 2026-08-10. */
 export const GITHUB_PULL_REQUEST_REST_API_VERSION = "2026-03-10";
@@ -34,9 +42,15 @@ export type GitHubSinglePullRequestResult = {
   // FEA-3552: the GitHub PR createdAt — when the PR was raised. Anchors the
   // branch/PR timeline's "PR opened" lifecycle dot.
   createdAt: string | null;
+  /** GitHub's `updated_at`. ISS-12344 refuses to re-file a PR on a read older than the stored row. */
+  updatedAt?: string;
   mergedAt: string | null;
   closedAt: string | null;
   authorLogin: string | null;
+  /** Stable provider account ID. Omitted when unmeasured; null clears GitHub's ghost placeholder. */
+  authorProviderUserId?: string | null;
+  /** GitHub's actor kind. Omitted when unmeasured; null clears GitHub's ghost placeholder. */
+  authorActorType?: GitHubActorType | null;
   isDraft: boolean;
   headSha: string;
   baseSha: string;
@@ -65,6 +79,57 @@ export const GITHUB_PULL_REQUEST_REST_HEADERS = {
   "X-GitHub-Api-Version": GITHUB_PULL_REQUEST_REST_API_VERSION,
 } as const;
 
+/** Fetch one Pull Request, preserving the legacy nullable failure surface. */
+export async function getSinglePullRequest(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  authorityObservation?: GitHubPullRequestRestAuthorityObservation
+): Promise<GitHubSinglePullRequestResult | null> {
+  const result = await getSinglePullRequestWithProviderResult(
+    octokit,
+    owner,
+    repo,
+    pullNumber,
+    authorityObservation
+  );
+  if (result.status === GitHubProviderResultStatus.Success) {
+    return result.value;
+  }
+  log.warn("[github/pull-request] Failed to fetch single pull request", {
+    owner,
+    repo,
+    pullNumber,
+    status: result.status,
+  });
+  return null;
+}
+
+/** Fetch one Pull Request through the existing user-token-compatible contract. */
+export async function getSinglePullRequestWithProviderResult(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  authorityObservation?: GitHubPullRequestRestAuthorityObservation
+): Promise<GitHubUserTokenProviderResult<GitHubSinglePullRequestResult>> {
+  try {
+    const { data: pr } = await octokit.rest.pulls.get({
+      owner,
+      repo,
+      pull_number: pullNumber,
+      headers: GITHUB_PULL_REQUEST_REST_HEADERS,
+    });
+    return {
+      status: GitHubProviderResultStatus.Success,
+      value: mapSinglePullRequestResponse(pr, authorityObservation),
+    };
+  } catch (error) {
+    return toGitHubUserTokenProviderFailure(error);
+  }
+}
+
 /** Map GitHub's Pull Request REST response without deriving repository facts. */
 export function mapSinglePullRequestResponse(
   pr: PullsGetResponseData,
@@ -91,9 +156,10 @@ export function mapSinglePullRequestResponse(
     baseBranch: pr.base.ref,
     state,
     createdAt: pr.created_at ?? null,
+    updatedAt: pr.updated_at,
     mergedAt: pr.merged_at ?? null,
     closedAt: pr.closed_at ?? null,
-    authorLogin: pr.user?.login ?? null,
+    ...mapPullRequestAuthor(pr.user),
     isDraft: pr.draft ?? false,
     headSha: pr.head.sha,
     baseSha: pr.base.sha,

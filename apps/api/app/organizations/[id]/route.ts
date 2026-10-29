@@ -1,4 +1,5 @@
 import type { Organization } from "@repo/api/src/types/organization";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   errorResponse,
@@ -11,7 +12,7 @@ import { organizationsService } from "../service";
 import { updateOrganizationForRoute } from "../update-organization-for-route";
 import { updateOrganizationValidator } from "../validators";
 
-export const GET = withAuth<Organization, "/organizations/[id]">(
+export const GET = withAnyAuth<Organization, "/organizations/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
@@ -21,7 +22,7 @@ export const GET = withAuth<Organization, "/organizations/[id]">(
         return forbiddenResponse();
       }
 
-      const organization = await organizationsService.findById(id);
+      const organization = await organizationsService.findDetailById(id);
 
       if (!organization) {
         return notFoundResponse("Organization");
@@ -35,7 +36,7 @@ export const GET = withAuth<Organization, "/organizations/[id]">(
 );
 
 export const PUT = withAuth<Organization, "/organizations/[id]">(
-  async ({ clerkUserId, user }, request, params) => {
+  async ({ clerkOrgId, clerkUserId, user }, request, params) => {
     try {
       const { id } = await params;
 
@@ -54,6 +55,7 @@ export const PUT = withAuth<Organization, "/organizations/[id]">(
 
       return await updateOrganizationForRoute({
         body,
+        clerkOrgId,
         clerkUserId,
         id,
       });

@@ -4,17 +4,21 @@
   "private": true,
   "scripts": {
     "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
-    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo"
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=*.{ts,tsx}' '--coverage.include=lib/**/*.{ts,tsx}'"
   },
   "dependencies": {
     "@repo/auth": "workspace:*",
     "@t3-oss/env-nextjs": "^0.13.11",
     "server-only": "^0.0.1",
     "svix": "^1.96.1",
-    "zod": "^4.3.6"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
-    "typescript": "^7.0.2"
+    "@repo/vitest-config": "workspace:*",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
   }
 }

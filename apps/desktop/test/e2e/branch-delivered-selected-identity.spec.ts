@@ -19,13 +19,13 @@ import {
   type DesktopAuthState,
   DesktopAuthStatus,
 } from "../../src/shared/contracts.js";
+import { launchAuthenticatedDesktopApp } from "./helpers/authenticated-desktop-app";
 import {
   AUTHENTICATED_GATEWAY_ID,
   AUTHENTICATED_ORGANIZATION_ID,
   AUTHENTICATED_USER_ID,
+  createAuthenticatedDesktopSessionRecord,
   isAuthenticatedBranchRequest,
-  launchAuthenticatedDesktopApp,
-  seedAuthenticatedDesktopSession,
   startAuthenticatedBranchCloudServer,
 } from "./helpers/branch-details-authenticated-cloud";
 import {
@@ -35,6 +35,8 @@ import {
 } from "./helpers/desktop-app";
 
 const CASES = Object.values(BranchDeliveredIdentityScenario);
+const OPEN_PR_STATE_LABEL = "Open";
+const MERGED_PR_STATE_LABEL = "Merged";
 
 declare global {
   // biome-ignore lint/style/useConsistentTypeDefinitions: Global DOM Window must be interface-merged; a type alias cannot augment it.
@@ -64,17 +66,8 @@ test("keeps selected PR identity and body compatibility atomic in authenticated 
   });
 
   try {
-    const sessionSeedLaunch = await launchAuthenticatedDesktopApp({
-      env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
-      userDataDir,
-    });
-    try {
-      await seedAuthenticatedDesktopSession(sessionSeedLaunch.app, userDataDir);
-    } finally {
-      await sessionSeedLaunch.cleanup();
-    }
-
     const { page, pageErrors, cleanup } = await launchAuthenticatedDesktopApp({
+      sameProcessSessionSeed: createAuthenticatedDesktopSessionRecord(),
       cloudReadReadiness: drainedCloudReadReadiness(),
       beforeLaunch: (launchUserDataDir) => {
         seedDesktopSettings(launchUserDataDir, {
@@ -148,14 +141,18 @@ async function expectScenario(
   await expect(
     panel.getByText(`#${SELECTED_PR_NUMBER}`, { exact: true })
   ).toBeVisible();
-  await expect(panel.getByText("Open", { exact: true })).toBeVisible();
+  await expect(
+    panel.getByText(OPEN_PR_STATE_LABEL, { exact: true })
+  ).toBeVisible();
   await expect(
     panel.getByText(`#${COMPATIBILITY_PR_NUMBER}`, { exact: true })
   ).toHaveCount(0);
   await expect(
     panel.getByText(COMPATIBILITY_PR_TITLE, { exact: true })
   ).toHaveCount(0);
-  await expect(panel.getByText("Merged", { exact: true })).toHaveCount(0);
+  await expect(
+    panel.getByText(MERGED_PR_STATE_LABEL, { exact: true })
+  ).toHaveCount(0);
   await expect(panel.locator(`a[href="${COMPATIBILITY_PR_URL}"]`)).toHaveCount(
     0
   );
@@ -196,7 +193,9 @@ async function expectCompatibilityProjection(panel: Locator): Promise<void> {
     panel.getByText(`#${COMPATIBILITY_PR_NUMBER}`, { exact: true })
   ).toBeVisible();
   await expect(panel.getByText(COMPATIBILITY_PR_TITLE)).toBeVisible();
-  await expect(panel.getByText("Merged", { exact: true })).toBeVisible();
+  await expect(
+    panel.getByText(MERGED_PR_STATE_LABEL, { exact: true })
+  ).toBeVisible();
   await expect(panel.getByText(COMPATIBILITY_PR_BODY)).toBeVisible();
   await expect(panel.getByRole("link")).toHaveAttribute(
     "href",
@@ -206,7 +205,9 @@ async function expectCompatibilityProjection(panel: Locator): Promise<void> {
     panel.getByText(`#${SELECTED_PR_NUMBER}`, { exact: true })
   ).toHaveCount(0);
   await expect(panel.getByText(SELECTED_PR_TITLE)).toHaveCount(0);
-  await expect(panel.getByText("Open", { exact: true })).toHaveCount(0);
+  await expect(
+    panel.getByText(OPEN_PR_STATE_LABEL, { exact: true })
+  ).toHaveCount(0);
   await expect(panel.getByText(SELECTED_PR_BODY)).toHaveCount(0);
   await expect(panel.locator(`a[href="${SELECTED_PR_URL}"]`)).toHaveCount(0);
 }

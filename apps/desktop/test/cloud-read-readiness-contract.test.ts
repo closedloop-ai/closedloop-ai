@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import {
+  CloudReadDeadLetteredBasis,
   type CloudReadLaneReadiness,
   CloudSyncBacklogState,
   cloudReadLaneOwesWork,
-  cloudReadReadinessFingerprint,
   hasCloudReadDeadLetters,
   isCloudReadBacklogDrained,
-  projectCloudReadReadiness,
   resolveCloudSyncBacklog,
   totalCloudReadDeadLettered,
   totalCloudReadItemsRemaining,
@@ -16,20 +15,24 @@ import {
 import {
   SYNC_LANE_IDS,
   type SyncLaneBurndown,
+  SyncLaneDeadLetteredBasis,
   SyncLaneDrainState,
   SyncLaneId,
 } from "../src/shared/sync-burndown-contract.js";
 import {
   burndownLane,
   burndownSnapshot,
+  projectConsentedReadiness,
 } from "./helpers/sync-burndown-fixtures.js";
 
 const lane = burndownLane;
 const snapshot = burndownSnapshot;
 
+const projectConsented = projectConsentedReadiness;
+
 describe("projectCloudReadReadiness", () => {
   it("projects a burn-down sample down to what a read-source decision needs", () => {
-    const projected = projectCloudReadReadiness({
+    const projected = projectConsented({
       importComplete: true,
       snapshot: snapshot([
         lane({
@@ -50,12 +53,20 @@ describe("projectCloudReadReadiness", () => {
         itemsRemaining: 200,
         itemsRemainingIsLowerBound: true,
         deadLetteredCount: 0,
+        // ISS-9744: the count and what it counted travel together — a lane's
+        // own basis, never re-derived from its id.
+        deadLetteredBasis: SyncLaneDeadLetteredBasis.QueueStatusCount,
+        // ISS-9823: projected from the row so the renderer can re-run the
+        // classifier over this payload and reproduce `state`.
+        resumeBlocked: false,
         // ISS-5768: carried through so the whole-app aggregate can see the
         // second way a lane fails to prove it owes nothing.
         unmeasuredRows: 0,
         // ISS-6206: no configuration resolver was supplied, so no lane is out
         // of play — the under-claiming default.
         notApplicableReason: null,
+        // ISS-7096: the sample lane measured no parked partition — unknown.
+        parkedCount: null,
       },
       {
         lane: SyncLaneId.TranscriptArchive,
@@ -63,14 +74,17 @@ describe("projectCloudReadReadiness", () => {
         itemsRemaining: 0,
         itemsRemainingIsLowerBound: false,
         deadLetteredCount: 3,
+        deadLetteredBasis: SyncLaneDeadLetteredBasis.QueueStatusCount,
+        resumeBlocked: false,
         unmeasuredRows: 0,
         notApplicableReason: null,
+        parkedCount: null,
       },
     ]);
   });
 
   it("projects an absent sample as UNKNOWN rather than as an empty, drained one", () => {
-    const projected = projectCloudReadReadiness({
+    const projected = projectConsented({
       importComplete: true,
       snapshot: null,
     });
@@ -86,9 +100,9 @@ describe("projectCloudReadReadiness", () => {
 
 describe("isCloudReadBacklogDrained", () => {
   it("answers true only when every lane is `drained`", () => {
-    const drained = projectCloudReadReadiness({
+    const drained = projectConsented({
       importComplete: true,
-      snapshot: snapshot([lane(), lane({ lane: SyncLaneId.TraceComments })]),
+      snapshot: snapshot([lane(), lane({ lane: SyncLaneId.InvocationParts })]),
     });
     assert.equal(isCloudReadBacklogDrained(drained), true);
 
@@ -99,7 +113,7 @@ describe("isCloudReadBacklogDrained", () => {
       SyncLaneDrainState.DrainedWithDeadLetters,
       SyncLaneDrainState.RemainingUnknown,
     ]) {
-      const blocked = projectCloudReadReadiness({
+      const blocked = projectConsented({
         importComplete: true,
         snapshot: snapshot([lane(), lane({ state })]),
       });
@@ -114,7 +128,7 @@ describe("isCloudReadBacklogDrained", () => {
   it("answers false for a sample that measured no lanes", () => {
     assert.equal(
       isCloudReadBacklogDrained(
-        projectCloudReadReadiness({
+        projectConsented({
           importComplete: true,
           snapshot: snapshot([]),
         })
@@ -126,7 +140,7 @@ describe("isCloudReadBacklogDrained", () => {
 
 describe("readiness totals", () => {
   it("sums what is owed, and reports UNKNOWN when a lane cannot measure its own", () => {
-    const measured = projectCloudReadReadiness({
+    const measured = projectConsented({
       importComplete: true,
       snapshot: snapshot([
         lane({ itemsRemaining: 12 }),
@@ -135,7 +149,7 @@ describe("readiness totals", () => {
     });
     assert.equal(totalCloudReadItemsRemaining(measured), 42);
 
-    const unmeasured = projectCloudReadReadiness({
+    const unmeasured = projectConsented({
       importComplete: true,
       snapshot: snapshot([
         lane({ itemsRemaining: 12 }),
@@ -151,7 +165,7 @@ describe("readiness totals", () => {
   });
 
   it("reports UNKNOWN for a snapshot that measured no lanes, not zero", () => {
-    const notSampled = projectCloudReadReadiness({
+    const notSampled = projectConsented({
       importComplete: true,
       snapshot: snapshot([]),
     });
@@ -163,7 +177,7 @@ describe("readiness totals", () => {
   });
 
   it("counts and detects abandoned work across lanes", () => {
-    const projected = projectCloudReadReadiness({
+    const projected = projectConsented({
       importComplete: true,
       snapshot: snapshot([
         lane({ deadLetteredCount: 2 }),
@@ -171,113 +185,22 @@ describe("readiness totals", () => {
       ]),
     });
 
-    assert.equal(totalCloudReadDeadLettered(projected), 7);
+    // ISS-9744: the total arrives with its own basis. Both lanes counted a
+    // population here, so `measured` — the exact case the mixed and unread
+    // snapshots in `sync-burndown-dead-lettered-basis.test.ts` must not answer.
+    assert.deepEqual(totalCloudReadDeadLettered(projected), {
+      count: 7,
+      basis: CloudReadDeadLetteredBasis.Measured,
+    });
     assert.equal(hasCloudReadDeadLetters(projected), true);
     assert.equal(
       hasCloudReadDeadLetters(
-        projectCloudReadReadiness({
+        projectConsented({
           importComplete: true,
           snapshot: snapshot([lane()]),
         })
       ),
       false
-    );
-  });
-});
-
-describe("cloudReadReadinessFingerprint", () => {
-  it("ignores the sample timestamp so a re-stamped identical sample is not progress", () => {
-    const lanes = [
-      lane({ state: SyncLaneDrainState.Draining, itemsRemaining: 8 }),
-    ];
-    const first = projectCloudReadReadiness({
-      importComplete: true,
-      snapshot: { sampledAtIso: "2026-08-07T12:00:00.000Z", lanes },
-    });
-    const later = projectCloudReadReadiness({
-      importComplete: true,
-      snapshot: { sampledAtIso: "2026-08-07T12:30:00.000Z", lanes },
-    });
-
-    // ISS-5347: activity is not progress. A moving clock beside a motionless
-    // queue must not reset the stall bound.
-    assert.equal(
-      cloudReadReadinessFingerprint(first),
-      cloudReadReadinessFingerprint(later)
-    );
-  });
-
-  it("changes on every dimension the cutover decision reads", () => {
-    const base = projectCloudReadReadiness({
-      importComplete: false,
-      snapshot: snapshot([
-        lane({ state: SyncLaneDrainState.Draining, itemsRemaining: 8 }),
-      ]),
-    });
-    const baseline = cloudReadReadinessFingerprint(base);
-
-    const importDone = projectCloudReadReadiness({
-      importComplete: true,
-      snapshot: snapshot([
-        lane({ state: SyncLaneDrainState.Draining, itemsRemaining: 8 }),
-      ]),
-    });
-    const queueShrank = projectCloudReadReadiness({
-      importComplete: false,
-      snapshot: snapshot([
-        lane({ state: SyncLaneDrainState.Draining, itemsRemaining: 7 }),
-      ]),
-    });
-    const stateMoved = projectCloudReadReadiness({
-      importComplete: false,
-      snapshot: snapshot([lane({ itemsRemaining: 8 })]),
-    });
-    const gaveUp = projectCloudReadReadiness({
-      importComplete: false,
-      snapshot: snapshot([
-        lane({
-          state: SyncLaneDrainState.Draining,
-          itemsRemaining: 8,
-          deadLetteredCount: 1,
-        }),
-      ]),
-    });
-
-    for (const [label, projected] of [
-      ["import completing", importDone],
-      ["the queue shrinking", queueShrank],
-      ["a lane state moving", stateMoved],
-      ["an item being abandoned", gaveUp],
-    ] as const) {
-      assert.notEqual(
-        cloudReadReadinessFingerprint(projected),
-        baseline,
-        `${label} must count as movement`
-      );
-    }
-  });
-
-  it("distinguishes an exact remainder from a lower-bound one", () => {
-    const exact = projectCloudReadReadiness({
-      importComplete: true,
-      snapshot: snapshot([
-        lane({ state: SyncLaneDrainState.Draining, itemsRemaining: 200 }),
-      ]),
-    });
-    const floor = projectCloudReadReadiness({
-      importComplete: true,
-      snapshot: snapshot([
-        lane({
-          state: SyncLaneDrainState.Draining,
-          itemsRemaining: 200,
-          itemsRemainingIsLowerBound: true,
-        }),
-      ]),
-    });
-
-    assert.notEqual(
-      cloudReadReadinessFingerprint(exact),
-      cloudReadReadinessFingerprint(floor)
     );
   });
 });
@@ -296,7 +219,7 @@ describe("resolveCloudSyncBacklog", () => {
     // while the component inventory still owed 2,985 rows and one item was
     // dead-lettered in the invocation-parts lane. This is that snapshot.
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot([
           lane({ lane: SyncLaneId.SessionMetadata }),
@@ -311,7 +234,6 @@ describe("resolveCloudSyncBacklog", () => {
             state: SyncLaneDrainState.Draining,
             itemsRemaining: 2985,
           }),
-          lane({ lane: SyncLaneId.TraceComments }),
         ]),
       })
     );
@@ -322,7 +244,7 @@ describe("resolveCloudSyncBacklog", () => {
 
   it("is drained only when every lane owes nothing", () => {
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot([
           lane({ lane: SyncLaneId.SessionMetadata }),
@@ -345,7 +267,7 @@ describe("resolveCloudSyncBacklog", () => {
       itemsRemaining: 7,
     });
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot([
           lane({ lane: SyncLaneId.SessionMetadata }),
@@ -359,7 +281,7 @@ describe("resolveCloudSyncBacklog", () => {
 
   it("treats an unmeasurable remainder as unknown, never as drained", () => {
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot([
           lane({ lane: SyncLaneId.SessionMetadata }),
@@ -377,7 +299,7 @@ describe("resolveCloudSyncBacklog", () => {
 
   it("reports abandoned when nothing is left to attempt but a lane gave up", () => {
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot([
           lane({
@@ -400,7 +322,7 @@ describe("resolveCloudSyncBacklog", () => {
     for (const unmeasured of [
       null,
       unknownCloudReadReadiness(),
-      projectCloudReadReadiness({ importComplete: true, snapshot: null }),
+      projectConsented({ importComplete: true, snapshot: null }),
     ]) {
       const backlog = resolveCloudSyncBacklog(unmeasured);
       assert.equal(backlog.state, CloudSyncBacklogState.Unknown);
@@ -413,7 +335,7 @@ describe("resolveCloudSyncBacklog", () => {
     // is not running and owes nothing, and reporting it outstanding forever
     // would be its own false claim.
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot([
           lane({ lane: SyncLaneId.SessionMetadata }),
@@ -430,7 +352,7 @@ describe("resolveCloudSyncBacklog", () => {
 
   it("marks the total a lower bound when any lane's remainder is a floor", () => {
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot([
           lane({
@@ -473,7 +395,7 @@ describe("resolveCloudSyncBacklog — unclassifiable rows (ISS-5768)", () => {
 
   it("is UNKNOWN, not drained, when a lane holds rows it could not classify", () => {
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot([
           lane({ lane: SyncLaneId.SessionMetadata }),
@@ -494,7 +416,7 @@ describe("resolveCloudSyncBacklog — unclassifiable rows (ISS-5768)", () => {
     // The counterfactual: identical lane with `unmeasuredRows: 0`. Without it the
     // two assertions above could pass on an aggregate that is never drained.
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot([
           lane({ lane: SyncLaneId.SessionMetadata }),
@@ -509,22 +431,6 @@ describe("resolveCloudSyncBacklog — unclassifiable rows (ISS-5768)", () => {
     );
     assert.equal(backlog.state, CloudSyncBacklogState.Drained);
   });
-
-  it("carries unmeasured rows into the stall fingerprint, so classifying them reads as movement", () => {
-    const before = cloudReadReadinessFingerprint(
-      projectCloudReadReadiness({
-        importComplete: true,
-        snapshot: snapshot([UNCLASSIFIED_LANE]),
-      })
-    );
-    const after = cloudReadReadinessFingerprint(
-      projectCloudReadReadiness({
-        importComplete: true,
-        snapshot: snapshot([lane({ ...UNCLASSIFIED_LANE, unmeasuredRows: 0 })]),
-      })
-    );
-    assert.notEqual(before, after);
-  });
 });
 
 /**
@@ -533,10 +439,9 @@ describe("resolveCloudSyncBacklog — unclassifiable rows (ISS-5768)", () => {
  *
  * While the collector is still parsing, history exists on this machine that has
  * not entered any sync queue yet, so every lane can report a clean remainder on
- * a machine that owes the cloud thousands of items. The read-source gate already
- * refuses to cut over on `!importComplete` (`CloudReadCutoverBlocker.
- * ImportPending`); the aggregate that fronts every "Up to date" indicator has to
- * refuse for the same reason, or Settings says "Up to date" while discovery runs.
+ * a machine that owes the cloud thousands of items. The aggregate that fronts
+ * every "Up to date" indicator has to refuse to claim completeness on that, or
+ * Settings says "Up to date" while discovery runs.
  */
 describe("resolveCloudSyncBacklog — import still discovering (ISS-5768)", () => {
   const CLEAN_LANES = [
@@ -546,7 +451,7 @@ describe("resolveCloudSyncBacklog — import still discovering (ISS-5768)", () =
 
   it("is UNKNOWN, not drained, while the import is still running", () => {
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: false,
         snapshot: snapshot(CLEAN_LANES),
       })
@@ -558,7 +463,7 @@ describe("resolveCloudSyncBacklog — import still discovering (ISS-5768)", () =
     // The counterfactual: identical lanes, `importComplete: true`. Without it the
     // assertion above would pass on an aggregate that is simply never drained.
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot(CLEAN_LANES),
       })
@@ -568,7 +473,7 @@ describe("resolveCloudSyncBacklog — import still discovering (ISS-5768)", () =
 
   it("refuses ABANDONED while the import runs — that claim says nothing is left to attempt", () => {
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: false,
         snapshot: snapshot([
           lane({ lane: SyncLaneId.SessionMetadata }),
@@ -587,7 +492,7 @@ describe("resolveCloudSyncBacklog — import still discovering (ISS-5768)", () =
 
   it("reports a measured remainder as a FLOOR, since discovery can only add to it", () => {
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: false,
         snapshot: snapshot([
           lane({
@@ -606,7 +511,7 @@ describe("resolveCloudSyncBacklog — import still discovering (ISS-5768)", () =
 
 /** The projected shape `cloudReadLaneOwesWork` actually receives. */
 function projectedLane(source: SyncLaneBurndown): CloudReadLaneReadiness {
-  const projected = projectCloudReadReadiness({
+  const projected = projectConsented({
     importComplete: true,
     snapshot: snapshot([source]),
   }).lanes[0];
@@ -624,7 +529,7 @@ describe("resolveCloudSyncBacklog — stopped lanes (ISS-6206)", () => {
     // Rounding it up to `drained` is what let the UI say "Up to date" about a
     // lane that never ran.
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot([
           lane(),
@@ -645,12 +550,12 @@ describe("resolveCloudSyncBacklog — stopped lanes (ISS-6206)", () => {
     // still not reported as `outstanding` — nothing is measurably owed — which
     // is exactly why `unknown` is the state that fits.
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot([
           lane(),
           lane({
-            lane: SyncLaneId.TraceComments,
+            lane: SyncLaneId.InvocationParts,
             state: SyncLaneDrainState.IdleNotRunning,
           }),
         ]),
@@ -671,7 +576,7 @@ describe("resolveCloudSyncBacklog — stopped lanes (ISS-6206)", () => {
     // could pass by making every snapshot unverified, which would mean the app
     // could never say it was caught up at all.
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot([
           lane(),
@@ -694,7 +599,7 @@ describe("resolveCloudSyncBacklog — stopped lanes (ISS-6206)", () => {
     // machine is `unknown`, "never `drained` or `abandoned` — both of those are
     // terminal claims".
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot([
           lane({
@@ -728,7 +633,7 @@ describe("resolveCloudSyncBacklog — stopped lanes (ISS-6206)", () => {
     // strict pending branch it rendered "1 item couldn't sync. Still checking
     // whether the rest of your history is synced." permanently, and the same
     // snapshot without the strict flag already answered `abandoned`.
-    const deadLetteredOnly = projectCloudReadReadiness({
+    const deadLetteredOnly = projectConsented({
       importComplete: true,
       snapshot: snapshot([
         lane({
@@ -756,7 +661,7 @@ describe("resolveCloudSyncBacklog — stopped lanes (ISS-6206)", () => {
     // The boundary the case above must not cross, asserted from the other side:
     // swap one drained lane for a stopped one and the verdict goes back to
     // `unknown`, because that lane's gate reopens on its own.
-    const stoppedSibling = projectCloudReadReadiness({
+    const stoppedSibling = projectConsented({
       importComplete: true,
       snapshot: snapshot([
         lane({
@@ -787,11 +692,11 @@ describe("resolveCloudSyncBacklog — stopped lanes (ISS-6206)", () => {
     );
     assert.equal(
       resolveCloudSyncBacklog(
-        projectCloudReadReadiness({
+        projectConsented({
           importComplete: false,
           snapshot: snapshot([
             lane(),
-            lane({ lane: SyncLaneId.TraceComments }),
+            lane({ lane: SyncLaneId.InvocationParts }),
           ]),
         }),
         STRICT
@@ -804,7 +709,7 @@ describe("resolveCloudSyncBacklog — stopped lanes (ISS-6206)", () => {
     // The desktop Labs gate is closed by default, so an un-opted-in build must
     // resolve exactly as it did before. This is the flag-off half of the fix,
     // and it fails if the guard is applied unconditionally.
-    const stopped = projectCloudReadReadiness({
+    const stopped = projectConsented({
       importComplete: true,
       snapshot: snapshot([
         lane(),
@@ -826,7 +731,7 @@ describe("resolveCloudSyncBacklog — stopped lanes (ISS-6206)", () => {
     // 2,900 outbox ROWS and 12 transcript FILES do not add up to "2,912 items".
     // The breakdown keeps each count with the lane whose unit it is.
     const backlog = resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot([
           lane({ state: SyncLaneDrainState.Draining, itemsRemaining: 2900 }),
@@ -836,7 +741,6 @@ describe("resolveCloudSyncBacklog — stopped lanes (ISS-6206)", () => {
             itemsRemaining: 12,
             itemsRemainingIsLowerBound: true,
           }),
-          lane({ lane: SyncLaneId.TraceComments }),
         ]),
       }),
       STRICT
@@ -867,9 +771,9 @@ describe("cloudSyncLaneRemainders — ordering (ISS-6206 review)", () => {
   // merely unmet: the order is now the burn-down's canonical lane sequence.
   function remaindersFor(
     lanes: readonly SyncLaneBurndown[]
-  ): readonly SyncLaneId[] {
+  ): readonly string[] {
     return resolveCloudSyncBacklog(
-      projectCloudReadReadiness({
+      projectConsented({
         importComplete: true,
         snapshot: snapshot(lanes),
       }),
@@ -935,12 +839,12 @@ describe("cloudSyncLaneRemainders — ordering (ISS-6206 review)", () => {
     assert.deepEqual(
       remaindersFor([
         lane({
-          lane: SyncLaneId.TraceComments,
+          lane: SyncLaneId.ComponentInventory,
           state: SyncLaneDrainState.Draining,
           itemsRemaining: 3,
         }),
         lane({
-          lane: SyncLaneId.ComponentInventory,
+          lane: SyncLaneId.TranscriptArchive,
           state: SyncLaneDrainState.Draining,
           itemsRemaining: 2,
         }),
@@ -948,8 +852,8 @@ describe("cloudSyncLaneRemainders — ordering (ISS-6206 review)", () => {
       ]),
       [
         SyncLaneId.SessionMetadata,
+        SyncLaneId.TranscriptArchive,
         SyncLaneId.ComponentInventory,
-        SyncLaneId.TraceComments,
       ]
     );
   });

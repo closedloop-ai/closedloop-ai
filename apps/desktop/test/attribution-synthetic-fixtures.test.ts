@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
+import { test } from "vitest";
 import { parseChatSessionFile } from "../src/main/collectors/copilot/copilot-parser.js";
 import { parseTranscriptFile as parseCursorFile } from "../src/main/collectors/cursor/cursor-parser.js";
 import { loadSessionsFromDb } from "../src/main/collectors/opencode/opencode-parser.js";

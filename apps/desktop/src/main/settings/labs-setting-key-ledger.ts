@@ -3,15 +3,25 @@
  * the reconciliation that turns the retirement sweep from a convention into a
  * gate.
  *
- * Retiring a Labs toggle takes four edits that nothing links together: remove the
+ * Retiring a Labs toggle takes five edits that nothing links together: remove the
  * `FEATURE_FLAGS` registry entry, remove the `DesktopSettings` member, remove the
- * `DEFAULT_DESKTOP_SETTINGS` entry, and add the key to
- * {@link RETIRED_LABS_SETTING_KEYS} so `removeRetiredKeys` deletes it from an
- * upgrading profile's persisted store. The first three are load-bearing for
- * compilation, so they get done. The fourth is not, so it gets missed — and
- * nothing failed when it was, because once the first three edits land the key
- * leaves no trace for a check to notice. Two lanes made that exact omission on
- * three flags in one night (ISS-5820 / ISS-6006 / ISS-6118).
+ * `DEFAULT_DESKTOP_SETTINGS` entry, remove the `REGISTRY_MEMBERSHIP_WITNESS` line
+ * in `apps/desktop/test/feature-flags-registry-membership-witness.ts`, and add the
+ * key to {@link RETIRED_LABS_SETTING_KEYS} so `removeRetiredKeys` deletes it from
+ * an upgrading profile's persisted store. The first four are load-bearing — three
+ * for compilation, the fourth for `feature-flags-registry-composition.test.ts`
+ * (and for the both-directions membership check in the ledger suite named below,
+ * which strands a witness entry the registry no longer carries) — so they get
+ * done. The fifth
+ * is not, so it gets missed, and nothing failed when it was, because once the
+ * other edits land the key leaves no trace for a check to notice. Two lanes made
+ * that exact omission on three flags in one night
+ * (ISS-5820 / ISS-6006 / ISS-6118).
+ *
+ * ADDING one costs SIX edits, and the enumeration with the guard that reddens
+ * for each lives in `apps/desktop/test/labs-setting-key-ledger.test.ts`
+ * (ISS-8071). "Five" was the working number here until PR #5989 was failed by
+ * the sixth.
  *
  * The cost is silent, unbounded, persisted-data drift. electron-store's `.store`
  * getter returns the raw persisted JSON including any key never explicitly
@@ -49,15 +59,57 @@
  * it is reconciled against; `removeRetiredKeys` imports it from here.
  */
 export const RETIRED_LABS_SETTING_KEYS = [
+  // ISS-10732 (operator ruling 2026-09-21, shipped with ISS-10733) — the
+  // agent-type breakdown's incomplete-population note, removed outright: the
+  // only surface that read this key was the unmounted Agents analytics
+  // cluster, so the gate was deleted with the component it gated rather than
+  // graduated. Retired DISABLED, so the stale persisted `false` agrees with
+  // the shipped behavior — but it is still a no-longer-typed key that
+  // `getAll()` would spread forever, so it is swept like any other.
+  "agent-type-roster-incomplete",
   "agents-count-column-alignment",
   "agents-loc-per-dollar-display",
   "cloud-read-cutover-gate",
   "component-versions-truncated",
+  // ISS-7819 — the import splash's Compute count, graduated to ALWAYS-ON. The
+  // rail stopped claiming a determinate position during the multi-hour rebuild,
+  // which left this count as the phase's only quantitative signal, so it can no
+  // longer sit behind a toggle. Retired ENABLED, the case this file's header
+  // calls out: an install that ever touched the toggle still persists `false`,
+  // and that would read as an opt-OUT of a feature with no off state.
+  "compute-progress-count",
+  // ISS-7870 — Branches server paging graduated to Desktop default-on after the
+  // production 30d metrics-card path regressed through the old complete-list
+  // waterfall. A stale persisted `false` would keep an upgraded install on the
+  // slow path even though the Labs toggle no longer exists.
+  "branches-server-pagination",
+  // ISS-9972 — the Branches cost-coverage agreement toggle, removed outright
+  // rather than graduated: a feature flag may no longer decide which cost basis
+  // a dollar figure reads, so the flag and the alternate derivation it selected
+  // were both deleted. Retired DISABLED, so the stale persisted `false` agrees
+  // with the shipped behavior — but it is still a no-longer-typed key that
+  // `getAll()` would spread forever, so it is swept like any other.
+  "branches-cost-coverage-agreement",
+  // ISS-9430 — GridTable v2 moved fully to the shared signed-in PostHog
+  // assignment path. A stale persisted Labs value must not shadow the shared
+  // rollback key.
+  "grid-table-v2",
   "detail-route-loading-state",
+  // PLN-1742 M5 — Clerk became the unconditional GitHub credential source, so
+  // the connect-opener URL toggle lost its off state.
+  "github-clerk-credentials",
   "session-linked-artifacts-reachable",
   "session-loc-pr-attribution",
   "session-timeline-axis-reconciliation",
   "session-trace-slash-command-chip",
+  // ISS-9972 — the Sessions LOC/$ coverage flag, RETIRED rather than graduated:
+  // a feature flag may no longer decide what a shipped ratio states, so the key
+  // is deleted and the card's render is pinned to the closed-by-default state
+  // every reader already saw. WHICH coverage behavior the card should ship is
+  // ISS-10354, settled separately. Retired DISABLED, so the stale persisted
+  // `false` agrees with the shipped behavior — but it is still a no-longer-typed
+  // key that `getAll()` would spread forever, so it is swept like any other.
+  "sessions-loc-per-dollar-coverage",
   "sessions-subagent-transcript-disclosure",
   // PRD-536 G1 — the per-session transcript-freshness marker.
   "sessions-transcript-sync-status",
@@ -67,6 +119,14 @@ export const RETIRED_LABS_SETTING_KEYS = [
   // ISS-4996 / ISS-4997 / ISS-4998 — Status, Repository, and the Activity
   // breakdown telling the truth about what they do not know.
   "sessions-honest-unknown-states",
+  // ISS-7019 — the Sessions displayed-status SSOT, graduated to ALWAYS-ON when
+  // `AgentSessionState` was deleted: the Local lane lost its second status axis,
+  // so the projection had to become unconditional or desktop would have shown a
+  // raw status where web shows the displayed one. Retired ENABLED, which is the
+  // case this file's header calls out — a profile that ever touched the toggle
+  // still persists `false`, and that would read as an opt-OUT of a feature with
+  // no off state.
+  "sessions-displayed-status-parity",
   // ISS-4952 — resolving an Owner chip's display name from the org roster.
   "sessions-owner-name-resolution",
   // ISS-4953 — one set of row-state chips beside the session name.
@@ -102,11 +162,94 @@ export const RETIRED_LABS_SETTING_KEYS = [
   // `sessions-cache-write-ttl`, needs no entry — it was never registered on
   // desktop, which is the ISS-5593 P3 parity defect the same retirement fixes.)
   "session-timeline-jump-feedback",
+  // ISS-7867 — the ISS-5564 Activity-breakdown confidence-basis footer, whose
+  // only consumer was the breakdown panel deleted with the phases surface
+  // below. Retired in the same change that orphaned it.
+  "session-phase-confidence-disclosure",
+  // ISS-7867 — the ISS-5841 Session-detail activity phases (the strip, the
+  // breakdown, and the Timeline's "Activity phase" Group-by cut), removed
+  // outright rather than graduated: product moved phase cost analysis to the
+  // Branch screen, so the toggle has no on state left to represent. Only an
+  // install that TOUCHED the toggle carries the raw key, and that stale value
+  // would otherwise bleed through `getAll()` for a flag that no longer exists.
+  "session-activity-phases",
   // ISS-6118 — the ISS-5258 collapsible import splash, retired GRADUATED: the
   // disclosure is unconditional now, so there is no off state for a stale
   // persisted `false` to mean. An install that opted IN carries a `true`, which
   // would be just as wrong once the key stops being a toggle.
   "collapsible-import-splash",
+  // ISS-4715 — the startup-readiness experience, retired GRADUATED: the ordered
+  // readiness panel is the only startup surface now (the first-launch import
+  // banner it gated is no longer mounted), so the toggle has no off state left
+  // to represent. An install that opted IN carries a stale `true`, which would
+  // be just as wrong once the key stops being a toggle.
+  "startupReadinessExperience",
+  // ISS-7995 — the ISS-5112 guest-mode first run, retired ENABLED: guest mode is
+  // the only first-run path now (the blocking onboarding overlay it gated is
+  // deleted), so the toggle has no off state left to represent. Only an install
+  // that TOUCHED the toggle carries the raw key, and that stale `false` would
+  // read as an opt-OUT of a feature that can no longer be opted out of.
+  "guest-onboarding",
+  // FEA-4174's Value Numerator 2.0 registry entry never acquired a runtime
+  // consumer; retire its default-off persisted residue instead of keeping a
+  // hidden switch that changes nothing.
+  "valueNumeratorV2",
+  // Retired GRADUATED: PostHog carried these three at unconditional 100%, which
+  // is a retired-ON state rather than a default-ON Desktop opt-out. The
+  // behavior is unconditional now, so any persisted local value is stale
+  // residue — an install that opted OUT carries a `false` that would otherwise
+  // read as an opt-out of a feature that can no longer be opted out of.
+  "sessions-change-pr-filters",
+  "sessions-grid-fold-legibility",
+  "session-timeline-column-hit-target",
+  // ISS-8791 — the Sessions Cost card's BREAKDOWN presentation, graduated to
+  // ALWAYS-ON (operator permission, 2026-09-01). Retired DISABLED, so only an
+  // install that opted in still persists the key — but that persisted `true`
+  // would keep bleeding a no-longer-typed member through `getAll()` forever.
+  "sessions-cost-breakdown",
+  // ISS-8791 — the ISS-4773 honest presentation, retired outright rather than
+  // graduated (operator decision, 2026-09-01). Making breakdown unconditional
+  // left this mode unreachable: both producers build `totalEstimatedCost` as
+  // `subscription + metered + unknown` and `apiEstimatedCost` as
+  // `metered + unknown`, so every payload either can emit reconciles and
+  // breakdown claims it first. Same persisted-residue reason as the row above.
+  "sessions-cost-billing-honesty",
+  // ISS-9660 — the ISS-8024 flag-source cutover gate, retired ENABLED. It chose
+  // between the local Labs registry (off) and the signed-in user's PostHog
+  // assignment (on); ISS-8753 (#6411) made PostHog the ONLY source and deleted
+  // the Labs-backed adapter, so the ON path won and there is no off state left
+  // for a persisted value to select. It is the one key here that was never a
+  // feature gate but a SOURCE gate, which is why it outlived every flag it
+  // governed. Retired-ENABLED is the case this file's header calls out: an
+  // install that ever touched the toggle still persists a raw boolean, and a
+  // stale `false` would read as an opt-OUT of a resolution path that no longer
+  // has an alternative.
+  "desktopPosthogFlags",
+  // ISS-9964 / ISS-9980 (RULED 2026-09-11) — the ISS-6114 merged-only "Lines
+  // changed" rung, retired ENABLED: merged authored PRs are now the single
+  // unflagged population the row prints and the LOC/$ beside it divides, so the
+  // toggle has no off state left to represent. Retired-ENABLED is the case this
+  // file's header calls out — an install that ever touched the toggle still
+  // persists `false`, which would read as an opt-OUT of a behavior that can no
+  // longer be opted out of.
+  "sessions-merged-loc-rung",
+  // ISS-12435 (PRD-795): the loop completion OS notification, removed with
+  // Loops. Retired DISABLED; swept so the no-longer-typed persisted value does
+  // not spread through `getAll()`.
+  "loopCompletedNotificationsEnabled",
+  // PRD-797 (Q-004): Routines and the Audit Bot, removed outright with crewd.
+  // Retired DISABLED; swept so the no-longer-typed persisted values do not
+  // spread through `getAll()`.
+  "routines",
+  "auditBot",
+  // ISS-12784 (R3): Update & Restart, removed outright with the gateway route
+  // it gated. Retired DISABLED; swept so the no-longer-typed persisted value
+  // does not spread through `getAll()`.
+  "updateAndRestartEnabled",
+  // ISS-12784 (R3): Trusted Browser Enforcement, removed outright with browser
+  // command signing. Retired DISABLED; an install that opted in persists a
+  // `true` that no longer enforces anything, so it is swept.
+  "commandSigningEnforcementEnabled",
 ] as const;
 
 /**
@@ -131,8 +274,8 @@ export const RETIRED_LABS_SETTING_KEYS = [
  *
  * Scope: this ledger reconciles against {@link RETIRED_LABS_SETTING_KEYS}, so it
  * covers the keys that batch retirement owns. Deliberately absent are the
- * compatibility shadow `scheduledTasks` (never a registry flag, and kept on
- * purpose) and the keys retired BEFORE the batch array existed, which
+ * former `scheduledTasks` shadow (never a registry flag) and the keys retired
+ * BEFORE the batch array existed, which
  * `settings-migrations.ts` still sweeps through their own individual `if` blocks
  * — several of those were registry flags, but their sweep is not the array read
  * here, so listing them would strand them as false violations. Those blocks are
@@ -140,9 +283,13 @@ export const RETIRED_LABS_SETTING_KEYS = [
  * through the array and is gated.
  */
 export const LABS_SETTING_KEY_LEDGER: readonly string[] = [
+  "activity-coverage-diagnostics",
   "agent-collaboration-network",
+  "agent-type-roster-incomplete",
   "agentCoachingPacks",
   "agentCoachingTips",
+  "agents-bounded-page-data",
+  "agents-card-attribute-labels",
   "agents-count-column-alignment",
   "agents-default-sort-usage",
   "agents-definition-empty-state-honesty",
@@ -152,9 +299,21 @@ export const LABS_SETTING_KEY_LEDGER: readonly string[] = [
   "agents-source-provenance-honesty",
   "agents-type-tab-overflow",
   "agentsNav",
+  "artifact-cell-primitives",
+  "eligible-branch-navigation",
   "auditBot",
+  "boot-import-degraded-terminal",
+  "branch-detail-measured-checks",
+  "branch-detail-metric-honesty",
+  "branch-detail-pr-base-and-author",
   "branch-timeline-cost-fallback-marker",
+  "branches-cohort-transparency",
+  "branches-cost-coverage-agreement",
+  "branches-pinned-name-column",
+  "branches-summary-honest-loading",
+  "branches-server-pagination",
   "chart-distinguishable-series",
+  "claudeCodeOtelCapture",
   "cloud-read-cutover-gate",
   "cloudCommandsPaused",
   "cloudConnectionEnabled",
@@ -165,9 +324,12 @@ export const LABS_SETTING_KEY_LEDGER: readonly string[] = [
   "commandSigningEnforcementEnabled",
   "component-versions-truncated",
   "compute-progress-count",
+  "custom-field-editor-contracts",
   "db-ahead-banner",
+  "desktopPosthogFlags",
   "detail-route-loading-state",
   "docsHelp",
+  "github-clerk-credentials",
   "grid-table-v2",
   "grid-table-width-budget",
   "guest-onboarding",
@@ -176,29 +338,47 @@ export const LABS_SETTING_KEY_LEDGER: readonly string[] = [
   "localSessionAuthoredPrGate",
   "loopCompletedNotificationsEnabled",
   "member-self-service-install",
+  "metric-delta-neutral-pill",
   "metric-delta-unified-pill",
   "opencode-withheld-diagnostics",
   "planExtractionEnabled",
   "requestsLiveRefresh",
   "routines",
   "session-activity-phases",
+  "session-claude-reported-cost",
   "session-detail-read-source",
   "session-duration-unmeasurable-span",
+  "session-launch-attribution",
   "session-linked-artifacts-reachable",
   "session-loc-pr-attribution",
+  "session-metric-population-disclosure",
   "session-phase-confidence-disclosure",
   "session-timeline-axis-reconciliation",
   "session-timeline-column-hit-target",
+  "session-timeline-coverage-disclosure",
   "session-timeline-jump-feedback",
+  "session-timeline-source-extent",
   "session-timeline-synthesized-cost",
+  "session-tokens-recorded-honesty",
+  "session-touched-branches",
+  "session-trace-evidence-disclosure",
+  "session-trace-idle-rows",
   "session-trace-slash-command-chip",
+  "session-transcript-never-expected",
   "sessionCompletionNotifications",
   "sessions-branches-tab-titles",
+  "sessions-change-pr-filters",
+  "sessions-comment-count-tag",
   "sessions-cost-billing-honesty",
+  "sessions-cost-breakdown",
+  "sessions-custom-date-window",
+  "sessions-delivery-card-no-data",
   "sessions-detail-prototype-parity",
   "sessions-displayed-status-parity",
   "sessions-grid-fold-legibility",
   "sessions-honest-unknown-states",
+  "sessions-loc-per-dollar-coverage",
+  "sessions-merged-loc-rung",
   "sessions-owner-name-resolution",
   "sessions-row-qualifiers-column",
   "sessions-row-state-chip-parity",
@@ -213,6 +393,9 @@ export const LABS_SETTING_KEY_LEDGER: readonly string[] = [
   "summary-strip-column-cardinality",
   "summary-strip-density",
   "summary-strip-density-tier",
+  "tag-create-color",
+  "terminalInstallFailureNotifications",
+  "threadViewershipSignal",
   "transcriptSyncEnabled",
   "updateAndRestartEnabled",
   "valueNumeratorV2",

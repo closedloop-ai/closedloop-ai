@@ -6,7 +6,7 @@ import { useMemo } from "react";
 import { useArtifactActivityFeed } from "../../../hooks/use-artifact-activity-feed";
 import { FeedItemKind } from "../feed-item";
 import type { FeedSource, FeedSourceUseItemsResult } from "../feed-source";
-import { ActivityCard } from "./activity-card";
+import { ActivitySourceCard } from "./activity-card";
 import { ActivityFilterControl } from "./activity-filter-control";
 import { useActivitySourceContext } from "./activity-source-provider";
 import {
@@ -116,5 +116,5 @@ export const activitySource: FeedSource<ActivityFeedItem, ActivityFilterState> =
     isFiltered: isActivityFiltered,
     FilterControl: ActivityFilterControl,
     Footer: ActivityLoadMoreFooter,
-    renderItem: (item) => <ActivityCard item={item} />,
+    renderItem: (item) => <ActivitySourceCard item={item} />,
   };

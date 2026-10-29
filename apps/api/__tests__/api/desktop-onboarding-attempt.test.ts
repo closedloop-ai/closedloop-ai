@@ -5,7 +5,13 @@
  * and persistence failures required by PLN-319 v8.
  */
 import { DesktopProvisioningPlatform } from "@repo/api/src/types/electron";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  stubTrustedOriginEnv,
+  TRUSTED_APP_ORIGIN,
+  TRUSTED_WEB_ORIGIN,
+  UNTRUSTED_ORIGIN,
+} from "@/__tests__/utils/trusted-origin.test-helpers";
 import { POST } from "@/app/desktop/onboarding-attempt/route";
 import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attempt/service";
 import { resolveSessionUser } from "@/lib/auth/session-user";
@@ -16,14 +22,11 @@ import {
 
 vi.mock("@/app/desktop/onboarding-attempt/service");
 vi.mock("@/lib/auth/session-user");
-vi.mock("@/lib/auth/canonical-trusted-origin", () => ({
-  canonicalizeTrustedOrigin: (origin: string) =>
-    origin.startsWith("https://") ? origin : null,
-}));
 
 describe("POST /desktop/onboarding-attempt", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    stubTrustedOriginEnv();
     vi.mocked(resolveSessionUser).mockResolvedValue({
       user: createTestAuthContext().user,
       clerkUserId: "clerk_test_user",
@@ -35,14 +38,18 @@ describe("POST /desktop/onboarding-attempt", () => {
     });
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("returns the exact onboarding attempt contract on success", async () => {
     const request = createMockRequest({
       method: "POST",
       url: "https://api.closedloop.ai/desktop/onboarding-attempt",
-      headers: { origin: "https://app.closedloop.ai" },
+      headers: { origin: TRUSTED_APP_ORIGIN },
       body: {
         platform: DesktopProvisioningPlatform.Darwin,
-        webAppOrigin: "https://app.closedloop.ai",
+        webAppOrigin: TRUSTED_APP_ORIGIN,
       },
     });
 
@@ -56,7 +63,7 @@ describe("POST /desktop/onboarding-attempt", () => {
     expect(desktopOnboardingAttemptsService.create).toHaveBeenCalledWith({
       organizationId: "test-org-id",
       userId: "test-user-id",
-      webAppOrigin: "https://app.closedloop.ai",
+      webAppOrigin: TRUSTED_APP_ORIGIN,
     });
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
@@ -65,8 +72,8 @@ describe("POST /desktop/onboarding-attempt", () => {
     const request = createMockRequest({
       method: "POST",
       url: "https://api.closedloop.ai/desktop/onboarding-attempt",
-      headers: { origin: "https://app.closedloop.ai" },
-      body: { webAppOrigin: "https://app.closedloop.ai" },
+      headers: { origin: TRUSTED_APP_ORIGIN },
+      body: { webAppOrigin: TRUSTED_APP_ORIGIN },
     });
 
     const response = await POST(request);
@@ -79,7 +86,7 @@ describe("POST /desktop/onboarding-attempt", () => {
     expect(desktopOnboardingAttemptsService.create).toHaveBeenCalledWith({
       organizationId: "test-org-id",
       userId: "test-user-id",
-      webAppOrigin: "https://app.closedloop.ai",
+      webAppOrigin: TRUSTED_APP_ORIGIN,
     });
   });
 
@@ -91,7 +98,7 @@ describe("POST /desktop/onboarding-attempt", () => {
         method: "POST",
         body: {
           platform: DesktopProvisioningPlatform.Darwin,
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
         },
       })
     );
@@ -113,7 +120,7 @@ describe("POST /desktop/onboarding-attempt", () => {
         method: "POST",
         body: {
           platform: DesktopProvisioningPlatform.Darwin,
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
         },
       })
     );
@@ -129,10 +136,10 @@ describe("POST /desktop/onboarding-attempt", () => {
     const response = await POST(
       createMockRequest({
         method: "POST",
-        headers: { origin: "https://app.closedloop.ai" },
+        headers: { origin: TRUSTED_APP_ORIGIN },
         body: {
           platform: DesktopProvisioningPlatform.Darwin,
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
           extraField: true,
         },
       })
@@ -145,14 +152,15 @@ describe("POST /desktop/onboarding-attempt", () => {
     });
   });
 
-  it("returns 403 when the submitted origin is not trusted or mismatches the request origin", async () => {
+  it("returns 403 without persisting when the request origin mismatches webAppOrigin", async () => {
+    // Both origins are allowlisted, so only the mismatch branch can 403 here.
     const response = await POST(
       createMockRequest({
         method: "POST",
-        headers: { origin: "https://app.closedloop.ai" },
+        headers: { origin: TRUSTED_WEB_ORIGIN },
         body: {
           platform: DesktopProvisioningPlatform.Darwin,
-          webAppOrigin: "https://admin.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
         },
       })
     );
@@ -162,16 +170,41 @@ describe("POST /desktop/onboarding-attempt", () => {
       code: "ONBOARDING_ATTEMPT_FORBIDDEN",
       retryable: false,
     });
+    expect(desktopOnboardingAttemptsService.create).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 without persisting a self-consistent non-allowlisted origin", async () => {
+    // The Origin header and webAppOrigin are identical, so the mismatch branch
+    // cannot fire: only the allowlist can reject this. Drop the
+    // canonicalizeTrustedOrigin calls from the route and this returns 200 and
+    // persists `https://evil.example.com` as the attempt's redirect origin.
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        headers: { origin: UNTRUSTED_ORIGIN },
+        body: {
+          platform: DesktopProvisioningPlatform.Darwin,
+          webAppOrigin: UNTRUSTED_ORIGIN,
+        },
+      })
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      code: "ONBOARDING_ATTEMPT_FORBIDDEN",
+      retryable: false,
+    });
+    expect(desktopOnboardingAttemptsService.create).not.toHaveBeenCalled();
   });
 
   it("ignores optional platform on the legacy onboarding-attempt contract", async () => {
     const response = await POST(
       createMockRequest({
         method: "POST",
-        headers: { origin: "https://app.closedloop.ai" },
+        headers: { origin: TRUSTED_APP_ORIGIN },
         body: {
           platform: DesktopProvisioningPlatform.Linux,
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
         },
       })
     );
@@ -184,7 +217,7 @@ describe("POST /desktop/onboarding-attempt", () => {
     expect(desktopOnboardingAttemptsService.create).toHaveBeenCalledWith({
       organizationId: "test-org-id",
       userId: "test-user-id",
-      webAppOrigin: "https://app.closedloop.ai",
+      webAppOrigin: TRUSTED_APP_ORIGIN,
     });
   });
 
@@ -196,10 +229,10 @@ describe("POST /desktop/onboarding-attempt", () => {
     const response = await POST(
       createMockRequest({
         method: "POST",
-        headers: { origin: "https://app.closedloop.ai" },
+        headers: { origin: TRUSTED_APP_ORIGIN },
         body: {
           platform: DesktopProvisioningPlatform.Darwin,
-          webAppOrigin: "https://app.closedloop.ai",
+          webAppOrigin: TRUSTED_APP_ORIGIN,
         },
       })
     );

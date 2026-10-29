@@ -1,4 +1,3 @@
-import { LANDING_PAGE_TITLE } from "@repo/lib/landing-hero-copy";
 import { createPageMetadata, siteDescription } from "@/lib/site";
 import { ArtifactsSection } from "./components/home/artifacts-section";
 import { ControlVisibilitySection } from "./components/home/control-visibility-section";
@@ -16,7 +15,11 @@ type HomePageProps = {
 };
 
 export const generateMetadata = async () =>
-  createPageMetadata(LANDING_PAGE_TITLE, siteDescription);
+  createPageMetadata(
+    "The workspace for team-based agentic software development",
+    siteDescription,
+    "/"
+  );
 
 const HomePage = async ({ params }: HomePageProps) => {
   const { locale } = await params;
@@ -30,7 +33,6 @@ const HomePage = async ({ params }: HomePageProps) => {
       <HowItWorksSection />
       <ControlVisibilitySection />
       <TokenMaxingSection />
-      {/* CommunitySection — hidden for now; lives at ./components/home/community-section.tsx. Re-import and render between TokenMaxingSection and FinalCtaSection to bring it back. */}
       <FinalCtaSection locale={locale} />
     </div>
   );

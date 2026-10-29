@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { after, before, describe, test } from "node:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import { createJsonlSink } from "../src/main/profiling/jsonl-sink.js";
 import {
   PROFILING_DROPPED_ROWS_KEY,
@@ -11,11 +11,11 @@ import {
 
 let workDir = "";
 
-before(() => {
+beforeAll(() => {
   workDir = mkdtempSync(path.join(tmpdir(), "profiling-jsonl-"));
 });
 
-after(() => {
+afterAll(() => {
   rmSync(workDir, { recursive: true, force: true });
 });
 

@@ -15,7 +15,7 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import {
   buildRecord,
   readBackEntry,
@@ -28,6 +28,7 @@ import {
   gradePageRead,
   newPageReadStats,
   PageReadOutcome,
+  PageReadTimeoutPhase,
   recordPageReadSample,
 } from "./soak/soak-page-read";
 
@@ -73,6 +74,9 @@ describe("ISS-6100: a page read is graded on content, not on the presence of a k
         result: { list: { items: [{ id: "s1" }], total: Number.NaN } },
         timedOut: false,
         elapsedMs: 5,
+        rendererMs: 4,
+        timeoutPhase: null,
+        dispatchMs: null,
       }),
       stats
     );
@@ -182,6 +186,9 @@ describe("ISS-6100: the population-establishment step itself", () => {
         result: { list: { items: [{ id: "s1" }], total: 2962 } },
         elapsedMs: 12,
         timedOut: false,
+        rendererMs: 9,
+        timeoutPhase: null,
+        dispatchMs: null,
       }),
       stats
     );
@@ -196,6 +203,9 @@ describe("ISS-6100: the population-establishment step itself", () => {
         result: { list: { items: [], total: 0 } },
         elapsedMs: 12,
         timedOut: false,
+        rendererMs: 9,
+        timeoutPhase: null,
+        dispatchMs: null,
       }),
       stats
     );
@@ -207,7 +217,14 @@ describe("ISS-6100: the population-establishment step itself", () => {
     const timedOutStats = newPageReadStats();
     assert.equal(
       await establishPageReadPopulation(
-        async () => ({ result: null, elapsedMs: 10_000, timedOut: true }),
+        async () => ({
+          result: null,
+          elapsedMs: 10_000,
+          timedOut: true,
+          rendererMs: null,
+          timeoutPhase: PageReadTimeoutPhase.InRenderer,
+          dispatchMs: null,
+        }),
         timedOutStats
       ),
       null
@@ -229,11 +246,17 @@ describe("ISS-6100: the population-establishment step itself", () => {
       result: null,
       elapsedMs: 10_000,
       timedOut: true,
+      rendererMs: null,
+      timeoutPhase: PageReadTimeoutPhase.InRenderer,
+      dispatchMs: null,
     });
     recordPageReadSample(stats, {
       result: { list: { items: [], total: 0 } },
       elapsedMs: 8,
       timedOut: false,
+      rendererMs: 6,
+      timeoutPhase: null,
+      dispatchMs: null,
     });
     assert.equal(stats.timeouts, 1);
     assert.equal(stats.empty, 1);

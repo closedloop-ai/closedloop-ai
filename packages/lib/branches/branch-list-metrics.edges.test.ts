@@ -3,12 +3,13 @@
  * 1. calculateBranchLastActiveMetric — malformed-only events → unavailable
  * 2. calculateActiveBranches — partial result when snapshots < cohortSize
  * 3. calculateMedianPrSize — merged PRs with all-null additions → unavailable
- * 4. reconcileByIdentity — empty identity key → conflicted
+ * 4. the reconcilers' empty identity key → conflicted
  * 5. metricValue — AllTime label with non-null prior → returns { current } only
  */
 import {
   BranchMetricAvailability,
   BranchMetricComparisonLabel,
+  BranchMetricDisclosure,
   BranchMetricPeriod,
 } from "@repo/api/src/types/branch-metrics";
 import { BranchVisibleLifecyclePhase } from "@repo/api/src/types/branch-phase-attribution";
@@ -16,9 +17,10 @@ import { describe, expect, it } from "vitest";
 import {
   type BranchListMetricInput,
   calculateBranchLastActiveMetric,
-  calculateBranchListMetrics,
 } from "./branch-list-metrics";
+import { calculateMetricsWithSpendFacts as calculateBranchListMetrics } from "./branch-list-metrics.test-helpers";
 import { buildAdjacentBranchMetricWindows } from "./branch-metric-windows";
+import { BranchPublicationLocSource } from "./branch-publication-loc";
 
 const NOW = new Date("2026-08-03T21:00:00.000Z");
 const CURRENT = "2026-08-01T12:00:00.000Z";
@@ -165,14 +167,15 @@ describe("calculateBranchListMetrics — medianPrSize when all PR sizes are miss
 });
 
 // ---------------------------------------------------------------------------
-// reconcileByIdentity — empty identity key → conflicted
+// empty identity key → conflicted
 // ---------------------------------------------------------------------------
 
-describe("calculateBranchListMetrics — reconcileByIdentity with empty identity key", () => {
+describe("calculateBranchListMetrics — reconcilers with an empty identity key", () => {
   it("marks cost reconciliation conflicted when a contribution has empty sourceEventId (empty key)", () => {
     const input = emptyInput(1);
     // Cost contribution with empty sourceEventId: key = "\0" + branchId is truthy,
-    // but for pullRequest with identity: "" the key IS empty → !key → conflicted.
+    // but a pullRequest with identity "" has an EMPTY key, which no reconciler
+    // can group on, so it is dropped and reported (ISS-11589 kept that arm).
     input.pullRequests = [
       pullRequest("", CURRENT, 10, 0), // identity: "" → !key → conflicted
     ];
@@ -185,27 +188,6 @@ describe("calculateBranchListMetrics — reconcileByIdentity with empty identity
     // and pullRequestCoverageComplete=true → notApplicable for mergeRate.
     // The conflicted=true flag degrades mergeRate to partial/unavailable.
     expect(result.mergeRatePct.current.state).toBe(
-      BranchMetricAvailability.Unavailable
-    );
-  });
-
-  it("marks aiSpend conflicted when a cost contribution produces empty key (empty sourceEventId + branchId)", () => {
-    const input = emptyInput(1);
-    // sourceEventId="" and branchId="" makes key = "\x00" (non-empty, but truthy).
-    // The true empty-key case for costContributions is actually not achievable via
-    // the key formula `sourceEventId\0branchId` (always non-empty if both are "").
-    // Cover it via pullRequest with identity="" instead (same reconcileByIdentity).
-    input.costContributions = [
-      cost("evt-1", "a", CURRENT, 10, 1),
-      cost("evt-1", "a", CURRENT, 20, 1), // conflicting value for same key
-    ];
-    input.costCompleteBranchIds = ["a"];
-    const result = calculateBranchListMetrics(
-      input,
-      buildAdjacentBranchMetricWindows(BranchMetricPeriod.SevenDays, NOW)
-    );
-    // Conflicting values → reconciled.conflicted=true → completeCoverage=false → Partial or Unavailable
-    expect(result.aiSpendUsd.current.state).toBe(
       BranchMetricAvailability.Unavailable
     );
   });
@@ -249,10 +231,15 @@ describe("calculateBranchListMetrics — empty cohort the producer could not qua
 
   it("reports every metric Unavailable when cohortCoverageComplete is false", () => {
     // The desktop list read reaches this state whenever the repository-default
-    // authority is unavailable: `resolveBranchDefaultEligibilitySnapshot` fails
-    // closed and excludes every candidate, so the cohort arrives empty with
-    // nothing actually decided about it. No data would assert a fact about a
-    // population that was never qualified.
+    // authority is unavailable, so nothing was actually decided about the
+    // cohort. No data would assert a fact about a population that was never
+    // qualified.
+    //
+    // ISS-10864 changed how that cohort ARRIVES without changing this rule: a
+    // failed authority read still fails closed and excludes every candidate, so
+    // the cohort is empty; an ABSENT GitHub connection now passes every
+    // candidate through instead, so the cohort can be full. Either way it is
+    // unqualified, and `cohortCoverageComplete: false` is what says so.
     const result = calculateBranchListMetrics(
       { ...emptyInput(0), cohortCoverageComplete: false },
       windows
@@ -311,5 +298,218 @@ describe("calculateBranchListMetrics — empty cohort the producer could not qua
     expect(result.mergeRatePct.current.state).toBe(
       BranchMetricAvailability.NoData
     );
+  });
+});
+
+const OUT_OF_WINDOW = "2026-01-01T00:00:00.000Z";
+const HUGE_COST = Number.MAX_VALUE;
+
+function sevenDayMetrics(input: BranchListMetricInput) {
+  return calculateBranchListMetrics(
+    input,
+    buildAdjacentBranchMetricWindows(BranchMetricPeriod.SevenDays, NOW)
+  );
+}
+
+function locRow(sourceEventId: string, additions: number) {
+  return {
+    sourceEventId,
+    branchId: "a",
+    occurredAt: CURRENT,
+    additions,
+    deletions: 0,
+  };
+}
+
+function pushedLocRow(sourceEventId: string, additions: number) {
+  return {
+    ...locRow(sourceEventId, additions),
+    source: BranchPublicationLocSource.SuccessfulPush,
+  };
+}
+
+function ratioInput(): BranchListMetricInput {
+  const input = emptyInput(1);
+  input.locContributions = [locRow("loc-1", 100)];
+  input.locCompleteBranchIds = ["a"];
+  input.costContributions = [cost("c1", "a", CURRENT, 10, 1)];
+  return input;
+}
+
+describe("calculateBranchListMetrics — contested status snapshots", () => {
+  it("withholds activeBranches when one branch reports two states", () => {
+    const input = emptyInput(1);
+    input.statusSnapshots = [
+      { branchId: "a", currentActive: true, priorActive: true },
+      { branchId: "a", currentActive: false, priorActive: true },
+    ];
+    expect(sevenDayMetrics(input).activeBranches.current.state).toBe(
+      BranchMetricAvailability.Unavailable
+    );
+  });
+});
+
+describe("calculateBranchListMetrics — locPerDollar denominator edges", () => {
+  it("withholds a zero-cost ratio when cost coverage is incomplete", () => {
+    const input = ratioInput();
+    input.costContributions = [cost("c1", "a", CURRENT, 0, 1)];
+    input.costCompleteBranchIds = [];
+    expect(sevenDayMetrics(input).locPerDollar.current.state).toBe(
+      BranchMetricAvailability.Unavailable
+    );
+  });
+
+  it("withholds the ratio when the summed cost overflows to Infinity", () => {
+    const input = ratioInput();
+    input.costContributions = [
+      cost("c1", "a", CURRENT, HUGE_COST, 1),
+      cost("c2", "a", CURRENT, HUGE_COST, 1),
+    ];
+    expect(sevenDayMetrics(input).locPerDollar.current.state).toBe(
+      BranchMetricAvailability.Unavailable
+    );
+  });
+
+  it("marks the ratio partial when an interval gap spans the whole window", () => {
+    const input = ratioInput();
+    input.locCoverageGaps = [
+      {
+        sourceEventId: "gap-1",
+        occurredAt: "2026-07-01T00:00:00.000Z",
+        affectsUntil: "2026-09-01T00:00:00.000Z",
+      },
+    ];
+    expect(sevenDayMetrics(input).locPerDollar.current.state).toBe(
+      BranchMetricAvailability.Partial
+    );
+  });
+
+  it("keeps the ratio complete when an interval gap ends before the window", () => {
+    const input = ratioInput();
+    input.locCoverageGaps = [
+      {
+        sourceEventId: "gap-1",
+        occurredAt: "2026-07-01T00:00:00.000Z",
+        affectsUntil: "2026-07-02T00:00:00.000Z",
+      },
+    ];
+    expect(sevenDayMetrics(input).locPerDollar.current).toEqual({
+      state: BranchMetricAvailability.Complete,
+      value: 10,
+    });
+  });
+});
+
+describe("calculateBranchListMetrics — merge rate under twinned PR rows", () => {
+  it("counts a twinned merged identity once rather than dropping it", () => {
+    // ISS-11589: `org/repo#1` arrives twice with disagreeing line counts. Both
+    // rows used to be erased, leaving one closed-unmerged PR and a 0% rate over
+    // a population missing a merge it had read. The tie-break keeps the merged
+    // identity, so the rate is 1 merged of 2 decided.
+    //
+    // Neither row carries a `githubId`, so nothing settles WHICH size is right
+    // and arrival order holds the answer. Per tamsinb's review on #8237 that
+    // keeps `conflicted` set, so the rate publishes its real figure STARRED
+    // rather than complete — the state this pair carried before the tie-break
+    // existed. Counting the identity once is what this case pins, and that is
+    // unchanged.
+    const input = emptyInput(1);
+    input.pullRequests = [
+      pullRequest("org/repo#1", CURRENT, 30, 0),
+      pullRequest("org/repo#1", CURRENT, 40, 0),
+      { ...pullRequest("org/repo#2", null, 5, 0), closedAt: CURRENT },
+      pullRequest("org/repo#3", OUT_OF_WINDOW, 5, 0),
+    ];
+    expect(sevenDayMetrics(input).mergeRatePct.current).toEqual({
+      state: BranchMetricAvailability.Partial,
+      value: 50,
+      coverage: { included: 2, total: 2 },
+      disclosure: BranchMetricDisclosure.PrCoverageIncomplete,
+    });
+  });
+});
+
+describe("calculateBranchLastActiveMetric — unparseable timestamp", () => {
+  it("treats an unparseable instant as malformed and keeps the valid latest", () => {
+    expect(
+      calculateBranchLastActiveMetric(
+        [
+          { sourceEventId: "ev-1", occurredAt: CURRENT },
+          { sourceEventId: "ev-2", occurredAt: "not-a-date" },
+        ],
+        true
+      )
+    ).toMatchObject({
+      state: BranchMetricAvailability.Partial,
+      value: CURRENT,
+      coverage: { included: 1, total: 2 },
+    });
+  });
+});
+
+describe("calculateBranchListMetrics — canonicalLocPerDollar incomplete LOC", () => {
+  it("withholds a zero-cost canonical ratio when LOC coverage is incomplete", () => {
+    const input = ratioInput();
+    input.locCompleteBranchIds = [];
+    input.canonicalEstimatedCostUsd = 0;
+    expect(sevenDayMetrics(input).canonicalLocPerDollar?.current.state).toBe(
+      BranchMetricAvailability.Unavailable
+    );
+  });
+
+  it("withholds the canonical ratio when no LOC lands in range and coverage is incomplete", () => {
+    const input = ratioInput();
+    input.locContributions = [];
+    input.locCompleteBranchIds = [];
+    input.canonicalEstimatedCostUsd = 20;
+    expect(sevenDayMetrics(input).canonicalLocPerDollar?.current.state).toBe(
+      BranchMetricAvailability.Unavailable
+    );
+  });
+});
+
+describe("calculateBranchListMetrics — pushedLocPerDollar denominator edges", () => {
+  function pushedInput(): BranchListMetricInput {
+    const input = ratioInput();
+    input.locContributions = [pushedLocRow("push-1", 100)];
+    return input;
+  }
+
+  it("withholds the ratio when spend is zero and an event could not be priced", () => {
+    const input = pushedInput();
+    input.costContributions = [
+      cost("c1", "a", CURRENT, 0, 1),
+      cost("unpriced", "a", CURRENT, null, 1),
+    ];
+    expect(sevenDayMetrics(input).pushedLocPerDollar?.current.state).toBe(
+      BranchMetricAvailability.Unavailable
+    );
+  });
+
+  it("reads an Infinity spend total as not applicable", () => {
+    // pins current behavior; looks odd because an overflowed (non-finite) spend
+    // total with complete coverage is reported as "cost nothing" rather than
+    // Unavailable.
+    const input = pushedInput();
+    input.costContributions = [
+      cost("c1", "a", CURRENT, HUGE_COST, 1),
+      cost("c2", "a", CURRENT, HUGE_COST, 1),
+    ];
+    expect(sevenDayMetrics(input).pushedLocPerDollar?.current.state).toBe(
+      BranchMetricAvailability.NotApplicable
+    );
+  });
+
+  it("names cost as the incomplete term when an event could not be priced", () => {
+    const input = pushedInput();
+    input.costContributions = [
+      ...input.costContributions,
+      cost("unpriced", "a", CURRENT, null, 1),
+    ];
+    expect(sevenDayMetrics(input).pushedLocPerDollar?.current).toEqual({
+      state: BranchMetricAvailability.Partial,
+      value: 10,
+      disclosure: BranchMetricDisclosure.CostIncomplete,
+    });
   });
 });

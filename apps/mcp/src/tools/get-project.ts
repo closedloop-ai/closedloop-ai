@@ -1,9 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
-  describeIdOrSlug,
   encodePathSegment,
+  requiredIdOrSlug,
   withErrorHandling,
 } from "./tool-utils.js";
 
@@ -17,7 +16,11 @@ export function registerGetProject(
       description:
         'Get one project by UUID or slug (PRO-*). When the user references a project by its slug (e.g. "tell me about PRO-7"), pass that slug as projectId directly.',
       inputSchema: {
-        projectId: z.string().describe(describeIdOrSlug("Project", "PRO-7")),
+        projectId: requiredIdOrSlug(
+          "Project",
+          "PRO-7",
+          "Use list-projects to find one."
+        ),
       },
     },
     ({ projectId }) =>

@@ -2,25 +2,33 @@
  * @file agent-dashboard-runtime-options.ts
  * @description The host-injected options contract for the Agent Dashboard
  * design-system runtime, plus the two aliases derived from it. Extracted out of
- * the shrink-only grandfathered `agent-dashboard-design-system-runtime.ts` so
+ * `agent-dashboard-design-system-runtime.ts` so
  * the runtime module and every sibling it now delegates to (db-host lifecycle,
- * IPC registration, the trace-comment cloud sync lane) share ONE definition of
+ * IPC registration) share ONE definition of
  * this options object instead of re-declaring narrowed copies of it.
  */
 import type { Harness } from "@repo/lib/harness/types";
 import type { BrowserWindow, WebContents } from "electron";
-import type {
-  ScheduledReviewRequest,
-  ScheduledReviewResult,
-} from "../../shared/scheduled-review-contract.js";
-import type { DesktopCloudSessionIdentity } from "../cloud/desktop-cloud-github-hydration.js";
+import type { AgentMonitorRuntimeStatus } from "../../shared/agent-monitor-status.js";
+import type { ReadSessionDeadLetterState } from "../agent-sync/agent-session-dead-letter-sync-state.js";
+import type { SyncLaneBatchEmit } from "../agent-sync/sync-lane-cloud-health.js";
 import type { CollectorEnabledState } from "../collectors/engine/collection-mode.js";
+import type { DesktopAccountAdmission } from "../session/desktop-account-admission.js";
+import type { SessionMeshHookSink } from "../session-mesh/session-mesh-hook-contract.js";
 import type { GoldenModeConfig } from "../settings/golden-mode.js";
-import type { DesktopIpcPerfEventInput } from "../telemetry/app-otel-runtime.js";
 import type { DesktopImportHealthEventInput } from "../telemetry/app-otel-runtime-import-health.js";
+import type { DesktopIpcPerfEventInput } from "../telemetry/app-otel-runtime-ipc.js";
 
 export type AgentDashboardDesignSystemRuntimeOptions = {
   getWindow: () => BrowserWindow | null;
+  /**
+   * Session Mesh hook delivery after analysis consent. The listener owns parsing and
+   * transport acknowledgement; the composed Mesh runtime owns canonical ID
+   * resolution and cloud publication.
+   */
+  onSessionMeshHookEvent?: SessionMeshHookSink;
+  /** Consent has released capture and the Mesh hook listener is bound. */
+  onSessionMeshReady?: () => void;
   /**
    * True when an IPC event originates from this app's trusted renderer. Wired
    * from `DesktopWindow.isTrustedSender` so every `desktop:db:*` handler gates
@@ -65,39 +73,35 @@ export type AgentDashboardDesignSystemRuntimeOptions = {
    * so an already-seeded install still gets the retry.
    */
   onCatalogSeeded?: () => void;
-  /**
-   * Stored `sk_live_*` desktop API key. Still consumed by org-directory
-   * warming; branch cloud hydration uses it only as the legacy FALLBACK
-   * credential (session-first since PLN-1535 M3); the cloud trace-comment
-   * lanes no longer use it at all (session-only since PLN-1437 Phase 4a).
-   */
+  /** Stored `sk_live_*` desktop API key, consumed by org-directory warming. */
   getApiKey?: () => string | null;
-  /**
-   * FEA-3425: first-party Desktop session token — the credential for the cloud
-   * trace-comment lanes.
-   */
+  /** FEA-3425: first-party Desktop session token. */
   getAccessToken?: () => Promise<string | null>;
-  /**
-   * FEA-3425: synchronous "is a first-party session live" probe so the
-   * (synchronous) cloud-auth availability gate can count session auth without
-   * awaiting a token read.
-   */
-  hasDesktopSessionAuth?: () => boolean;
   getApiOrigin?: () => string;
-  getProfileId?: () => string | null;
   getComputeTargetId?: () => string | null;
   /**
-   * FEA-3659: ONLINE-AWARE compute target — the id of the currently-connected
-   * cloud compute target, or null when offline/unauthenticated. Distinct from
-   * `getComputeTargetId`, which deliberately falls back to the last-known
-   * (possibly stale) `lastComputeTargetId` so offline trace-comment / component
-   * reads can still resolve cloud artifacts. The data-revision sync-outbox
-   * enqueue must NOT use that stale fallback: enqueuing under a stale source key
-   * strands rows under the wrong key across an account switch. Mirrors the sync
-   * service's own `getSyncComputeTargetId` (null-when-offline) so both the
-   * enqueue and the read side agree on the source key when online.
+   * FEA-3659: IDENTITY-SCOPED compute target — the id the session sync lane
+   * writes under, or null when none is attributable to the account signed in
+   * now. Distinct from `getComputeTargetId`, which deliberately falls back to
+   * the last-known (possibly stale) `lastComputeTargetId` so offline
+   * component reads can still resolve cloud artifacts. The
+   * data-revision sync-outbox enqueue must NOT use that stale fallback:
+   * enqueuing under a stale source key strands rows under the wrong key across
+   * an account switch. Mirrors the sync service's own `getSyncComputeTargetId`
+   * so the enqueue and the read side agree on the source key.
+   *
+   * ISS-8691: that target may be RETAINED from the last hello while the socket
+   * reconnects, so this is no longer null merely because we are offline. The
+   * account-switch guarantee is unchanged — the retained id is bound to its
+   * owner and re-checked on every read, so it resolves null the moment a
+   * different account is signed in.
    */
   getSyncComputeTargetId?: () => string | null;
+  /**
+   * ISS-11427: whether the session lane holds a session as a dead letter or
+   * has abandoned it. Optional so fakes and older wiring report neither.
+   */
+  readSessionDeadLetterState?: ReadSessionDeadLetterState;
   /**
    * ISS-4546: inject the ids the data-revision
    * rebuild just enqueued into the durable sync outbox into the sync service's
@@ -136,46 +140,18 @@ export type AgentDashboardDesignSystemRuntimeOptions = {
    * behavior: the Init snapshot is never refreshed.
    */
   subscribeUserIdentityChanged?: (listener: () => void) => () => void;
+  getAccountAdmission?: () => DesktopAccountAdmission | null;
   /**
-   * PR #3994 review P0: the signed-in Desktop session's account identity
-   * (`DesktopSessionManager.getIdentity()`), non-null whenever a session
-   * (stored or live, incl. during boot restore) exists. Branch cloud
-   * hydration's session lane gates on it AND scopes every cached/persisted
-   * overlay to `session:<orgId>:<userId>` — without it, session-auth accounts
-   * on one machine would share a cache identity and could read each other's
-   * private PR overlays. Distinct from `getUserIdentity`, which resolves the
-   * API-KEY account via `/me` and is null for session-only installs.
+   * ISS-10533 (marisolashgrove review): is the desktop GENUINELY signed out, as
+   * opposed to merely identity-less right now?
+   *
+   * `DesktopSessionManager.getIdentity()` is null whenever `this.session` is,
+   * which covers several distinct states — `Loading` (before `restore()`, which
+   * awaits a network refresh), `SignedOut`, and `RefreshFailed` after the
+   * background `clearSession(DesktopAuthStatus.RefreshFailed)`. Only the middle
+   * one means "nobody was signed in".
    */
-  getSessionIdentity?: () => DesktopCloudSessionIdentity | null;
-  /**
-   * Invalidate the cached session token on an HTTP 401
-   * (`DesktopSessionManager.invalidateAccessToken()`), matching the other
-   * session-backed HTTP lanes.
-   */
-  invalidateAccessToken?: () => void;
-  /**
-   * FEA-4169: live "may session data egress at all?" gate, ANDing the
-   * server-owned ORG POLICY over per-device sync consent (the same predicate the
-   * bulk sync/transcript lanes read via `isSessionMetadataSyncTierAllowed`). The
-   * trace-comment recovery path (`syncCloudSessionForTraceComments`) posts the
-   * local parent SESSION artifact directly to `/desktop/agent-sessions/sync` when
-   * a comment hits a missing-session response, bypassing those lane gates; wiring
-   * this in makes that path honor an explicit policy-off just like the lanes do,
-   * so it never sends the parent session for a policy-disabled org. Read live so a
-   * policy flip is picked up on the next recovery attempt. Omit ⇒ allowed (the
-   * pre-FEA-4169 behavior), so an unwired/older host never newly suppresses sync.
-   */
-  isSessionSyncAllowed?: () => boolean;
-  /**
-   * ISS-4578 (P1 #10): live "did the server advertise
-   * `agentSessionSyncActivityChunking`?" probe. The trace-comment recovery path
-   * (`syncCloudSessionForTraceComments`) prepares the parent-session payload
-   * directly, so it needs the SAME negotiated capability the bulk sync lane
-   * reads to paginate an oversized activity tiling across chunks. Omit ⇒ false
-   * (skew-safe: the tiling stays in the base and an oversized one dead-letters
-   * for a larger-payload retry, never a silent truncation).
-   */
-  isSyncActivityChunkingSupported?: () => boolean;
+  isDesktopSessionSignedOut?: () => boolean;
   /**
    * FEA-3741 (slice 1): reads the per-tool collector enable toggles
    * (`collectClaudeEnabled` / `collectCursorEnabled` / `collectCopilotEnabled`,
@@ -185,23 +161,34 @@ export type AgentDashboardDesignSystemRuntimeOptions = {
    * manager (no watcher, no tool-home walk). Omit → every harness enabled.
    */
   getCollectorEnabledState?: () => CollectorEnabledState;
+  /**
+   * ISS-7352: whether the OTLP receiver's decoded Claude Code signals are
+   * persisted (`claudeCodeOtelCapture`, SettingsStore, default OFF). Read fresh
+   * on every export so a toggle flip takes effect without a restart. Omit →
+   * capture stays off, which is the shipped default.
+   */
+  isClaudeCodeOtelCaptureEnabled?: () => boolean;
   onTerminalFailure: (reason: string) => void;
+  /**
+   * Publish the first-class Agent Monitor runtime status the renderer reads over
+   * `desktop:get-runtime-status` (davetho, #6432).
+   *
+   * Distinct from {@link onTerminalFailure}, which owns the notification and the
+   * tray only. Boot-time failures already publish through
+   * `agent-dashboard-runtime-bootstrap.ts`; this is the seam that lets a runtime
+   * that failed AFTER boot — the ISS-8776 restart-ladder exhaustion — say so
+   * too, instead of leaving the status latched at `ready`.
+   *
+   * Required, not optional: a missing wire is exactly the silent-healthy defect
+   * this exists to close, so it must fail typecheck rather than degrade.
+   */
+  setAgentMonitorRuntimeStatus: (status: AgentMonitorRuntimeStatus) => void;
   /**
    * A live agent session reached a terminal status (completed/error). Wired by
    * the app to fire a desktop completion Notification with a click-through to
    * the session detail, gated on the session-completion-notifications flag.
    */
   onSessionTerminal?: (notice: { sessionId: string; status: string }) => void;
-  /**
-   * FEA-4143: run a scheduled review that the db-host daemon proxied to main.
-   * Wired by the app to the shared `runScheduledReviewThroughAuditService`
-   * composition over the SAME `AuditService` the on-demand Audit view uses, so
-   * the scheduled and on-demand paths cannot diverge (workspace safety +
-   * credential boundary + parity). Omitted ⇒ a fired review task records a skip.
-   */
-  onRunScheduledReview?: (
-    request: ScheduledReviewRequest
-  ) => Promise<ScheduledReviewResult>;
   /**
    * FEA-2715: a Claude hook event arrived (the transcript archive lane uses it
    * to enqueue the session's transcript — terminal events flush immediately,
@@ -240,6 +227,8 @@ export type AgentDashboardDesignSystemRuntimeOptions = {
    * renderer state (`main/sync/AGENTS.md` invariant 9).
    */
   onLocalSessionDataChanged?: () => void;
+  /** Wake sync lanes once the initial session projection may be uploaded. */
+  onInitialSessionProjectionReady?: () => void;
   userDataPath?: string;
   /**
    * FEA-2648 golden mode: ingest ONLY the staged golden corpus. When set, the
@@ -263,6 +252,8 @@ export type AgentDashboardDesignSystemRuntimeOptions = {
    * tally, no sentinel count queries).
    */
   emitImportHealth?: (input: DesktopImportHealthEventInput) => void;
+  /** ISS-6338: emit a sync lane's per-batch cloud health. */
+  emitSyncBatch?: SyncLaneBatchEmit;
 };
 
 export type AgentDashboardLog = NonNullable<

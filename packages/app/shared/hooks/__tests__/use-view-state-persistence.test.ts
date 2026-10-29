@@ -1,5 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   reviveDates,
   useViewStatePersistence,
@@ -8,6 +8,12 @@ import {
 describe("useViewStatePersistence", () => {
   beforeEach(() => {
     localStorage.clear();
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   test("returns defaultValue when no localStorage data exists", () => {
@@ -43,6 +49,92 @@ describe("useViewStatePersistence", () => {
     );
 
     expect(result.current[0]).toBe("default");
+  });
+
+  test("restores state saved exactly ttlMs ago and leaves it in storage", () => {
+    const savedAt = FIXED_NOW - SHORT_TTL_MS;
+    localStorage.setItem(
+      "test-key",
+      JSON.stringify({ savedAt, data: "saved" })
+    );
+
+    const { result } = renderHook(() =>
+      useViewStatePersistence("test-key", "default", { ttlMs: SHORT_TTL_MS })
+    );
+
+    expect(result.current[0]).toBe("saved");
+    expect(readEnvelope("test-key")).toEqual({ savedAt, data: "saved" });
+  });
+
+  test("returns defaultValue and clears state saved one ms past ttlMs", () => {
+    const savedAt = FIXED_NOW - SHORT_TTL_MS - 1;
+    localStorage.setItem(
+      "test-key",
+      JSON.stringify({ savedAt, data: "stale" })
+    );
+
+    const { result } = renderHook(() =>
+      useViewStatePersistence("test-key", "default", { ttlMs: SHORT_TTL_MS })
+    );
+
+    expect(result.current[0]).toBe("default");
+    expect(readEnvelope("test-key")).toBeNull();
+  });
+
+  // The clearing effect drives the settled value to defaultValue on its own, so
+  // asserting only result.current cannot tell the read-path check apart from
+  // the effect. The first render is the read path's own answer, and a stale
+  // value there would reach the user as a flash before the effect wiped it.
+  test("read path rejects an expired envelope on its first render", () => {
+    const savedAt = FIXED_NOW - SHORT_TTL_MS - 1;
+    localStorage.setItem(
+      "test-key",
+      JSON.stringify({ savedAt, data: "stale" })
+    );
+
+    const renders: string[] = [];
+    renderHook(() => {
+      const state = useViewStatePersistence("test-key", "default", {
+        ttlMs: SHORT_TTL_MS,
+      });
+      renders.push(state[0]);
+      return state;
+    });
+
+    expect(renders[0]).toBe("default");
+  });
+
+  // The seven-day figure is written out rather than imported from the hook so
+  // it acts as an independent oracle: importing DEFAULT_TTL_MS would move both
+  // sides of the assertion together and let a change to the default go green.
+  test("default ttl restores state saved exactly seven days ago", () => {
+    const savedAt = FIXED_NOW - SEVEN_DAYS_MS;
+    localStorage.setItem(
+      "test-key",
+      JSON.stringify({ savedAt, data: "saved" })
+    );
+
+    const { result } = renderHook(() =>
+      useViewStatePersistence("test-key", "default")
+    );
+
+    expect(result.current[0]).toBe("saved");
+    expect(readEnvelope("test-key")).toEqual({ savedAt, data: "saved" });
+  });
+
+  test("default ttl clears state saved one ms past seven days", () => {
+    const savedAt = FIXED_NOW - SEVEN_DAYS_MS - 1;
+    localStorage.setItem(
+      "test-key",
+      JSON.stringify({ savedAt, data: "stale" })
+    );
+
+    const { result } = renderHook(() =>
+      useViewStatePersistence("test-key", "default")
+    );
+
+    expect(result.current[0]).toBe("default");
+    expect(readEnvelope("test-key")).toBeNull();
   });
 
   test("validate callback transforms restored data", () => {
@@ -85,7 +177,7 @@ describe("useViewStatePersistence", () => {
     expect(localStorage.getItem("__view-state-noop__")).toBeNull();
   });
 
-  test("clear removes localStorage entry and returns defaultValue", () => {
+  test("clear stores a null envelope and returns defaultValue", () => {
     localStorage.setItem(
       "test-key",
       JSON.stringify({ savedAt: Date.now(), data: "saved" })
@@ -102,6 +194,10 @@ describe("useViewStatePersistence", () => {
     });
 
     expect(result.current[0]).toBe("default");
+    // Asserted raw rather than through readEnvelope: clear writes JSON null and
+    // leaves the key in place, and only the unparsed string tells that apart
+    // from removal.
+    expect(localStorage.getItem("test-key")).toBe("null");
   });
 
   test("functional updater receives current value", () => {
@@ -121,6 +217,52 @@ describe("useViewStatePersistence", () => {
     });
 
     expect(result.current[0]).toEqual({ count: 11 });
+  });
+
+  // Advancing the clock after mount ages the stored envelope without producing
+  // a re-render, so the clearing effect never runs and the write path is the
+  // first code to see it as expired. That is the only way to reach the
+  // freshness guard inside setPersistedValue with a well-formed envelope.
+  test("functional updater receives persisted value at exactly ttlMs", () => {
+    localStorage.setItem(
+      "test-key",
+      JSON.stringify({ savedAt: FIXED_NOW, data: { count: 10 } })
+    );
+
+    const { result } = renderHook(() =>
+      useViewStatePersistence("test-key", { count: 0 }, { ttlMs: SHORT_TTL_MS })
+    );
+
+    vi.setSystemTime(FIXED_NOW + SHORT_TTL_MS);
+
+    act(() => {
+      result.current[1]((prev) => ({ ...prev, count: prev.count + 1 }));
+    });
+
+    expect(result.current[0]).toEqual({ count: 11 });
+  });
+
+  test("functional updater receives defaultValue one ms past ttlMs", () => {
+    localStorage.setItem(
+      "test-key",
+      JSON.stringify({ savedAt: FIXED_NOW, data: { count: 10 } })
+    );
+
+    const { result } = renderHook(() =>
+      useViewStatePersistence("test-key", { count: 0 }, { ttlMs: SHORT_TTL_MS })
+    );
+
+    vi.setSystemTime(FIXED_NOW + SHORT_TTL_MS + 1);
+
+    act(() => {
+      result.current[1]((prev) => ({ ...prev, count: prev.count + 1 }));
+    });
+
+    expect(result.current[0]).toEqual({ count: 1 });
+    expect(readEnvelope("test-key")).toEqual({
+      savedAt: FIXED_NOW + SHORT_TTL_MS + 1,
+      data: { count: 1 },
+    });
   });
 });
 
@@ -156,3 +298,14 @@ describe("reviveDates", () => {
     expect(result.date).toBe("not-a-date");
   });
 });
+
+const FIXED_NOW = Date.UTC(2026, 5, 15, 12, 0, 0);
+const SHORT_TTL_MS = 60 * 60 * 1000;
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+// A cleared envelope is stored as the string "null" rather than removed, so
+// parsing is what makes "cleared" and "absent" assert the same way.
+function readEnvelope(key: string): unknown {
+  const raw = localStorage.getItem(key);
+  return raw === null ? null : JSON.parse(raw);
+}

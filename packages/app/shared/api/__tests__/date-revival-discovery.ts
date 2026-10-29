@@ -85,8 +85,20 @@ export const ROUTE_ROOT = "apps/api/app";
  * Where the types those payloads are built from live. Reachability from a route
  * payload — not residence in one of these directories — is what makes a
  * declaration a response contract.
+ *
+ * `packages/api/src/utils` is here because a contract declared beside the pure
+ * reduction that produces it is still a contract: `AgentComponentPageDataResult`
+ * lives there and carries `AgentComponent[]`. While this root was unindexed that
+ * payload resolved to NO keys, so the derivation emitted an empty shadow row for
+ * `/agent-components/page-data` and the client revived its `string` `lastSeenAt`
+ * into a `Date` — the ISS-5771 defect, on a route whose own sibling
+ * `/agent-components` suppresses that very key.
  */
-const CONTRACT_ROOTS = ["packages/api/src/types", "packages/loops-api/src"];
+const CONTRACT_ROOTS = [
+  "packages/api/src/types",
+  "packages/api/src/utils",
+  "packages/loops-api/src",
+];
 
 /**
  * The route-auth wrappers whose FIRST type argument is the response payload

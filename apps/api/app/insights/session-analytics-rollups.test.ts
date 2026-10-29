@@ -1,6 +1,6 @@
 import { SpendOutcome } from "@closedloop-ai/loops-api/insights";
-import { AgentSessionState } from "@repo/api/src/types/agent-session";
 import { LossClass, ModelVerdict } from "@repo/api/src/types/session-analytics";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { describe, expect, it } from "vitest";
 import {
   foldBehavioralCauses,
@@ -46,7 +46,7 @@ function gridRow(overrides: Partial<SignalGridRow> = {}): SignalGridRow {
     minutes: 60,
     producedArtifact: false,
     sessions: 1,
-    state: AgentSessionState.Completed,
+    status: SESSION_STATUS.INACTIVE,
     throttleSource: null,
     ...overrides,
   };
@@ -66,27 +66,27 @@ const GRID: SignalGridRow[] = [
     endsWithError: true,
     minutes: 120,
     sessions: 3,
-    state: AgentSessionState.Error,
+    status: SESSION_STATUS.ERROR,
   }),
   gridRow({
     endsWithError: true,
     minutes: 90,
     sessions: 2,
-    state: AgentSessionState.Completed,
+    status: SESSION_STATUS.INACTIVE,
   }),
   // Systemic: a platform throttle is on the record.
   gridRow({
     endsWithError: true,
     minutes: 200,
     sessions: 4,
-    state: AgentSessionState.Error,
+    status: SESSION_STATUS.ERROR,
     throttleSource: "usage_limit",
   }),
   gridRow({
     endsWithError: true,
     minutes: 45,
     sessions: 1,
-    state: AgentSessionState.Error,
+    status: SESSION_STATUS.ERROR,
     throttleSource: "provider_rate_limit",
   }),
   // Unattributed: the outcome was never recorded.
@@ -267,14 +267,14 @@ describe("the person table never lets a rate be read as a total", () => {
         endsWithError: true,
         minutes: 400,
         sessions: 4,
-        state: AgentSessionState.Error,
+        status: SESSION_STATUS.ERROR,
         throttleSource: "usage_limit",
       }),
       personRow({
         endsWithError: true,
         minutes: 30,
         sessions: 1,
-        state: AgentSessionState.Completed,
+        status: SESSION_STATUS.INACTIVE,
       }),
     ];
     const [person] = foldPeople(rows);
@@ -308,9 +308,9 @@ function candidate(
     minutes: 42,
     name: "Fix flaky gateway auth test",
     producedArtifact: false,
-    repositoryFullName: "closedloop-ai/example-repo",
+    repositoryFullName: "closedloop-ai/closedloop-ai",
     startedAt: new Date("2026-07-20T09:00:00.000Z"),
-    state: AgentSessionState.Error,
+    status: SESSION_STATUS.ERROR,
     throttleSource: null,
     ...overrides,
   };
@@ -357,7 +357,7 @@ function spendRow(overrides: Partial<SpendGridRow> = {}): SpendGridRow {
     // A terminal state by default: `outcomeOf` reports Unknown for a run that
     // has not finished, so a fixture that omitted this would silently grade
     // every row as outcome-unknown and pass for the wrong reason.
-    state: AgentSessionState.Completed,
+    status: SESSION_STATUS.INACTIVE,
     usd: 10,
     ...overrides,
   };
@@ -440,7 +440,7 @@ describe("tokenops estimates stay visibly separate from the facts", () => {
         endsWithError: false,
         producedArtifact: false,
         sessions: 2,
-        state: AgentSessionState.Running,
+        status: SESSION_STATUS.ACTIVE,
         usd: 75,
       }),
     ];
@@ -506,10 +506,25 @@ describe("model right-sizing grades against the fleet, never a magic absolute", 
       usd: 5,
     }),
   ];
+  // Billed medians are deliberately larger than, and ordered differently from,
+  // the work medians beside them: nothing here may be passing because the two
+  // bases happen to agree.
   const medians: ModelMedianRow[] = [
-    { medianTokens: 1_500_000, model: "claude-sonnet-4.6" },
-    { medianTokens: 1_200_000, model: "claude-haiku-4.2" },
-    { medianTokens: 100_000, model: "gpt-5.4-mini" },
+    {
+      medianTokens: 4_000_000,
+      medianWorkTokens: 1_500_000,
+      model: "claude-sonnet-4.6",
+    },
+    {
+      medianTokens: 3_000_000,
+      medianWorkTokens: 1_200_000,
+      model: "claude-haiku-4.2",
+    },
+    {
+      medianTokens: 2_000_000,
+      medianWorkTokens: 100_000,
+      model: "gpt-5.4-mini",
+    },
   ];
   const models = foldModelRows(rows, medians);
 
@@ -552,5 +567,184 @@ describe("model right-sizing grades against the fleet, never a magic absolute", 
       0
     );
     expect(modelTotal).toBeCloseTo(outcomeTotal, CENTS);
+  });
+});
+
+/**
+ * The Over-powered verdict itself, which is what ISS-5189 changed the token
+ * basis to make reachable. It is a CONJUNCTION — expensive per million tokens
+ * AND pointed at smaller-than-median jobs — and each half is pinned by a model
+ * that trips the other half alone and must still come back Right-sized. Without
+ * those two, deleting either guard leaves every suite green.
+ *
+ * Every row ends clean, so the fleet's error share is zero and the
+ * Under-powered branch (which is evaluated first) cannot fire and mask the
+ * comparison under test.
+ */
+describe("the Over-powered verdict needs BOTH an expensive rate and small jobs", () => {
+  const CHEAP_USD = 10;
+  const ORDINARY_USD = 20;
+  const PREMIUM_USD = 100;
+  const FLEET_TOKENS = 10_000_000;
+
+  function cleanModelRow(model: string, usd: number): ModelSpendGridRow {
+    return modelRow({
+      endsWithError: false,
+      model,
+      producedArtifact: true,
+      sessions: MIN_GRADED_SESSIONS,
+      tokens: FLEET_TOKENS,
+      usd,
+    });
+  }
+
+  // Rates per million: 1, 1, 2, 10, 10 — so the fleet median is 2 and the
+  // Over-powered bar is 6. Only the two premiums clear it.
+  const rows: ModelSpendGridRow[] = [
+    cleanModelRow("cheap-small-jobs", CHEAP_USD),
+    cleanModelRow("cheap-ordinary-jobs", CHEAP_USD),
+    cleanModelRow("ordinary", ORDINARY_USD),
+    cleanModelRow("premium-small-jobs", PREMIUM_USD),
+    cleanModelRow("premium-hard-jobs", PREMIUM_USD),
+  ];
+  // WORK medians: 200k, 300k, 1M, 1M, 5M — fleet median 1M.
+  //
+  // The BILLED medians beside them are ordered so that reading the wrong basis
+  // INVERTS the answer rather than merely perturbing it: their fleet median is
+  // 5M and `premium-small-jobs` carries the largest of them (8M), so a verdict
+  // computed over `medianTokens` cannot call it small-jobs and the
+  // Over-powered case below goes red. Equal values on both bases would let the
+  // verdict read either one and stay green.
+  const medians: ModelMedianRow[] = [
+    {
+      medianTokens: 5_000_000,
+      medianWorkTokens: 300_000,
+      model: "cheap-small-jobs",
+    },
+    {
+      medianTokens: 4_000_000,
+      medianWorkTokens: 1_000_000,
+      model: "cheap-ordinary-jobs",
+    },
+    { medianTokens: 3_000_000, medianWorkTokens: 1_000_000, model: "ordinary" },
+    {
+      medianTokens: 8_000_000,
+      medianWorkTokens: 200_000,
+      model: "premium-small-jobs",
+    },
+    {
+      medianTokens: 5_500_000,
+      medianWorkTokens: 5_000_000,
+      model: "premium-hard-jobs",
+    },
+  ];
+  const verdictOf = (model: string) =>
+    foldModelRows(rows, medians).find((row) => row.model === model)?.verdict;
+
+  it("grades a costly model on small jobs Over-powered", () => {
+    expect(verdictOf("premium-small-jobs")).toBe(ModelVerdict.Overpowered);
+  });
+
+  it("spares a costly model that is doing genuinely large jobs", () => {
+    // Drop the job-size half of the conjunction and this model is condemned for
+    // its sticker price alone, which is the judgment the verdict refuses to
+    // make: a premium model on hard work is earning what it costs.
+    expect(verdictOf("premium-hard-jobs")).toBe(ModelVerdict.RightSized);
+  });
+
+  it("spares a cheap model on small jobs", () => {
+    // Drop the rate half and small jobs alone convict this one. Being pointed
+    // at short work is not a finding when the work is not expensive.
+    expect(verdictOf("cheap-small-jobs")).toBe(ModelVerdict.RightSized);
+  });
+
+  it("reads the job-size guard off the WORK basis, not the billed one", () => {
+    // The two bases are inverted in this fixture (see the medians above), so
+    // this is the assertion that fails if `resolveVerdict` is ever pointed back
+    // at `medianTokens`. The three cases above would all survive that swap on
+    // some other fixture; this one cannot.
+    const row = foldModelRows(rows, medians).find(
+      (item) => item.model === "premium-small-jobs"
+    );
+    expect(row?.medianWorkTokens).toBe(200_000);
+    expect(row?.medianTokens).toBe(8_000_000);
+    expect(row?.verdict).toBe(ModelVerdict.Overpowered);
+  });
+
+  it("withholds Over-powered when the job size is unknown rather than reading it as zero", () => {
+    // The sentinel hazard. A missing median coerced to `0` satisfies
+    // `medianWorkTokens < fleet.medianSessionTokens` for ANY positive fleet
+    // median, so the fabricated value does not merely fail to inform the
+    // verdict — it actively convicts. Every other input here is the
+    // Over-powered case that passes above, so only the unknown job size is
+    // under test.
+    const withUnknownJobSize = medians.map((row) =>
+      row.model === "premium-small-jobs"
+        ? { ...row, medianWorkTokens: null }
+        : row
+    );
+    const row = foldModelRows(rows, withUnknownJobSize).find(
+      (item) => item.model === "premium-small-jobs"
+    );
+    expect(row?.verdict).toBe(ModelVerdict.RightSized);
+  });
+});
+
+/**
+ * The wire shape of the two bases (ISS-5189).
+ *
+ * `apps/api` and `apps/app` are separate Vercel deploy units on one push, so
+ * changing what `medianTokens` MEANS in place would misreport for the whole
+ * window in which one of them is old. The field therefore keeps its billed
+ * basis and the work basis arrives beside it as an additive optional field.
+ * These pin both halves of that: the old field must not have moved, and the new
+ * one must be omitted rather than zeroed when there is nothing to send.
+ */
+describe("the model row carries both token bases as separate wire fields", () => {
+  const rows: ModelSpendGridRow[] = [
+    modelRow({
+      endsWithError: false,
+      producedArtifact: true,
+      sessions: MIN_GRADED_SESSIONS,
+      tokens: 10_000_000,
+      usd: 50,
+    }),
+  ];
+  const model = "claude-sonnet-4.6";
+
+  it("passes the billed median through on `medianTokens`, unchanged", () => {
+    // The retired field, on its ORIGINAL basis. An `apps/app` build that
+    // predates `medianWorkTokens` renders exactly this number, so it must be
+    // the billed median the read returned and not the work one.
+    const row = foldModelRows(rows, [
+      { medianTokens: 900_000, medianWorkTokens: 120_000, model },
+    ])[0];
+    expect(row.medianTokens).toBe(900_000);
+  });
+
+  it("carries the work median on `medianWorkTokens`", () => {
+    const row = foldModelRows(rows, [
+      { medianTokens: 900_000, medianWorkTokens: 120_000, model },
+    ])[0];
+    expect(row.medianWorkTokens).toBe(120_000);
+  });
+
+  it("OMITS `medianWorkTokens` when there is no work median, rather than sending 0", () => {
+    // Omitted, not `null` and not `0`: a real `0` is reachable on this narrowed
+    // basis, so a fabricated one is indistinguishable from a measurement, and
+    // the screen's absent-field dash is the only honest render.
+    const row = foldModelRows(rows, [
+      { medianTokens: 900_000, medianWorkTokens: null, model },
+    ])[0];
+    expect(Object.hasOwn(row, "medianWorkTokens")).toBe(false);
+    expect(row.medianWorkTokens).toBeUndefined();
+  });
+
+  it("OMITS `medianWorkTokens` for a model the median read returned no row for", () => {
+    const row = foldModelRows(rows, [])[0];
+    expect(Object.hasOwn(row, "medianWorkTokens")).toBe(false);
+    // The retired field keeps the `0` it has always projected here: narrowing a
+    // required field would break the very client it is being kept for.
+    expect(row.medianTokens).toBe(0);
   });
 });

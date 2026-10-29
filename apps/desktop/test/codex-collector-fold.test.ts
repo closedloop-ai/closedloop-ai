@@ -10,13 +10,23 @@
  * reads `packages/golden-sessions`.
  */
 import assert from "node:assert/strict";
+import { appendFileSync } from "node:fs";
 import path from "node:path";
-import { after, before, describe, test } from "node:test";
+import {
+  ImportIngestFailure,
+  ImportParseDegradedSite,
+} from "@closedloop-ai/telemetry-contract/app";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import {
   createCodexCollector,
   foldCodexDescendants,
 } from "../src/main/collectors/codex/codex-collector.js";
 import { parseRolloutFile } from "../src/main/collectors/codex/codex-parser.js";
+import {
+  parseDegradedSite,
+  parseQualityIngestFailures,
+} from "../src/main/collectors/engine/collector-ingest-failure.js";
+import type { IngestStorePort } from "../src/main/collectors/engine/ingest-store-port.js";
 import type { NormalizedTokenCounts } from "../src/main/collectors/types.js";
 import {
   CODEX_CHILD_UUID,
@@ -40,11 +50,11 @@ import {
 
 const ORIGINAL_TZ = process.env.TZ;
 
-before(() => {
+beforeAll(() => {
   process.env.TZ = "UTC";
 });
 
-after(() => {
+afterAll(() => {
   if (ORIGINAL_TZ === undefined) {
     Reflect.deleteProperty(process.env, "TZ");
   } else {
@@ -73,13 +83,13 @@ function counts(
 function collectorOver(
   root: string,
   sources: string[],
-  linkageCachePath?: string
+  linkageStore?: IngestStorePort
 ) {
   return createCodexCollector({
     sessionsDir: root,
     archivedDir: path.join(root, "archive"),
     listSources: () => sources,
-    linkageCachePath,
+    ...(linkageStore ? { linkageStore } : {}),
   });
 }
 
@@ -461,6 +471,102 @@ describe("Codex descendant fold — provenance and quality", () => {
       parentOnly?.parseQuality?.unknownRecords,
       undefined,
       "fixture guard: every one of those signals came from the child"
+    );
+  });
+
+  // ISS-6336 (whitlockk review): `mergeParseQuality` re-derived the child fold
+  // instead of reusing the canonical one, and got both halves wrong — it summed
+  // the child's `malformedLines` RAW, counting its benign live-write truncation
+  // as corruption, and OR-ed `truncatedFinalLine` onto a parent whose own final
+  // line was fine. A healthy multi-rollout session therefore reported
+  // `session_parse_degraded`, which is a health counter firing on health.
+  test("a descendant rollout's benign trailing truncation is not corruption (ISS-6336)", async () => {
+    const root = makeTempDir("codex-fold-quality-truncated-");
+    const parentPath = writeParent(root);
+    const childPath = writeChild(root, childLines());
+    // Append a raw truncated line — `writeChild` JSON-stringifies every element,
+    // so a malformed line cannot be expressed through it.
+    appendFileSync(
+      childPath,
+      '{"timestamp":"2026-06-24T10:01:09.000Z","payload":{"type":"even',
+      "utf8"
+    );
+    const collector = collectorOver(root, [parentPath, childPath]);
+
+    const parentOnly = await parseRolloutFile(parentPath, {
+      mergeWorkflowJournalTokens: false,
+    });
+    const [parent] = await collector.parse(parentPath);
+
+    assert.equal(
+      parent.parseQuality?.malformedLines,
+      parentOnly?.parseQuality?.malformedLines ?? 0,
+      "the child's own trailing truncation must not inflate the parent"
+    );
+    assert.equal(
+      parent.parseQuality?.truncatedFinalLine,
+      false,
+      "truncatedFinalLine belongs to the ROOT rollout's file, never a child's"
+    );
+    assert.equal(parent.parseQuality?.childTruncatedFinalLines, 1);
+    assert.deepEqual(parseQualityIngestFailures(parent.parseQuality), []);
+  });
+
+  /**
+   * ISS-12036: the fold ATTRIBUTES what it adds, so a degraded multi-rollout
+   * Codex session says which writer lost the lines.
+   *
+   * The three shares — the root's own transcript, folded children, folded
+   * descendant rollouts — sum back to the corrupt-line count exactly, which is
+   * what lets `parseDegradedSite` derive the root's share as the remainder
+   * rather than carry a fourth counter that could disagree with the total.
+   *
+   * MUTATION: drop the `foldedDescendantMalformedLines` term from
+   * `mergeParseQuality` and the site falls through to `main_transcript`,
+   * blaming the root for a descendant's corruption.
+   */
+  test("a descendant rollout's MID-FILE corruption is attributed to the fold (ISS-12036)", async () => {
+    const root = makeTempDir("codex-fold-quality-attributed-");
+    const parentPath = writeParent(root);
+    const childPath = writeChild(root, childLines());
+    // A corrupt line in the MIDDLE of the child, followed by a well-formed one,
+    // so it is genuine corruption rather than the benign trailing truncation the
+    // sibling case above covers.
+    appendFileSync(
+      childPath,
+      '{"timestamp":"2026-06-24T10:01:09.000Z","payload":{"type":"even\n',
+      "utf8"
+    );
+    appendFileSync(
+      childPath,
+      `${JSON.stringify(codexTokenCount("2026-06-24T10:01:10.000Z", 10, 0, 1))}\n`,
+      "utf8"
+    );
+    const collector = collectorOver(root, [parentPath, childPath]);
+
+    const parentOnly = await parseRolloutFile(parentPath, {
+      mergeWorkflowJournalTokens: false,
+    });
+    const [parent] = await collector.parse(parentPath);
+
+    assert.equal(
+      parentOnly?.parseQuality?.malformedLines,
+      0,
+      "fixture guard: the root's own transcript is clean, so every corrupt line came from the descendant"
+    );
+    assert.equal(parent.parseQuality?.malformedLines, 1);
+    assert.equal(parent.parseQuality?.foldedDescendantMalformedLines, 1);
+    assert.equal(
+      parent.parseQuality?.foldedChildMalformedLines,
+      undefined,
+      "no workflow journal was folded, so that share stays absent"
+    );
+    assert.deepEqual(parseQualityIngestFailures(parent.parseQuality), [
+      ImportIngestFailure.SessionParseDegraded,
+    ]);
+    assert.equal(
+      parseDegradedSite(parent.parseQuality),
+      ImportParseDegradedSite.FoldedDescendant
     );
   });
 

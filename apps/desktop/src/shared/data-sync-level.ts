@@ -1,4 +1,10 @@
-import { DataSyncLevel, type SyncObservabilityTier } from "./contracts.js";
+import {
+  DATA_SYNC_LEVELS,
+  DataSyncLevel,
+  dataSyncLevelAllowsTranscripts,
+} from "@repo/api/src/types/data-sync-level";
+import { MetadataContentPolicy } from "@repo/lib/agent-sessions/metadata-preview";
+import type { SyncObservabilityTier } from "./contracts.js";
 
 /**
  * FEA-3907 — the graduated "data sync level": ONE product control in Settings
@@ -10,13 +16,13 @@ import { DataSyncLevel, type SyncObservabilityTier } from "./contracts.js";
  * consumer keeps reading its own boolean; the level just derives them together
  * so a user can no longer put them in a contradictory combination.
  *
- * The {@link DataSyncLevel} const/type itself lives in `contracts.ts` (next to
- * `SyncObservabilityTier`) to avoid a circular import; this module owns the
- * ranking, the level → booleans mapping, and the backward-compat migration.
- *
- * Ranked least-to-most exposure — the RANKING, not a render order (ISS-5318
- * renders the picker most-permissive first):
- *   Off < Metadata only (fresh-install default) < Redacted sessions < Full transcripts.
+ * ISS-6147: this module owns the level → booleans mapping and the
+ * backward-compat migration, and NOT the level set. That, its order, and the
+ * default/elevated anchors are declared once in
+ * `@repo/api/src/types/data-sync-level` and re-exported below, because `@repo/app`
+ * renders the same levels and cannot import from `apps/desktop`. The list is
+ * ordered most-permissive first — surfaces render it as declared, and
+ * `isMoreExposedDataSyncLevel` reads the same array for direction.
  *
  * NOT superseded here: the per-tool `collect{Claude,Cursor,Copilot}Enabled`
  * flags. Those gate LOCAL collection (what the desktop reads off disk to
@@ -26,24 +32,6 @@ import { DataSyncLevel, type SyncObservabilityTier } from "./contracts.js";
  * destructive removal into the level is deferred (see the FEA-3907 PR); the
  * level never forces a user's disabled collector back on.
  */
-
-/** All levels, least-to-most exposure. */
-export const DATA_SYNC_LEVELS: readonly DataSyncLevel[] = [
-  DataSyncLevel.Off,
-  DataSyncLevel.Metadata,
-  DataSyncLevel.Redacted,
-  DataSyncLevel.Full,
-];
-
-/**
- * What a fresh install lands on. Metadata unlocks cloud insights without ever
- * uploading prompt or file contents. Carries no chip of its own since ISS-5318:
- * where the selection starts is not a claim the picker needs to make.
- */
-export const DEFAULT_DATA_SYNC_LEVEL: DataSyncLevel = DataSyncLevel.Metadata;
-
-/** The most-permissive level — the one `dataSyncLevelBadge` marks "Recommended". */
-export const ELEVATED_DATA_SYNC_LEVEL: DataSyncLevel = DataSyncLevel.Full;
 
 // FEA-4055: the per-level PRESENTATIONAL copy (titles, benefit lines, per-line
 // egress breakdown, caveats) no longer lives here. It moved to the shared
@@ -60,11 +48,8 @@ export const ELEVATED_DATA_SYNC_LEVEL: DataSyncLevel = DataSyncLevel.Full;
  * The set of persisted settings a DELIBERATE level pick derives. Every field is
  * a value an existing runtime consumer already reads. `syncObservabilityTier` is
  * the PRD-532 §7 lane gate the level folds in so an active choice keeps the level
- * and tier consistent. NOTE: the one-time upgrade MIGRATION does not establish the
- * consent tier from THIS map — it grandfathers the tier from the install's actual
- * prior behavior via {@link grandfatherConsentTier}, and only when no explicit tier
- * was ever persisted (see `migrateDataSyncLevel` in `settings-migrations.ts`), so a
- * silent migration never overwrites a deliberate choice.
+ * and tier consistent. Upgrade migrations preserve a missing answer as unset;
+ * only an explicit choice establishes consent (ISS-12523).
  */
 export type DataSyncLevelBooleans = {
   cloudConnectionEnabled: boolean;
@@ -289,44 +274,34 @@ export function reconcileDataSyncLevel(
 }
 
 /**
- * FEA-4103 follow-up — the SINGLE consent-inference SSOT the settings migration
- * uses to GRANDFATHER an upgrading install's PRD-532 §7 consent tier from its
- * legacy connectivity/sync flags, or `null` to record no consent. It replaces the
- * older two-path approach (derive a level from the legacy flags OR from the
- * reconciled persisted level, map that level back to a tier, then special-case
- * `local`), which computed the same answer two different ways and could drift.
+ * ISS-7775 — which `metadata` content policy a machine on `level` may put on the
+ * sync wire. The SSOT for that decision, sitting with
+ * {@link dataSyncLevelToBooleans} because it is the same kind of derivation: one
+ * persisted level, several runtime consequences that must not be settable into a
+ * contradictory combination.
  *
- * Connectivity-aware and non-escalating:
- *   - Disconnected, or a legacy tier pinned to `local` (both mean "was syncing
- *     nothing") → grandfather NOTHING (`null`), EXCEPT an install that completed
- *     onboarding, which keeps the FEA-3462 `metadata` floor so a later reconnect
- *     resumes the aggregate lane instead of staying gated on `null`.
- *   - Connected → `full` iff it was transcript-syncing (full transcript sync was
- *     the only pre-tier behavior, so this is continuity, not a new grant), else
- *     the `metadata` floor. `metadata`/`local` never upload transcript contents.
+ * Only `Full` retains content. That is not a third statement of the tier order —
+ * it is the SAME predicate {@link dataSyncLevelAllowsTranscripts} already
+ * publishes, read here for the metadata blob instead of the transcript lane. A
+ * level whose consent card says "Prompts & completions — stays on this device"
+ * must not ship them inside `metadata` either, which is exactly what it did
+ * before this: the producer took no level at all, so Metadata, Redacted and Full
+ * emitted byte-identical payloads.
  *
- * Only meaningful when the install never made an explicit tier choice — the caller
- * guards on the `syncObservabilityTier` key being ABSENT, so `flags` carries a
- * `null` tier here; an explicit tier (including an explicit `null`) is
- * authoritative and must not be reinterpreted. This is the tier-valued twin of
- * {@link legacyFlagsToDataSyncLevel}: for every input, the tier it returns equals
- * `dataSyncLevelToBooleans(legacyFlagsToDataSyncLevel(flags)).syncObservabilityTier`
- * with the same `local → onboarded ? metadata : null` floor.
+ * `Off` maps to `Omit` for completeness rather than for effect — a disconnected
+ * machine sends no payload at all — so that no level can reach the producer
+ * without a policy.
+ *
+ * Lives in `apps/desktop` because only the desktop knows a user's tier: the
+ * cloud persist boundary receives a payload that has already left some machine,
+ * and keeps the permissive default (see `compactMetadataForPreview`).
  */
-export function grandfatherConsentTier(
-  flags: LegacyDataSyncFlags,
-  onboardingCompleted: boolean
-): SyncObservabilityTier | null {
-  if (
-    !flags.cloudConnectionEnabled ||
-    flags.syncObservabilityTier === "local"
-  ) {
-    return onboardingCompleted ? "metadata" : null;
-  }
-  if (flags.transcriptSyncEnabled) {
-    return "full";
-  }
-  return "metadata";
+export function dataSyncLevelToMetadataContentPolicy(
+  level: DataSyncLevel
+): MetadataContentPolicy {
+  return dataSyncLevelAllowsTranscripts(level)
+    ? MetadataContentPolicy.Retain
+    : MetadataContentPolicy.Omit;
 }
 
 function assertNeverLevel(level: never): never {

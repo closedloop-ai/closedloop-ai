@@ -12,11 +12,11 @@ import { buildCorrelationId, notifySlack } from "@/lib/slack-notifier";
  * Generalizes the old one-off `apps/api/scripts/purge-phantom-sessions.ts`
  * (which only matched a narrow Codex re-serialization burst and never ran on a
  * schedule) using the FEA-3284 `SESSION_IDLE_WHERE` SSOT, gated by an age window
- * (the late-chunk safety guard) and a no-PR guard so no real work is ever lost.
- * FEA-3287 stops NEW phantoms at the desktop source; this sweep drains the
- * existing backlog. Complements `cleanup-expired-sessions` (governance-window
- * retention) — that sweep deletes OLD sessions regardless of substance; this one
- * deletes EMPTY sessions once aged.
+ * plus an explicit pending-chunk exclusion and a no-PR guard so no real work is
+ * ever lost. FEA-3287 stops NEW phantoms at the desktop source; this sweep drains
+ * the existing backlog. Complements `cleanup-expired-sessions`
+ * (governance-window retention) — that sweep deletes OLD sessions regardless of
+ * substance; this one deletes EMPTY sessions once aged.
  *
  * Protected by CRON_SECRET bearer token — must be set in environment and passed
  * via `Authorization: Bearer <secret>` header (e.g., Vercel Cron).
@@ -34,6 +34,9 @@ export const GET = async (request: Request): Promise<Response> => {
 
   log.info(`[cleanup-phantom-sessions] ${result.summary}`, {
     deleted: result.deleted,
+    spared: result.spared,
+    deletedSessionIds: result.deletedSessionIds,
+    deletedSessionIdsComplete: result.deletedSessionIdsComplete,
     cutoff: result.cutoff,
     exitCode: result.exitCode,
   });

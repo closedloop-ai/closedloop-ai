@@ -6,14 +6,13 @@
  * says today.
  */
 import { AGENT_COMPONENT_INVOCATION_DEFINITION_CONTENT_MAX_BYTES } from "@repo/api/src/types/agent-component-invocation";
-import { asRecord, stringValue } from "../parser-utils";
+import { asRecord, stringValue, toIso } from "../parser-utils";
 import type {
   NormalizedDefinitionKind,
   NormalizedDefinitionSnapshot,
   NormalizedSkillUse,
   NormalizedToolUse,
 } from "../types";
-import { isoTs } from "./parse-claude";
 import type { SessionAccumulator } from "./parse-claude-accumulator";
 import { CLAUDE_DELEGATION_TOOL_NAMES } from "./parse-claude-delegations";
 
@@ -35,7 +34,7 @@ export function attachDefinitionSnapshot(
   if (content === null) {
     return;
   }
-  const capturedAt = isoTs(record.timestamp);
+  const capturedAt = toIso(record.timestamp);
 
   const sourceToolUseId = stringValue(record.sourceToolUseID);
   if (sourceToolUseId) {

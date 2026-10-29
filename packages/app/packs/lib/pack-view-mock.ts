@@ -1,3 +1,4 @@
+// gardener-support: test and story data, not shipped
 /**
  * Presentational fixtures for the Packs UX — used by Storybook stories and
  * component tests. Not shipped to any real surface; the data adapters produce
@@ -16,7 +17,7 @@ import {
   type PackView,
 } from "./pack-view";
 
-const user = (id: string, name: string, color: string): PackUser => ({
+const user = (id: string, name: string): PackUser => ({
   id,
   name,
   initials: name
@@ -25,18 +26,17 @@ const user = (id: string, name: string, color: string): PackUser => ({
     .join("")
     .slice(0, 2)
     .toUpperCase(),
-  color,
 });
 
 export const mockPackUsers: PackUser[] = [
-  user("u-maya", "Maya Chen", "#e11d48"),
-  user("u-devon", "Devon Park", "#6366f1"),
-  user("u-sasha", "Sasha Ortiz", "#10b981"),
-  user("u-imani", "Imani Reid", "#f59e0b"),
-  user("u-kenji", "Kenji Tan", "#8b5cf6"),
-  user("u-ada", "Ada Nunez", "#0891b2"),
-  user("u-pascoe", "Pascoe Birchall", "#db2777"),
-  user("u-tomas", "Tomas Vidal", "#2563eb"),
+  user("u-maya", "Maya Chen"),
+  user("u-devon", "Devon Park"),
+  user("u-sasha", "Sasha Ortiz"),
+  user("u-imani", "Imani Reid"),
+  user("u-kenji", "Kenji Tan"),
+  user("u-ada", "Ada Nunez"),
+  user("u-pascoe", "Pascoe Birchall"),
+  user("u-tomas", "Tomas Vidal"),
 ];
 
 export const mockPackViews: PackView[] = [

@@ -15,19 +15,31 @@ import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { GitHubInstallationStatus, Prisma } from "@repo/database";
 import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import {
+  installBranchIngestDb,
+  syncBranchRefs,
+} from "@/__tests__/support/agent-sessions/branch-ingest.test-harness";
+import {
   buildDefaultAgentSessionEventMocks,
   buildDefaultAgentSessionMocks,
   buildSlugCounterMock,
   buildSyncedSession,
-  installBranchIngestDb,
   installDb,
+  persistedSessionDetail,
   SESSION_STARTED_AT,
   SESSION_UPDATED_AT,
-  syncBranchRefs,
 } from "@/__tests__/support/agent-sessions/service.test-harness";
 import { mocks } from "@/__tests__/support/agent-sessions/service.test-mocks";
+import {
+  SessionPrLinkAudience,
+  sessionPrLinkKindWhere,
+} from "@/lib/session-pr-links";
 import { agentSessionsService } from "../../service";
 import { SessionSyncMetric } from "../session-sync-metrics";
+
+vi.mock("@/app/branches/branch-detail-signal", () => ({
+  emitBranchDetailChanged: vi.fn(),
+  emitBranchDetailsChanged: vi.fn(),
+}));
 
 vi.mock("@repo/database", async () => {
   const { databaseModuleMock } = await import(
@@ -88,9 +100,21 @@ describe("agentSessionsService", () => {
         organizationId: "org-1",
         sourceId: "persisted-session-1",
         linkType: LinkType.RelatesTo,
-        metadata: { path: ["linkKind"], equals: "session_pr" },
+        // ISS-5823: the replacement sweep runs at the Evidence audience, so it
+        // owns the weak prose tier too — a sweep blind to those rows would
+        // orphan every prose-derived link it should have replaced.
+        ...sessionPrLinkKindWhere(SessionPrLinkAudience.Evidence),
         // FEA-2729: spare rows that also carry session_branch evidence.
-        NOT: { metadata: { path: ["branchLinked"], equals: true } },
+        // ISS-9859: NULL-safe, so a row with no `branchLinked` key — every
+        // PR-only link this lane writes — is matched and deleted.
+        AND: [
+          {
+            OR: [
+              { metadata: { path: ["branchLinked"], equals: Prisma.AnyNull } },
+              { NOT: { metadata: { path: ["branchLinked"], equals: true } } },
+            ],
+          },
+        ],
       },
     });
   });
@@ -126,26 +150,45 @@ describe("agentSessionsService", () => {
       },
     ]);
 
-    expect(m.artifactLinkUpsert).toHaveBeenCalledTimes(1);
-    const metadata = m.artifactLinkUpsert.mock.calls[0][0].create.metadata;
-    // PR precedence keeps the scalar linkKind so the session_pr reader works.
+    expect(m.linkRow).toHaveBeenCalledTimes(1);
+    const metadata = m.linkRow.mock.calls[0][0].metadata;
     expect(metadata.linkKind).toBe(SessionArtifactLinkKind.SessionPr);
-    // Both kinds are recorded, sorted.
     expect(metadata.linkKinds).toEqual([
       SessionArtifactLinkKind.SessionBranch,
       SessionArtifactLinkKind.SessionPr,
     ]);
-    // PR markers preserved…
     expect(metadata.relationTypes).toEqual([SessionPrRelationType.Created]);
     expect(metadata.prNumber).toBe(7);
-    // …and branch evidence added.
     expect(metadata.method).toBe("git_command");
     expect(metadata.relation).toBe(ArtifactRefRelation.Created);
     expect(metadata.branchLinked).toBe(true);
   });
-  it("aggregates CREATED and REFERENCED prRefs for same PR into single ArtifactLink with relationTypes array", async () => {
+  it("persists every same-branch PR identity with per-PR relation types", async () => {
     const artifactLinkDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
     const artifactLinkUpsert = vi.fn().mockResolvedValue({});
+    const pullRequestDetailFindMany = vi.fn().mockResolvedValue([
+      {
+        id: "prd-1",
+        repositoryId: "repo-1",
+        number: 42,
+        branchArtifactId: "branch-artifact-1",
+        isCurrent: false,
+      },
+      {
+        id: "prd-2",
+        repositoryId: "repo-1",
+        number: 43,
+        branchArtifactId: "branch-artifact-1",
+        isCurrent: true,
+      },
+      {
+        id: "prd-incidental",
+        repositoryId: "repo-1",
+        number: 44,
+        branchArtifactId: "branch-artifact-1",
+        isCurrent: true,
+      },
+    ]);
     installDb({
       computeTarget: {
         findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
@@ -169,18 +212,11 @@ describe("agentSessionsService", () => {
         findMany: vi
           .fn()
           .mockResolvedValue([
-            { id: "repo-1", fullName: "closedloop-ai/example-repo" },
+            { id: "repo-1", fullName: "closedloop-ai/closedloop-ai" },
           ]),
       },
       pullRequestDetail: {
-        findMany: vi.fn().mockResolvedValue([
-          {
-            id: "prd-1",
-            repositoryId: "repo-1",
-            number: 42,
-            branchArtifactId: "branch-artifact-1",
-          },
-        ]),
+        findMany: pullRequestDetailFindMany,
       },
     });
 
@@ -199,7 +235,7 @@ describe("agentSessionsService", () => {
           buildSyncedSession({
             prRefs: [
               {
-                repositoryFullName: "closedloop-ai/example-repo",
+                repositoryFullName: "closedloop-ai/closedloop-ai",
                 prNumber: 42,
                 relationType: SessionPrRelationType.Created,
                 branchLifecycleEvents: [
@@ -211,9 +247,14 @@ describe("agentSessionsService", () => {
                 ],
               },
               {
-                repositoryFullName: "closedloop-ai/example-repo",
+                repositoryFullName: "closedloop-ai/closedloop-ai",
                 prNumber: 42,
                 relationType: SessionPrRelationType.Referenced,
+              },
+              {
+                repositoryFullName: "closedloop-ai/closedloop-ai",
+                prNumber: 43,
+                relationType: SessionPrRelationType.Reviewed,
               },
             ],
           }),
@@ -222,16 +263,42 @@ describe("agentSessionsService", () => {
     );
 
     expect(artifactLinkUpsert).toHaveBeenCalledTimes(1);
+    expect(pullRequestDetailFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          organizationId: "org-1",
+          lastVerifiedAt: { not: null },
+          OR: [
+            { repositoryId: "repo-1", number: 42 },
+            { repositoryId: "repo-1", number: 43 },
+          ],
+        },
+        select: expect.objectContaining({
+          id: true,
+          repositoryId: true,
+          number: true,
+          branchArtifactId: true,
+        }),
+      })
+    );
+    expect(pullRequestDetailFindMany.mock.invocationCallOrder[0]).toBeLessThan(
+      artifactLinkUpsert.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY
+    );
     const upsertArg = artifactLinkUpsert.mock.calls[0][0];
     expect(upsertArg.create).toMatchObject({
       sourceId: "persisted-session-1",
       targetId: "branch-artifact-1",
       linkType: LinkType.RelatesTo,
       metadata: expect.objectContaining({
-        linkKind: "session_pr",
+        linkKind: SessionArtifactLinkKind.SessionBranch,
+        linkKinds: [
+          SessionArtifactLinkKind.SessionBranch,
+          SessionArtifactLinkKind.SessionPrSet,
+        ],
         relationTypes: [
           SessionPrRelationType.Created,
           SessionPrRelationType.Referenced,
+          SessionPrRelationType.Reviewed,
         ],
         branchLifecycleEvents: [
           {
@@ -240,55 +307,77 @@ describe("agentSessionsService", () => {
             evidenceId: "desktop-artifact-link:pr-create",
           },
         ],
-        repositoryFullName: "closedloop-ai/example-repo",
-        prNumber: 42,
+        prRefs: [
+          {
+            repositoryFullName: "closedloop-ai/closedloop-ai",
+            prNumber: 42,
+            relationTypes: [
+              SessionPrRelationType.Created,
+              SessionPrRelationType.Referenced,
+            ],
+          },
+          {
+            repositoryFullName: "closedloop-ai/closedloop-ai",
+            prNumber: 43,
+            relationTypes: [SessionPrRelationType.Reviewed],
+          },
+        ],
       }),
     });
-    // FEA-2729: the PR lane's replacement delete must spare rows that also
-    // carry session_branch evidence (a merged edge keeps linkKind=session_pr).
+    expect(upsertArg.create.metadata).not.toHaveProperty("repositoryFullName");
+    expect(upsertArg.create.metadata).not.toHaveProperty("prNumber");
+    expect(upsertArg.create.metadata.prRefs).not.toContainEqual(
+      expect.objectContaining({ prNumber: 44 })
+    );
     const prDeleteCall = artifactLinkDeleteMany.mock.calls.find(
       (call: unknown[]) =>
-        (call[0] as { where: Record<string, unknown> }).where.metadata !==
-        undefined
+        (call[0] as { where: { OR?: unknown[] } }).where.OR !== undefined
     );
     expect(prDeleteCall).toBeDefined();
     const prDeleteArgs = prDeleteCall?.[0];
     expect(prDeleteArgs).toBeDefined();
-    expect((prDeleteArgs as { where: { NOT?: unknown } }).where.NOT).toEqual({
-      metadata: { path: ["branchLinked"], equals: true },
-    });
+    // ISS-9859: the branch-evidence exclusion is NULL-safe now, so a row with
+    // no `branchLinked` key is deleted and only `branchLinked: true` is spared.
+    expect((prDeleteArgs as { where: { AND?: unknown } }).where.AND).toEqual([
+      {
+        OR: [
+          { metadata: { path: ["branchLinked"], equals: Prisma.AnyNull } },
+          { NOT: { metadata: { path: ["branchLinked"], equals: true } } },
+        ],
+      },
+    ]);
   });
   it("PR metadata updates preserve existing branch lifecycle metadata on merged edges", async () => {
     const artifactLinkUpsert = vi.fn().mockResolvedValue({});
-    // ISS-4445: persistSessionPrArtifactLinks now reads the pre-existing merge
-    // base for every (session → branch) target in ONE batched findMany keyed by
-    // targetId (loadExistingLinkMetadataByTargetId), not a per-branch findFirst.
-    // Mock that findMany with the existing merged edge so the loop merges the
-    // prior branch lifecycle metadata onto the new PR ref.
-    const artifactLinkFindMany = vi.fn().mockResolvedValue([
-      {
-        targetId: "branch-artifact-1",
-        metadata: {
-          linkKind: SessionArtifactLinkKind.SessionPr,
-          linkKinds: [
-            SessionArtifactLinkKind.SessionBranch,
-            SessionArtifactLinkKind.SessionPr,
-          ],
-          branchLinked: true,
-          method: "git_push",
-          relation: ArtifactRefRelation.Created,
-          branchName: "feat/x",
-          branchRepositoryFullName: "closedloop-ai/example-repo",
-          branchLifecycleEvents: [
-            {
-              kind: BranchLifecycleBoundaryKind.PrRaised,
-              observedAt: "2026-05-20T17:01:00.000Z",
-              evidenceId: "desktop-artifact-link:pr-create",
-            },
-          ],
+    const existingMetadata = {
+      linkKind: SessionArtifactLinkKind.SessionPr,
+      linkKinds: [
+        SessionArtifactLinkKind.SessionBranch,
+        SessionArtifactLinkKind.SessionPr,
+      ],
+      branchLinked: true,
+      method: "git_push",
+      relation: ArtifactRefRelation.Created,
+      branchName: "feat/x",
+      branchRepositoryFullName: "closedloop-ai/closedloop-ai",
+      branchLifecycleEvents: [
+        {
+          kind: BranchLifecycleBoundaryKind.PrRaised,
+          observedAt: "2026-05-20T17:01:00.000Z",
+          evidenceId: "desktop-artifact-link:pr-create",
         },
-      },
-    ]);
+      ],
+    };
+    const artifactLinkFindMany = vi.fn().mockImplementation((args) =>
+      args.select?.targetId
+        ? Promise.resolve([
+            {
+              targetId: "branch-artifact-1",
+              metadata: existingMetadata,
+            },
+          ])
+        : Promise.resolve([])
+    );
     installDb({
       computeTarget: {
         findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
@@ -313,7 +402,7 @@ describe("agentSessionsService", () => {
         findMany: vi
           .fn()
           .mockResolvedValue([
-            { id: "repo-1", fullName: "closedloop-ai/example-repo" },
+            { id: "repo-1", fullName: "closedloop-ai/closedloop-ai" },
           ]),
       },
       pullRequestDetail: {
@@ -343,7 +432,7 @@ describe("agentSessionsService", () => {
           buildSyncedSession({
             prRefs: [
               {
-                repositoryFullName: "closedloop-ai/example-repo",
+                repositoryFullName: "closedloop-ai/closedloop-ai",
                 prNumber: 42,
                 relationType: SessionPrRelationType.Reviewed,
                 branchLifecycleEvents: [
@@ -386,7 +475,7 @@ describe("agentSessionsService", () => {
     const repoFindMany = vi.fn().mockResolvedValue([
       {
         id: "repo-canonical",
-        fullName: "closedloop-ai/example-repo",
+        fullName: "closedloop-ai/closedloop-ai",
       },
     ]);
     const pullRequestDetailFindMany = vi.fn().mockResolvedValue([
@@ -439,7 +528,7 @@ describe("agentSessionsService", () => {
           buildSyncedSession({
             prRefs: [
               {
-                repositoryFullName: "closedloop-ai/example-repo",
+                repositoryFullName: "closedloop-ai/closedloop-ai",
                 prNumber: 42,
                 prUrl: "https://github.com/forged-org/forged-repo/pull/999",
                 relationType: SessionPrRelationType.Created,
@@ -452,7 +541,7 @@ describe("agentSessionsService", () => {
 
     expect(repoFindMany).toHaveBeenCalledWith({
       where: {
-        fullName: { in: ["closedloop-ai/example-repo"] },
+        fullName: { in: ["closedloop-ai/closedloop-ai"] },
         removedAt: null,
         installation: {
           organizationId: "org-1",
@@ -461,14 +550,22 @@ describe("agentSessionsService", () => {
       },
       select: { id: true, fullName: true },
     });
-    expect(pullRequestDetailFindMany).toHaveBeenCalledWith({
-      where: {
-        isCurrent: true,
-        lastVerifiedAt: { not: null },
-        OR: [{ repositoryId: "repo-canonical", number: 42 }],
-      },
-      select: { repositoryId: true, number: true, branchArtifactId: true },
-    });
+    expect(pullRequestDetailFindMany).toHaveBeenCalledTimes(1);
+    expect(pullRequestDetailFindMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: {
+          organizationId: "org-1",
+          lastVerifiedAt: { not: null },
+          OR: [{ repositoryId: "repo-canonical", number: 42 }],
+        },
+        select: expect.objectContaining({
+          id: true,
+          repositoryId: true,
+          number: true,
+          branchArtifactId: true,
+        }),
+      })
+    );
     expect(artifactLinkUpsert).toHaveBeenCalledTimes(1);
     const upsertArg = artifactLinkUpsert.mock.calls[0][0];
     expect(upsertArg.create).toMatchObject({
@@ -478,7 +575,7 @@ describe("agentSessionsService", () => {
       metadata: expect.objectContaining({
         linkKind: "session_pr",
         relationTypes: [SessionPrRelationType.Created],
-        repositoryFullName: "closedloop-ai/example-repo",
+        repositoryFullName: "closedloop-ai/closedloop-ai",
         prNumber: 42,
       }),
     });
@@ -583,7 +680,7 @@ describe("agentSessionsService — PR blob and session_pr links share one gate (
     const artifactLinkDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
     const sessionDetailUpsert = vi
       .fn()
-      .mockResolvedValue({ artifactId: "persisted-session-1" });
+      .mockResolvedValue(persistedSessionDetail("persisted-session-1"));
     installDb({
       computeTarget: {
         findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
@@ -644,9 +741,16 @@ describe("agentSessionsService — PR blob and session_pr links share one gate (
   function countSessionPrDeletes(deleteMany: Mock): number {
     return deleteMany.mock.calls.filter((call: unknown[]) => {
       const arg = call[0] as
-        | { where?: { metadata?: { path?: string[]; equals?: string } } }
+        | {
+            where?: {
+              OR?: Array<{ metadata?: { equals?: string } }>;
+            };
+          }
         | undefined;
-      return arg?.where?.metadata?.equals === SessionArtifactLinkKind.SessionPr;
+      return arg?.where?.OR?.some(
+        (clause) =>
+          clause.metadata?.equals === SessionArtifactLinkKind.SessionPr
+      );
     }).length;
   }
 

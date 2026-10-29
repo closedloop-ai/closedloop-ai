@@ -21,9 +21,10 @@
  *  - web (`apps/app`) reads it as a PostHog flag via
  *    `AGENTS_DEFINITION_EMPTY_STATE_FEATURE_FLAG_KEY`
  *    (`packages/app/shared/lib/feature-flags.ts`).
- *  - the desktop main process registers it as a Labs toggle via
- *    `DESKTOP_AGENTS_DEFINITION_EMPTY_STATE_FEATURE_FLAG_KEY`
- *    (`apps/desktop/src/shared/feature-flags.ts`).
+ *  - the desktop renderer resolves the byte-for-byte-equal key from the
+ *    signed-in account's PostHog assignment, delivered over the IPC bridge,
+ *    under the alias `DESKTOP_AGENTS_DEFINITION_EMPTY_STATE_FEATURE_FLAG_KEY`
+ *    (`apps/desktop/src/shared/feature-flags-labs-detail.ts`).
  *
  * `AgentDetail` mounts on the web app AND the packaged desktop renderer, so a
  * single-surface gate would let the change leak on desktop while hidden on web

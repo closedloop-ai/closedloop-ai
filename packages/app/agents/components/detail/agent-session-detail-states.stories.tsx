@@ -33,9 +33,9 @@ import {
  * mounts globally (ISS-5665).
  */
 const meta = {
-  title: "App Core/Agents/Agent Session Detail States",
+  title: "Composites v1.0/Agents/Detail/Agent Session Detail States",
   component: SessionDetailNotFound,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "fullscreen" },
   decorators: [
     (Story) => (
@@ -54,9 +54,15 @@ type Story = StoryObj<typeof meta>;
 /**
  * The first-paint state. A skeleton stands in for the detail body while the
  * heading is already present, so the page has an outline before the read lands.
+ *
+ * `SessionDetailLoading` takes no `backHref` — it renders before there is
+ * anything to link back to — so the inherited `backHref` arg has no effect
+ * here; excluded from Controls so the panel does not offer a knob that turns
+ * nothing.
  */
 export const Loading: Story = {
   render: () => <SessionDetailLoading />,
+  parameters: { controls: { exclude: ["backHref"] } },
 };
 
 /**

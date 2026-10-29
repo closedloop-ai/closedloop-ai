@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
+import { SessionListCursorSortKey } from "../src/main/agent-sync/agent-session-read-model.js";
+import { listCursorPageSortSql } from "../src/main/database/session-aggregate-filters.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import {
   insertSqliteEvent,
@@ -23,7 +25,8 @@ import {
  */
 
 // PR #1837 perf guard: a temp-b-tree filesort in an EXPLAIN QUERY PLAN means the
-// last-activity sort is NOT being served by idx_sessions_last_activity.
+// last-activity sort is NOT being served by its index.
+const LAST_ACTIVITY_SORT_INDEX = "idx_sessions_last_activity_started";
 const TEMP_BTREE_SORT_PATTERN = /TEMP B-TREE FOR ORDER BY/i;
 
 test("SQLite sync cursor rows are ordered by update time", async () => {
@@ -94,6 +97,7 @@ test("SQLite session cursor page applies date and search filters before paging",
 
   try {
     await insertSqliteSession(db, "old-matching-branch", {
+      name: "fea-2161 old session",
       startedAt: "2026-06-17T00:00:00.000Z",
       metadata: JSON.stringify({ gitBranch: "fea-2161" }),
     });
@@ -102,6 +106,7 @@ test("SQLite session cursor page applies date and search filters before paging",
       metadata: JSON.stringify({ gitBranch: "fea-9999" }),
     });
     await insertSqliteSession(db, "recent-matching-branch", {
+      name: "fea-2161 recent session",
       startedAt: "2026-06-21T00:00:00.000Z",
       metadata: JSON.stringify({ gitBranch: "fea-2161" }),
     });
@@ -182,12 +187,16 @@ test("SQLite session cursor page filters by the Status facet before paging", asy
       []
     );
 
-    // The Waiting facet selects the display projection (awaiting + not ended),
-    // not a stored literal.
+    // ISS-9939 / ISS-10629: EXPECTATION CHANGED. The Waiting facet used to
+    // select the display projection (awaiting + not ended) rather than a stored
+    // literal; the operator ruling retired it, so `waiting` is now an ordinary
+    // unrecognized request — the same answer `completed` gets above. Kept as the
+    // counterfactual, because `s-waiting` is still seeded: if the branch comes
+    // back, the row comes back with it and this reddens.
     const waiting = await pageFor(["waiting"]);
     assert.deepEqual(
       waiting?.rows.map((row) => row.id),
-      ["s-waiting"]
+      []
     );
 
     // Multi-select ORs within the facet; total reflects the filtered cohort.
@@ -307,34 +316,44 @@ test("cursor last-activity sort uses denormalized last_activity_at and matches t
 
     // Perf regression guard (review comment, PR #1837): the whole point of the
     // denormalized NOT NULL column is that the last-activity sort can be served
-    // by `idx_sessions_last_activity` directly. Ordering by the bare column (no
-    // COALESCE wrapper) must let SQLite walk the index instead of materializing a
-    // temp b-tree. This EXPLAIN QUERY PLAN mirrors the CTE shape that
-    // listSqliteSessionCursorPage builds for the last-activity sort.
-    const plan = await db.prisma.client.$queryRawUnsafe<{ detail: string }[]>(
-      `EXPLAIN QUERY PLAN
-         WITH activity AS (
-           SELECT
-             s.id,
-             s.updated_at,
-             s.started_at AS sort_started_at,
-             s.last_activity_at AS sort_last_activity_at
-           FROM sessions s
-         )
-         SELECT id, updated_at
-         FROM activity
-         ORDER BY sort_last_activity_at DESC, id DESC
-         LIMIT 10 OFFSET 0`
-    );
-    const planText = plan.map((r) => r.detail).join("\n");
-    assert.ok(
-      planText.includes("idx_sessions_last_activity"),
-      `last-activity sort must use idx_sessions_last_activity; plan was:\n${planText}`
-    );
-    assert.ok(
-      !TEMP_BTREE_SORT_PATTERN.test(planText),
-      `last-activity sort must not require a temp-b-tree filesort; plan was:\n${planText}`
-    );
+    // by an index directly. Ordering by the bare columns (no COALESCE wrapper)
+    // must let SQLite walk the index instead of materializing a temp b-tree.
+    // This EXPLAIN QUERY PLAN mirrors the CTE shape and the ORDER BY that
+    // listSqliteSessionCursorPage builds for the last-activity sort. A tie
+    // narrows by start, then id, both DESC in either direction (ISS-9584), so
+    // ASC adds a partial sort of the tied rows ("LAST 2 TERMS"); a full "TEMP
+    // B-TREE FOR ORDER BY" would mean the index stopped serving the key.
+    for (const direction of ["DESC", "ASC"] as const) {
+      const { source, orderBy } = listCursorPageSortSql(
+        SessionListCursorSortKey.LastActivity,
+        direction
+      );
+      const plan = await db.prisma.client.$queryRawUnsafe<{ detail: string }[]>(
+        `EXPLAIN QUERY PLAN
+           WITH activity AS (
+             SELECT
+               s.id,
+               s.updated_at,
+               s.started_at AS sort_started_at,
+               s.last_activity_at AS sort_last_activity_at,
+               s.started_at AS tie_started_at
+             FROM ${source}
+           )
+           SELECT id, updated_at
+           FROM activity
+           ORDER BY ${orderBy}
+           LIMIT 10 OFFSET 0`
+      );
+      const planText = plan.map((r) => r.detail).join("\n");
+      assert.ok(
+        planText.includes(LAST_ACTIVITY_SORT_INDEX),
+        `last-activity ${direction} sort must use ${LAST_ACTIVITY_SORT_INDEX}; plan was:\n${planText}`
+      );
+      assert.ok(
+        !TEMP_BTREE_SORT_PATTERN.test(planText),
+        `last-activity ${direction} sort must not require a temp-b-tree filesort; plan was:\n${planText}`
+      );
+    }
 
     // The denormalized column was populated for every session, so the read path
     // no longer depends on the events table at query time. Re-deriving the old
@@ -373,7 +392,8 @@ test("cursor last-activity sort uses denormalized last_activity_at and matches t
     assert.equal(byId.get("charlie"), "2026-06-08T00:00:00.000Z");
     assert.equal(byId.get("delta"), "2026-06-08T00:00:00.000Z");
 
-    // ASC mirrors DESC (key ASC, id ASC tie-break): charlie before delta.
+    // ASC flips the key only: the charlie/delta tie (same start) still closes
+    // id DESC, as the cloud's does (ISS-9584, FEA-4329): delta before charlie.
     const fullAsc = await db.syncSource.listSessionCursorPage?.({
       limit: 10,
       offset: 0,
@@ -382,7 +402,7 @@ test("cursor last-activity sort uses denormalized last_activity_at and matches t
     });
     assert.deepEqual(
       fullAsc?.rows.map((row) => row.id),
-      ["bravo", "charlie", "delta", "alpha"]
+      ["bravo", "delta", "charlie", "alpha"]
     );
 
     // Paging is stable across page boundaries (limit/offset over the same order).

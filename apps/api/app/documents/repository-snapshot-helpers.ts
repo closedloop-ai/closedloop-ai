@@ -12,9 +12,9 @@ import { loadProjectRepoDefaults } from "@/app/projects/repository-resolver";
 
 /**
  * Helpers for populating the per-document `repository_snapshot` JSON column
- * introduced in PLN-602. The snapshot is server-owned, immutable post-create,
- * and produced from one of: project defaults, an explicit Loop selection, or
- * an inherited parent-artifact snapshot.
+ * introduced in PLN-602. The snapshot is server-owned and never client-editable,
+ * and produced from one of: project defaults, an explicit repository
+ * selection, or an inherited parent-artifact snapshot.
  */
 
 function emptySnapshot(): ArtifactRepositorySnapshot {
@@ -88,11 +88,12 @@ export async function buildSnapshotFromProjectDefaults(
 }
 
 /**
- * Build a snapshot from a Loop-style repo selection (primary + additional).
- * Used by both Loop-completion callers and the create-document path, which
- * forward the user's modal-time `repositorySelection`.
+ * Build a snapshot from a repo selection (primary + additional). Used by the
+ * create-document path, which forwards the user's modal-time
+ * `repositorySelection`. The stored `source` keeps its `loop_selection` wire
+ * value so existing rows and old clients read it unchanged.
  */
-export function buildSnapshotFromLoopSelection(
+export function buildSnapshotFromRepositorySelection(
   input: RepositorySelectionInput
 ): ArtifactRepositorySnapshot {
   const repositories: ArtifactRepositoryEntry[] = [

@@ -1,8 +1,6 @@
-import type { BranchTraceResponse } from "@repo/api/src/types/branch";
-import {
-  branchReadService,
-  branchTraceQuerySchema,
-} from "@/app/branches/branch-read-service";
+import type { BranchTraceResponse } from "@repo/api/src/types/branch-trace";
+import { branchTraceQuerySchema } from "@/app/branches/branch-list-query";
+import { branchReadService } from "@/app/branches/branch-read-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   errorResponse,

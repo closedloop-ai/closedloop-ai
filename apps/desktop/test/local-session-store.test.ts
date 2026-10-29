@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { LocalSessionStore } from "../src/main/auth/local-session-store.js";
 import { nodeTestTimers } from "./support/node-test-fake-timers.js";
 
@@ -47,11 +47,12 @@ test("validate() returns false for a valid token with the wrong origin", () => {
   assert.equal(store.validate(sessionToken, "http://localhost:4000"), false);
 });
 
-test("validate() returns false for an expired session", async () => {
+test("validate() returns false for an expired session", () => {
+  nodeTestTimers.enable(["Date"], { now: PINNED_NOW_MS });
   const store = new LocalSessionStore(0.05); // 50 ms TTL
   const { sessionToken } = store.create("http://localhost:3000");
 
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  nodeTestTimers.tick(100);
 
   assert.equal(store.validate(sessionToken, "http://localhost:3000"), false);
 });
@@ -66,12 +67,13 @@ test("validate() returns false for an unknown token", () => {
   );
 });
 
-test("cleanup() removes expired sessions and returns the count removed", async () => {
+test("cleanup() removes expired sessions and returns the count removed", () => {
+  nodeTestTimers.enable(["Date"], { now: PINNED_NOW_MS });
   const store = new LocalSessionStore(0.05); // 50 ms TTL
   store.create("http://localhost:3000");
   store.create("http://localhost:3001");
 
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  nodeTestTimers.tick(100);
 
   const removed = store.cleanup();
   assert.equal(removed, 2);
@@ -124,7 +126,8 @@ test("creating a 9th session evicts the oldest one", () => {
   );
 });
 
-test("activeCount reflects only non-expired sessions", async () => {
+test("activeCount reflects only non-expired sessions", () => {
+  nodeTestTimers.enable(["Date"], { now: PINNED_NOW_MS });
   const shortTtlStore = new LocalSessionStore(0.05); // 50 ms TTL
   const longTtlStore = new LocalSessionStore();
 
@@ -138,7 +141,7 @@ test("activeCount reflects only non-expired sessions", async () => {
   assert.equal(shortTtlStore.activeCount, 2);
   assert.equal(longTtlStore.activeCount, 1);
 
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  nodeTestTimers.tick(100);
 
   assert.equal(shortTtlStore.activeCount, 0);
   assert.equal(longTtlStore.activeCount, 1);

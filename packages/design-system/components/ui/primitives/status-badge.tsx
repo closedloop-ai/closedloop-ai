@@ -89,21 +89,33 @@ export function ToneBadge({
   pulseRing = false,
   showDot = true,
   className,
+  onBlur,
+  onFocus,
   ...passthrough
 }: ToneBadgeProps) {
   // `className` is destructured (merged into the tone classes below) so it is
   // NOT re-spread via `passthrough`; the rest (aria-label, data-*, ref, …) is.
+  // `onFocus`/`onBlur` are destructured so a marked pill can compose its
+  // focus-origin tracking with the caller's (Radix's tooltip trigger) handlers.
   return (
     <Badge
       className={cn(
         "h-6 gap-1.5 rounded-full px-2.5 font-semibold text-[11px] tracking-[0.01em]",
-        pulseRing && [
-          STATUS_PULSE_RING_CLASS,
-          STATUS_PULSE_RING_REDUCED_MOTION_CLASS,
-          STATUS_PULSE_RING_FOCUS_CLASS,
-        ],
+        pulseRing && STATUS_PULSE_RING_CLASS_NAME,
         className
       )}
+      onBlur={(event) => {
+        onBlur?.(event);
+        if (pulseRing) {
+          STATUS_PULSE_RING_FOCUS_ORIGIN_HANDLERS.onBlur(event);
+        }
+      }}
+      onFocus={(event) => {
+        onFocus?.(event);
+        if (pulseRing) {
+          STATUS_PULSE_RING_FOCUS_ORIGIN_HANDLERS.onFocus(event);
+        }
+      }}
       variant={TONE_BADGE_VARIANT[tone]}
       {...passthrough}
     >
@@ -243,3 +255,86 @@ const STATUS_PULSE_RING_REDUCED_MOTION_CLASS =
  */
 const STATUS_PULSE_RING_FOCUS_CLASS =
   "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring" as const;
+
+/**
+ * ISS-12548: flags a ring-marked pill whose focus came from a POINTER, so the
+ * detached focus outline above is not drawn for it.
+ *
+ * Chromium's `:focus-visible` heuristic is not fixed at focus time: once an
+ * element has focus, a later keystroke makes it match — a lone Shift, Escape,
+ * a letter key, or the Shift of a Cmd+Shift+4 screenshot. The pill is
+ * focusable only so its tooltip opens on keyboard focus (`tabIndex`, or the
+ * champion's `<button>`), so a pill someone merely CLICKED kept focus and, at
+ * the next unrelated keystroke, grew the offset outline around one row of the
+ * Sessions Status column (reproduced in Storybook: click, then Shift).
+ *
+ * The origin is read once, on `focus`, where `:focus-visible` still reflects
+ * how focus arrived; it holds until `blur`. Keyboard focus (Tab, or a
+ * programmatic move after keyboard input) is untouched and keeps the outline.
+ */
+const STATUS_PULSE_RING_POINTER_FOCUS_ATTRIBUTE = "data-pointer-focus";
+
+const STATUS_PULSE_RING_POINTER_FOCUS_CLASS =
+  "data-pointer-focus:outline-none" as const;
+
+function focusArrivedByPointer(element: HTMLElement): boolean {
+  try {
+    return !element.matches(":focus-visible");
+  } catch {
+    // An engine that cannot evaluate `:focus-visible` keeps the outline: an
+    // unmarked keyboard focus is the worse failure.
+    return false;
+  }
+}
+
+/**
+ * Focus/blur handlers that keep {@link STATUS_PULSE_RING_POINTER_FOCUS_ATTRIBUTE}
+ * in step with how focus arrived. Spread onto any focusable element wearing
+ * {@link STATUS_PULSE_RING_CLASS_NAME} or {@link STATUS_PULSE_RING_HOST_CLASS_NAME};
+ * `ToneBadge` wires them itself.
+ */
+export const STATUS_PULSE_RING_FOCUS_ORIGIN_HANDLERS = {
+  onFocus: (event: React.FocusEvent<HTMLElement>) => {
+    event.currentTarget.toggleAttribute(
+      STATUS_PULSE_RING_POINTER_FOCUS_ATTRIBUTE,
+      focusArrivedByPointer(event.currentTarget)
+    );
+  },
+  onBlur: (event: React.FocusEvent<HTMLElement>) => {
+    event.currentTarget.removeAttribute(
+      STATUS_PULSE_RING_POINTER_FOCUS_ATTRIBUTE
+    );
+  },
+} as const;
+
+/**
+ * Shared whole-pill sync treatment for a pill that is itself the focusable
+ * element (`ToneBadge`'s `pulseRing`). A host wrapping a pill it does not render
+ * uses {@link STATUS_PULSE_RING_HOST_CLASS_NAME}.
+ */
+export const STATUS_PULSE_RING_CLASS_NAME = cn(
+  STATUS_PULSE_RING_CLASS,
+  STATUS_PULSE_RING_REDUCED_MOTION_CLASS,
+  STATUS_PULSE_RING_FOCUS_CLASS,
+  STATUS_PULSE_RING_POINTER_FOCUS_CLASS
+);
+
+/**
+ * ISS-12548: the same treatment for a focusable HOST that wraps a `Badge`
+ * (`data-slot="badge"`) it does not render itself — the champion Status pill,
+ * a tooltip `<button>` around `ArtifactStatus`.
+ *
+ * The host keeps the focus outline, because the host is what takes focus. The
+ * ring moves onto the pill. Worn by the host, the ring was the bug: the keyframe
+ * paints in `currentColor`, and a host's `currentColor` is the text color it
+ * inherits from the table cell, not the pill's tone, so the ring came out a
+ * 25% foreground GRAY. It also traced the host's box, which was 2px taller
+ * than the pill, so it stood off the pill's top edge. On the pill, both
+ * follow from the pill: its tone and its edge.
+ */
+export const STATUS_PULSE_RING_HOST_CLASS_NAME = cn(
+  "motion-safe:[&_[data-slot=badge]]:animate-status-pulse-ring",
+  "motion-reduce:[&_[data-slot=badge]]:ring-2 motion-reduce:[&_[data-slot=badge]]:ring-current/55",
+  STATUS_PULSE_RING_FOCUS_CLASS,
+  STATUS_PULSE_RING_POINTER_FOCUS_CLASS
+);

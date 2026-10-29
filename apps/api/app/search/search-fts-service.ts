@@ -2,12 +2,12 @@
  * FEA-3863 (parent FEA-3800, PLN-1456 Slice 3) — the unified full-text query
  * side over the `search_document` projection (FEA-3857). Runs one org-scoped,
  * type-faceted, date-windowed, ranked GIN query across the whole Phase-1 corpus
- * (documents/projects/loops) and returns a single heterogeneous
+ * (documents/projects) and returns a single heterogeneous
  * {@link UnifiedSearchResponse}.
  *
  * SECURITY — the index is NOT an access-control boundary. The GIN query returns
  * candidates; {@link reauthorizeHits} re-checks each candidate against the
- * authoritative source rows (Artifact/Project/Loop, org-scoped) with ONE
+ * authoritative source rows (Artifact/Project, org-scoped) with ONE
  * set-based query per entity type before any hit is returned. A candidate whose
  * source row the requester can't see (deleted, moved orgs, stale projection) is
  * dropped — the projection can never widen visibility.
@@ -24,12 +24,18 @@ import {
   searchHitDeepLink,
   type UnifiedSearchResponse,
 } from "@repo/api/src/types/search";
-import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
+import {
+  isOfferedSearchType,
+  OFFERED_SEARCH_ENTITY_TYPES,
+  PRIORITY_BEARING_ENTITY_TYPES,
+  SearchEntityType,
+} from "@repo/api/src/types/search-entity-kind";
 import {
   hasStructuredFilters,
   type IdLookup,
   PRIORITY_ORDINAL,
   type PriorityFilter,
+  PriorityFilterKind,
   SearchFilterOperator,
   type SearchFilters,
   type StatusFilter,
@@ -37,6 +43,7 @@ import {
 } from "@repo/api/src/types/search-query";
 import { expandSlugAliases } from "@repo/api/src/types/slug-prefix";
 import { Prisma, withDb } from "@repo/database";
+import { withCommentAnchorDocumentSlugs } from "./comment-anchor-document-slugs";
 
 /** Default page size for a unified query; clamped to {@link MAX_LIMIT}. */
 const DEFAULT_LIMIT = 25;
@@ -54,7 +61,7 @@ export type UnifiedSearchParams = {
   organizationId: string;
   query: string;
   mode: SearchMode;
-  /** Corpus filter; empty means "all Phase-1 types". */
+  /** Corpus filter; empty means "every offered type". */
   types: SearchEntityType[];
   since: Date | null;
   until: Date | null;
@@ -173,7 +180,10 @@ export const searchFtsService = {
       return {
         query: params.query,
         mode: params.mode,
-        results: exactHits,
+        results: await withCommentAnchorDocumentSlugs(
+          params.organizationId,
+          exactHits
+        ),
         nextCursor: null,
       };
     }
@@ -228,7 +238,10 @@ export const searchFtsService = {
     return {
       query: params.query,
       mode: params.mode,
-      results,
+      results: await withCommentAnchorDocumentSlugs(
+        params.organizationId,
+        results
+      ),
       nextCursor: nextCursorFor(
         params,
         candidates,
@@ -301,11 +314,8 @@ function runExactLookupQuery(
   // Honor the corpus `types` filter on the exact lane too. Without it,
   // `/search?q=FEA-42&types=project` could surface a document exact hit while
   // the caller restricted the corpus to projects (the FTS lane already applies
-  // this filter). Empty `types` means "all Phase-1 types" → no predicate.
-  const typeFilter =
-    params.types.length > 0
-      ? Prisma.sql`AND "entity_type" IN (${Prisma.join(params.types)})`
-      : Prisma.empty;
+  // this filter).
+  const typeFilter = corpusTypeFilter(params.types);
   return withDb((db) =>
     db.$queryRaw<CandidateRow[]>(Prisma.sql`
       SELECT
@@ -439,10 +449,7 @@ function runCandidateQuery(
   projectIds: string[] | null,
   fetchLimit: number
 ): Promise<CandidateRow[]> {
-  const typeFilter =
-    params.types.length > 0
-      ? Prisma.sql`AND "entity_type" IN (${Prisma.join(params.types)})`
-      : Prisma.empty;
+  const typeFilter = corpusTypeFilter(params.types);
   const sinceFilter = params.since
     ? Prisma.sql`AND "updated_at" >= ${params.since}`
     : Prisma.empty;
@@ -542,20 +549,43 @@ function statusPredicate(status: StatusFilter | undefined): Prisma.Sql {
 }
 
 /**
- * `:priority` → an ordinal comparison. The projected `priority` TEXT is mapped
- * to its ordinal via a CASE that mirrors {@link PRIORITY_ORDINAL}, so a
- * comparison operator (`>=` etc.) orders LOW<MEDIUM<HIGH<URGENT. A row whose
- * priority is NULL or unmapped yields NULL and is excluded by any comparison.
+ * `:priority` → an ordinal comparison, or a NULL test for the unset arm.
+ *
+ * The projected `priority` TEXT is mapped to its ordinal via a CASE that mirrors
+ * {@link PRIORITY_ORDINAL}, so a comparison operator (`>=` etc.) orders
+ * LOW<MEDIUM<HIGH<URGENT. A row whose priority is NULL or unmapped yields a NULL
+ * ordinal, which no `=`/`<`/`>`/`<=`/`>=` comparison can satisfy — so before
+ * ISS-9665 there was no way to ASK for those rows. (`!=` is the exception, and
+ * for the same reason `statusPredicate` documents: `IS DISTINCT FROM` treats
+ * NULL as "not the value", so `priority!=HIGH` already returned them mixed in
+ * with real priorities. That is a different question from "which artifacts have
+ * no priority", which is why the unset arm exists rather than a sentinel
+ * ordinal.)
  */
 function priorityPredicate(priority: PriorityFilter | undefined): Prisma.Sql {
   if (!priority) {
     return Prisma.empty;
   }
-  const target = PRIORITY_ORDINAL[priority.value];
-  if (target === undefined) {
-    // Parser already validated the value; defensively drop an unmapped one.
-    return Prisma.empty;
+  if (priority.kind === PriorityFilterKind.Unset) {
+    // Scoped to the kinds that CAN hold a priority. A bare `IS NULL` conflates
+    // "this document has no priority" with "a comment has no such field" — three
+    // of the seven projections hardcode `priority: null` — so an unscoped
+    // predicate would answer `:priority=NONE` with every comment, PR and
+    // component in the org. `IS NOT NULL` needs no such clause: only a row of a
+    // priority-bearing kind can ever satisfy it.
+    return priority.operator === SearchFilterOperator.Eq
+      ? Prisma.sql`AND "priority" IS NULL AND "entity_type" IN (${Prisma.join([
+          ...PRIORITY_BEARING_ENTITY_TYPES,
+        ])})`
+      : Prisma.sql`AND "priority" IS NOT NULL`;
   }
+  // Read directly, not through `priorityOrdinal`: the `ordinal` arm types its
+  // value as `Priority`, so the map is total over it and the lookup is a plain
+  // number. Laundering it through the wire-string reader widened the result to
+  // `number | undefined` and bought an unreachable `undefined` arm whose only
+  // available answer was `Prisma.empty` — dropping the predicate, so
+  // `:priority>=HIGH` would have answered with every row in the org.
+  const target = PRIORITY_ORDINAL[priority.value];
   const ordinal = priorityOrdinalSql();
   switch (priority.operator) {
     case SearchFilterOperator.Eq:
@@ -794,13 +824,6 @@ function authorizedIdsForType(
         });
         return rows.map((r) => r.id);
       }
-      case SearchEntityType.Loop: {
-        const rows = await db.loop.findMany({
-          where: { id: { in: ids }, organizationId },
-          select: { id: true },
-        });
-        return rows.map((r) => r.id);
-      }
       case SearchEntityType.AgentSession: {
         // Fail-closed on the org gate: when transcript search is off, no
         // agent_session hit is authorized even if projection rows still exist.
@@ -1012,4 +1035,22 @@ export function clampSearchLimit(raw: number | null): number {
     return DEFAULT_LIMIT;
   }
   return Math.max(1, Math.min(Math.floor(raw), MAX_LIMIT));
+}
+
+/**
+ * The corpus `types` predicate both lanes share. Candidates are restricted to
+ * the offered kinds (ISS-12435): a retired kind such as `loop` stays an
+ * accepted filter value but its leftover projection rows never reach the
+ * over-fetch, so they cannot thin a page. Empty `types` means every offered
+ * kind; a filter naming only retired kinds matches nothing.
+ */
+function corpusTypeFilter(types: SearchEntityType[]): Prisma.Sql {
+  const offered =
+    types.length > 0
+      ? types.filter(isOfferedSearchType)
+      : OFFERED_SEARCH_ENTITY_TYPES;
+  if (offered.length === 0) {
+    return Prisma.sql`AND FALSE`;
+  }
+  return Prisma.sql`AND "entity_type" IN (${Prisma.join(offered)})`;
 }

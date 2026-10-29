@@ -11,6 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
+import { DASHBOARD_HEADING } from "./helpers/dashboard-header-copy";
 import { gotoNav, launchDesktopApp } from "./helpers/desktop-app";
 
 const REMOVED_COMPUTED_BADGE_TEXT = "Computed on this device";
@@ -40,11 +41,11 @@ test.describe("Dashboard computed badge", () => {
         page.getByRole("heading", {
           exact: true,
           level: 1,
-          name: "Welcome to Closedloop",
+          name: DASHBOARD_HEADING,
         })
       ).toBeVisible({ timeout: 15_000 });
 
-      const dateRange = page.getByRole("group", { name: "Date range" });
+      const dateRange = page.getByRole("radiogroup", { name: "Date range" });
       await expect(dateRange).toBeVisible({ timeout: 15_000 });
       await expect(
         dateRange.getByRole("radio", {

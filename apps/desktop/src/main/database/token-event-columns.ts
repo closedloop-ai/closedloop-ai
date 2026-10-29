@@ -6,8 +6,10 @@ import { selectRowsByIds } from "./session-detail-mappers.js";
 /**
  * ISS-6050: the `token_events` column list a hydration SELECTs.
  *
- * A LIST read nulls the two SYNC-ONLY columns — `cost_summary` (a per-event
- * JSON blob) and `source_identity`. Their only consumer is `token-event-sync.ts`,
+ * A LIST read drops the two SYNC-ONLY columns — `cost_summary` (a per-event
+ * JSON blob) and `source_identity` — from the projection (ISS-6050 selected them
+ * as `NULL AS`; ISS-6227 omits them outright, see {@link tokenEventSelectColumns}).
+ * Their only consumer is `token-event-sync.ts`,
  * the cloud payload builder, which never passes the option. The blob multiplied
  * by every token event of every session in the working set is the dominant term
  * in the measured 444MB `pageData({quality:"all"})` read on the 2,962-session
@@ -23,7 +25,7 @@ import { selectRowsByIds } from "./session-detail-mappers.js";
  *      `resolveActivityEndMs`) reads `created_at`;
  *   2. `buildSessionAutonomyInput` pushes EVERY event's `created_at` into
  *      `agentActivityTimestamps` — and the Sessions list RENDERS that score
- *      (`SessionAutonomyChip`; `agent-sessions-list.tsx` — "autonomy always
+ *      (`AutonomyChip`; Sessions list — "autonomy always
  *      shows"), so an omitted stream moves a DISPLAYED list value;
  *   3. per-event `activityBuckets`/`markers` content (session-trace.ts), whose
  *      every production consumer is under `agents/components/detail/` or
@@ -34,8 +36,10 @@ import { selectRowsByIds } from "./session-detail-mappers.js";
  * non-optional `number`, so a NULL count coerces to a FABRICATED `0` rather than
  * to "unknown". The counts are 8-byte scalars; the blob is the cost.
  *
- * The divergence is therefore exactly one field — a narrowed event omits
- * `costSummary` — pinned by `sync-source-list-token-event-projection.test.ts`.
+ * The divergence is therefore exactly TWO fields — a narrowed event omits
+ * `costSummary` AND `sourceIdentity`, one per omitted column — pinned by
+ * `sync-source-list-token-event-projection.test.ts`, which seeds both columns
+ * non-null so either surviving the narrowing fails there.
  * Omitted, never defaulted: an absent field reads as "unknown" where a
  * fabricated one would assert a cost nobody computed.
  *
@@ -62,11 +66,27 @@ export function selectTokenEventRows(
   );
 }
 
+/**
+ * ISS-6227: a narrowed read omits the two sync-only columns from the result set
+ * ENTIRELY rather than selecting them as `NULL AS`.
+ *
+ * `NULL AS source_identity` still materializes a cell per row, and on this
+ * boundary a cell — not a byte — is the unit of cost, so the saving scales with
+ * the ROW COUNT of the working set rather than with the stored bytes.
+ *
+ * Parity is structural, not merely observed: `parseStoredTokenSourceIdentity`
+ * and `parseStoredTokenCostSummary` both return `undefined` for `null` AND for
+ * `undefined`, and `mapSyncedTokenEvent` spreads each field conditionally — so
+ * an absent property and a NULL cell produce the same synced event. The narrowed
+ * event therefore still omits `costSummary` rather than defaulting it — omitted
+ * reads as "unknown" where a fabricated value would assert a cost nobody
+ * computed. `sync-source-list-token-event-projection.test.ts` pins both halves.
+ */
 function tokenEventSelectColumns(options?: SyncedSessionLoadOptions): string {
   const syncOnlyColumns = options?.omitTokenEventCostColumns
-    ? `NULL AS source_identity,
-        NULL AS cost_summary`
-    : `source_identity,
+    ? ""
+    : `,
+        source_identity,
         cost_summary`;
   return `transport_id,
         model,
@@ -82,5 +102,5 @@ function tokenEventSelectColumns(options?: SyncedSessionLoadOptions): string {
         output_cost_usd_estimated,
         cache_read_cost_usd_estimated,
         cache_creation_cost_usd_estimated,
-        ${syncOnlyColumns}`;
+        agent_id${syncOnlyColumns}`;
 }

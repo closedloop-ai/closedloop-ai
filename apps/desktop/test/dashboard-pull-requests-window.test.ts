@@ -23,7 +23,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import { MAX_DASHBOARD_PULL_REQUEST_PAGE_LIMIT } from "../src/main/database/db-constants.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import {
@@ -33,7 +33,7 @@ import {
 
 const NOW = "2026-06-22T00:00:00.000Z";
 const T1 = "2026-06-20T10:00:00.000Z";
-const REPO = "closedloop-ai/example-repo";
+const REPO = "closedloop-ai/closedloop-ai";
 const SESSION_ID = "s-many-prs";
 
 type SeededDb = Awaited<ReturnType<typeof openSqliteAgentDatabase>>;
@@ -309,13 +309,13 @@ test("getPullRequests keeps one row per artifact when a session has two pull_req
     for (const [id, url, branch, observedAt] of [
       [
         "pr-row-canonical",
-        "https://github.com/closedloop-ai/example-repo/pull/31",
+        "https://github.com/closedloop-ai/closedloop-ai/pull/31",
         "head-canonical",
         "2026-06-20T10:00:00.000Z",
       ],
       [
         "pr-row-files-suffix",
-        "https://github.com/closedloop-ai/example-repo/pull/31/files",
+        "https://github.com/closedloop-ai/closedloop-ai/pull/31/files",
         "head-files-suffix",
         "2026-06-20T09:30:00.000Z",
       ],

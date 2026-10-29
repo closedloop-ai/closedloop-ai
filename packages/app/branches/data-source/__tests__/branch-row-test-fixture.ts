@@ -22,7 +22,7 @@ export function makeBranchRow(id: string): BranchRow {
     prState: null,
     prTitle: null,
     prUrl: null,
-    repoFullName: "closedloop-ai/example-repo",
+    repoFullName: "closedloop-ai/closedloop-ai",
     reviewDecision: null,
     sessionIds: [],
     status: BranchStatus.Open,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type {
   DesktopSessionResult,
   DesktopSessionTokens,
@@ -125,6 +125,52 @@ test("FEA-3425: invalidateAccessToken forces a refresh on the next getAccessToke
   );
 });
 
+test("ISS-9701: a late 401 for a superseded token neither evicts the fresh one nor refreshes again", async () => {
+  // 401s do not come back in the order their requests left. Two requests both
+  // leave carrying access-1; the first is refused, refreshes to access-2 and
+  // succeeds — and only then does the second's 401 land, still describing
+  // access-1. Clearing on that report throws away the freshly minted access-2,
+  // so the straggler's read mints a THIRD token for an expiry that was already
+  // recovered, once per straggler. Under provider rate limiting that storm can
+  // end at the very sign-in card the recovery exists to avoid.
+  const stub = createStubClient();
+  let nowMs = T0;
+  const { manager, store } = createManager({
+    stub,
+    now: () => nowMs,
+    storeName: "dsm-late-401",
+  });
+  store.setSession(storedRecord());
+  await manager.restore();
+  assert.equal(stub.calls.refresh, 1);
+  assert.equal(await manager.getAccessToken(), "access-1");
+
+  // Still well inside the token's TTL — every read below would serve the cache
+  // if nothing evicted it, so each refresh counted here was caused by a report.
+  nowMs = T0 + 5 * 60 * 1000;
+  stub.setRefresh({ ok: true, value: makeTokens({ accessToken: "access-2" }) });
+
+  // The first request's 401: it names the token that IS cached, so it evicts.
+  manager.invalidateAccessToken("access-1");
+  assert.equal(await manager.getAccessToken(), "access-2");
+  assert.equal(stub.calls.refresh, 2, "the matching report must still evict");
+
+  // The straggler's 401, describing the token access-2 already replaced.
+  stub.setRefresh({ ok: true, value: makeTokens({ accessToken: "access-3" }) });
+  manager.invalidateAccessToken("access-1");
+
+  assert.equal(
+    await manager.getAccessToken(),
+    "access-2",
+    "the credential the server never refused must survive the late report"
+  );
+  assert.equal(
+    stub.calls.refresh,
+    2,
+    "a 401 for a superseded token must not mint another for an expiry already recovered"
+  );
+});
+
 test("getAccessToken refreshes once when concurrent calls race past expiry", async () => {
   const stub = createStubClient();
   let nowMs = T0;
@@ -226,6 +272,32 @@ test("subscribe is notified on state transitions", async () => {
   assert.deepEqual(statuses, [
     DesktopAuthStatus.Authenticated,
     DesktopAuthStatus.SignedOut,
+  ]);
+});
+
+// ISS-12257: the replay recording fence tells a renderer report from before a
+// sign-in flip by this count.
+test("the auth generation moves on only when the status enters or leaves authenticated", async () => {
+  const stub = createStubClient();
+  const { manager, store } = createManager({
+    stub,
+    storeName: "dsm-auth-generation",
+  });
+  store.setSession(storedRecord());
+  const published: [string, number | undefined][] = [];
+  manager.subscribe((state) =>
+    published.push([state.status, state.authGeneration])
+  );
+  assert.equal(manager.getState().authGeneration, 0);
+
+  await manager.restore();
+  await manager.signOut();
+  await manager.restore(); // nothing stored now: signed out again, no flip
+
+  assert.deepEqual(published, [
+    [DesktopAuthStatus.Authenticated, 1],
+    [DesktopAuthStatus.SignedOut, 2],
+    [DesktopAuthStatus.SignedOut, 2],
   ]);
 });
 

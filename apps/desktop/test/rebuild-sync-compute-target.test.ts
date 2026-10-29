@@ -2,13 +2,13 @@
  * @file rebuild-sync-compute-target.test.ts
  * @description #4150: pure, electron-free coverage for the leaf module that owns
  * `resolveRebuildSyncComputeTargetId` and the extracted
- * `buildSharedAgentSessionsListOptions`. The builder was moved out of the
- * grandfathered `agent-dashboard-design-system-runtime.ts`; this pins its
+ * `buildSharedAgentSessionsListOptions`. The builder was moved out of
+ * `agent-dashboard-design-system-runtime.ts`; this pins its
  * two-lane wiring (online-aware compute target + bounded transcript-blob loader
  * that degrades when the store is absent) at the new boundary.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   buildSharedAgentSessionsListOptions,
   resolveRebuildSyncComputeTargetId,

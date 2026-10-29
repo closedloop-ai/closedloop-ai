@@ -612,6 +612,61 @@ describe("buildCursorSession: tokensByModel", () => {
     expect(session?.tokensByModel?.["gpt-5-codex"]?.input).toBe(20);
   });
 
+  /**
+   * ISS-8565: the cursor fold built `tokensByModel` on a plain `{}`, so a
+   * transcript whose `turn_context` named the model `__proto__` lost its ENTIRE
+   * token aggregate — 1500 tokens vanished with no throw and no log, which is
+   * why "does not throw" would be the false green here.
+   */
+  it("keeps a __proto__ model as a visible own key (ISS-8565)", async () => {
+    const lines = [
+      line({
+        type: "turn_context",
+        timestamp: TS0,
+        payload: { model: "__proto__" },
+      }),
+      line({
+        type: "token_count",
+        timestamp: TS1,
+        payload: { input_tokens: 1000, output_tokens: 500 },
+      }),
+    ];
+    const session = await parseCursorTranscript(lines, {
+      sessionId: "tbm-proto",
+    });
+
+    const tokensByModel = session?.tokensByModel ?? {};
+    expect(Object.keys(tokensByModel)).toContain("__proto__");
+    // biome-ignore lint/suspicious/noProto: ISS-8565 regression — the hostile key IS the subject under test
+    expect(tokensByModel.__proto__?.input).toBe(1000);
+    // biome-ignore lint/suspicious/noProto: ISS-8565 regression — the hostile key IS the subject under test
+    expect(tokensByModel.__proto__?.output).toBe(500);
+    expect(Object.getPrototypeOf(tokensByModel)).toBe(Object.prototype);
+  });
+
+  /** ISS-8565: a valid model must still fold byte-identically, key order included. */
+  it("folds an ordinary model byte-identically (ISS-8565)", async () => {
+    const lines = [
+      line({
+        type: "turn_context",
+        timestamp: TS0,
+        payload: { model: "gpt-5-codex" },
+      }),
+      line({
+        type: "token_count",
+        timestamp: TS1,
+        payload: { input_tokens: 1000, output_tokens: 500 },
+      }),
+    ];
+    const session = await parseCursorTranscript(lines, {
+      sessionId: "tbm-control",
+    });
+
+    expect(JSON.stringify(session?.tokensByModel)).toBe(
+      '{"gpt-5-codex":{"input":1000,"output":500,"cacheRead":0,"cacheWrite":0}}'
+    );
+  });
+
   it("no tool uses → emptyArtifacts() (no prs or issues)", async () => {
     const lines = [
       line({

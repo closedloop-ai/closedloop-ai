@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assertButtonPresent,
   assertTextAbsent,
@@ -13,6 +13,15 @@ function makeRoot(html: string): HTMLElement {
 }
 
 describe("waitForText", () => {
+  // Registered rather than called inline at the end of each case: the two cases
+  // below install fake timers and then assert, so an inline restore is the one
+  // line that does NOT run on the run that matters. A failed assertion would
+  // leak the fake clock into every test after it in this file, and they would
+  // pass or fail for a reason that has nothing to do with what they assert.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("resolves immediately when the text is already present", async () => {
     const root = makeRoot("<p>hello world</p>");
     await waitForText(root, "hello");
@@ -27,8 +36,6 @@ describe("waitForText", () => {
     root.innerHTML = "<p>ready</p>";
     await vi.advanceTimersByTimeAsync(50);
     await task;
-
-    vi.useRealTimers();
   });
 
   it("throws when the text never appears", async () => {
@@ -40,8 +47,6 @@ describe("waitForText", () => {
     const result = await task;
     expect(result).toBeInstanceOf(Error);
     expect((result as Error).message).toContain('"missing" never appeared');
-
-    vi.useRealTimers();
   });
 });
 

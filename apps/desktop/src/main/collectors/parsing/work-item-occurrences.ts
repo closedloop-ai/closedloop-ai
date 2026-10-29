@@ -44,10 +44,10 @@
  * appearing in a file the agent READ is incidental context, not work on that item.
  */
 import { buildSlugPrefixAlternation } from "@repo/api/src/types/slug-prefix";
+import { collectSessionToolUses } from "@repo/lib/harness/session-tool-uses";
 import type { NormalizedSession } from "../types.js";
 import { stripCodeFences } from "./artifact-ref-extractor.js";
 import { flattenTextValues } from "./parser-utils.js";
-import { collectSessionToolUses } from "./session-tool-uses.js";
 
 /**
  * A Closedloop slug mention, in any case. Built from the same prefix SSOT the

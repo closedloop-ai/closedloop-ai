@@ -1,21 +1,17 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
-import {
-  BranchCloudHydrationStatus,
-  BranchKpiState,
-  encodeBranchId,
-} from "@repo/api/src/types/branch.js";
+import { BranchKpiState, encodeBranchId } from "@repo/api/src/types/branch.js";
 import { BranchActivityEvidenceCompleteness } from "@repo/api/src/types/branch-activity.js";
-import { ChecksStatus } from "@repo/api/src/types/branch-checks.js";
 import {
   BranchMetricAvailability,
   BranchMetricDisclosure,
 } from "@repo/api/src/types/branch-metrics.js";
+import { describe, test, vi } from "vitest";
 import { getSharedBranchAnalytics } from "../src/main/branch/branch-analytics-read.js";
 import { getSharedBranchCohortAnalytics } from "../src/main/branch/branch-cohort-analytics.js";
 import { projectDesktopBranchLastActive } from "../src/main/branch/branch-last-active-projection.js";
 import {
   type BranchSyncSource,
+  getSharedBranchDetail,
   getSharedBranches,
   getSharedBranchesPageData,
   getSharedBranchUsage,
@@ -33,6 +29,14 @@ import {
   makeSource,
   SQL_SECRET,
 } from "./shared-branches-test-helpers.js";
+
+vi.mock(
+  "../src/main/branch/shared-branches-default-eligibility.js",
+  async (importOriginal) =>
+    (
+      await import("./helpers/complete-eligibility-snapshot.js")
+    ).withCompleteEligibility(await importOriginal())
+);
 
 const branchId = encodeBranchId({
   repoFullName: "acme/web",
@@ -53,6 +57,24 @@ describe("Desktop canonical Branch Last active", () => {
 
     assert.equal(row.lastActivityAt, "2026-06-20T12:00:00.000Z");
     assert.deepEqual(row.canonicalLastActiveAt, {
+      value: "2026-06-20T12:00:00.000Z",
+      state: BranchMetricAvailability.Partial,
+      disclosure: BranchMetricDisclosure.DefaultIncomplete,
+    });
+  });
+
+  test("production detail consumes the same canonical activity row", async () => {
+    const source = makeSource({
+      links: [link({})],
+      canonicalActivity: [
+        canonicalActivity({ occurredAt: "2026-06-20T12:00:00.000Z" }),
+      ],
+    });
+
+    const detail = await getSharedBranchDetail(source, branchId);
+
+    assert.equal(detail?.lastActivityAt, "2026-06-20T12:00:00.000Z");
+    assert.deepEqual(detail?.canonicalLastActiveAt, {
       value: "2026-06-20T12:00:00.000Z",
       state: BranchMetricAvailability.Partial,
       disclosure: BranchMetricDisclosure.DefaultIncomplete,
@@ -295,7 +317,11 @@ describe("Desktop canonical Branch Last active", () => {
       recentResult
     );
     assert.deepEqual(cohort?.canonicalMetrics.lastActiveAt, recentResult);
-    assert.deepEqual(cohort?.matchedBranchIds, [recentId, unavailableId]);
+    assert.deepEqual(cohort?.matchedBranchIds, [
+      recentId,
+      oldId,
+      unavailableId,
+    ]);
   });
 
   test("uses canonical activity for usage and analytics window membership", async () => {
@@ -331,34 +357,19 @@ describe("Desktop canonical Branch Last active", () => {
     assert.equal(analytics.activeBranchCount.value, 1);
   });
 
-  test("cloud hydration cannot overwrite canonical activity or legacy membership", async () => {
+  test("canonical activity alone decides Last active and window membership", async () => {
     const source = makeSource({
       links: [link({})],
       canonicalActivity: [
         canonicalActivity({ occurredAt: "2026-06-01T12:00:00.000Z" }),
       ],
     });
-    const hydration = {
-      hydrate: async () => ({
-        status: BranchCloudHydrationStatus.Fresh,
-        overlays: {
-          "acme/web::feature/x": {
-            lastActivityAt: "2026-06-30T12:00:00.000Z",
-            checksStatus: ChecksStatus.Passing,
-          },
-        },
-      }),
-    };
-
-    const [row] = (await getSharedBranches(source, {}, hydration)).items;
-    const analytics = await getSharedBranchAnalytics(
-      source,
-      { startDate: "2026-06-20T00:00:00.000Z" },
-      hydration
-    );
+    const [row] = (await getSharedBranches(source, {})).items;
+    const analytics = await getSharedBranchAnalytics(source, {
+      startDate: "2026-06-20T00:00:00.000Z",
+    });
 
     assert.equal(row.lastActivityAt, "2026-06-01T12:00:00.000Z");
-    assert.equal(row.checksStatus, ChecksStatus.Passing);
     assert.deepEqual(row.canonicalLastActiveAt, {
       value: "2026-06-01T12:00:00.000Z",
       state: BranchMetricAvailability.Partial,

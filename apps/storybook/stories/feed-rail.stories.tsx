@@ -9,13 +9,28 @@ import {
 import {
   FeedRail,
   type FeedRailMode,
-  FeedRailTab,
 } from "@repo/design-system/components/ui/feed-rail";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
 import { fn } from "storybook/test";
 
-const feedItems = [
+/**
+ * The fixture's real shape: only the "anchored-thread" item carries a version
+ * banner and an anchored code preview, so both fields are optional here rather
+ * than typed from the first (non-anchored) literal in the array — that is what
+ * left `item.versionLabel` / `item.anchorPreview` unrecognized below.
+ */
+type FeedItemFixture = {
+  id: string;
+  author: string;
+  timestamp: string;
+  label: string;
+  body: string;
+  anchorPreview?: string;
+  versionLabel?: string;
+};
+
+const feedItems: FeedItemFixture[] = [
   {
     id: "rollout-comment",
     author: "Avery Carter",
@@ -39,21 +54,14 @@ const feedItems = [
     label: "General conversation",
     body: "I can summarize the open concerns into a release checklist.",
   },
-] as const;
+];
 
 function FeedRailStory({ mode }: { mode?: FeedRailMode }) {
-  const [activeTab, setActiveTab] = useState<FeedRailTab>(FeedRailTab.Feed);
   const [width, setWidth] = useState(380);
 
   return (
     <div className="relative h-[560px] overflow-hidden rounded-lg border bg-background">
       <FeedRail
-        activeTab={activeTab}
-        chatPanel={
-          <div className="flex h-full items-center justify-center border-t text-muted-foreground text-sm">
-            Chat panel mock
-          </div>
-        }
         feedPanel={
           <>
             <div className="border-b px-3 py-2 text-muted-foreground text-xs">
@@ -114,10 +122,8 @@ function FeedRailStory({ mode }: { mode?: FeedRailMode }) {
             </div>
           </>
         }
-        hasChat
         mode={mode}
         onClose={() => undefined}
-        onTabChange={setActiveTab}
         onWidthChange={setWidth}
         visible
         width={width}
@@ -127,9 +133,9 @@ function FeedRailStory({ mode }: { mode?: FeedRailMode }) {
 }
 
 const meta = {
-  title: "Design System/Documents & Conversation/Feed Rail",
+  title: "Composites v1.0/Documents/Feed Rail",
   component: FeedRailStory,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof FeedRailStory>;
 
@@ -146,4 +152,17 @@ export const Default: Story = {};
  */
 export const Sheet: Story = {
   render: () => <FeedRailStory mode="sheet" />,
+};
+
+/**
+ * FEA-3865: the fixed-width right-hand panel the adaptive `inline` mode
+ * resolves to at `sm`..`lg` viewports — too narrow to give the rail its own
+ * resizable track beside the document, too wide for the bottom sheet. Forcing
+ * `mode="overlay"` shows it at any width. It floats over the content behind a
+ * click-to-close scrim rather than sharing the row with it, and like the
+ * sheet it drops the pointer resize handle — there is no adjacent track to
+ * resize against.
+ */
+export const Overlay: Story = {
+  render: () => <FeedRailStory mode="overlay" />,
 };

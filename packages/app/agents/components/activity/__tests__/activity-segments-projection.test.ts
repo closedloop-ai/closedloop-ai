@@ -96,14 +96,21 @@ describe("projectActivitySegments", () => {
     expect(projection.malformedCount).toBe(1);
   });
 
-  it("flags truncation when the row set hits the wire cap", () => {
+  // ISS-7779 (whitlockk, #6094): reaching MAX_SYNCED_ACTIVITY_SEGMENTS once flagged
+  // the projection truncated, from when 5000 was the desktop's ASSEMBLY cap.
+  // ISS-4578 made it the PER-CHUNK wire bound (the desktop paginates a larger
+  // tiling across parts and the cloud merges them), so a COMPLETE tiling of
+  // >=5000 rows is ordinary. Row count says nothing about completeness, and the
+  // projection carries no truncation output at all (ISS-9858): the read-side
+  // flag is disclosed by the Session Timeline legend straight off the detail.
+  it("projects a complete tiling at or past the per-chunk wire cap as ready, in full", () => {
     const rows = Array.from(
-      { length: MAX_SYNCED_ACTIVITY_SEGMENTS },
+      { length: MAX_SYNCED_ACTIVITY_SEGMENTS + 1 },
       (_, index) => row({ startMs: index * 10, endMs: index * 10 + 5 })
     );
     const projection = projectActivitySegments(rows);
-    expect(projection.truncated).toBe(true);
     expect(projection.state).toBe(ActivitySegmentsState.Ready);
+    expect(projection.segments).toHaveLength(MAX_SYNCED_ACTIVITY_SEGMENTS + 1);
   });
 
   it("floors width and clamps confidence for degenerate but valid spans", () => {
@@ -129,38 +136,7 @@ describe("projectActivitySegments", () => {
     expect(projection.segments[0].evidenceLayers).toEqual(["declared"]);
   });
 
-  // FEA-4238: idle-dominance signal that folds a near-empty phase strip.
-  it("flags idleDominant for a mostly-idle span and reports the idle share", () => {
-    // A 66h span with a single ~30min active stretch: the agent slept through
-    // essentially the whole run, so the strip is ~98% empty hatch.
-    const sixtySixHoursMs = 66 * 60 * 60 * 1000;
-    const projection = projectActivitySegments([
-      row({ phase: "idle", startMs: 0, endMs: sixtySixHoursMs }),
-      row({
-        phase: "implement",
-        startMs: sixtySixHoursMs,
-        endMs: sixtySixHoursMs + 30 * 60 * 1000,
-      }),
-    ]);
-    expect(projection.state).toBe(ActivitySegmentsState.Ready);
-    expect(projection.idleDominant).toBe(true);
-    // Idle covers essentially the whole span.
-    expect(projection.idleDurationShare).toBeGreaterThan(0.98);
-  });
-
-  it("does not flag idleDominant when the working stretch is meaningful", () => {
-    // Half idle, half active — well above the 5% non-idle floor.
-    const projection = projectActivitySegments([
-      row({ phase: "idle", startMs: 0, endMs: 1000 }),
-      row({ phase: "implement", startMs: 1000, endMs: 2000 }),
-    ]);
-    expect(projection.idleDominant).toBe(false);
-    expect(projection.idleDurationShare).toBeCloseTo(0.5, 5);
-  });
-
-  it("treats unattributed (non-idle) coverage as non-idle for the dominance guard", () => {
-    // A long unattributed span plus a short idle one: unattributed is not idle,
-    // so the strip is NOT idle-dominant even though little is classified active.
+  it("classifies an unattributed span as unavailable, not idle", () => {
     const projection = projectActivitySegments([
       row({
         phase: "unknown",
@@ -171,40 +147,6 @@ describe("projectActivitySegments", () => {
       row({ phase: "idle", startMs: 10_000, endMs: 10_100 }),
     ]);
     expect(projection.segments[0].kind).toBe(ActivitySegmentKind.Unavailable);
-    expect(projection.idleDominant).toBe(false);
-  });
-
-  it("never flags idleDominant when the byte-truncation signal is set", () => {
-    // FEA-3779: the same ~98%-idle prefix, but flagged truncated. A start-ordered
-    // prefix can be all-idle at the front while the dropped tail held the real
-    // work, so folding it as "mostly idle" would lie about a partial input. It
-    // must stay inline (and report truncated) instead.
-    const sixtySixHoursMs = 66 * 60 * 60 * 1000;
-    const rows = [
-      row({ phase: "idle", startMs: 0, endMs: sixtySixHoursMs }),
-      row({
-        phase: "implement",
-        startMs: sixtySixHoursMs,
-        endMs: sixtySixHoursMs + 30 * 60 * 1000,
-      }),
-    ];
-    const complete = projectActivitySegments(rows);
-    expect(complete.idleDominant).toBe(true);
-
-    const truncated = projectActivitySegments(rows, { rowsTruncated: true });
-    expect(truncated.truncated).toBe(true);
-    expect(truncated.idleDominant).toBe(false);
-    // The idle share is still reported (it is a raw measure), but the fold does
-    // not engage on a partial tiling.
-    expect(truncated.idleDurationShare).toBeGreaterThan(0.98);
-  });
-
-  it("treats a null/omitted truncation flag as complete", () => {
-    const rows = [row({ phase: "idle", startMs: 0, endMs: 100_000 })];
-    for (const rowsTruncated of [null, undefined, false] as const) {
-      const projection = projectActivitySegments(rows, { rowsTruncated });
-      // rows.length is under the cap, so a falsy flag means complete.
-      expect(projection.truncated).toBe(false);
-    }
+    expect(projection.segments[1].kind).toBe(ActivitySegmentKind.Idle);
   });
 });

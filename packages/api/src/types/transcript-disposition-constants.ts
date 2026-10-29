@@ -29,9 +29,19 @@
  *                        not yet started (the normal "transcript uploading" case,
  *                        NOT an error — clients should show a benign progress
  *                        affordance, not a failure).
- *   - `failedTransient`— the last upload attempt failed but is expected to be
- *                        retried; distinct from `failedPermanent` so the UI does
- *                        not present a retryable hiccup as a dead end.
+ *   - `failedTransient`— the blob is absent and NOT settled. Two producers
+ *                        reach it and they are different sentences to a user,
+ *                        so a renderer that keys on this value alone states the
+ *                        wrong one of them (ISS-9884): (1) the last upload
+ *                        attempt failed and the desktop re-queues it with
+ *                        backoff — a retryable hiccup, which is why this is
+ *                        distinct from `failedPermanent`; (2) the desktop's
+ *                        lane hit its 24h environmental wall clock and STOPPED
+ *                        attempting, on a file presumed present
+ *                        (`environment_unavailable`). The second is not
+ *                        retrying. What separates them is the terminal skip
+ *                        reason, carried beside the verdict as
+ *                        `AgentSessionListItem.transcriptDispositionReason`.
  *   - `failedPermanent`— the upload failed and will not be retried; the
  *                        transcript is never coming. Fully realized by FEA-3476
  *                        (deferred, product-gated). The contract/enum ships now;
@@ -39,7 +49,7 @@
  *                        server maps a `uploadFailed` file conservatively to
  *                        `failedTransient`, never `failedPermanent`.
  *   - `neverExpected`  — this session is not expected to have a transcript at
- *                        all (e.g. a synthetic/loop-only session); absence is
+ *                        all (e.g. a synthetic session); absence is
  *                        normal and clients should show nothing rather than a
  *                        "syncing"/"missing" affordance.
  *

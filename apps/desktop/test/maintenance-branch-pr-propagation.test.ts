@@ -10,7 +10,7 @@
  * {@link openTestPrisma} harness so it runs locally and in CI.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import {
   linkBranchSessionsToPr,
   propagateBranchPrLinks,
@@ -49,7 +49,7 @@ async function seedSession(
 // invariant that gitBranch is not attribution data. Only a relation='created'
 // branch-link (git_push / git_commit / gh_pr_create) may drive the join.
 
-const REPO = "closedloop-ai/example-repo";
+const REPO = "closedloop-ai/closedloop-ai";
 const BRANCH = "fix/desktop-sessions-loading-stall";
 const PR_NUMBER = 3837;
 const BRANCH_ARTIFACT_ID = "art-branch-1";
@@ -106,8 +106,6 @@ async function seedBranchPrFixture(
       branchName,
     ]
   );
-  // PR artifact, unenriched (pr_state NULL ⇒ treated as open) — the exact window
-  // in which the maintenance pass would mint the link before enrichment lands.
   await store.query(
     `INSERT INTO artifacts
        (id, identity_key, kind, repo_full_name, pr_number, branch_name,

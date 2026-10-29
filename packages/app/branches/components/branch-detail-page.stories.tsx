@@ -4,13 +4,13 @@ import {
   type BranchPageDetail,
   BranchPrCommentKind,
   type BranchPrCommentsResponse,
-  BranchStatus,
 } from "@repo/api/src/types/branch";
+import { resolveAttributedBranchCost } from "@repo/api/src/types/branch-cost";
 import {
-  BranchAssociatedPullRequestCompletenessState,
-  BranchAssociatedPullRequestProvenance,
-  BranchAssociatedPullRequestSelectionReason,
-} from "@repo/api/src/types/branch-associated-pull-request";
+  BranchPhaseAttributionCompleteness,
+  type BranchPhaseAttributionResult,
+  BranchVisibleLifecyclePhase,
+} from "@repo/api/src/types/branch-phase-attribution";
 import {
   type BranchSelectedPullRequestFile,
   BranchSelectedPullRequestFileCompleteness,
@@ -23,8 +23,9 @@ import {
   BranchTraceSessionHydrationState,
   type MergedTraceItem,
 } from "@repo/api/src/types/branch-trace";
-import { GitHubPRState } from "@repo/api/src/types/github-status";
 import { SelectedPullRequestFileStatus } from "@repo/api/src/types/selected-pull-request-evidence";
+import { phaseAttributionSegment } from "@repo/lib/branches/__tests__/branch-phase-attribution-fixture";
+import { calculateBranchDetailMetrics } from "@repo/lib/branches/branch-detail-outcomes";
 import type { Meta, StoryObj } from "@storybook/react";
 import type { ReactNode } from "react";
 import type { FixtureRoute } from "../../shared/storybook/fixture-fetch";
@@ -32,10 +33,8 @@ import type { BranchesDataSource } from "../data-source/branches-data-source";
 import { BranchesDataSourceProvider } from "../data-source/provider";
 import { BranchDetailPage } from "./branch-detail-page";
 import {
-  completeMetrics,
-  completePhaseAttribution,
+  populatedDetail as buildPopulatedDetail,
   completeSelectedPullRequest,
-  completeSelectedPullRequestChecks,
 } from "./branch-story-metric-fixtures";
 
 // PLN-1148 Phase 2: the Sessions & timeline tab lazily fetches the merged trace
@@ -170,7 +169,6 @@ function makeBaseStoryCommentsResponse(
 }
 
 const storySelectedPullRequest = completeSelectedPullRequest();
-const storyChecksProjection = completeSelectedPullRequestChecks();
 const storyFilesResponse: BranchSelectedPullRequestFilesResponse = {
   status: BranchSelectedPullRequestReadAvailability.Available,
   value: {
@@ -222,98 +220,77 @@ const storyFilesResponse: BranchSelectedPullRequestFilesResponse = {
   },
 };
 
-const populatedDetail: BranchPageDetail = {
-  id: "b-1",
-  branchName: "feature/branches-detail",
-  baseBranch: "main",
-  repoFullName: "owner/repo",
-  owner: "alice",
-  status: BranchStatus.Merged,
-  prNumber: 1270,
-  prTitle: "Add Branch Detail page",
-  prState: GitHubPRState.Merged,
-  prUrl: "https://github.com/owner/repo/pull/1270",
-  multiPrWarning: false,
-  checksStatus: storyChecksProjection.legacy.checksStatus,
-  checksPassed: storyChecksProjection.legacy.checksPassed,
-  checksTotal: storyChecksProjection.legacy.checksTotal,
-  reviewDecision: storySelectedPullRequest.reviewDecision,
-  ahead: null,
-  behind: null,
-  additions: 180,
-  deletions: 24,
-  filesChanged: 3,
-  estimatedCostUsd: 4,
-  lastActivityAt: "2026-06-17T12:00:00.000Z",
-  sessionIds: ["s1"],
-  prBody: "Implements the Branch Detail shell.",
-  prBodyHtmlUrl: "https://github.com/owner/repo/pull/1270",
-  headSha: storySelectedPullRequest.headRefOid,
-  mergeCommitSha: storySelectedPullRequest.mergeCommitSha,
-  mergedAt: "2026-06-17T12:00:00.000Z",
-  closedAt: "2026-06-17T12:00:00.000Z",
-  openedAt: storySelectedPullRequest.openedAt,
-  commits: [],
-  sessions: [
-    {
-      sessionId: "s1",
-      slug: "sess-one",
-      name: "Scaffold the shell",
-      harness: "claude",
-      startedAt: "2026-06-17T09:00:00.000Z",
-      endedAt: "2026-06-17T10:00:00.000Z",
-      isPrimary: true,
-      estimatedCostUsd: 4,
-      inputTokens: 1000,
-      outputTokens: 2000,
-      cacheReadTokens: 500,
-      cacheWriteTokens: 300,
-      ownerUserName: "Cosimo",
-    },
-  ],
-  mergedTrace: [{ type: "end", sessionId: "s1", text: "Session ended" }],
-  leadTime: { firstActivityT: null, lastActivityT: null, idleSpans: [] },
-  linkedPrNumbers: [1270],
-  linkedArtifacts: [{ slug: "FEA-1952" }, { slug: "PLN-988" }],
-  associatedPullRequests: {
-    items: [
-      {
-        id: "owner/repo#1270",
-        repositoryFullName: "owner/repo",
-        number: 1270,
-        title: "Add Branch Detail page",
-        url: "https://github.com/owner/repo/pull/1270",
-        state: GitHubPRState.Merged,
-        isDraft: false,
-        reviewDecision: storySelectedPullRequest.reviewDecision,
-        openedAt: storySelectedPullRequest.openedAt,
-        closedAt: storySelectedPullRequest.closedAt,
-        mergedAt: storySelectedPullRequest.mergedAt,
-      },
+// Shared with ISS-10963's design harness via the fixtures module. Not
+// exported: every named export in a `.stories.tsx` file is indexed as a story.
+const populatedDetail: BranchPageDetail = buildPopulatedDetail();
+
+const RESIDUE_ATTRIBUTED_COST_USD = 174.04;
+const RESIDUE_ROLLUP_COST_USD = 8;
+
+function costAttributionResidueDetail(): BranchPageDetail {
+  const phaseAttribution: BranchPhaseAttributionResult = {
+    segments: [
+      phaseAttributionSegment({
+        sessionId: "s1",
+        phase: BranchVisibleLifecyclePhase.Build,
+        startMs: 0,
+        endMs: 1,
+        estimatedCostUsd: RESIDUE_ROLLUP_COST_USD,
+      }),
     ],
-    selectedId: "owner/repo#1270",
-    selectionReason:
-      BranchAssociatedPullRequestSelectionReason.MostRecentTerminal,
-    completeness: {
-      state: BranchAssociatedPullRequestCompletenessState.Complete,
-      reasons: [],
-      provenance: BranchAssociatedPullRequestProvenance.PersistedCloud,
+    rollups: Object.values(BranchVisibleLifecyclePhase).map((phase) => ({
+      phase,
+      estimatedCostUsd:
+        phase === BranchVisibleLifecyclePhase.Build
+          ? RESIDUE_ROLLUP_COST_USD
+          : 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      durationMs: 30 * 60 * 1000,
+      sessionCount: 1,
+    })),
+    coverage: {
+      completeness: BranchPhaseAttributionCompleteness.Complete,
+      subtotalUsd: RESIDUE_ROLLUP_COST_USD,
     },
-  },
-  selectedPullRequest: storySelectedPullRequest,
-  selectedPullRequestChecks: storyChecksProjection.response,
-  phaseAttribution: completePhaseAttribution(),
-  canonicalMetrics: completeMetrics(),
-};
+  };
+  const detail: BranchPageDetail = {
+    ...populatedDetail,
+    // The Sessions & timeline tab reads this figure; the Cost breakdown card
+    // must land on the same one.
+    estimatedCostUsd: RESIDUE_ATTRIBUTED_COST_USD,
+    attributedCostUsd: RESIDUE_ATTRIBUTED_COST_USD,
+    sessions: populatedDetail.sessions.map((session) => ({
+      ...session,
+      estimatedCostUsd: RESIDUE_ATTRIBUTED_COST_USD,
+      evenSplitCostUsd: RESIDUE_ATTRIBUTED_COST_USD,
+      branchCount: 1,
+    })),
+    phaseAttribution,
+  };
+  return {
+    ...detail,
+    canonicalMetrics: calculateBranchDetailMetrics({
+      attributedCostUsd: resolveAttributedBranchCost(detail),
+      phaseAttribution,
+      selectedCycle: null,
+      selectedPrAdditions: detail.additions,
+      selectedPrDeletions: detail.deletions,
+      selectedPrLocComplete: true,
+    }),
+  };
+}
 
 const StoryFrame = ({ children }: { children: ReactNode }) => (
   <div className="flex h-[600px] w-full">{children}</div>
 );
 
 const meta = {
-  title: "App Core/Branches/Branch Detail Page",
+  title: "Surfaces v1.0/Branches/Branch Detail Page",
   component: BranchDetailPage,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "fullscreen",
     appCore: { apiRoutes: storyApiRoutes },
@@ -351,6 +328,17 @@ export const EmptyNoSessions: Story = {
 
 export const Populated: Story = {
   args: { detail: populatedDetail },
+};
+
+/**
+ * ISS-6949 — a Branch whose phase attribution prices only part of its real spend,
+ * so the Cost breakdown header and the Sessions & timeline stat are derived from
+ * quantities that disagree. `canonicalMetrics` is produced by the REAL kernel over
+ * this fixture rather than hand-authored, so the story renders whatever the
+ * shipped derivation decides.
+ */
+export const CostAttributionResidue: Story = {
+  args: { detail: costAttributionResidueDetail() },
 };
 
 export const CommentsUnsynced: Story = {

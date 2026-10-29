@@ -15,29 +15,43 @@
  *   - github-claude-plugin      — single marketplace plugin: walks commands/ +
  *                                  agents/ + skills/ if present under plugin_path
  *                                  (claude-plugins-official entries)
+ *   - bundled-local             — ships inside Desktop, installs from disk, so
+ *                                  there is no remote tree to list (ISS-10605)
  *   - none                      — pack has no skill/command listing (RTK, claude-code-router)
  *
- * Returns [{ name, type, description?, path? }]. type is one of
+ * Returns [{ name, type, description?, path? }]. Description may be null when
+ * the upstream manifest omits it. type is one of
  * 'skill', 'command', 'agent', 'plugin'.
  */
 
-import { execFileSync } from "node:child_process";
-import https from "node:https";
-import { resolveBinaryFromLoginShellSync } from "../../server/shell-path.js";
+import { z } from "zod";
 import type { DesktopPrisma } from "../database/prisma-client.js";
+import { gatewayLog } from "../logging/gateway-logger.js";
+import { Observability } from "../telemetry/observability.js";
+import {
+  MARKETPLACE_MANIFEST_INVALID_TELEMETRY_CATEGORY,
+  MARKETPLACE_MANIFEST_VALIDATION_ERROR_MESSAGE,
+} from "../telemetry/telemetry-protocol.js";
 
+import {
+  contentsEndpoint,
+  fetchGithubJsonResult,
+  GitHubJsonFetchStatus,
+  type ParsedRepo,
+  parseGithubUrl,
+} from "./catalog-github-client.js";
 import { applyContentsFetch } from "./catalog-store.js";
 
-const REQUEST_TIMEOUT_MS = 8000;
+const MAX_CATALOG_CONTENT_ITEMS = 100;
 
 // ---------- types ----------
 
-type ParsedRepo = {
-  owner: string;
-  repo: string;
-};
-
 export type ContentItemKind = "skill" | "command" | "agent" | "plugin";
+
+export const CatalogContentsFetchStatus = {
+  Success: "success",
+  Unavailable: "unavailable",
+} as const;
 
 export type ContentItem = {
   name: string;
@@ -50,6 +64,16 @@ export type ContentItem = {
   skills?: string[];
 };
 
+/**
+ * `contents.type` for a pack that ships inside Desktop and installs from disk.
+ *
+ * ISS-10605: such a pack has no upstream repository whose stars and forks could
+ * be measured, so the catalog fetch must not attempt a lookup for it at all.
+ * Declared here beside `ContentsType` so the union member, the dispatch arm and
+ * the fetch-side check cannot drift to different spellings.
+ */
+export const BUNDLED_LOCAL_CONTENTS_TYPE = "bundled-local" as const;
+
 type ContentsType =
   | "github-skill-tree"
   | "github-multi-skill-tree"
@@ -58,6 +82,7 @@ type ContentsType =
   | "github-nested-skill-tree"
   | "claude-marketplace"
   | "github-claude-plugin"
+  | typeof BUNDLED_LOCAL_CONTENTS_TYPE
   | "none";
 
 type ContentsSpec = {
@@ -81,6 +106,10 @@ export type CatalogEntry = {
   contentsFetchedAt?: string | null;
 };
 
+export type CatalogContentsFetchResult =
+  | { status: typeof CatalogContentsFetchStatus.Success; items: ContentItem[] }
+  | { status: typeof CatalogContentsFetchStatus.Unavailable; items: null };
+
 type GitHubTreeEntry = {
   name: string;
   path: string;
@@ -88,9 +117,70 @@ type GitHubTreeEntry = {
   content?: string;
 };
 
-type MarketplaceManifest = {
-  plugins?: Array<{ name: string; description?: string }>;
+type ParsedMarketplaceDescription = {
+  value: string | null;
+  invalid: boolean;
 };
+
+type ParsedMarketplacePlugin =
+  | {
+      valid: true;
+      name: string;
+      description: string | null;
+      invalidDescription: boolean;
+    }
+  | { valid: false };
+
+type GithubContentsResult<T> =
+  | { status: typeof GitHubJsonFetchStatus.Success; value: T }
+  | {
+      status: typeof GitHubJsonFetchStatus.NotFound;
+      value: null;
+      reason: "not_found" | "refused_path";
+    }
+  | { status: typeof GitHubJsonFetchStatus.Unavailable; value: null };
+
+const MARKETPLACE_DESCRIPTION_SCHEMA = z
+  .string()
+  .optional()
+  .transform(
+    (description): ParsedMarketplaceDescription => ({
+      value: description || null,
+      invalid: false,
+    })
+  )
+  .catch({ value: null, invalid: true });
+
+const MARKETPLACE_PLUGIN_NAME_REGEX = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
+
+const MARKETPLACE_PLUGIN_SCHEMA = z
+  .object({
+    // The name is both the rendered identity and a path segment in the
+    // plugins_root enrichment lookup, so it is bounded to `[A-Za-z0-9._-]` with
+    // no leading dot (ISS-8883). `contentsEndpoint` is what actually holds the
+    // traversal line — it refuses a `..` segment and percent-encodes `#`/`?`
+    // per segment, and every path built from this name goes through it — so
+    // this bound is defence in depth over a name that has no business carrying
+    // path syntax, not the only thing standing between a manifest and a
+    // repository contents request. The cost of keeping it is real:
+    // a plugin named "My Plugin" is dropped from the catalog. Judged, never
+    // coerced: a well-formed name still emits byte-identically.
+    name: z.string().refine((name) => MARKETPLACE_PLUGIN_NAME_REGEX.test(name)),
+    description: MARKETPLACE_DESCRIPTION_SCHEMA,
+  })
+  .transform(
+    (plugin): ParsedMarketplacePlugin => ({
+      valid: true,
+      name: plugin.name,
+      description: plugin.description.value,
+      invalidDescription: plugin.description.invalid,
+    })
+  )
+  .catch({ valid: false });
+
+const MARKETPLACE_MANIFEST_SCHEMA = z.object({
+  plugins: z.array(MARKETPLACE_PLUGIN_SCHEMA).optional(),
+});
 
 // ---------- low-level GitHub helpers ----------
 
@@ -120,78 +210,6 @@ function readKind(value: Record<string, unknown>): ContentItemKind | undefined {
     raw === "plugin"
     ? raw
     : undefined;
-}
-
-function parseGithubUrl(url: string | null | undefined): ParsedRepo | null {
-  const m = String(url || "").match(/github\.com[/:]([^/]+)\/([^/?#.]+)/);
-  return m ? { owner: m[1], repo: m[2].replace(/\.git$/, "") } : null;
-}
-
-function ghCliAvailable(): boolean {
-  const result = resolveBinaryFromLoginShellSync("gh");
-  return result.source !== "fallback" && result.source !== "override_invalid";
-}
-
-function ghApi<T = unknown>(endpoint: string): T | null {
-  try {
-    const out = execFileSync(
-      "gh",
-      ["api", endpoint, "--header", "Accept: application/vnd.github+json"],
-      { timeout: REQUEST_TIMEOUT_MS, stdio: ["ignore", "pipe", "ignore"] }
-    );
-    return JSON.parse(out.toString("utf8")) as T;
-  } catch {
-    return null;
-  }
-}
-
-function restApi<T = unknown>(endpoint: string): Promise<T | null> {
-  return new Promise((resolve) => {
-    const urlPath = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
-    const req = https.get(
-      {
-        host: "api.github.com",
-        path: urlPath,
-        headers: {
-          "User-Agent": "closedloop-electron-agent-monitor",
-          Accept: "application/vnd.github+json",
-        },
-        timeout: REQUEST_TIMEOUT_MS,
-      },
-      (res) => {
-        if (res.statusCode !== 200) {
-          resolve(null);
-          res.resume();
-          return;
-        }
-        let body = "";
-        res.setEncoding("utf8");
-        res.on("data", (chunk: string) => (body += chunk));
-        res.on("end", () => {
-          try {
-            resolve(JSON.parse(body) as T);
-          } catch {
-            resolve(null);
-          }
-        });
-      }
-    );
-    req.on("error", () => resolve(null));
-    req.on("timeout", () => {
-      req.destroy();
-      resolve(null);
-    });
-  });
-}
-
-async function gh<T = unknown>(endpoint: string): Promise<T | null> {
-  if (ghCliAvailable()) {
-    const data = ghApi<T>(endpoint);
-    if (data) {
-      return data;
-    }
-  }
-  return restApi<T>(endpoint);
 }
 
 function parseSkillFrontmatterFromBase64(
@@ -235,30 +253,58 @@ async function fetchSkillTree(
   owner: string,
   repo: string,
   skillsPath: string,
-  marker?: string
-): Promise<ContentItem[]> {
+  marker?: string,
+  options: { missingRootAsEmpty?: boolean } = {}
+): Promise<ContentItem[] | null> {
   const skillMarker = marker || "SKILL.md";
-  const items = await gh<GitHubTreeEntry[]>(
-    `repos/${owner}/${repo}/contents/${encodeURI(skillsPath)}`
+  if (!isUsableContentsPath(skillMarker)) {
+    return null;
+  }
+  const items = await githubContents<GitHubTreeEntry[]>(
+    owner,
+    repo,
+    skillsPath
   );
-  if (!Array.isArray(items)) {
+  if (
+    items.status === GitHubJsonFetchStatus.NotFound &&
+    options.missingRootAsEmpty
+  ) {
     return [];
+  }
+  if (items.status !== GitHubJsonFetchStatus.Success) {
+    return null;
+  }
+  if (!Array.isArray(items.value)) {
+    return null;
   }
 
   const skills: ContentItem[] = [];
-  for (const entry of items) {
+  for (const entry of items.value) {
+    // Soft cap to avoid blowing the API budget: one marker read per skill.
+    if (skills.length >= MAX_CATALOG_CONTENT_ITEMS) {
+      break;
+    }
     if (entry.type !== "dir") {
       continue;
     }
     // Fetch the marker file's frontmatter (one extra API call per skill).
-    const file = await gh<GitHubTreeEntry>(
-      `repos/${owner}/${repo}/contents/${encodeURI(entry.path)}/${skillMarker}`
+    // `entry.path` is response-owned and the marker is seed-owned; a refused
+    // response path skips just that entry, while an API failure aborts so a
+    // partial scrape never overwrites the cache.
+    const file = await githubContents<GitHubTreeEntry>(
+      owner,
+      repo,
+      `${entry.path}/${skillMarker}`,
+      { refusedPath: GitHubJsonFetchStatus.NotFound }
     );
-    if (!file?.content) {
+    if (file.status === GitHubJsonFetchStatus.Unavailable) {
+      return null;
+    }
+    if (file.status === GitHubJsonFetchStatus.NotFound || !file.value.content) {
       skills.push({ name: entry.name, type: "skill", path: entry.path });
       continue;
     }
-    const meta = parseSkillFrontmatterFromBase64(file.content);
+    const meta = parseSkillFrontmatterFromBase64(file.value.content);
     skills.push({
       name: meta.name || entry.name,
       type: "skill",
@@ -274,14 +320,15 @@ async function fetchFlatMd(
   repo: string,
   mdPath: string,
   kind?: ContentItemKind
-): Promise<ContentItem[]> {
-  const items = await gh<GitHubTreeEntry[]>(
-    `repos/${owner}/${repo}/contents/${encodeURI(mdPath)}`
-  );
-  if (!Array.isArray(items)) {
-    return [];
+): Promise<ContentItem[] | null> {
+  const items = await githubContents<GitHubTreeEntry[]>(owner, repo, mdPath);
+  if (items.status !== GitHubJsonFetchStatus.Success) {
+    return null;
   }
-  return items
+  if (!Array.isArray(items.value)) {
+    return null;
+  }
+  return items.value
     .filter(
       (e) =>
         e.type === "file" &&
@@ -300,26 +347,54 @@ async function fetchNestedMd(
   repo: string,
   rootPath: string,
   kind?: ContentItemKind
-): Promise<ContentItem[]> {
-  const top = await gh<GitHubTreeEntry[]>(
-    `repos/${owner}/${repo}/contents/${encodeURI(rootPath)}`
-  );
-  if (!Array.isArray(top)) {
-    return [];
+): Promise<ContentItem[] | null> {
+  const top = await githubContents<GitHubTreeEntry[]>(owner, repo, rootPath);
+  if (top.status !== GitHubJsonFetchStatus.Success) {
+    return null;
+  }
+  if (!Array.isArray(top.value)) {
+    return null;
   }
 
   const items: ContentItem[] = [];
-  for (const cat of top) {
+  let categoryReads = 0;
+  for (const cat of top.value) {
+    // Soft cap to avoid blowing the API budget: one read per category, and a
+    // single category can itself list a thousand files. Counted on READS as
+    // well as items, because an empty or README-only category costs a call
+    // and adds nothing.
+    if (
+      items.length >= MAX_CATALOG_CONTENT_ITEMS ||
+      categoryReads >= MAX_CATALOG_CONTENT_ITEMS
+    ) {
+      break;
+    }
     if (cat.type !== "dir") {
       continue;
     }
-    const inner = await gh<GitHubTreeEntry[]>(
-      `repos/${owner}/${repo}/contents/${encodeURI(cat.path)}`
+    categoryReads += 1;
+    const inner = await githubContents<GitHubTreeEntry[]>(
+      owner,
+      repo,
+      cat.path,
+      { refusedPath: GitHubJsonFetchStatus.NotFound }
     );
-    if (!Array.isArray(inner)) {
+    if (
+      inner.status === GitHubJsonFetchStatus.NotFound &&
+      inner.reason === "refused_path"
+    ) {
       continue;
     }
-    for (const file of inner) {
+    if (inner.status !== GitHubJsonFetchStatus.Success) {
+      return null;
+    }
+    if (!Array.isArray(inner.value)) {
+      return null;
+    }
+    for (const file of inner.value) {
+      if (items.length >= MAX_CATALOG_CONTENT_ITEMS) {
+        break;
+      }
       if (file.type !== "file") {
         continue;
       }
@@ -345,10 +420,14 @@ async function fetchMultiSkillTree(
   repo: string,
   paths: string[] | undefined,
   marker?: string
-): Promise<ContentItem[]> {
+): Promise<ContentItem[] | null> {
   const out: ContentItem[] = [];
   for (const p of paths || []) {
-    out.push(...(await fetchSkillTree(owner, repo, p, marker)));
+    const items = await fetchSkillTree(owner, repo, p, marker);
+    if (!items) {
+      return null;
+    }
+    out.push(...items);
   }
   return out;
 }
@@ -357,46 +436,147 @@ async function fetchClaudeMarketplace(
   owner: string,
   repo: string,
   pluginsRoot?: string
-): Promise<ContentItem[]> {
+): Promise<ContentItem[] | null> {
   // Read .claude-plugin/marketplace.json for the canonical list.
-  const meta = await gh<GitHubTreeEntry>(
-    `repos/${owner}/${repo}/contents/.claude-plugin/marketplace.json`
+  const meta = await githubContents<GitHubTreeEntry>(
+    owner,
+    repo,
+    ".claude-plugin/marketplace.json"
   );
-  if (meta?.content) {
-    try {
-      const parsed = JSON.parse(
-        Buffer.from(meta.content, "base64").toString("utf8")
-      ) as MarketplaceManifest;
-      if (Array.isArray(parsed.plugins)) {
-        const items: ContentItem[] = parsed.plugins.map((p) => ({
-          name: p.name,
-          type: "plugin" as const,
-          description: p.description || null,
-        }));
-        // If a plugins_root is declared, walk each plugin's skills/ dir for a
-        // richer breakdown. Best-effort; bail if API budget is exhausted.
-        if (pluginsRoot) {
-          for (const item of items) {
-            try {
-              const skills = await fetchSkillTree(
-                owner,
-                repo,
-                `${pluginsRoot}/${item.name}/skills`
-              );
-              item.skill_count = skills.length;
-              item.skills = skills.map((s) => s.name);
-            } catch {
-              /* per-plugin scrape best-effort */
-            }
-          }
-        }
-        return items;
-      }
-    } catch {
-      /* malformed marketplace.json — fall through */
+  if (meta.status !== GitHubJsonFetchStatus.Success || !meta.value.content) {
+    return null;
+  }
+  const plugins = parseMarketplacePlugins(meta.value.content);
+  if (!plugins) {
+    return null;
+  }
+  // If a plugins_root is declared, walk each plugin's skills/ dir for a
+  // richer breakdown. Abort on API failure so a partial enrichment does not
+  // overwrite a complete cached scrape.
+  if (pluginsRoot) {
+    const enriched = await enrichMarketplacePluginSkills(
+      owner,
+      repo,
+      pluginsRoot,
+      plugins
+    );
+    if (!enriched) {
+      return null;
     }
   }
-  return [];
+  return plugins;
+}
+
+/**
+ * Validate a base64 marketplace manifest into its plugin items, dropping any
+ * record that cannot be trusted and reporting the aggregate bad-data counts.
+ *
+ * Returns `null` for a manifest that carries no usable plugin list at all:
+ * undecodable, structurally invalid, or simply absent. The caller treats that
+ * as unavailable so a corrupt remote manifest cannot overwrite a good cache.
+ */
+function parseMarketplacePlugins(base64Content: string): ContentItem[] | null {
+  const decoded = decodeMarketplaceManifest(base64Content);
+  // A manifest that cannot be decoded is the same corrupt-remote-input class as
+  // one that fails the schema, and reaches the caller as the same unavailable
+  // result, so it owes the same report.
+  const parsed = decoded
+    ? MARKETPLACE_MANIFEST_SCHEMA.safeParse(decoded.value)
+    : null;
+  if (!parsed?.success) {
+    reportInvalidMarketplaceManifest({
+      invalidManifest: true,
+      invalidPlugins: 0,
+      invalidDescriptions: 0,
+    });
+    return null;
+  }
+  if (!parsed.data.plugins) {
+    return null;
+  }
+  const items: ContentItem[] = [];
+  let invalidPlugins = 0;
+  let invalidDescriptions = 0;
+  for (const plugin of parsed.data.plugins) {
+    if (!plugin.valid) {
+      invalidPlugins += 1;
+      continue;
+    }
+    if (plugin.invalidDescription) {
+      invalidDescriptions += 1;
+    }
+    items.push({
+      name: plugin.name,
+      type: "plugin",
+      description: plugin.description,
+    });
+  }
+  reportInvalidMarketplaceManifest({
+    invalidManifest: false,
+    invalidPlugins,
+    invalidDescriptions,
+  });
+  return items;
+}
+
+async function enrichMarketplacePluginSkills(
+  owner: string,
+  repo: string,
+  pluginsRoot: string,
+  items: ContentItem[]
+): Promise<boolean> {
+  for (const item of items.slice(0, MAX_CATALOG_CONTENT_ITEMS)) {
+    const skills = await fetchSkillTree(
+      owner,
+      repo,
+      `${pluginsRoot}/${item.name}/skills`,
+      undefined,
+      { missingRootAsEmpty: true }
+    );
+    if (!skills) {
+      return false;
+    }
+    item.skill_count = skills.length;
+    item.skills = skills.map((s) => s.name);
+  }
+  return true;
+}
+
+function reportInvalidMarketplaceManifest(summary: {
+  invalidManifest: boolean;
+  invalidPlugins: number;
+  invalidDescriptions: number;
+}): void {
+  if (
+    !summary.invalidManifest &&
+    summary.invalidPlugins === 0 &&
+    summary.invalidDescriptions === 0
+  ) {
+    return;
+  }
+  // The three counters are what separates a wholly corrupt manifest from one
+  // bad plugin or one bad description, so they travel with BOTH sinks. They are
+  // array-derived integers — bounded and content-free, never a name or a URL.
+  const counts = `invalid_manifest=${summary.invalidManifest ? 1 : 0} invalid_plugins=${summary.invalidPlugins} invalid_descriptions=${summary.invalidDescriptions}`;
+  gatewayLog.warn(
+    "catalog-contents",
+    `remote marketplace manifest failed validation; ${counts}. Invalid plugin entries were dropped and invalid descriptions were omitted.`
+  );
+  try {
+    // Catalog fetching runs on the DB-host store thread. Its process-local
+    // app-exception bridge has no bound runtime, so use the existing two-hop
+    // telemetry relay; DbHostClient consumes this discriminator in Electron
+    // main and emits through the monitored main-process bridge there. The
+    // canonical prefix stays leading so the relayed error groups unchanged.
+    Observability.getTelemetryEmitter().emit({
+      severity: "error",
+      category: MARKETPLACE_MANIFEST_INVALID_TELEMETRY_CATEGORY,
+      message: `${MARKETPLACE_MANIFEST_VALIDATION_ERROR_MESSAGE}; ${counts}`,
+    });
+  } catch {
+    // Reporting failure must not turn malformed optional catalog metadata into
+    // a Desktop render failure; gatewayLog above remains the durable record.
+  }
 }
 
 /**
@@ -409,63 +589,113 @@ async function fetchClaudePlugin(
   owner: string,
   repo: string,
   pluginPath: string
-): Promise<ContentItem[]> {
+): Promise<ContentItem[] | null> {
   const items: ContentItem[] = [];
-  const top = await gh<GitHubTreeEntry[]>(
-    `repos/${owner}/${repo}/contents/${encodeURI(pluginPath)}`
-  );
-  if (!Array.isArray(top)) {
-    return items;
+  const top = await githubContents<GitHubTreeEntry[]>(owner, repo, pluginPath);
+  if (top.status !== GitHubJsonFetchStatus.Success) {
+    return null;
+  }
+  if (!Array.isArray(top.value)) {
+    return null;
   }
   const hasDir = (name: string): boolean =>
-    top.some((e) => e.type === "dir" && e.name === name);
+    top.value.some((e) => e.type === "dir" && e.name === name);
+  // Soft cap across the three sub-walks together, so the plugin's union is
+  // bounded the same way each walker is on its own.
+  const underCap = (): boolean => items.length < MAX_CATALOG_CONTENT_ITEMS;
 
   // commands/<name>.md
-  if (hasDir("commands")) {
-    items.push(
-      ...(await fetchFlatMd(owner, repo, `${pluginPath}/commands`, "command"))
+  if (hasDir("commands") && underCap()) {
+    const commands = await fetchFlatMd(
+      owner,
+      repo,
+      `${pluginPath}/commands`,
+      "command"
     );
+    if (!commands) {
+      return null;
+    }
+    items.push(...commands);
   }
   // agents/<name>.md
-  if (hasDir("agents")) {
-    items.push(
-      ...(await fetchFlatMd(owner, repo, `${pluginPath}/agents`, "agent"))
+  if (hasDir("agents") && underCap()) {
+    const agents = await fetchFlatMd(
+      owner,
+      repo,
+      `${pluginPath}/agents`,
+      "agent"
     );
+    if (!agents) {
+      return null;
+    }
+    items.push(...agents);
   }
   // skills/<name>/SKILL.md
-  if (hasDir("skills")) {
-    items.push(...(await fetchSkillTree(owner, repo, `${pluginPath}/skills`)));
+  if (hasDir("skills") && underCap()) {
+    const skills = await fetchSkillTree(owner, repo, `${pluginPath}/skills`);
+    if (!skills) {
+      return null;
+    }
+    items.push(...skills);
   }
-  return items;
+  return items.slice(0, MAX_CATALOG_CONTENT_ITEMS);
 }
 
 async function fetchNestedSkillTree(
   owner: string,
   repo: string,
   _matchPattern?: string
-): Promise<ContentItem[]> {
+): Promise<ContentItem[] | null> {
   // Simple two-level walk: <team>/skills/<skill>/SKILL.md
-  const top = await gh<GitHubTreeEntry[]>(`repos/${owner}/${repo}/contents`);
-  if (!Array.isArray(top)) {
-    return [];
+  const top = await fetchGithubJsonResult<GitHubTreeEntry[]>(
+    `/repos/${owner}/${repo}/contents`
+  );
+  if (top.status !== GitHubJsonFetchStatus.Success) {
+    return null;
+  }
+  if (!Array.isArray(top.value)) {
+    return null;
   }
 
   const items: ContentItem[] = [];
-  for (const teamDir of top) {
+  let teamReads = 0;
+  for (const teamDir of top.value) {
+    // Soft cap to avoid blowing the API budget for huge multi-team repos.
+    // Counted on READS as well as items, because a team dir with no `skills`
+    // subdirectory costs a call and adds nothing, so an items-only cap never
+    // fires on a repo of a thousand empty teams.
+    if (
+      items.length >= MAX_CATALOG_CONTENT_ITEMS ||
+      teamReads >= MAX_CATALOG_CONTENT_ITEMS
+    ) {
+      break;
+    }
     if (teamDir.type !== "dir") {
       continue;
     }
     if (teamDir.name.startsWith(".")) {
       continue;
     }
-    const teamSkillsPath = `${teamDir.path}/skills`;
-    const innerTry = await gh<GitHubTreeEntry[]>(
-      `repos/${owner}/${repo}/contents/${encodeURI(teamSkillsPath)}`
+    teamReads += 1;
+    const innerTry = await githubContents<GitHubTreeEntry[]>(
+      owner,
+      repo,
+      `${teamDir.path}/skills`,
+      { refusedPath: GitHubJsonFetchStatus.NotFound }
     );
-    if (!Array.isArray(innerTry)) {
+    if (innerTry.status === GitHubJsonFetchStatus.NotFound) {
       continue;
     }
-    for (const skillDir of innerTry) {
+    if (innerTry.status !== GitHubJsonFetchStatus.Success) {
+      return null;
+    }
+    if (!Array.isArray(innerTry.value)) {
+      return null;
+    }
+    for (const skillDir of innerTry.value) {
+      if (items.length >= MAX_CATALOG_CONTENT_ITEMS) {
+        break;
+      }
       if (skillDir.type !== "dir") {
         continue;
       }
@@ -476,27 +706,23 @@ async function fetchNestedSkillTree(
         path: skillDir.path,
       });
     }
-    // Soft cap to avoid blowing the API budget for huge multi-team repos.
-    if (items.length >= 100) {
-      break;
-    }
   }
   return items;
 }
 
 // ---------- dispatch ----------
 
-export async function fetchContents(
+export async function fetchContentsResult(
   entry: CatalogEntry
-): Promise<ContentItem[]> {
+): Promise<CatalogContentsFetchResult> {
   const contents = entry.contents;
   const type = contents ? readString(contents, "type") : undefined;
   if (!(contents && type)) {
-    return [];
+    return catalogContentsSuccess([]);
   }
   const parsed = parseGithubUrl(entry.githubUrl);
   if (!parsed) {
-    return [];
+    return catalogContentsUnavailable();
   }
   const { owner, repo } = parsed;
 
@@ -504,89 +730,205 @@ export async function fetchContents(
     case "github-skill-tree": {
       const skillsPath = readString(contents, "skills_path");
       if (!skillsPath) {
-        return [];
+        return catalogContentsUnavailable();
       }
-      return fetchSkillTree(
-        owner,
-        repo,
-        skillsPath,
-        readString(contents, "skill_marker")
+      return catalogContentsResult(
+        await fetchSkillTree(
+          owner,
+          repo,
+          skillsPath,
+          readString(contents, "skill_marker")
+        )
       );
     }
     case "github-multi-skill-tree": {
       const skillPaths = readStringArray(contents, "skill_paths");
       if (skillPaths.length === 0) {
-        return [];
+        return catalogContentsUnavailable();
       }
-      return fetchMultiSkillTree(
-        owner,
-        repo,
-        skillPaths,
-        readString(contents, "skill_marker")
+      return catalogContentsResult(
+        await fetchMultiSkillTree(
+          owner,
+          repo,
+          skillPaths,
+          readString(contents, "skill_marker")
+        )
       );
     }
     case "github-flat-md": {
       const mdPath = readString(contents, "md_path");
       if (!mdPath) {
-        return [];
+        return catalogContentsUnavailable();
       }
-      return fetchFlatMd(owner, repo, mdPath, readKind(contents));
+      return catalogContentsResult(
+        await fetchFlatMd(owner, repo, mdPath, readKind(contents))
+      );
     }
     case "github-nested-md": {
       const rootPath = readString(contents, "root_path");
       if (!rootPath) {
-        return [];
+        return catalogContentsUnavailable();
       }
-      return fetchNestedMd(owner, repo, rootPath, readKind(contents));
+      return catalogContentsResult(
+        await fetchNestedMd(owner, repo, rootPath, readKind(contents))
+      );
     }
     case "github-nested-skill-tree":
-      return fetchNestedSkillTree(
-        owner,
-        repo,
-        readString(contents, "match_pattern")
+      return catalogContentsResult(
+        await fetchNestedSkillTree(
+          owner,
+          repo,
+          readString(contents, "match_pattern")
+        )
       );
     case "claude-marketplace": {
-      const marketplaceRepo = readString(contents, "marketplace_repo");
-      const repoFromContents = marketplaceRepo
-        ? parseGithubUrl(`https://github.com/${marketplaceRepo}`)
-        : null;
-      const mkO = repoFromContents ? repoFromContents.owner : owner;
-      const mkR = repoFromContents ? repoFromContents.repo : repo;
-      return fetchClaudeMarketplace(
-        mkO,
-        mkR,
-        readString(contents, "plugins_root")
+      const source = marketplaceSourceRepo(contents, parsed);
+      return catalogContentsResult(
+        await fetchClaudeMarketplace(
+          source.owner,
+          source.repo,
+          readString(contents, "plugins_root")
+        )
       );
     }
     case "github-claude-plugin": {
-      const marketplaceRepo = readString(contents, "marketplace_repo");
-      const repoFromContents = marketplaceRepo
-        ? parseGithubUrl(`https://github.com/${marketplaceRepo}`)
-        : null;
-      const pluginO = repoFromContents ? repoFromContents.owner : owner;
-      const pluginR = repoFromContents ? repoFromContents.repo : repo;
       const pluginPath = readString(contents, "plugin_path");
       if (!pluginPath) {
-        return [];
+        return catalogContentsUnavailable();
       }
-      return fetchClaudePlugin(pluginO, pluginR, pluginPath);
+      const source = marketplaceSourceRepo(contents, parsed);
+      return catalogContentsResult(
+        await fetchClaudePlugin(source.owner, source.repo, pluginPath)
+      );
     }
+    // A pack that ships inside Desktop has no remote tree to list, which is the
+    // same empty-and-complete answer as "none" — not an unavailable transport.
+    case BUNDLED_LOCAL_CONTENTS_TYPE:
     case "none":
-      return [];
+      return catalogContentsSuccess([]);
     default:
-      return [];
+      return catalogContentsUnavailable();
   }
+}
+
+export async function fetchContents(
+  entry: CatalogEntry
+): Promise<ContentItem[]> {
+  const result = await fetchContentsResult(entry);
+  return result.status === CatalogContentsFetchStatus.Success
+    ? result.items
+    : [];
 }
 
 /**
  * Top-level entry. Fetches contents for one catalog entry, applies to the
  * cache table, and returns the items.
+ *
+ * Honors `SKIP_CATALOG_CONTENTS_FETCH=1` so tests can pin seeded
+ * `contents_cache`. Unavailable refreshes leave that cache unchanged.
  */
 export async function refreshCatalogContents(
   prisma: DesktopPrisma,
   catalogEntry: CatalogEntry
-): Promise<ContentItem[]> {
-  const items = await fetchContents(catalogEntry);
-  await applyContentsFetch(prisma, { pack_id: catalogEntry.packId, items });
-  return items;
+): Promise<ContentItem[] | null> {
+  if (process.env.SKIP_CATALOG_CONTENTS_FETCH === "1") {
+    return null;
+  }
+  const result = await fetchContentsResult(catalogEntry);
+  if (result.status === CatalogContentsFetchStatus.Unavailable) {
+    gatewayLog.warn(
+      "catalog-contents",
+      `contents refresh unavailable for ${catalogEntry.packId}; cache left unchanged`
+    );
+    return null;
+  }
+  await applyContentsFetch(prisma, {
+    pack_id: catalogEntry.packId,
+    items: result.items,
+  });
+  return result.items;
+}
+
+/**
+ * Which repo a pack's plugin contents are actually scraped from.
+ *
+ * A pack whose plugin ships inside somebody else's marketplace declares
+ * `contents.marketplace_repo`, and that wins over the pack's own `githubUrl` —
+ * the seed's `context7` is the live case, with `githubUrl` on `upstash/context7`
+ * while the plugin itself lives in `anthropics/claude-plugins-official`. Absent
+ * or unparseable, the pack's own repo stands.
+ *
+ * ISS-8006: `claude-marketplace` and `github-claude-plugin` each carried their
+ * own copy of this, so a fix to one silently missed the other. One
+ * implementation means the `github-claude-plugin` override test now covers the
+ * path both branches take.
+ */
+function marketplaceSourceRepo(
+  contents: Record<string, unknown>,
+  fallback: ParsedRepo
+): ParsedRepo {
+  const marketplaceRepo = readString(contents, "marketplace_repo");
+  if (!marketplaceRepo) {
+    return fallback;
+  }
+  return parseGithubUrl(`https://github.com/${marketplaceRepo}`) ?? fallback;
+}
+
+function decodeMarketplaceManifest(
+  base64Content: string
+): { value: unknown } | null {
+  try {
+    return {
+      value: JSON.parse(Buffer.from(base64Content, "base64").toString("utf8")),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isUsableContentsPath(path: string): boolean {
+  return contentsEndpoint("owner", "repo", path) !== null;
+}
+
+function githubContents<T = unknown>(
+  owner: string,
+  repo: string,
+  path: string,
+  options: {
+    refusedPath?: typeof GitHubJsonFetchStatus.NotFound;
+  } = {}
+): Promise<GithubContentsResult<T>> {
+  const endpoint = contentsEndpoint(owner, repo, path);
+  if (!endpoint) {
+    return Promise.resolve(
+      options.refusedPath === GitHubJsonFetchStatus.NotFound
+        ? {
+            status: GitHubJsonFetchStatus.NotFound,
+            value: null,
+            reason: "refused_path",
+          }
+        : { status: GitHubJsonFetchStatus.Unavailable, value: null }
+    );
+  }
+  return fetchGithubJsonResult<T>(`/${endpoint}`).then((result) =>
+    result.status === GitHubJsonFetchStatus.NotFound
+      ? { ...result, reason: "not_found" }
+      : result
+  );
+}
+
+function catalogContentsResult(
+  items: ContentItem[] | null
+): CatalogContentsFetchResult {
+  return items ? catalogContentsSuccess(items) : catalogContentsUnavailable();
+}
+
+function catalogContentsSuccess(
+  items: ContentItem[]
+): CatalogContentsFetchResult {
+  return { status: CatalogContentsFetchStatus.Success, items };
+}
+
+function catalogContentsUnavailable(): CatalogContentsFetchResult {
+  return { status: CatalogContentsFetchStatus.Unavailable, items: null };
 }

@@ -38,9 +38,9 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
-import type { CapturedStatement } from "../src/main/database/prisma-client.js";
+import { test } from "vitest";
+import type { CapturedStatement } from "../src/main/database/prisma-statement-observers.js";
 import { createSqliteSessionSyncSource } from "../src/main/database/sync-source.js";
 import { persistLocalFrustration } from "../src/main/database/sync-source-frustration-writeback.js";
 import { createWriteQueue } from "../src/main/database/write-queue.js";

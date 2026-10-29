@@ -8,8 +8,12 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { DesktopSignInProvider } from "@repo/api/src/types/desktop-authorize-url";
+import {
+  DesktopSignInFraming,
+  DesktopSignInMethod,
+  DesktopSignInProvider,
+} from "@repo/api/src/types/desktop-authorize-url";
+import { test } from "vitest";
 import { createDesktopApi } from "../src/main/preload-common.js";
 
 const BEGIN_SIGN_IN_CHANNEL = "desktop:begin-desktop-sign-in";
@@ -41,17 +45,66 @@ test("beginDesktopSignIn forwards the picked provider over IPC", async () => {
 
   const call = calls.find((c) => c.channel === BEGIN_SIGN_IN_CHANNEL);
   assert.ok(call, "the begin-sign-in channel was invoked");
-  assert.deepEqual(call.args, [DesktopSignInProvider.Google]);
+  assert.deepEqual(call.args, [
+    DesktopSignInProvider.Google,
+    undefined,
+    undefined,
+    undefined,
+  ]);
+});
+
+// ISS-5954 M2/M5 — the email pick is an explicit wire value now, not the
+// absent hint (absent means GitHub on the web side), and the typed address
+// rides along for the prefill.
+test("beginDesktopSignIn forwards the email method and hint over IPC", async () => {
+  const { ipc, calls } = createIpcStub();
+
+  await createDesktopApi(ipc).beginDesktopSignIn(
+    DesktopSignInMethod.Email,
+    "kerensa+desktop@closedloop.ai",
+    DesktopSignInFraming.SignIn
+  );
+
+  const call = calls.find((c) => c.channel === BEGIN_SIGN_IN_CHANNEL);
+  assert.ok(call, "the begin-sign-in channel was invoked");
+  assert.deepEqual(call.args, [
+    DesktopSignInMethod.Email,
+    "kerensa+desktop@closedloop.ai",
+    DesktopSignInFraming.SignIn,
+    undefined,
+  ]);
 });
 
 test("beginDesktopSignIn sends no provider when the caller names none", async () => {
-  // The renderer's email pick and any older caller land here. `undefined` has to
-  // reach main as an absent hint rather than being substituted for something.
+  // An older caller that names nothing lands here. `undefined` has to reach
+  // main as an absent hint rather than being substituted for something.
   const { ipc, calls } = createIpcStub();
 
   await createDesktopApi(ipc).beginDesktopSignIn();
 
   const call = calls.find((c) => c.channel === BEGIN_SIGN_IN_CHANNEL);
   assert.ok(call, "the begin-sign-in channel was invoked");
-  assert.deepEqual(call.args, [undefined]);
+  assert.deepEqual(call.args, [undefined, undefined, undefined, undefined]);
+});
+
+// ISS-11345 — the fourth argument is what holds a gated card's sign-in for the
+// account confirmation; dropped here, main adopts the browser's account unseen.
+test("beginDesktopSignIn forwards the sign-in options over IPC", async () => {
+  const { ipc, calls } = createIpcStub();
+
+  await createDesktopApi(ipc).beginDesktopSignIn(
+    undefined,
+    undefined,
+    undefined,
+    { confirmAccount: true }
+  );
+
+  const call = calls.find((c) => c.channel === BEGIN_SIGN_IN_CHANNEL);
+  assert.ok(call, "the begin-sign-in channel was invoked");
+  assert.deepEqual(call.args, [
+    undefined,
+    undefined,
+    undefined,
+    { confirmAccount: true },
+  ]);
 });

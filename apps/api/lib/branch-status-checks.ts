@@ -39,7 +39,6 @@ export type PersistBranchStatusChecksResult =
   | { status: "skipped"; reason: "missing_or_stale_branch" };
 
 type BranchStatusChecksProjectionInput = {
-  artifactId: string;
   headSha: string | null;
   checksDetailHeadSha: string | null;
   checksDetailTotalCount: number;
@@ -178,6 +177,8 @@ export async function invalidateBranchStatusChecksForHeadChange(
   await tx.branchDetail.update({
     where: { artifactId: branchArtifactId },
     data: getBranchStatusChecksResetData(),
+    // `BranchDetail` is keyed on `artifactId`; it has no `id` column.
+    select: { artifactId: true },
   });
 }
 
@@ -219,27 +220,34 @@ export function projectBranchStatusChecks(
     return undefined;
   }
 
+  // ISS-8241: a FAILED read leaves every count where the last SUCCESSFUL read
+  // put it — `persistBranchStatusChecksFromRollup` writes only the head, the
+  // provider state, the reason and the timestamp on that path. Serving those
+  // counts beside `provider_unavailable` hands a consumer an earlier read's
+  // population as this one's, so the failure carries no counts at all, matching
+  // the empty `items` below.
+  const unavailable =
+    providerState === BranchViewChecksProviderState.ProviderUnavailable;
+
   return {
     headSha: branch.checksDetailHeadSha,
     providerState,
-    unavailableReason:
-      providerState === BranchViewChecksProviderState.ProviderUnavailable
-        ? normalizeFailureReason(branch.checksDetailUnavailableReason)
-        : null,
-    totalCount: branch.checksDetailTotalCount,
-    truncated: branch.checksDetailTruncated,
-    items:
-      providerState === BranchViewChecksProviderState.ProviderUnavailable
-        ? []
-        : (branch.statusChecks ?? [])
-            .filter(
-              (row) =>
-                row.headSha === branch.checksDetailHeadSha &&
-                row.providerKey &&
-                isKnownCheckKind(row.kind)
-            )
-            .sort((left, right) => left.position - right.position)
-            .map(projectStatusCheckRow),
+    unavailableReason: unavailable
+      ? normalizeFailureReason(branch.checksDetailUnavailableReason)
+      : null,
+    totalCount: unavailable ? 0 : branch.checksDetailTotalCount,
+    truncated: unavailable ? false : branch.checksDetailTruncated,
+    items: unavailable
+      ? []
+      : (branch.statusChecks ?? [])
+          .filter(
+            (row) =>
+              row.headSha === branch.checksDetailHeadSha &&
+              row.providerKey &&
+              isKnownCheckKind(row.kind)
+          )
+          .sort((left, right) => left.position - right.position)
+          .map(projectStatusCheckRow),
   };
 }
 

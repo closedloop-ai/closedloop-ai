@@ -24,7 +24,7 @@ export function readModelPullRequest() {
     githubId: "4242",
     number: 42,
     title: "Backfilled PR",
-    htmlUrl: "https://github.com/closedloop-ai/example-repo/pull/42",
+    htmlUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/42",
     headBranch: "feature/test",
     baseBranch: "main",
     headSha: "abc123",
@@ -49,11 +49,12 @@ export function readModelPullRequest() {
 /** The persisted PR row a fully-projected {@link readModelPullRequest} produces. */
 export function existingPullRequest() {
   return {
-    id: "pr-detail-1",
+    id: "11111111-1111-4111-8111-111111111113",
+    branchArtifactId: "branch-artifact-1",
     githubId: "4242",
     number: 42,
     title: "Backfilled PR",
-    htmlUrl: "https://github.com/closedloop-ai/example-repo/pull/42",
+    htmlUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/42",
     prState: GitHubPRState.Open,
     isDraft: false,
     additions: 1,
@@ -99,7 +100,7 @@ export function pullRequestMetadata(): GitHubBackfillPullRequestMetadata {
         created_at: "2026-07-05T00:00:00.000Z",
         updated_at: "2026-07-05T00:01:00.000Z",
         html_url:
-          "https://github.com/closedloop-ai/example-repo/pull/42#issuecomment-1001",
+          "https://github.com/closedloop-ai/closedloop-ai/pull/42#issuecomment-1001",
         deleted_at: null,
         is_deleted: false,
         is_updated: true,
@@ -128,7 +129,7 @@ export function pullRequestMetadata(): GitHubBackfillPullRequestMetadata {
         created_at: "2026-07-05T00:02:00.000Z",
         updated_at: "2026-07-05T00:03:00.000Z",
         html_url:
-          "https://github.com/closedloop-ai/example-repo/pull/42#discussion_r2001",
+          "https://github.com/closedloop-ai/closedloop-ai/pull/42#discussion_r2001",
         commit_id: "abc123",
         pull_request_review_id: 3001,
         review_thread_node_id: "thread-node-2001",
@@ -151,7 +152,7 @@ export function pullRequestMetadata(): GitHubBackfillPullRequestMetadata {
         body: "Approved",
         submitted_at: "2026-07-05T00:04:00.000Z",
         html_url:
-          "https://github.com/closedloop-ai/example-repo/pull/42#pullrequestreview-3001",
+          "https://github.com/closedloop-ai/closedloop-ai/pull/42#pullrequestreview-3001",
       },
     ],
     statusCheckRollup: {
@@ -189,12 +190,13 @@ export function existingReviewThreadProjectionRow(
     reviewId: "3001",
     path: "app.ts",
     line: 10,
+    originalLine: 10,
     side: "RIGHT",
     startLine: null,
     startSide: null,
     commitSha: "abc123",
     htmlUrl:
-      "https://github.com/closedloop-ai/example-repo/pull/42#discussion_r2001",
+      "https://github.com/closedloop-ai/closedloop-ai/pull/42#discussion_r2001",
     // `review_thread_is_resolved: true` maps to the LEGACY comment state
     // ADDRESSED — not `ThreadStatus.RESOLVED`, which is the other vocabulary
     // this row carries elsewhere.
@@ -216,7 +218,7 @@ export function existingReviewRow(over: Record<string, unknown> = {}) {
     state: ReviewDecision.Approved,
     body: "Approved",
     htmlUrl:
-      "https://github.com/closedloop-ai/example-repo/pull/42#pullrequestreview-3001",
+      "https://github.com/closedloop-ai/closedloop-ai/pull/42#pullrequestreview-3001",
     submittedAt: new Date("2026-07-05T00:04:00.000Z"),
     ...over,
   };

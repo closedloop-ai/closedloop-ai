@@ -10,7 +10,7 @@ import type {
   SessionRow,
   SessionWithAgents,
 } from "../../shared/agent-db-contract.js";
-import { DATA_REVISION } from "../collectors/engine/data-revision.js";
+import { effectiveDataRevision } from "../collectors/engine/effective-data-revision.js";
 import type {
   TokenUsageCounts,
   TokenUsageRow,
@@ -29,7 +29,7 @@ import {
   tokenCountValue,
 } from "./db-helpers.js";
 import type { Prisma } from "./generated/client.js";
-import type { DesktopPrisma } from "./prisma-client.js";
+import type { DesktopPrisma, DesktopPrismaReader } from "./prisma-client.js";
 import { countSqliteSessions } from "./session-count.js";
 import {
   detailRowsToList,
@@ -41,8 +41,7 @@ import { attachEstimatedCosts } from "./session-estimated-costs.js";
 // Explicit column projection for session list/detail reads. Lists ONLY the
 // columns `toSessionRow` (and `detailRowsToList`) actually consume, so the
 // large unused `sessions` columns — `metadata` is read and therefore kept, but
-// the JSONB `trace_phase_sources` / `throttle_sources` / `correction_sources`
-// and the `cost_*` / `data_revision` columns are NOT materialized on every
+// the `cost_*` / `data_revision` columns are NOT materialized on every
 // listed row. Behavior-preserving: identical mapped `SessionRow` output, fewer
 // bytes read. `attachEstimatedCosts` re-queries `cost_usd_estimated` on its own,
 // so dropping it here is safe.
@@ -221,7 +220,7 @@ export function createSqliteSessionStore(prisma: DesktopPrisma) {
         LEFT JOIN event_counts ec ON ec.session_id = s.id
         LEFT JOIN token_totals tt ON tt.session_id = s.id
         WHERE s.status NOT IN ${TERMINAL_STATUSES}
-        ORDER BY s.started_at DESC
+        ORDER BY s.started_at DESC, s.id DESC
       `)
       );
       const sessions = detailRowsToList(rows);
@@ -247,7 +246,7 @@ export function createSqliteSessionStore(prisma: DesktopPrisma) {
         LEFT JOIN event_counts ec ON ec.session_id = s.id
         LEFT JOIN token_totals tt ON tt.session_id = s.id
         WHERE s.status IN ${TERMINAL_STATUSES}
-        ORDER BY s.started_at DESC
+        ORDER BY s.started_at DESC, s.id DESC
       `)
       );
       const sessions = detailRowsToList(rows);
@@ -318,7 +317,16 @@ export function createSqliteSessionStore(prisma: DesktopPrisma) {
       statuses: string[],
       limit: number
     ): Promise<KanbanPages> {
-      const result: KanbanPages = {};
+      // ISS-8143: `Object.create(null)`, not `{}`. `statuses` originates at the
+      // renderer, whose only filter is `typeof s === "string"`, and a plain
+      // object literal FIRES the `__proto__` setter on assignment — so a
+      // `__proto__` column mutated this object's prototype, vanished from
+      // `Object.keys`, and took every field of its page with it into the
+      // prototype chain. A null-prototype accumulator has no setter to fire, so
+      // the column lands as an OWN property and the caller gets the page it
+      // asked for. (Structured clone re-materializes own keys with
+      // DefineOwnProperty, so it survives the IPC hop as an own key too.)
+      const result: KanbanPages = Object.create(null);
       for (const status of statuses) {
         result[status] = await this.getPage({ limit, status });
       }
@@ -527,11 +535,7 @@ export function createSqliteEventStore(prisma: DesktopPrisma) {
   return {
     async getBySession(sessionId: string): Promise<EventRow[]> {
       return await prisma.read((reader) =>
-        reader.event.findMany({
-          where: { sessionId },
-          select: EVENT_ROW_SELECT,
-          orderBy: { createdAt: "asc" },
-        })
+        selectEventsInInsertionOrder(reader, sessionId)
       );
     },
     async getBySessionAndAgent(
@@ -539,11 +543,7 @@ export function createSqliteEventStore(prisma: DesktopPrisma) {
       agentId: string
     ): Promise<EventRow[]> {
       return await prisma.read((reader) =>
-        reader.event.findMany({
-          where: { sessionId, agentId },
-          select: EVENT_ROW_SELECT,
-          orderBy: { createdAt: "asc" },
-        })
+        selectEventsInInsertionOrder(reader, sessionId, agentId)
       );
     },
     async getAll(): Promise<EventWithSession[]> {
@@ -565,11 +565,7 @@ export function createSqliteEventStore(prisma: DesktopPrisma) {
     },
     async getWithSession(sessionId: string): Promise<EventWithSession[]> {
       const rows = await prisma.read((reader) =>
-        reader.event.findMany({
-          where: { sessionId },
-          select: EVENT_ROW_SELECT,
-          orderBy: { createdAt: "asc" },
-        })
+        selectEventsInInsertionOrder(reader, sessionId)
       );
       // No events -> no rows to decorate; skip the session-name lookup, keeping
       // the empty case a single query (mirrors the guard in getAll()).
@@ -604,6 +600,25 @@ export function createSqliteEventStore(prisma: DesktopPrisma) {
       }));
     },
   };
+}
+
+/** Preserve the store's established stable insertion order for timestamp ties. */
+function selectEventsInInsertionOrder(
+  reader: DesktopPrismaReader,
+  sessionId: string,
+  agentId?: string
+): Promise<EventRow[]> {
+  const agentClause = agentId === undefined ? "" : " AND agent_id = $2";
+  const values = agentId === undefined ? [sessionId] : [sessionId, agentId];
+  return reader.$queryRawUnsafe<EventRow[]>(
+    `SELECT id, session_id AS "sessionId", agent_id AS "agentId",
+            event_type AS "eventType", tool_name AS "toolName", summary, data,
+            created_at AS "createdAt"
+       FROM events
+      WHERE session_id = $1${agentClause}
+      ORDER BY created_at ASC, rowid ASC`,
+    ...values
+  );
 }
 
 /**
@@ -776,7 +791,7 @@ export function createSqliteTokenUsageStore(prisma: DesktopPrisma) {
           baselineCacheRead,
           baselineCacheWrite,
           CodexOtelTokenUsageSource.JsonlParser,
-          DATA_REVISION,
+          effectiveDataRevision(),
           createdAt,
           now,
           CodexOtelTokenUsageSource.OtelLogPayload,

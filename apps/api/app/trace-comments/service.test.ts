@@ -1,11 +1,22 @@
 import {
+  CommentSurface,
+  CommentTargetType,
   ThreadSource,
   ThreadStatus,
   TraceCommentKind,
-  TraceCommentSurface,
-  TraceCommentTargetType,
 } from "@repo/api/src/types/comment";
+import { STAFF_EMAIL_DOMAIN } from "@repo/api/src/types/staff-email";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock(
+  "@/app/comments/service/comment-thread-signal",
+  async (importOriginal) => {
+    const { createCommentThreadSignalMockModule } = await import(
+      "../../__tests__/fixtures/mock-modules"
+    );
+    return createCommentThreadSignalMockModule(importOriginal);
+  }
+);
 
 vi.mock("@repo/database", async () => {
   const { createDatabaseMockModule } = await import(
@@ -15,9 +26,6 @@ vi.mock("@repo/database", async () => {
     ArtifactType: {
       SESSION: "SESSION",
       BRANCH: "BRANCH",
-    },
-    Prisma: {
-      JsonNull: null,
     },
   });
 });
@@ -32,32 +40,17 @@ vi.mock("@/lib/mention-notifications", () => ({
   dispatchMentionNotifications: vi.fn(),
 }));
 
+import {
+  sessionTraceAnchor as anchor,
+  sessionTraceMetadata as metadata,
+  storedSessionTraceThreadColumns as storedThreadColumns,
+} from "@/__tests__/support/trace-comments/trace-comment-thread.test-fixtures";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import { dispatchMentionNotifications } from "@/lib/mention-notifications";
 import { getMockWithDb } from "../../__tests__/utils/db-helpers";
 import { traceCommentsService } from "./service";
 
 const mockWithDb = getMockWithDb();
-
-const anchor = {
-  traceId: "trace:session-1:0",
-  turnId: "turn:session-1:0",
-  row: 0,
-  selectedText: "quote target",
-  sourceText: "A trace quote target row",
-  startOffset: 8,
-  endOffset: 20,
-  sessionId: "session-1",
-  actor: { name: "codex", human: null },
-};
-
-const metadata = {
-  kind: "trace_comment",
-  schemaVersion: 1,
-  targetType: TraceCommentTargetType.Session,
-  surface: "session_detail",
-  anchor,
-};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -69,9 +62,6 @@ beforeEach(() => {
 describe("traceCommentsService", () => {
   it("resolves desktop comments through compute target and external session id before user fallback", async () => {
     const sessionFindFirst = vi.fn((args) => {
-      if (args.where.artifactId === "desktop-session-1") {
-        return Promise.resolve(null);
-      }
       if (
         args.where.computeTargetId === "compute-target-1" &&
         args.where.externalSessionId === "desktop-session-1"
@@ -90,7 +80,7 @@ describe("traceCommentsService", () => {
       id: "thread-1",
       artifactId: "session-artifact-1",
       status: ThreadStatus.Open,
-      metadata,
+      ...storedThreadColumns,
       createdAt: new Date("2026-06-17T10:00:00.000Z"),
       updatedAt: new Date("2026-06-17T10:00:00.000Z"),
       comments: [
@@ -123,7 +113,7 @@ describe("traceCommentsService", () => {
     const created = await traceCommentsService.create({
       organizationId: "org-1",
       userId: "api-key-user",
-      target: { type: TraceCommentTargetType.Session, id: "desktop-session-1" },
+      target: { type: CommentTargetType.Session, id: "desktop-session-1" },
       computeTargetId: "compute-target-1",
       draft: { anchor, body: "Desktop note" },
     });
@@ -133,9 +123,10 @@ describe("traceCommentsService", () => {
       artifactId: "session-artifact-1",
       body: "Desktop note",
     });
-    expect(sessionFindFirst).toHaveBeenCalledTimes(2);
+    // ISS-11190: a non-UUID target never probes the `@db.Uuid` artifact id.
+    expect(sessionFindFirst).toHaveBeenCalledTimes(1);
     expect(sessionFindFirst).toHaveBeenNthCalledWith(
-      2,
+      1,
       expect.objectContaining({
         where: expect.objectContaining({
           computeTargetId: "compute-target-1",
@@ -172,7 +163,7 @@ describe("traceCommentsService", () => {
       organizationId: "org-1",
       userId: "api-key-user",
       clerkUserId: "clerk-user-1",
-      target: { type: TraceCommentTargetType.Session, id: "desktop-session-1" },
+      target: { type: CommentTargetType.Session, id: "desktop-session-1" },
       computeTargetId: "compute-target-1",
       draft: { anchor, body: "Should not attach" },
     });
@@ -184,18 +175,15 @@ describe("traceCommentsService", () => {
       "api-key-user",
       "clerk-user-1"
     );
-    expect(sessionFindFirst).toHaveBeenCalledTimes(1);
+    expect(sessionFindFirst).not.toHaveBeenCalled();
     expect(mockWithDb.tx).not.toHaveBeenCalled();
   });
 
   it("creates a native thread/comment after resolving a desktop external session id to a cloud artifact", async () => {
     const sessionFindFirst = vi.fn((args) => {
-      if (args.where.artifactId === "desktop-session-1") {
-        return Promise.resolve(null);
-      }
       if (
         args.where.externalSessionId === "desktop-session-1" &&
-        args.where.userId === "user-1"
+        args.where.artifact?.is?.createdById === "user-1"
       ) {
         return Promise.resolve({ artifactId: "session-artifact-1" });
       }
@@ -211,7 +199,7 @@ describe("traceCommentsService", () => {
       id: "thread-1",
       artifactId: "session-artifact-1",
       status: ThreadStatus.Open,
-      metadata,
+      ...storedThreadColumns,
       createdAt: new Date("2026-06-17T10:00:00.000Z"),
       updatedAt: new Date("2026-06-17T10:00:00.000Z"),
       comments: [
@@ -244,7 +232,7 @@ describe("traceCommentsService", () => {
     const created = await traceCommentsService.create({
       organizationId: "org-1",
       userId: "user-1",
-      target: { type: TraceCommentTargetType.Session, id: "desktop-session-1" },
+      target: { type: CommentTargetType.Session, id: "desktop-session-1" },
       draft: { anchor, body: "Persisted note" },
     });
 
@@ -260,7 +248,7 @@ describe("traceCommentsService", () => {
       expect.objectContaining({
         where: expect.objectContaining({
           externalSessionId: "desktop-session-1",
-          userId: "user-1",
+          artifact: { is: expect.objectContaining({ createdById: "user-1" }) },
         }),
       })
     );
@@ -280,8 +268,7 @@ describe("traceCommentsService", () => {
           },
           metadata: expect.objectContaining({
             kind: "trace_comment",
-            targetType: TraceCommentTargetType.Session,
-            anchor,
+            targetType: CommentTargetType.Session,
           }),
         }),
       })
@@ -296,6 +283,12 @@ describe("traceCommentsService", () => {
             .fn()
             .mockResolvedValue({ artifactId: "session-artifact-1" }),
         },
+        // ISS-11212 (PLN-2121 decision 5): the kind is staff-only on the server.
+        user: {
+          findFirst: vi
+            .fn()
+            .mockResolvedValue({ email: `triage${STAFF_EMAIL_DOMAIN}` }),
+        },
       })
     );
 
@@ -304,6 +297,7 @@ describe("traceCommentsService", () => {
       artifactId: "session-artifact-1",
       status: ThreadStatus.Open,
       // The mapper reads the classification from the persisted metadata.
+      ...storedThreadColumns,
       metadata: { ...metadata, commentKind: TraceCommentKind.ParsingBug },
       createdAt: new Date("2026-06-17T10:00:00.000Z"),
       updatedAt: new Date("2026-06-17T10:00:00.000Z"),
@@ -338,7 +332,7 @@ describe("traceCommentsService", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       draft: {
@@ -348,7 +342,7 @@ describe("traceCommentsService", () => {
       },
     });
 
-    expect(created?.kind).toBe(TraceCommentKind.ParsingBug);
+    expect(created).toHaveProperty("kind", TraceCommentKind.ParsingBug);
     expect(threadCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -376,7 +370,7 @@ describe("traceCommentsService", () => {
       id: "thread-1",
       artifactId: "session-artifact-1",
       status: ThreadStatus.Open,
-      metadata,
+      ...storedThreadColumns,
       createdAt: new Date("2026-06-17T10:00:00.000Z"),
       updatedAt: new Date("2026-06-17T10:00:00.000Z"),
       comments: [
@@ -410,13 +404,13 @@ describe("traceCommentsService", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       draft: { anchor, body: "Plain note" },
     });
 
-    expect(created?.kind).toBe(TraceCommentKind.Comment);
+    expect(created).toHaveProperty("kind", TraceCommentKind.Comment);
     const persistedMetadata = threadCreate.mock.calls[0]?.[0]?.data?.metadata;
     expect(persistedMetadata).not.toHaveProperty("commentKind");
   });
@@ -437,7 +431,7 @@ describe("traceCommentsService", () => {
       id: "thread-1",
       artifactId: "session-artifact-1",
       status: ThreadStatus.Open,
-      metadata,
+      ...storedThreadColumns,
       createdAt: new Date("2026-06-17T10:00:00.000Z"),
       updatedAt: new Date("2026-06-17T10:00:00.000Z"),
       comments: [
@@ -471,7 +465,7 @@ describe("traceCommentsService", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       draft: { anchor, body: "Persisted note", clientId: "local-comment-1" },
@@ -510,7 +504,7 @@ describe("traceCommentsService", () => {
       id: "thread-1",
       artifactId: "session-artifact-1",
       status: ThreadStatus.Open,
-      metadata,
+      ...storedThreadColumns,
       createdAt: new Date("2026-06-17T10:00:00.000Z"),
       updatedAt: new Date("2026-06-17T10:00:00.000Z"),
       comments: [
@@ -548,7 +542,7 @@ describe("traceCommentsService", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       draft: { anchor, body: "Persisted note", clientId: "local-comment-1" },
@@ -574,7 +568,7 @@ describe("traceCommentsService", () => {
       id: "thread-1",
       artifactId: "session-artifact-1",
       status: ThreadStatus.Open,
-      metadata,
+      ...storedThreadColumns,
       createdAt: new Date("2026-06-17T10:00:00.000Z"),
       updatedAt: new Date("2026-06-17T10:00:00.000Z"),
       comments: [
@@ -623,7 +617,7 @@ describe("traceCommentsService", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       draft: { anchor, body: "Persisted note", clientId: "local-comment-1" },
@@ -651,7 +645,7 @@ describe("traceCommentsService", () => {
         id: "thread-1",
         artifactId: "session-artifact-1",
         status: ThreadStatus.Open,
-        metadata,
+        ...storedThreadColumns,
         createdAt: new Date("2026-06-17T10:00:00.000Z"),
         updatedAt: new Date("2026-06-17T10:00:00.000Z"),
         comments: [
@@ -692,7 +686,7 @@ describe("traceCommentsService", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       draft: { anchor, body: "cc the team", mentions: ["user-2", "user-999"] },
@@ -743,6 +737,7 @@ describe("traceCommentsService", () => {
         id: "thread-b1",
         artifactId: "branch-artifact-1",
         status: ThreadStatus.Open,
+        ...storedThreadColumns,
         metadata: args.data.metadata,
         createdAt: new Date("2026-06-17T10:00:00.000Z"),
         updatedAt: new Date("2026-06-17T10:00:00.000Z"),
@@ -781,17 +776,17 @@ describe("traceCommentsService", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Branch,
+        type: CommentTargetType.Branch,
         id: "branch-artifact-1",
       },
-      surface: TraceCommentSurface.BranchTimeline,
+      surface: CommentSurface.BranchTimeline,
       draft: { anchor, body: "cc on branch", mentions: ["user-2"] },
     });
 
     expect(created).toMatchObject({
       id: "comment-b1",
       mentions: ["user-2"],
-      surface: TraceCommentSurface.BranchTimeline,
+      surface: CommentSurface.BranchTimeline,
     });
     expect(dispatchMentionNotifications).toHaveBeenCalledTimes(1);
     expect(dispatchMentionNotifications).toHaveBeenCalledWith(
@@ -843,7 +838,7 @@ describe("traceCommentsService", () => {
       id: "thread-1",
       artifactId: "session-artifact-1",
       status: ThreadStatus.Open,
-      metadata,
+      ...storedThreadColumns,
       createdAt: new Date("2026-06-17T10:00:00.000Z"),
       updatedAt: new Date("2026-06-17T10:05:00.000Z"),
       comments: [
@@ -859,6 +854,7 @@ describe("traceCommentsService", () => {
     mockWithDb.tx.mockImplementation((callback) =>
       callback({
         commentThread: {
+          update: vi.fn().mockResolvedValue({ revision: 1 }),
           findFirst: vi.fn().mockResolvedValue(editableThread),
         },
         comment: {
@@ -873,7 +869,7 @@ describe("traceCommentsService", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       commentId: "comment-1",
@@ -911,12 +907,16 @@ describe("traceCommentsService", () => {
     const created = await traceCommentsService.create({
       organizationId: "org-1",
       userId: "user-1",
-      target: { type: TraceCommentTargetType.Session, id: "desktop-session-1" },
+      target: { type: CommentTargetType.Session, id: "desktop-session-1" },
       draft: { anchor, body: "Should not attach" },
     });
 
     expect(created).toBeNull();
-    expect(sessionFindFirst).toHaveBeenCalledTimes(2);
+    expect(sessionFindFirst).toHaveBeenCalledTimes(1);
+    expect(sessionFindFirst.mock.calls[0][0].where).toMatchObject({
+      externalSessionId: "desktop-session-1",
+      artifact: { is: { createdById: "user-1" } },
+    });
     expect(sessionFindMany).not.toHaveBeenCalled();
     expect(mockWithDb.tx).not.toHaveBeenCalled();
   });
@@ -929,7 +929,7 @@ describe("traceCommentsService", () => {
         status: ThreadStatus.Resolved,
         resolvedAt: new Date("2026-06-17T10:07:00.000Z"),
         resolvedById: "resolver-1",
-        metadata,
+        ...storedThreadColumns,
         createdAt: new Date("2026-06-17T10:00:00.000Z"),
         updatedAt: new Date("2026-06-17T10:00:00.000Z"),
         comments: [
@@ -948,6 +948,7 @@ describe("traceCommentsService", () => {
         status: ThreadStatus.Open,
         resolvedAt: null,
         resolvedById: null,
+        ...storedThreadColumns,
         metadata: { kind: "document_comment" },
         createdAt: new Date("2026-06-17T10:01:00.000Z"),
         updatedAt: new Date("2026-06-17T10:01:00.000Z"),
@@ -995,7 +996,7 @@ describe("traceCommentsService", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
     });
@@ -1021,7 +1022,7 @@ describe("traceCommentsService", () => {
           source: ThreadSource.Native,
           metadata: {
             path: ["surface"],
-            equals: TraceCommentSurface.SessionDetail,
+            equals: CommentSurface.SessionDetail,
           },
         },
       })
@@ -1045,7 +1046,7 @@ describe("traceCommentsService", () => {
       id: "thread-1",
       artifactId: "session-artifact-1",
       status: ThreadStatus.Open,
-      metadata,
+      ...storedThreadColumns,
       createdAt,
       updatedAt: createdAt,
       comments: [
@@ -1081,7 +1082,10 @@ describe("traceCommentsService", () => {
       .mockResolvedValueOnce(updatedThread);
     mockWithDb.tx.mockImplementation((callback) =>
       callback({
-        commentThread: { findFirst: commentThreadFindFirst },
+        commentThread: {
+          findFirst: commentThreadFindFirst,
+          update: vi.fn().mockResolvedValue({ revision: 1 }),
+        },
         comment: { create: commentCreate },
         user: {
           findMany: vi.fn().mockResolvedValue([
@@ -1108,7 +1112,7 @@ describe("traceCommentsService", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       commentId: "comment-1",
@@ -1161,7 +1165,7 @@ describe("traceCommentsService", () => {
       id: "thread-1",
       artifactId: "session-artifact-1",
       status: ThreadStatus.Open,
-      metadata,
+      ...storedThreadColumns,
       createdAt,
       updatedAt: createdAt,
       comments: [
@@ -1229,7 +1233,7 @@ describe("traceCommentsService", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       commentId: "comment-1",
@@ -1264,7 +1268,7 @@ describe("traceCommentsService", () => {
       id: "thread-1",
       artifactId: "session-artifact-1",
       status: ThreadStatus.Open,
-      metadata,
+      ...storedThreadColumns,
       createdAt,
       updatedAt: createdAt,
       comments: [
@@ -1346,7 +1350,7 @@ describe("traceCommentsService", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       commentId: "comment-1",
@@ -1380,7 +1384,7 @@ describe("traceCommentsService", () => {
       id: "thread-1",
       artifactId: "session-artifact-1",
       status: ThreadStatus.Open,
-      metadata,
+      ...storedThreadColumns,
       createdAt,
       updatedAt: createdAt,
       comments: [
@@ -1417,7 +1421,10 @@ describe("traceCommentsService", () => {
       .mockResolvedValueOnce(updatedThread);
     mockWithDb.tx.mockImplementation((callback) =>
       callback({
-        commentThread: { findFirst: commentThreadFindFirst },
+        commentThread: {
+          findFirst: commentThreadFindFirst,
+          update: vi.fn().mockResolvedValue({ revision: 1 }),
+        },
         comment: { create: commentCreate, findUnique: commentFindUnique },
         user: {
           findMany: vi.fn().mockResolvedValue([
@@ -1444,7 +1451,7 @@ describe("traceCommentsService", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       commentId: "comment-1",
@@ -1480,7 +1487,7 @@ describe("traceCommentsService", () => {
             id: "thread-1",
             artifactId: "session-artifact-1",
             status: ThreadStatus.Open,
-            metadata,
+            ...storedThreadColumns,
             createdAt,
             updatedAt: repliedAt,
             comments: [
@@ -1511,7 +1518,7 @@ describe("traceCommentsService", () => {
       organizationId: "org-1",
       userId: "user-1",
       target: {
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
         id: "session-artifact-1",
       },
       commentId: "reply-1",
@@ -1520,647 +1527,5 @@ describe("traceCommentsService", () => {
 
     expect(result).toEqual({ ok: false, reason: "not_found" });
     expect(commentCreate).not.toHaveBeenCalled();
-  });
-
-  it("updates an existing trace comment only when the viewer authored it", async () => {
-    const createdAt = new Date("2026-06-17T10:00:00.000Z");
-    const editedAt = new Date("2026-06-17T10:05:00.000Z");
-    mockWithDb.mockImplementation((callback) =>
-      callback({
-        sessionDetail: {
-          findFirst: vi.fn().mockResolvedValue({
-            artifactId: "session-artifact-1",
-          }),
-        },
-      })
-    );
-
-    const commentUpdate = vi.fn().mockResolvedValue({
-      id: "comment-1",
-      authorId: "user-1",
-      plainText: "Edited persisted note",
-      editedAt,
-      createdAt,
-      updatedAt: editedAt,
-    });
-    const commentThreadFindFirst = vi
-      .fn()
-      .mockResolvedValueOnce({
-        id: "thread-1",
-        artifactId: "session-artifact-1",
-        status: ThreadStatus.Open,
-        metadata,
-        createdAt,
-        updatedAt: createdAt,
-        comments: [
-          {
-            id: "comment-1",
-            authorId: "user-1",
-            plainText: "Persisted note",
-            editedAt: null,
-            createdAt,
-            updatedAt: createdAt,
-          },
-        ],
-      })
-      .mockResolvedValueOnce({
-        id: "thread-1",
-        artifactId: "session-artifact-1",
-        status: ThreadStatus.Open,
-        metadata,
-        createdAt,
-        updatedAt: editedAt,
-        comments: [
-          {
-            id: "comment-1",
-            authorId: "user-1",
-            plainText: "Edited persisted note",
-            editedAt,
-            createdAt,
-            updatedAt: editedAt,
-          },
-        ],
-      });
-    const commentFindUnique = vi.fn().mockResolvedValue({
-      body: { type: "doc", content: [], mentions: ["user-2"] },
-    });
-    mockWithDb.tx.mockImplementation((callback) =>
-      callback({
-        commentThread: {
-          findFirst: commentThreadFindFirst,
-        },
-        comment: { update: commentUpdate, findUnique: commentFindUnique },
-        user: {
-          findMany: vi.fn().mockResolvedValue([
-            {
-              id: "user-1",
-              firstName: "Test",
-              lastName: "User",
-              email: "test@example.com",
-              avatarUrl: null,
-            },
-          ]),
-        },
-      })
-    );
-
-    const result = await traceCommentsService.update({
-      organizationId: "org-1",
-      userId: "user-1",
-      target: {
-        type: TraceCommentTargetType.Session,
-        id: "session-artifact-1",
-      },
-      commentId: "comment-1",
-      update: { body: "Edited persisted note" },
-    });
-
-    expect(result).toMatchObject({
-      ok: true,
-      value: {
-        id: "comment-1",
-        body: "Edited persisted note",
-        canEdit: true,
-        canDelete: true,
-        editedAt: editedAt.toISOString(),
-      },
-    });
-    expect(commentUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          body: {
-            type: "doc",
-            content: expect.any(Array),
-            mentions: ["user-2"],
-          },
-          plainText: "Edited persisted note",
-          editedAt: expect.any(Date),
-        }),
-        where: { id: "comment-1" },
-      })
-    );
-  });
-
-  it("replaces mentions on an edit that passes an explicit empty list (FEA-3490)", async () => {
-    const createdAt = new Date("2026-06-17T10:00:00.000Z");
-    const editedAt = new Date("2026-06-17T10:05:00.000Z");
-    mockWithDb.mockImplementation((callback) =>
-      callback({
-        sessionDetail: {
-          findFirst: vi.fn().mockResolvedValue({
-            artifactId: "session-artifact-1",
-          }),
-        },
-      })
-    );
-
-    let editedBody: unknown;
-    const commentUpdate = vi.fn((args) => {
-      editedBody = args.data.body;
-      return Promise.resolve({
-        id: "comment-1",
-        authorId: "user-1",
-        plainText: "Edited persisted note",
-        editedAt,
-        createdAt,
-        updatedAt: editedAt,
-      });
-    });
-    const commentThreadFindFirst = vi
-      .fn()
-      .mockResolvedValueOnce({
-        id: "thread-1",
-        artifactId: "session-artifact-1",
-        status: ThreadStatus.Open,
-        metadata,
-        createdAt,
-        updatedAt: createdAt,
-        comments: [
-          {
-            id: "comment-1",
-            authorId: "user-1",
-            plainText: "Persisted note",
-            editedAt: null,
-            createdAt,
-            updatedAt: createdAt,
-          },
-        ],
-      })
-      .mockResolvedValueOnce({
-        id: "thread-1",
-        artifactId: "session-artifact-1",
-        status: ThreadStatus.Open,
-        metadata,
-        createdAt,
-        updatedAt: editedAt,
-        comments: [
-          {
-            id: "comment-1",
-            authorId: "user-1",
-            plainText: "Edited persisted note",
-            body: editedBody,
-            editedAt,
-            createdAt,
-            updatedAt: editedAt,
-          },
-        ],
-      });
-    // findUnique IS consulted on every edit now (FEA-3490): the prior mentions
-    // are the baseline for the notification delta. Here the comment previously
-    // mentioned user-2, and the edit clears mentions to [].
-    const commentFindUnique = vi.fn().mockResolvedValue({
-      body: { type: "doc", content: [], mentions: ["user-2"] },
-    });
-    mockWithDb.tx.mockImplementation((callback) =>
-      callback({
-        commentThread: { findFirst: commentThreadFindFirst },
-        comment: { update: commentUpdate, findUnique: commentFindUnique },
-        user: {
-          findMany: vi
-            .fn()
-            // scopeMentionsToOrg: explicit [] short-circuits, so this is the
-            // author-resolution query only.
-            .mockResolvedValue([
-              {
-                id: "user-1",
-                firstName: "Test",
-                lastName: "User",
-                email: "test@example.com",
-                avatarUrl: null,
-              },
-            ]),
-        },
-      })
-    );
-
-    await traceCommentsService.update({
-      organizationId: "org-1",
-      userId: "user-1",
-      target: {
-        type: TraceCommentTargetType.Session,
-        id: "session-artifact-1",
-      },
-      commentId: "comment-1",
-      update: { body: "Edited persisted note", mentions: [] },
-    });
-
-    // The delta baseline is read, but scopeMentionsToOrg still short-circuits on
-    // the explicit [] (no member-scoping query), and the cleared body carries no
-    // mentions.
-    expect(commentFindUnique).toHaveBeenCalled();
-    expect(editedBody).toMatchObject({ type: "doc" });
-    expect(editedBody).not.toHaveProperty("mentions");
-    // Clearing mentions removes user-2 (nothing is newly added), so nobody is
-    // pinged.
-    expect(dispatchMentionNotifications).not.toHaveBeenCalled();
-  });
-
-  it("deletes an existing trace comment only when the viewer authored it", async () => {
-    const createdAt = new Date("2026-06-17T10:00:00.000Z");
-    mockWithDb.mockImplementation((callback) =>
-      callback({
-        sessionDetail: {
-          findFirst: vi.fn().mockResolvedValue({
-            artifactId: "session-artifact-1",
-          }),
-        },
-      })
-    );
-
-    const commentUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
-    mockWithDb.tx.mockImplementation((callback) =>
-      callback({
-        commentThread: {
-          findFirst: vi.fn().mockResolvedValue({
-            id: "thread-1",
-            artifactId: "session-artifact-1",
-            status: ThreadStatus.Open,
-            metadata,
-            createdAt,
-            updatedAt: createdAt,
-            comments: [
-              {
-                id: "comment-1",
-                authorId: "user-1",
-                plainText: "Persisted note",
-                editedAt: null,
-                createdAt,
-                updatedAt: createdAt,
-              },
-            ],
-          }),
-        },
-        comment: {
-          // FEA-3930: a root delete first reads the affected ids to remove their
-          // search-projection rows, then soft-deletes the thread.
-          findMany: vi.fn().mockResolvedValue([{ id: "comment-1" }]),
-          updateMany: commentUpdateMany,
-        },
-      })
-    );
-
-    const result = await traceCommentsService.delete({
-      organizationId: "org-1",
-      userId: "user-1",
-      target: {
-        type: TraceCommentTargetType.Session,
-        id: "session-artifact-1",
-      },
-      commentId: "comment-1",
-    });
-
-    expect(result).toEqual({ ok: true, value: { deleted: true } });
-    expect(commentUpdateMany).toHaveBeenCalledWith({
-      data: { deletedAt: expect.any(Date) },
-      where: { threadId: "thread-1", deletedAt: null },
-    });
-  });
-
-  it("deletes the whole trace comment thread when the root has replies", async () => {
-    const createdAt = new Date("2026-06-17T10:00:00.000Z");
-    const repliedAt = new Date("2026-06-17T10:05:00.000Z");
-    mockWithDb.mockImplementation((callback) =>
-      callback({
-        sessionDetail: {
-          findFirst: vi.fn().mockResolvedValue({
-            artifactId: "session-artifact-1",
-          }),
-        },
-      })
-    );
-
-    const commentUpdate = vi.fn();
-    const commentUpdateMany = vi.fn().mockResolvedValue({ count: 2 });
-    mockWithDb.tx.mockImplementation((callback) =>
-      callback({
-        commentThread: {
-          findFirst: vi.fn().mockResolvedValue({
-            id: "thread-1",
-            artifactId: "session-artifact-1",
-            status: ThreadStatus.Open,
-            metadata,
-            createdAt,
-            updatedAt: repliedAt,
-            comments: [
-              {
-                id: "comment-1",
-                authorId: "user-1",
-                plainText: "Persisted note",
-                editedAt: null,
-                createdAt,
-                updatedAt: createdAt,
-              },
-              {
-                id: "reply-1",
-                authorId: "another-user",
-                plainText: "Reply that must not become root",
-                editedAt: null,
-                createdAt: repliedAt,
-                updatedAt: repliedAt,
-              },
-            ],
-          }),
-        },
-        comment: {
-          findMany: vi
-            .fn()
-            .mockResolvedValue([{ id: "comment-1" }, { id: "reply-1" }]),
-          update: commentUpdate,
-          updateMany: commentUpdateMany,
-        },
-      })
-    );
-
-    const result = await traceCommentsService.delete({
-      organizationId: "org-1",
-      userId: "user-1",
-      target: {
-        type: TraceCommentTargetType.Session,
-        id: "session-artifact-1",
-      },
-      commentId: "comment-1",
-    });
-
-    expect(result).toEqual({ ok: true, value: { deleted: true } });
-    expect(commentUpdateMany).toHaveBeenCalledWith({
-      data: { deletedAt: expect.any(Date) },
-      where: { threadId: "thread-1", deletedAt: null },
-    });
-    expect(commentUpdate).not.toHaveBeenCalled();
-  });
-
-  it("deletes only the selected reply when the viewer authored that reply", async () => {
-    const createdAt = new Date("2026-06-17T10:00:00.000Z");
-    const repliedAt = new Date("2026-06-17T10:05:00.000Z");
-    mockWithDb.mockImplementation((callback) =>
-      callback({
-        sessionDetail: {
-          findFirst: vi.fn().mockResolvedValue({
-            artifactId: "session-artifact-1",
-          }),
-        },
-      })
-    );
-
-    const commentUpdate = vi.fn().mockResolvedValue({ id: "reply-1" });
-    const commentUpdateMany = vi.fn();
-    mockWithDb.tx.mockImplementation((callback) =>
-      callback({
-        commentThread: {
-          findFirst: vi.fn().mockResolvedValue({
-            id: "thread-1",
-            artifactId: "session-artifact-1",
-            status: ThreadStatus.Open,
-            metadata,
-            createdAt,
-            updatedAt: repliedAt,
-            comments: [
-              {
-                id: "comment-1",
-                authorId: "another-user",
-                plainText: "Persisted note",
-                editedAt: null,
-                createdAt,
-                updatedAt: createdAt,
-              },
-              {
-                id: "reply-1",
-                authorId: "user-1",
-                plainText: "Reply from viewer",
-                editedAt: null,
-                createdAt: repliedAt,
-                updatedAt: repliedAt,
-              },
-            ],
-          }),
-        },
-        comment: { update: commentUpdate, updateMany: commentUpdateMany },
-      })
-    );
-
-    const result = await traceCommentsService.delete({
-      organizationId: "org-1",
-      userId: "user-1",
-      target: {
-        type: TraceCommentTargetType.Session,
-        id: "session-artifact-1",
-      },
-      commentId: "reply-1",
-    });
-
-    expect(result).toEqual({ ok: true, value: { deleted: true } });
-    expect(commentUpdate).toHaveBeenCalledWith({
-      data: { deletedAt: expect.any(Date) },
-      select: { id: true },
-      where: { id: "reply-1" },
-    });
-    expect(commentUpdateMany).not.toHaveBeenCalled();
-  });
-
-  it("rejects trace comment edit and delete for non-authors", async () => {
-    const createdAt = new Date("2026-06-17T10:00:00.000Z");
-    mockWithDb.mockImplementation((callback) =>
-      callback({
-        sessionDetail: {
-          findFirst: vi.fn().mockResolvedValue({
-            artifactId: "session-artifact-1",
-          }),
-        },
-      })
-    );
-
-    const commentUpdate = vi.fn();
-    mockWithDb.tx.mockImplementation((callback) =>
-      callback({
-        commentThread: {
-          findFirst: vi.fn().mockResolvedValue({
-            id: "thread-1",
-            artifactId: "session-artifact-1",
-            status: ThreadStatus.Open,
-            metadata,
-            createdAt,
-            updatedAt: createdAt,
-            comments: [
-              {
-                id: "comment-1",
-                authorId: "another-user",
-                plainText: "Persisted note",
-                editedAt: null,
-                createdAt,
-                updatedAt: createdAt,
-              },
-            ],
-          }),
-        },
-        comment: { update: commentUpdate },
-      })
-    );
-
-    const updateResult = await traceCommentsService.update({
-      organizationId: "org-1",
-      userId: "user-1",
-      target: {
-        type: TraceCommentTargetType.Session,
-        id: "session-artifact-1",
-      },
-      commentId: "comment-1",
-      update: { body: "Edited persisted note" },
-    });
-    const deleteResult = await traceCommentsService.delete({
-      organizationId: "org-1",
-      userId: "user-1",
-      target: {
-        type: TraceCommentTargetType.Session,
-        id: "session-artifact-1",
-      },
-      commentId: "comment-1",
-    });
-
-    expect(updateResult).toEqual({ ok: false, reason: "forbidden" });
-    expect(deleteResult).toEqual({ ok: false, reason: "forbidden" });
-    expect(commentUpdate).not.toHaveBeenCalled();
-  });
-
-  it("aggregates unresolved trace comments org-scoped with a next cursor (FEA-3550)", async () => {
-    const commentThreadFindMany = vi.fn().mockResolvedValue([
-      {
-        id: "thread-1",
-        artifactId: "session-artifact-1",
-        status: ThreadStatus.Open,
-        metadata,
-        createdAt: new Date("2026-07-20T10:00:00.000Z"),
-        updatedAt: new Date("2026-07-20T10:00:00.000Z"),
-        comments: [
-          {
-            id: "comment-1",
-            authorId: "user-1",
-            plainText: "Open comment",
-            createdAt: new Date("2026-07-20T10:00:00.000Z"),
-            updatedAt: new Date("2026-07-20T10:00:00.000Z"),
-          },
-        ],
-      },
-    ]);
-    const commentThreadCount = vi.fn().mockResolvedValue(4);
-    mockWithDb.mockImplementation((callback) =>
-      callback({
-        commentThread: {
-          findMany: commentThreadFindMany,
-          count: commentThreadCount,
-        },
-        user: {
-          findMany: vi.fn().mockResolvedValue([
-            {
-              id: "user-1",
-              firstName: "Test",
-              lastName: "User",
-              email: "test@example.com",
-              avatarUrl: null,
-            },
-          ]),
-        },
-      })
-    );
-
-    const response = await traceCommentsService.listAll({
-      organizationId: "org-1",
-      userId: "user-1",
-      filters: { resolved: false },
-    });
-
-    expect(response.total).toBe(4);
-    expect(response.nextCursor).toBe("1");
-    expect(response.items[0]).toMatchObject({
-      id: "comment-1",
-      threadId: "thread-1",
-      artifactId: "session-artifact-1",
-      target: {
-        type: TraceCommentTargetType.Session,
-        id: "session-artifact-1",
-      },
-      status: ThreadStatus.Open,
-      authorName: "Test User",
-    });
-
-    const where = commentThreadFindMany.mock.calls[0][0].where;
-    expect(where).toMatchObject({
-      organizationId: "org-1",
-      source: ThreadSource.Native,
-      status: ThreadStatus.Open,
-      artifactId: { not: null },
-      comments: { some: { deletedAt: null } },
-    });
-    expect(where.AND).toContainEqual({
-      metadata: { path: ["kind"], equals: "trace_comment" },
-    });
-    expect(commentThreadCount).toHaveBeenCalledWith({ where });
-    expect(commentThreadFindMany.mock.calls[0][0]).toMatchObject({
-      skip: 0,
-      take: 50,
-    });
-  });
-
-  it("returns an empty page with a null cursor when nothing matches (FEA-3550)", async () => {
-    const commentThreadFindMany = vi.fn().mockResolvedValue([]);
-    const commentThreadCount = vi.fn().mockResolvedValue(0);
-    mockWithDb.mockImplementation((callback) =>
-      callback({
-        commentThread: {
-          findMany: commentThreadFindMany,
-          count: commentThreadCount,
-        },
-        user: { findMany: vi.fn() },
-      })
-    );
-
-    const response = await traceCommentsService.listAll({
-      organizationId: "org-1",
-      userId: "user-1",
-      filters: { resolved: false },
-    });
-
-    expect(response).toEqual({ items: [], total: 0, nextCursor: null });
-  });
-
-  it("narrows by target type, author, session, and cursor offset (FEA-3550)", async () => {
-    const commentThreadFindMany = vi.fn().mockResolvedValue([]);
-    const commentThreadCount = vi.fn().mockResolvedValue(0);
-    mockWithDb.mockImplementation((callback) =>
-      callback({
-        commentThread: {
-          findMany: commentThreadFindMany,
-          count: commentThreadCount,
-        },
-        user: { findMany: vi.fn() },
-      })
-    );
-
-    await traceCommentsService.listAll({
-      organizationId: "org-1",
-      userId: "user-1",
-      filters: {
-        resolved: true,
-        targetType: TraceCommentTargetType.Session,
-        authorId: "author-9",
-        sessionId: "session-artifact-9",
-        limit: 10,
-        cursor: 20,
-      },
-    });
-
-    const findManyArgs = commentThreadFindMany.mock.calls[0][0];
-    expect(findManyArgs).toMatchObject({ skip: 20, take: 10 });
-    expect(findManyArgs.where).toMatchObject({
-      organizationId: "org-1",
-      status: ThreadStatus.Resolved,
-      createdById: "author-9",
-      artifactId: "session-artifact-9",
-    });
-    expect(findManyArgs.where.AND).toContainEqual({
-      metadata: {
-        path: ["targetType"],
-        equals: TraceCommentTargetType.Session,
-      },
-    });
   });
 });

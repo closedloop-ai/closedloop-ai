@@ -41,6 +41,17 @@ export type PackDistributionWithdrawal = {
   requestWithdraw: ((distributionIds: string[]) => void) | undefined;
   /** The distributions awaiting confirmation, or null when none are. */
   pendingDistributionIds: string[] | null;
+  /**
+   * The pack named by the confirmation, captured when the withdrawal was
+   * REQUESTED rather than read live off the surface's current selection.
+   *
+   * ISS-6925 review (whitlockk): once pack detail is addressable, Back/Forward move
+   * the selection under an open dialog. Reading the live name would leave the
+   * confirmation — and the success toast — naming a pack the pending ids do not
+   * belong to, which is a destructive org-wide action describing the wrong
+   * blast radius.
+   */
+  pendingPackName: string | null;
   /** Issue the withdrawal. Rejects on failure so the dialog can stay open. */
   confirmWithdraw: () => Promise<void>;
   /**
@@ -66,22 +77,32 @@ export function usePackDistributionWithdrawal({
   packName?: string | null;
 }): PackDistributionWithdrawal {
   const enabled = isAdmin && flagEnabled;
-  const [pendingDistributionIds, setPendingDistributionIds] = useState<
-    string[] | null
-  >(null);
+  const [pending, setPending] = useState<{
+    readonly distributionIds: string[];
+    readonly packName: string | null;
+  } | null>(null);
+  const pendingDistributionIds = pending?.distributionIds ?? null;
   const withdrawDistribution = useWithdrawDistribution();
 
-  const requestWithdraw = useCallback((distributionIds: string[]) => {
-    if (distributionIds.length === 0) {
-      return;
-    }
-    setPendingDistributionIds(distributionIds);
-  }, []);
+  // The name is captured WITH the ids, for the same reason invariant 2 above
+  // binds the request to ids: the selection can change under an open dialog,
+  // and a confirmation that renames its subject mid-flight promises a blast
+  // radius the pending ids do not have.
+  const requestWithdraw = useCallback(
+    (distributionIds: string[]) => {
+      if (distributionIds.length === 0) {
+        return;
+      }
+      setPending({ distributionIds, packName: packName ?? null });
+    },
+    [packName]
+  );
 
   const confirmWithdraw = useCallback(async () => {
-    if (!pendingDistributionIds) {
+    if (!pending) {
       return;
     }
+    const { distributionIds, packName: confirmedPackName } = pending;
     // `mutateAsync` so the caller's confirmation dialog genuinely awaits the
     // requests: on failure this rejects, the dialog stays open, and the pending
     // ids are preserved for a retry rather than being cleared as if it had
@@ -89,7 +110,7 @@ export function usePackDistributionWithdrawal({
     // safe because withdrawal is an idempotent no-op on an already-withdrawn
     // distribution and never re-stamps who withdrew it or when.
     await Promise.all(
-      pendingDistributionIds.map((distributionId) =>
+      distributionIds.map((distributionId) =>
         withdrawDistribution.mutateAsync(distributionId)
       )
     );
@@ -98,23 +119,24 @@ export function usePackDistributionWithdrawal({
     // org-wide action they just took actually landed. It doubles as the screen
     // reader announcement, since nothing else changes focus.
     toast.success(
-      packName
-        ? `Stopped distributing "${packName}"`
+      confirmedPackName
+        ? `Stopped distributing "${confirmedPackName}"`
         : "Stopped distributing this pack"
     );
-    setPendingDistributionIds(null);
-  }, [pendingDistributionIds, withdrawDistribution, packName]);
+    setPending(null);
+  }, [pending, withdrawDistribution]);
 
   const setConfirmOpen = useCallback((open: boolean) => {
     if (open) {
       return;
     }
-    setPendingDistributionIds(null);
+    setPending(null);
   }, []);
 
   return {
     requestWithdraw: enabled ? requestWithdraw : undefined,
     pendingDistributionIds: enabled ? pendingDistributionIds : null,
+    pendingPackName: enabled ? (pending?.packName ?? null) : null,
     confirmWithdraw,
     setConfirmOpen,
     isPending: withdrawDistribution.isPending,

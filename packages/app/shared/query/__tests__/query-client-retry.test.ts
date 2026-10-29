@@ -9,9 +9,11 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../../api/api-error";
 import {
+  API_NO_RESPONSE_STATUS,
   API_TIMEOUT_ERROR_CODE,
   API_TIMEOUT_ERROR_MESSAGE,
 } from "../../api/api-timeout";
+import { createApiClient } from "../../api/create-api-client";
 import {
   isResponseBackedError,
   MAX_TRANSIENT_QUERY_RETRIES,
@@ -69,7 +71,7 @@ describe("shouldRetryQuery", () => {
     expect(shouldRetryQuery(0, new StatusBackedError("Forbidden", 403))).toBe(
       false
     );
-    // A runner-token plain Error with a 401 status is likewise terminal.
+    // A plain Error with a 401 status is likewise terminal.
     expect(shouldRetryQuery(0, new StatusBackedError("no token", 401))).toBe(
       false
     );
@@ -80,6 +82,15 @@ describe("shouldRetryQuery", () => {
     // failure that stays retryable.
     const error = new StatusBackedError("network down", 0);
     expect(shouldRetryQuery(0, error)).toBe(true);
+    expect(shouldRetryQuery(MAX_TRANSIENT_QUERY_RETRIES, error)).toBe(false);
+  });
+
+  // ISS-5083: the error every `useApiClient` query actually rejects with when
+  // the network drops.
+  it("retries the shared client's status-0 ApiError up to the cap", async () => {
+    const error = await clientTransportError();
+    expect(shouldRetryQuery(0, error)).toBe(true);
+    expect(shouldRetryQuery(MAX_TRANSIENT_QUERY_RETRIES - 1, error)).toBe(true);
     expect(shouldRetryQuery(MAX_TRANSIENT_QUERY_RETRIES, error)).toBe(false);
   });
 
@@ -97,8 +108,13 @@ describe("shouldRetryQuery", () => {
 });
 
 describe("isResponseBackedError", () => {
-  it("recognizes an ApiError", () => {
+  it("recognizes an ApiError carrying an HTTP status", () => {
     expect(isResponseBackedError(new ApiError("Unauthorized", 401))).toBe(true);
+    expect(isResponseBackedError(new ApiError("Server error", 500))).toBe(true);
+  });
+
+  it("treats the shared client's status-0 ApiError as transport", async () => {
+    expect(isResponseBackedError(await clientTransportError())).toBe(false);
   });
 
   it("recognizes any error carrying a real HTTP status", () => {
@@ -126,3 +142,26 @@ describe("queryRetryDelay", () => {
     expect(queryRetryDelay(20)).toBe(QUERY_RETRY_MAX_DELAY_MS);
   });
 });
+
+/** What the shared client rejects with when its transport fails (ISS-5083). */
+async function clientTransportError(): Promise<ApiError> {
+  const client = createApiClient({
+    getToken: () => Promise.resolve(null),
+    userId: null,
+    orgId: null,
+    deploymentId: null,
+    honorsAbortSignal: true,
+    waitForAuthLoaded: () => Promise.resolve(),
+    resolveApiOrigin: () => "https://api.test",
+    doFetch: () => Promise.reject(new TypeError("Failed to fetch")),
+  });
+  const error = await client.get("/probe").catch((caught: unknown) => caught);
+  if (
+    !(error instanceof ApiError) ||
+    error.status !== API_NO_RESPONSE_STATUS ||
+    error.isTimeout()
+  ) {
+    throw new Error("Expected the client's status-0 transport ApiError");
+  }
+  return error;
+}

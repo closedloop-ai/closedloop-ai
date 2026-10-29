@@ -1,0 +1,13 @@
+diff --git a/lib/state.js b/lib/state.js
+index da30e6f639d31307ebf503691aa991bb93948f8a..b020e9e92ad124a9b1bb5386e1bd0d608c886e62 100644
+--- a/lib/state.js
++++ b/lib/state.js
+@@ -59,7 +59,7 @@ export const restoreUnstagedChangesSkipped = (ctx) => {
+   // we can still restore unstaged changes to make it easier
+   // to do manually.
+   if (!ctx.shouldRevert) {
+-    false
++    return false
+   }
+ 
+   // Should be skipped when tasks fail

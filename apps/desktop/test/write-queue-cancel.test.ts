@@ -21,9 +21,10 @@
  *   - a late settle of an evicted task neither re-settles it nor takes a victim.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   createWriteQueue,
+  WriteDispatchState,
   WriteQueueCancelledError,
   WriteQueueCancelOutcome,
   WriteQueueClass,
@@ -336,4 +337,130 @@ test("ISS-4710 (@whitlockk, global-order): cancel evicts the RUNNING wedge over 
   wedged.resolve("abandoned-settles");
   assert.equal(await newerQueued, "newer", "the newer queued task survived");
   await queue.drain();
+});
+
+test("ISS-7256: probeUndispatchedTask distinguishes a WAITER from the running head, and evicts nothing", async () => {
+  const queue = createWriteQueue();
+  const head = deferred<string>();
+  const waiter = deferred<string>();
+  const running = queue.run(() => head.promise, "head-owner");
+  const queued = queue.run(() => waiter.promise, "waiting-owner");
+  // The head dispatched immediately; the second task is behind it and has not.
+  const waiting = queue.probeUndispatchedTask("waiting-owner");
+  assert.equal(
+    waiting.state,
+    WriteDispatchState.Queued,
+    "a task queued behind another owner's write has never dispatched"
+  );
+  assert.equal(
+    queue.probeUndispatchedTask("head-owner").state,
+    WriteDispatchState.Dispatched,
+    "the running head HAS dispatched, so it is the wedge and not a waiter"
+  );
+  assert.deepEqual(
+    queue.probeUndispatchedTask("nobody"),
+    { state: WriteDispatchState.Absent, taskSeq: null },
+    "an owner with no live task is Absent, never reported as waiting"
+  );
+  // The probe is read-only: neither task was evicted, so both still settle
+  // normally with their own results.
+  head.resolve("head");
+  assert.equal(await running, "head");
+  assert.equal(
+    queue.probeUndispatchedTask("waiting-owner").state,
+    WriteDispatchState.Dispatched,
+    "once the writer advances the waiter dispatches, so it stops reading as queued"
+  );
+  waiter.resolve("waiter");
+  assert.equal(await queued, "waiter");
+});
+
+/**
+ * ISS-7256 (davetho review) — `taskSeq` is what makes two `queued` answers
+ * distinguishable. Without it a caller cannot tell a task that has sat still
+ * from one that dispatched, settled, and was replaced by the SAME owner's next
+ * record group, and it would grant the second one more waiting on the strength
+ * of an answer that describes a task which already finished.
+ */
+test("ISS-7256: a same-owner successor reports a DIFFERENT taskSeq, so a stale 'queued' is detectable", async () => {
+  const queue = createWriteQueue();
+  const firstBlocker = deferred<string>();
+  const secondBlocker = deferred<string>();
+  const first = deferred<string>();
+  const second = deferred<string>();
+  const blockingOne = queue.run(() => firstBlocker.promise, "other-owner");
+  const groupOne = queue.run(() => first.promise, "importer");
+  const observed = queue.probeUndispatchedTask("importer");
+  assert.equal(observed.state, WriteDispatchState.Queued);
+
+  // The blocker clears, the importer's first group runs to completion, and a
+  // DIFFERENT owner takes the writer again while the importer enqueues its NEXT
+  // group. The importer reads `queued` a second time.
+  firstBlocker.resolve("blocker-one");
+  assert.equal(await blockingOne, "blocker-one");
+  first.resolve("one");
+  assert.equal(await groupOne, "one");
+  const blockingTwo = queue.run(() => secondBlocker.promise, "other-owner");
+  const groupTwo = queue.run(() => second.promise, "importer");
+  const later = queue.probeUndispatchedTask("importer");
+
+  assert.equal(
+    later.state,
+    WriteDispatchState.Queued,
+    "the successor is itself a fresh waiter, so the STATE alone repeats"
+  );
+  assert.notEqual(
+    later.taskSeq,
+    observed.taskSeq,
+    "but it is a different task, and taskSeq is what says so"
+  );
+  secondBlocker.resolve("blocker-two");
+  assert.equal(await blockingTwo, "blocker-two");
+  second.resolve("two");
+  assert.equal(await groupTwo, "two");
+});
+
+/**
+ * ISS-7256 (whitlockk review) — the observer is what lets the DISPATCHER answer for
+ * this queue while the thread that owns it is parked inside a synchronous
+ * statement. `dispatched` must be reported BEFORE the task's `fn` runs, or the
+ * notice would be stuck behind exactly the block it is meant to describe.
+ */
+test("ISS-7256: the observer reports queued/dispatched/settled, and dispatched lands BEFORE the task body runs", async () => {
+  const seen: string[] = [];
+  const queue = createWriteQueue((token, phase) =>
+    seen.push(`${token}:${phase}`)
+  );
+  const work = deferred<string>();
+  const task = queue.run(() => {
+    seen.push("owner:fn-entered");
+    return work.promise;
+  }, "owner");
+  // Both notices are already out before the body has had a chance to run at all.
+  // That ordering is the whole mechanism: `fn`'s first statement is where a
+  // synchronous libSQL call parks the thread, and a notice emitted after it
+  // would be stuck behind exactly the block it exists to describe.
+  assert.deepEqual(seen, ["owner:queued", "owner:dispatched"]);
+  work.resolve("done");
+  assert.equal(await task, "done");
+  assert.deepEqual(seen, [
+    "owner:queued",
+    "owner:dispatched",
+    "owner:fn-entered",
+    "owner:settled",
+  ]);
+});
+
+test("ISS-7256: the observer ignores untagged tasks and never lets a throwing observer cost a write", async () => {
+  const seen: string[] = [];
+  const queue = createWriteQueue((token, phase) => {
+    seen.push(`${token}:${phase}`);
+    throw new Error("observer is broken");
+  });
+  // Untagged: not addressable by `cancel`, so nothing can ask about it either.
+  assert.equal(await queue.run(() => Promise.resolve("untagged")), "untagged");
+  assert.deepEqual(seen, [], "an untagged task is not reported");
+  // Tagged: the observer throws on every phase and the write still completes.
+  assert.equal(await queue.run(() => Promise.resolve("ok"), "owner"), "ok");
+  assert.deepEqual(seen, ["owner:queued", "owner:dispatched", "owner:settled"]);
 });

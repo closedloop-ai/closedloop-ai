@@ -1,6 +1,9 @@
 "use client";
 
+import type { Priority } from "@repo/api/src/types/common";
 import {
+  buildScopedDocumentPath,
+  DOCUMENT_ROUTE_PREFIX,
   type DocumentStatus,
   DocumentType,
   getRoutePrefixForType,
@@ -14,11 +17,16 @@ import {
   isSupportedSearchType,
   type SearchEntityType,
 } from "@repo/api/src/types/search-entity-kind";
+import { ARTIFACT_PRIORITY_UNSET_FLAG_KEY } from "@repo/app/documents/lib/artifact-priority-unset-flag";
+import { priorityDisplayFallback } from "@repo/app/documents/lib/priority-display-fallback";
 import {
   DOCUMENT_TYPE_LABELS,
   PROJECT_STATUS_LABELS,
 } from "@repo/app/projects/lib/project-constants";
 import { SearchEmptyOnRamp } from "@repo/app/search/components/search-empty-onramp";
+import { SearchResultCountStrip } from "@repo/app/search/components/search-result-count-strip";
+import { SearchSurfaceV2 } from "@repo/app/search/components/search-surface-v2";
+import { SearchSurfaceModeKind } from "@repo/app/search/components/search-surface-v2-props";
 import { SearchTypeControl } from "@repo/app/search/components/search-type-control";
 import { SearchTypeahead } from "@repo/app/search/components/search-typeahead";
 import { UnifiedSearchResults } from "@repo/app/search/components/unified-search-results";
@@ -27,6 +35,7 @@ import {
   useGlobalSearch,
   useSearchPanelState,
 } from "@repo/app/search/hooks/use-search";
+import { searchHitsToSurfaceResults } from "@repo/app/search/lib/search-surface-model";
 import {
   activeTypeKinds,
   addTypeToken,
@@ -37,8 +46,14 @@ import {
   IssuePriorityBadge,
   IssueStatusBadge,
 } from "@repo/app/shared/components/status-badge";
+import {
+  useFeatureFlagEnabled,
+  useFeatureFlagEnabledOptional,
+} from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { formatDate } from "@repo/app/shared/lib/date-utils";
+import { PORTABLE_SEARCH_SURFACE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { Button } from "@repo/design-system/components/ui/button";
+import { GridEmptyValue } from "@repo/design-system/components/ui/grid-table-card";
 import {
   Table,
   TableBody,
@@ -47,6 +62,7 @@ import {
   TableHeader,
   TableRow,
 } from "@repo/design-system/components/ui/table";
+import { PRIORITY_LABEL_NONE } from "@repo/design-system/lib/priority-order";
 import { Link } from "@repo/navigation/link";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
@@ -84,6 +100,13 @@ export function SearchResults() {
  */
 function UnifiedSearchPanel() {
   const orgSlug = useOrgSlug();
+  // ONE read, HERE, choosing between two whole result bodies. Neither branch
+  // knows the gate exists. The same PostHog key gates the Desktop command
+  // palette, which resolves the signed-in account's assignment from the same
+  // key space, so there is no second key and no Labs toggle beside it.
+  const portableSearchSurface = useFeatureFlagEnabled(
+    PORTABLE_SEARCH_SURFACE_FEATURE_FLAG_KEY
+  );
   const navigation = useNavigation();
   const searchParams = useSearchParamsValue();
   // BACKWARD COMPAT (FEA-4134): the previous `/search` UI expressed the entity
@@ -135,6 +158,7 @@ function UnifiedSearchPanel() {
   const {
     results,
     isLoading,
+    isRetrying,
     isError,
     filterErrorMessage,
     nextCursor,
@@ -179,6 +203,34 @@ function UnifiedSearchPanel() {
 
   const showResults = urlQuery.trim().length >= MIN_UNIFIED_QUERY_LENGTH;
 
+  // Runs an on-ramp example: seeds the bar and commits it, exactly as the
+  // pre-ISS-9414 inline handler did. Named because both branches wire it now.
+  const runExample = (example: string) => {
+    setQuery(example);
+    commitQuery(example);
+  };
+
+  // The pre-ISS-9414 body, kept whole behind the flag. Bound to a name rather
+  // than nested in the branch below because the two questions — which surface,
+  // and has the query run — are separate, and only the legacy branch still asks
+  // the second one for itself.
+  const legacyResultsBody = showResults ? (
+    <UnifiedSearchResults
+      activeTypes={activeKinds}
+      filterErrorMessage={filterErrorMessage}
+      hideTypeFacets
+      isError={isError}
+      isLoading={isLoading}
+      onRetry={refetch}
+      // Kind filtering is owned by the query bar's `type:` tokens, so the
+      // in-list facet toggle routes through the same token writer.
+      onToggleType={handleToggleKind}
+      results={results}
+    />
+  ) : (
+    <SearchEmptyOnRamp onRunExample={runExample} />
+  );
+
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
       <h1 className="sr-only">Search results</h1>
@@ -201,86 +253,49 @@ function UnifiedSearchPanel() {
         />
       </div>
 
-      {showResults ? (
-        <>
-          {/* The count strip must not assert a result count next to an error —
-              a failed query returned no set, so a "0 results" line beside the
-              error banner would lie about state. Suppress it while either the
-              load error or the inline filter error is active. */}
-          {!(isError || filterErrorMessage) && (
-            <ResultCountStrip
-              hasMore={Boolean(nextCursor)}
-              isLoading={isLoading}
-              loadedCount={results.length}
-              onClear={handleClearSearch}
-              query={urlQuery}
-            />
-          )}
-          <UnifiedSearchResults
-            activeTypes={activeKinds}
-            filterErrorMessage={filterErrorMessage}
-            hideTypeFacets
-            isError={isError}
-            isLoading={isLoading}
-            onRetry={refetch}
-            // Kind filtering is owned by the query bar's `type:` tokens, so the
-            // in-list facet toggle routes through the same token writer.
-            onToggleType={handleToggleKind}
-            results={results}
-          />
-        </>
-      ) : (
-        <SearchEmptyOnRamp
-          onRunExample={(example) => {
-            setQuery(example);
-            commitQuery(example);
-          }}
+      {/* The count strip must not assert a result count next to an error —
+          a failed query returned no set, so a "0 results" line beside the
+          error banner would lie about state. Suppress it while either the
+          load error or the inline filter error is active. */}
+      {showResults && !(isError || filterErrorMessage) && (
+        <SearchResultCountStrip
+          hasMore={Boolean(nextCursor)}
+          isLoading={isLoading}
+          loadedCount={results.length}
+          onClear={handleClearSearch}
+          query={urlQuery}
         />
       )}
-    </div>
-  );
-}
 
-/**
- * The thin result-context strip: an honest count (`N`/`N+` while a cursor
- * remains) plus a Clear action, announced to assistive tech via `aria-live` so
- * a screen reader hears the count change on re-query.
- */
-function ResultCountStrip({
-  query,
-  loadedCount,
-  hasMore,
-  isLoading,
-  onClear,
-}: Readonly<{
-  query: string;
-  loadedCount: number;
-  hasMore: boolean;
-  isLoading: boolean;
-  onClear: () => void;
-}>) {
-  const countLabel = hasMore ? `${loadedCount}+` : String(loadedCount);
-  const resultNoun = loadedCount === 1 && !hasMore ? "result" : "results";
-  const text = isLoading
-    ? `Searching for "${query}"…`
-    : `${countLabel} ${resultNoun} for "${query}"`;
-
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-2 border-border border-b pb-2">
-      <p className="text-muted-foreground text-sm">{text}</p>
-      <span aria-live="polite" className="sr-only">
-        {text}
-      </span>
-      <Button
-        aria-label="Clear search"
-        onClick={onClear}
-        size="sm"
-        type="button"
-        variant="outline"
-      >
-        <XIcon className="size-3.5" />
-        Clear
-      </Button>
+      {portableSearchSurface ? (
+        <SearchSurfaceV2
+          mode={{
+            kind: SearchSurfaceModeKind.Page,
+            onRunExample: runExample,
+          }}
+          onRetry={refetch}
+          query={urlQuery}
+          read={{
+            // `showResults` IS "the query ran": the hook fires at the same
+            // 2-char floor, so below it nothing was asked and the surface must
+            // not claim an empty corpus.
+            hasRun: showResults,
+            // A retry in flight is a load, not the failure it is fixing: the
+            // ladder puts Loading above Unavailable, so this is what moves the
+            // surface off the settled error while the refetch runs.
+            isLoading: isLoading || isRetrying,
+            isUnavailable: isError,
+            // A malformed inline filter is a 400 whose body is safe to show, so
+            // the surface names the query as the thing that failed and offers
+            // no retry. Any other failure has no such sentence and gets one.
+            unavailableReason: filterErrorMessage ?? null,
+            resultCount: results.length,
+          }}
+          results={searchHitsToSurfaceResults(results)}
+        />
+      ) : (
+        legacyResultsBody
+      )}
     </div>
   );
 }
@@ -409,6 +424,7 @@ function ArtifactsSection({
                 <TableCell>
                   {/* This list holds non-Feature documents, so status is a DocumentStatus (PRD-495). */}
                   <DocumentStatusBadge
+                    artifactId={artifact.id}
                     status={artifact.status as DocumentStatus}
                   />
                 </TableCell>
@@ -448,13 +464,22 @@ function FeaturesSection({
           {features.map((feature) => (
             <TableRow key={feature.id}>
               <TableCell>
-                <TitleCell href={`/${orgSlug}/issues/${feature.slug}`}>
+                <TitleCell
+                  href={buildScopedDocumentPath(
+                    DOCUMENT_ROUTE_PREFIX,
+                    feature.slug,
+                    orgSlug
+                  )}
+                >
                   {feature.title}
                 </TitleCell>
               </TableCell>
               <TableCell>
                 {/* This list holds Features, so status is a IssueStatus (PRD-495). */}
-                <IssueStatusBadge status={feature.status as IssueStatus} />
+                <IssueStatusBadge
+                  artifactId={feature.id}
+                  status={feature.status as IssueStatus}
+                />
               </TableCell>
               <TableCell>
                 {feature.priority && (
@@ -479,6 +504,11 @@ function ProjectsSection({
   projects,
 }: Readonly<{ projects: ProjectSearchResult[] }>) {
   const orgSlug = useOrgSlug();
+  // ISS-9441: flag OFF folds an unset project priority to Medium, which is what
+  // this table showed before a project could hold none.
+  const unsetPriorityEnabled = useFeatureFlagEnabledOptional(
+    ARTIFACT_PRIORITY_UNSET_FLAG_KEY
+  );
   return (
     <section>
       <SectionHeader count={projects.length} title="Projects" />
@@ -507,9 +537,13 @@ function ProjectsSection({
                   {PROJECT_STATUS_LABELS[project.status] ?? project.status}
                 </TableCell>
                 <TableCell>
-                  {project.priority && (
-                    <IssuePriorityBadge priority={project.priority} />
-                  )}
+                  <ProjectPriorityCell
+                    priority={
+                      unsetPriorityEnabled
+                        ? project.priority
+                        : priorityDisplayFallback(project).priority
+                    }
+                  />
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {project.teamName ?? "-"}
@@ -545,4 +579,24 @@ function foldLegacyTypes(
     }
   }
   return next;
+}
+
+/**
+ * An unset project priority is named beside the empty-value mark, as the project
+ * overview names it, so the cell is not mistaken for a value that failed to load.
+ */
+function ProjectPriorityCell({
+  priority,
+}: Readonly<{ priority: Priority | null }>) {
+  if (priority === null) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+        <span aria-hidden="true">
+          <GridEmptyValue />
+        </span>
+        {PRIORITY_LABEL_NONE}
+      </span>
+    );
+  }
+  return <IssuePriorityBadge priority={priority} />;
 }

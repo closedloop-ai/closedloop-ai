@@ -23,6 +23,44 @@ describe("classifyListReadErrorState (ISS-4483)", () => {
     SHARED_AGENT_SESSIONS_TRANSIENT_ERROR_CODE
   );
 
+  // ISS-7528: `isListErrorTransientSource` answers "was this a db-host failure at
+  // all", which `isListErrorTransient` cannot once exhaustion closes it. The
+  // availability fold needs the exhaustion-agnostic answer to keep a WEDGED
+  // transient on the error card instead of dropping it into the empty state.
+  it("reports a transient LIST error as transient-source both before and after exhaustion", () => {
+    const retrying = classifyListReadErrorState({
+      isListError: true,
+      listError: transientListError,
+      usageError: false,
+      hasSummaryUsage: false,
+      transientRetriesExhausted: false,
+    });
+    const wedged = classifyListReadErrorState({
+      isListError: true,
+      listError: transientListError,
+      usageError: false,
+      hasSummaryUsage: false,
+      transientRetriesExhausted: true,
+    });
+    expect(retrying.isListErrorTransientSource).toBe(true);
+    expect(wedged.isListErrorTransientSource).toBe(true);
+    // …while the exhaustion-folded flag is precisely what closes.
+    expect(retrying.isListErrorTransient).toBe(true);
+    expect(wedged.isListErrorTransient).toBe(false);
+  });
+
+  it("does not report a NON-transient list error as transient-source", () => {
+    const state = classifyListReadErrorState({
+      isListError: true,
+      listError: new Error("SQLITE_CORRUPT: database disk image is malformed"),
+      usageError: false,
+      hasSummaryUsage: false,
+      transientRetriesExhausted: false,
+    });
+    expect(state.isListErrorTransientSource).toBe(false);
+    expect(state.isListErrorTransient).toBe(false);
+  });
+
   it("holds a transient LIST error (not errored) while retries remain", () => {
     const state = classifyListReadErrorState({
       isListError: true,

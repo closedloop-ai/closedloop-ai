@@ -142,6 +142,7 @@ export function useAddTeamMember() {
       queryClient.invalidateQueries({
         queryKey: teamKeys.detail(teamId),
       });
+      queryClient.invalidateQueries({ queryKey: teamKeys.lists() });
     },
   });
 }
@@ -168,6 +169,7 @@ export function useUpdateTeamMemberRole() {
       queryClient.invalidateQueries({
         queryKey: teamKeys.detail(teamId),
       });
+      queryClient.invalidateQueries({ queryKey: teamKeys.lists() });
     },
   });
 }
@@ -186,6 +188,7 @@ export function useRemoveTeamMember() {
       queryClient.invalidateQueries({
         queryKey: teamKeys.detail(teamId),
       });
+      queryClient.invalidateQueries({ queryKey: teamKeys.lists() });
     },
   });
 }

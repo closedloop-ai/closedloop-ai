@@ -1,8 +1,6 @@
 import type { TranscriptSkipRequest } from "@repo/api/src/types/desktop-transcripts";
-import {
-  TranscriptSkipReason,
-  TranscriptUploadStatus,
-} from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptUploadStatus } from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
@@ -13,8 +11,6 @@ const mocks = vi.hoisted(() => {
       update: vi.fn(),
     },
     sessionDetail: { findUnique: vi.fn() },
-    // FEA-4169: the default org-policy gate reads Organization via withDb.
-    organization: { findUnique: vi.fn() },
     $executeRaw: vi.fn(),
   };
   const withDb = Object.assign(
@@ -34,7 +30,7 @@ vi.mock("@repo/database", () => ({
   withDb: mocks.withDb,
   Prisma: mocks.Prisma,
 }));
-vi.mock("@repo/aws", () => ({
+vi.mock("@repo/aws/transcript-storage", () => ({
   createTranscriptMultipartUpload: vi.fn(),
   copyTranscriptPart: vi.fn(),
   presignTranscriptUploadPart: vi.fn(),
@@ -60,12 +56,13 @@ import {
   s3Port,
   transcriptRow,
 } from "@/__tests__/support/desktop/transcripts/service.test-fixtures";
-import { TranscriptSyncErrorReason, transcriptSyncService } from "./service";
+import { transcriptSyncService } from "./service";
+import { TranscriptSyncErrorReason } from "./transcript-sync-error-reason";
 
 /**
  * `markPermanentlySkipped` behavior (FEA-3476 / ISS-4621). Split out of
- * `service.test.ts` (which owns plan/complete plus the cross-path lock and
- * org-policy suites) so neither file exceeds the file-size ceiling. The
+ * `service.test.ts` (which owns plan/complete plus the cross-path lock suite) so
+ * neither file exceeds the file-size ceiling. The
  * `vi.hoisted`/`vi.mock` header mirrors that file — vitest hoists module mocks
  * per test module, so only the pure fixtures are shared
  * (`service.test-fixtures.ts`).
@@ -74,9 +71,6 @@ import { TranscriptSyncErrorReason, transcriptSyncService } from "./service";
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.findOwnedById.mockResolvedValue({ id: CT });
-  mocks.db.organization.findUnique.mockResolvedValue({
-    sessionSyncPolicyEnabled: true,
-  });
   mocks.db.sessionTranscript.findUnique.mockResolvedValue(null);
   mocks.db.sessionDetail.findUnique.mockResolvedValue(null);
   mocks.db.sessionTranscript.upsert.mockResolvedValue({});
@@ -306,6 +300,42 @@ describe("transcriptSyncService.markPermanentlySkipped (FEA-3476)", () => {
         value: {
           status: TranscriptUploadStatus.Skipped,
           permanentFailureReason: TranscriptSkipReason.SourceGone,
+          sessionDetailId: "art-1",
+        },
+      });
+    });
+
+    it("does NOT let a late environment_unavailable overwrite an existing HARD reason (ISS-9884: ranked weakest, deliberately)", async () => {
+      // The new recoverable reason inherits the ISS-4820 rank, and that is the
+      // wanted answer even though an outage is arguably the newer truth: a file
+      // that is genuinely `too_large` must not be relabelled by a later outage,
+      // and re-ranking it reopens the resurrection bug this rule exists to stop.
+      mocks.db.sessionTranscript.findUnique.mockResolvedValue(
+        transcriptRow({
+          uploadStatus: TranscriptUploadStatus.Skipped,
+          permanentFailureReason: TranscriptSkipReason.TooLarge,
+          sessionDetailId: "art-1",
+        })
+      );
+
+      const result = await transcriptSyncService.markPermanentlySkipped({
+        ...auth,
+        request: skipRequest({
+          sourceHarness: "claude",
+          reason: TranscriptSkipReason.EnvironmentUnavailable,
+        }),
+        deps: baseDeps(s3Port()),
+      });
+
+      const [call] = mocks.db.sessionTranscript.upsert.mock.calls;
+      expect(call[0].update.permanentFailureReason).toBe(
+        TranscriptSkipReason.TooLarge
+      );
+      expect(result).toEqual({
+        ok: true,
+        value: {
+          status: TranscriptUploadStatus.Skipped,
+          permanentFailureReason: TranscriptSkipReason.TooLarge,
           sessionDetailId: "art-1",
         },
       });

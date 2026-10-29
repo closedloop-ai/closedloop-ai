@@ -121,7 +121,8 @@ describe("seed entrypoint guard order", () => {
       name: "invalid profile before no-reset DB initialization",
       args: ["--profile", "unknown-profile"],
       env: {
-        DATABASE_URL: "postgresql://user:pass@example-prod.example.test:5432/app",
+        DATABASE_URL:
+          "postgresql://user:pass@example-prod.example.test:5432/app",
       },
       reason: SeedGuardFailureReason.InvalidProfile,
     },
@@ -129,7 +130,8 @@ describe("seed entrypoint guard order", () => {
       name: "invalid reset target UUID before DB initialization",
       args: ["--reset", "--force", "--organization-id", "not-a-uuid"],
       env: {
-        DATABASE_URL: "postgresql://user:pass@example-prod.example.test:5432/app",
+        DATABASE_URL:
+          "postgresql://user:pass@example-prod.example.test:5432/app",
       },
       reason: SeedGuardFailureReason.InvalidTargetUuid,
     },
@@ -143,7 +145,8 @@ describe("seed entrypoint guard order", () => {
       name: "production DATABASE_URL despite local PGHOST before reset DB initialization",
       args: ["--reset", "--force", "--profile", SeedProfileName.Minimal],
       env: {
-        DATABASE_URL: "postgresql://user:pass@example-prod.example.test:5432/app",
+        DATABASE_URL:
+          "postgresql://user:pass@example-prod.example.test:5432/app",
         PGHOST: "localhost",
         SEED_ALLOW_REMOTE: "1",
       },
@@ -200,12 +203,13 @@ describe("seed entrypoint guard order", () => {
     SEED_DB_TEST_TIMEOUT_MS
   );
 
-  it.each([
+  it.each<SeedGuardRefusalCase>([
     {
       name: "invalid no-reset profile",
       argv: ["--profile", "unknown-profile"],
       env: {
-        DATABASE_URL: "postgresql://user:pass@example-prod.example.test:5432/app",
+        DATABASE_URL:
+          "postgresql://user:pass@example-prod.example.test:5432/app",
       },
       reason: SeedGuardFailureReason.InvalidProfile,
     },
@@ -213,7 +217,8 @@ describe("seed entrypoint guard order", () => {
       name: "reset target parser failure",
       argv: ["--reset", "--force", "--organization-id", "not-a-uuid"],
       env: {
-        DATABASE_URL: "postgresql://user:pass@example-prod.example.test:5432/app",
+        DATABASE_URL:
+          "postgresql://user:pass@example-prod.example.test:5432/app",
       },
       reason: SeedGuardFailureReason.InvalidTargetUuid,
     },
@@ -225,52 +230,51 @@ describe("seed entrypoint guard order", () => {
       },
       reason: SeedGuardFailureReason.RemoteHostRequiresOptIn,
     },
-  ])("does not initialize DB or seed helpers before $name", async ({
-    argv,
-    env,
-    reason,
-  }) => {
-    const restoreEnv = replaceSeedEnv(env);
-    const originalArgv = process.argv;
-    process.argv = ["node", "seed.ts", ...argv];
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((
-      code?: string | number | null | undefined
-    ) => {
-      throw new Error(`process.exit:${code}`);
-    }) as typeof process.exit);
-    const stderrSpy = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
+  ])(
+    "does not initialize DB or seed helpers before $name",
+    async ({ argv, env, reason }) => {
+      const restoreEnv = replaceSeedEnv(env);
+      const originalArgv = process.argv;
+      process.argv = ["node", "seed.ts", ...argv];
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation(((
+        code?: string | number | null | undefined
+      ) => {
+        throw new Error(`process.exit:${code}`);
+      }) as typeof process.exit);
+      const stderrSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
 
-    try {
-      const exitRejection = new Promise<unknown>((resolve) => {
-        process.once("unhandledRejection", resolve);
-      });
-      await import("../../../seed");
-      await expect(exitRejection).resolves.toMatchObject({
-        message: "process.exit:1",
-      });
-      expect(stderrSpy.mock.calls.flat().map(String).join("\n")).toContain(
-        reason
-      );
-      expect(exitSpy).toHaveBeenCalledWith(1);
-      expect(entrypointMocks.pool).not.toHaveBeenCalled();
-      expect(entrypointMocks.prismaPg).not.toHaveBeenCalled();
-      expect(entrypointMocks.prismaClient).not.toHaveBeenCalled();
-      expect(entrypointMocks.detectOrgConflicts).not.toHaveBeenCalled();
-      expect(
-        entrypointMocks.collectResetVerificationSnapshot
-      ).not.toHaveBeenCalled();
-      expect(entrypointMocks.countResettableOrgRows).not.toHaveBeenCalled();
-      expect(entrypointMocks.confirmResetIfNeeded).not.toHaveBeenCalled();
-      expect(entrypointMocks.resetOrgData).not.toHaveBeenCalled();
-      expect(entrypointMocks.verifyResetComplete).not.toHaveBeenCalled();
-      expect(entrypointMocks.runSeed).not.toHaveBeenCalled();
-    } finally {
-      process.argv = originalArgv;
-      restoreEnv();
+      try {
+        const exitRejection = new Promise<unknown>((resolve) => {
+          process.once("unhandledRejection", resolve);
+        });
+        await import("../../../seed");
+        await expect(exitRejection).resolves.toMatchObject({
+          message: "process.exit:1",
+        });
+        expect(stderrSpy.mock.calls.flat().map(String).join("\n")).toContain(
+          reason
+        );
+        expect(exitSpy).toHaveBeenCalledWith(1);
+        expect(entrypointMocks.pool).not.toHaveBeenCalled();
+        expect(entrypointMocks.prismaPg).not.toHaveBeenCalled();
+        expect(entrypointMocks.prismaClient).not.toHaveBeenCalled();
+        expect(entrypointMocks.detectOrgConflicts).not.toHaveBeenCalled();
+        expect(
+          entrypointMocks.collectResetVerificationSnapshot
+        ).not.toHaveBeenCalled();
+        expect(entrypointMocks.countResettableOrgRows).not.toHaveBeenCalled();
+        expect(entrypointMocks.confirmResetIfNeeded).not.toHaveBeenCalled();
+        expect(entrypointMocks.resetOrgData).not.toHaveBeenCalled();
+        expect(entrypointMocks.verifyResetComplete).not.toHaveBeenCalled();
+        expect(entrypointMocks.runSeed).not.toHaveBeenCalled();
+      } finally {
+        process.argv = originalArgv;
+        restoreEnv();
+      }
     }
-  });
+  );
 
   it("aborts before any reset/delete side effect when the seed phase graph fails to load", async () => {
     // Regression guard for davetho's review: the seed phase modules (which
@@ -357,6 +361,19 @@ function runSeedCommand(
     timeout: COMMAND_TIMEOUT_MS,
   });
 }
+
+/**
+ * One in-process refusal case. `env` is annotated rather than inferred: the
+ * cases set different subsets of the env keys, so an inferred table widens to a
+ * union whose members carry `KEY?: undefined` and no longer satisfy
+ * `replaceSeedEnv`'s `Record<string, string>`.
+ */
+type SeedGuardRefusalCase = {
+  name: string;
+  argv: string[];
+  env: Record<string, string>;
+  reason: SeedGuardFailureReason;
+};
 
 function replaceSeedEnv(envOverrides: Record<string, string>) {
   const previous = Object.fromEntries(

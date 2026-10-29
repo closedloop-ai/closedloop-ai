@@ -1,10 +1,7 @@
 import { createMetadata } from "@repo/seo/metadata";
-import dynamic from "next/dynamic";
+import { resolveDesktopBootstrapBrowserRun } from "@/lib/desktop-bootstrap-run";
 import { createAuthPageMetadataGenerator } from "@/lib/og-metadata";
-
-const SignUp = dynamic(() =>
-  import("@repo/auth/components/sign-up").then((mod) => mod.SignUp)
-);
+import { SignUpPageContent } from "../sign-up-page-content";
 
 const DEFAULT_METADATA = createMetadata({
   title: "Create an account",
@@ -18,6 +15,10 @@ const DEFAULT_METADATA = createMetadata({
 export const generateMetadata =
   createAuthPageMetadataGenerator(DEFAULT_METADATA);
 
-const SignUpPage = () => <SignUp />;
+const SignUpPage = async () => {
+  const browserRun = await resolveDesktopBootstrapBrowserRun();
+
+  return <SignUpPageContent browserRun={browserRun} />;
+};
 
 export default SignUpPage;

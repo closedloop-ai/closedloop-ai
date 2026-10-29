@@ -1,7 +1,4 @@
-import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "@repo/api/src/types/session-status";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { SESSION_STATUS_LABELS } from "@repo/api/src/types/session-status-display";
 import { GroupSectionHeader } from "@repo/design-system/components/ui/group-section-header";
 import type { Meta, StoryObj } from "@storybook/react";
@@ -32,9 +29,9 @@ import { createSessionTableRowFixture } from "./session-list-fixtures";
  * question a reader has when they scan a banded list.
  */
 const meta = {
-  title: "App Core/Agents/Session Group Icons",
+  title: "Primitives v1.0/Data Display/Session Group Icons",
   component: GroupSectionHeader,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     icon: SESSION_GROUP_ICONS[SessionGroupBy.Status],
@@ -57,8 +54,8 @@ type Story = StoryObj<typeof meta>;
  * lands here for free instead of being re-spelled.
  *
  * The set is chosen so each dimension exercises its fallback as well as its happy
- * path: a display-only status (`stale`, which must band under its own pill word
- * rather than being folded into Active), an empty harness (which bands as
+ * path: a retired legacy status spelling (`stale`, which ISS-10364 folds into
+ * Active rather than banding on its own), an empty harness (which bands as
  * "Unspecified"), and a row with no owner (which bands as "Unattributed").
  */
 const BANDED_ROWS = [
@@ -80,14 +77,17 @@ const BANDED_ROWS = [
     harness: "Claude",
     id: "ses-stale",
     name: "agent/backfill-golden-sessions",
-    status: DISPLAYED_SESSION_STATUS.STALE,
+    // Plain literal: ISS-10364 retired `DISPLAYED_SESSION_STATUS.STALE`. A
+    // legacy/version-skewed row can still carry this spelling, and it must now
+    // band under Active rather than its own "Stale" header.
+    status: "stale",
     user: { id: "user-1", name: "Daveth Oakhurst" },
   }),
   createSessionTableRowFixture({
     harness: "",
     id: "ses-unattributed",
     name: "agent/nightly-review-crew",
-    status: DISPLAYED_SESSION_STATUS.WAITING,
+    status: "waiting",
     user: null,
   }),
 ];
@@ -110,7 +110,8 @@ const COLLAPSED_BAND_LABEL = SESSION_STATUS_LABELS[SESSION_STATUS.INACTIVE];
  * Banding on Status: a filled circle-dot, the glyph the Status facet and the
  * status pills already read as "run state". The label is the PILL's word, not the
  * stored one. `buildSessionGroups` routes through `SESSION_STATUS_LABELS`, so the
- * band and the cell beneath it cannot name one value two ways.
+ * band and the cell beneath it cannot name one value two ways — and since
+ * ISS-10364 that word is always one of the three lifecycle labels.
  */
 export const Status: Story = {};
 
@@ -189,15 +190,17 @@ export const Collapsed: Story = {
  * looking at.
  *
  * It also pins the labels the bands carry, which is where the map's value lives:
- * `error` bands as "Failed" like its pill, `stale` keeps its own word instead of
- * being folded into Active, `Claude` and `claude` are one harness, and a row with
- * no owner bands as "Unattributed" rather than vanishing.
+ * `error` bands as "Failed" like its pill, a legacy `stale` row folds into the
+ * same "Active" band rather than getting one of its own (ISS-10364), `Claude`
+ * and `claude` are one harness, and a row with no owner bands as "Unattributed"
+ * rather than vanishing.
  *
  * No counts, deliberately. `SessionsTable` passes `showGroupCount={false}`
  * because the list is server-paginated and a number here would read as the
  * population when it only ever means "on this page".
  */
 export const AllDimensions: Story = {
+  tags: ["!manifest"],
   render: () => (
     <div className="flex flex-col gap-6">
       {BANDED_DIMENSIONS.map((dimension) => (
@@ -213,13 +216,17 @@ export const AllDimensions: Story = {
         name: SESSION_STATUS_LABELS[SESSION_STATUS.ERROR],
       })
     ).toBeInTheDocument();
-    // ISS-5366: a display-only status must NOT fold into Active, or the band
-    // would contradict the pill in the row beneath it.
+    // ISS-10364: the legacy `stale` row now folds into the SAME Active band as
+    // `ses-active` — there is exactly one "Active" button, not a second "Stale"
+    // one, over four rows none of which stores a lifecycle value other than
+    // Active or Error.
+    const activeButtons = canvas.getAllByRole("button", {
+      name: SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE],
+    });
+    await expect(activeButtons).toHaveLength(1);
     await expect(
-      canvas.getByRole("button", {
-        name: SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.STALE],
-      })
-    ).toBeInTheDocument();
+      canvas.queryByRole("button", { name: "Stale" })
+    ).not.toBeInTheDocument();
   },
 };
 

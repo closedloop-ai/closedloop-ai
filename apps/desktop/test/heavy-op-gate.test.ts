@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { createHeavyOpGate } from "../src/main/database/db-host/heavy-op-gate.js";
 
 const BOOM = /boom/;
@@ -21,9 +21,8 @@ describe("createHeavyOpGate", () => {
     const makeOp = (id: number) => async () => {
       active++;
       maxActive = Math.max(maxActive, active);
-      // Yield across a couple microtask/macrotask turns so a broken gate would
-      // certainly interleave.
-      await new Promise((resolve) => setTimeout(resolve, 1));
+      // Yield a macrotask so a broken gate would interleave.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       order.push(id);
       active--;
       return id;
@@ -67,7 +66,7 @@ describe("createHeavyOpGate", () => {
 
     const slow = gate.runExclusive(async () => {
       events.push("slow:start");
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 0));
       events.push("slow:end");
     });
     const fast = gate.runExclusive(() => {
@@ -134,9 +133,9 @@ describe("createHeavyOpGate — memory-aware admission (FEA-3150)", () => {
       return Promise.resolve();
     });
 
-    // Give the microtask queue a few turns; the op must NOT have run — it's
-    // parked in admission behind the still-high pressure.
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    // Drain the microtask queue with a macrotask yield; the op must NOT have
+    // run — it's parked in admission behind the still-high pressure.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     assert.deepEqual(events, ["admit:enter"]);
 
     // Clear pressure → admission resolves → the op runs.
@@ -177,7 +176,7 @@ describe("createHeavyOpGate — memory-aware admission (FEA-3150)", () => {
 
     const a = gate.runExclusive(async () => {
       events.push("a:start");
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await new Promise((resolve) => setTimeout(resolve, 0));
       events.push("a:end");
     });
     const b = gate.runExclusive(() => {

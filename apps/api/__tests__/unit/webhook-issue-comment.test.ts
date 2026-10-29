@@ -1,28 +1,15 @@
 import type {
+  IssueComment,
   IssueCommentCreatedEvent,
+  IssueCommentDeletedEvent,
   IssueCommentEditedEvent,
 } from "@octokit/webhooks-types";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockWithDbTx as setupMockWithDbTx } from "../utils/db-helpers";
 
-const { MockGitHubProjectionNoWriteError, mockUpsertGitHubIssueCommentThread } =
-  vi.hoisted(() => ({
-    MockGitHubProjectionNoWriteError: class GitHubProjectionNoWriteError extends Error {
-      readonly code: string;
-      readonly details: Record<string, string | number | null>;
-
-      constructor(
-        code: string,
-        details: Record<string, string | number | null>
-      ) {
-        super(`GitHub comment projection no-write: ${code}`);
-        this.name = "GitHubProjectionNoWriteError";
-        this.code = code;
-        this.details = details;
-      }
-    },
-    mockUpsertGitHubIssueCommentThread: vi.fn(),
-  }));
+const { mockApplyExternal } = vi.hoisted(() => ({
+  mockApplyExternal: vi.fn(),
+}));
 
 vi.mock("@repo/database", () => ({
   ArtifactType: {
@@ -34,6 +21,7 @@ vi.mock("@repo/database", () => ({
   GitHubInstallationStatus: {
     ACTIVE: "ACTIVE",
   },
+  GitHubCommentThreadKind: { ISSUE_COMMENT: "ISSUE_COMMENT" },
   GitHubLegacyCommentState: {
     PENDING: "PENDING",
     ADDRESSED: "ADDRESSED",
@@ -42,10 +30,8 @@ vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
 }));
 
-vi.mock("@/app/comments/github-projection", () => ({
-  GitHubProjectionNoWriteError: MockGitHubProjectionNoWriteError,
-  softDeleteGitHubCommentByRemoteId: vi.fn(),
-  upsertGitHubIssueCommentThread: mockUpsertGitHubIssueCommentThread,
+vi.mock("@/app/comments/service", () => ({
+  commentsService: { applyExternal: mockApplyExternal },
 }));
 
 vi.mock("@/app/webhooks/github/handlers/branch-activity-producer", () => ({
@@ -56,67 +42,46 @@ vi.mock("@/app/webhooks/github/handlers/branch-activity-producer", () => ({
   }),
 }));
 
-import { GitHubProjectionNoWriteError } from "@/app/comments/github-projection";
+import { CommentSyncProvider } from "@repo/api/src/types/comment-thread-dto";
+import { GitHubCommentThreadKind } from "@repo/database";
+import {
+  ApplyExternalOutcome,
+  GitHubExternalEventKind,
+} from "@/app/comments/service/github/apply-external-events";
 import {
   GitHubBranchActivityEventName,
   persistGitHubBranchActivity,
 } from "@/app/webhooks/github/handlers/branch-activity-producer";
 import { handleIssueComment } from "@/app/webhooks/github/handlers/issue-comment-handler";
 import {
+  createInstallationLite,
+  createReactions,
   createRepository,
   createSender,
 } from "../fixtures/github-webhook-fixtures";
 import { makePrDetailRow } from "../utils/pr-detail-helpers";
 
-let mockTx: any;
+let mockTx: ReturnType<typeof createMockTx>;
 const mockPersistGitHubBranchActivity =
   persistGitHubBranchActivity as ReturnType<typeof vi.fn>;
 
 describe("handleIssueComment", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTx = {
-      gitHubInstallation: {
-        findMany: vi.fn(),
-      },
-      gitHubInstallationRepository: {
-        findMany: vi.fn(),
-      },
-      pullRequestDetail: {
-        findMany: vi.fn(),
-        findUnique: vi.fn(),
-      },
-      gitHubCommentProjection: {
-        findFirst: vi.fn().mockResolvedValue(null),
-      },
-      gitHubUserConnection: {
-        findFirst: vi.fn().mockResolvedValue(null),
-      },
-      externalCommentAuthor: {
-        findUnique: vi.fn().mockResolvedValue(null),
-        upsert: vi.fn(),
-      },
-      user: {
-        upsert: vi.fn(),
-      },
-      workstreamEvent: {
-        create: vi.fn(),
-      },
-    };
+    mockTx = createMockTx();
     setupMockWithDbTx(mockTx);
     mockExternalAuthorResolution();
-    mockUpsertGitHubIssueCommentThread.mockImplementation((_tx, input: any) =>
-      Promise.resolve({
-        threadId: "thread-1",
-        commentIds: ["comment-1"],
-        createdGithubCommentIds: [String(input.comment.githubCommentId)],
-      })
-    );
+    mockApplyExternal.mockResolvedValue({
+      outcomes: [ApplyExternalOutcome.Applied],
+      changedThreadIds: ["thread-1"],
+    });
   });
 
   it("ignores non-PR issue comments before owner resolution", async () => {
+    // A plain issue's comment: GitHub sends the issue without `pull_request`.
+    const { pull_request: _pullRequest, ...plainIssue } = makeIssue();
     const response = await handleIssueComment(
-      makeIssueCommentEvent({ issue: makeIssue({ pull_request: null }) })
+      makeIssueCommentEvent({ issue: plainIssue })
     );
 
     expect(response.status).toBe(200);
@@ -153,7 +118,7 @@ describe("handleIssueComment", () => {
     expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
   });
 
-  it("creates PR conversation comments with resolved external author identity", async () => {
+  it("applies PR conversation comments through applyExternal with the provider author", async () => {
     const prDetail = makePrDetailRow({
       id: "pr-detail-1",
       artifactId: "legacy-pr-artifact",
@@ -174,6 +139,7 @@ describe("handleIssueComment", () => {
       comment: makeIssueComment({
         id: 123_456,
         body: "Conversation note",
+        updated_at: "2026-02-10T12:05:00Z",
       }),
     });
 
@@ -182,20 +148,26 @@ describe("handleIssueComment", () => {
       observedAt: new Date("2026-08-12T14:00:00.000Z"),
     });
 
-    expect(mockUpsertGitHubIssueCommentThread).toHaveBeenCalledWith(
-      mockTx,
+    expect(mockApplyExternal).toHaveBeenCalledWith(
       expect.objectContaining({
+        provider: CommentSyncProvider.Github,
         organizationId: "org-uuid-123",
         branchArtifactId: "branch-artifact-1",
         pullRequestDetailId: "pr-detail-1",
-        comment: expect.objectContaining({
-          githubCommentId: 123_456,
-          bodyMarkdown: "Conversation note",
-          author: {
-            userId: "shadow-99999",
-            externalAuthorId: "external-author-99999",
-          },
-        }),
+        events: [
+          expect.objectContaining({
+            kind: GitHubExternalEventKind.IssueCommentUpsert,
+            comment: expect.objectContaining({
+              githubCommentId: 123_456,
+              bodyMarkdown: "Conversation note",
+              author: expect.objectContaining({
+                id: 99_999,
+                login: "reviewer",
+              }),
+              providerUpdatedAt: new Date("2026-02-10T12:05:00Z"),
+            }),
+          }),
+        ],
       })
     );
     expect(mockPersistGitHubBranchActivity).toHaveBeenCalledWith({
@@ -211,6 +183,43 @@ describe("handleIssueComment", () => {
     expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
   });
 
+  it("deletes a PR conversation comment through applyExternal at the payload's updated_at", async () => {
+    const prDetail = makePrDetailRow({
+      id: "pr-detail-1",
+      artifactId: "legacy-pr-artifact",
+      branchArtifactId: "branch-artifact-1",
+    });
+    mockOwnerResolutionSuccess(prDetail);
+
+    const event: IssueCommentDeletedEvent = {
+      ...makeIssueCommentEvent({
+        comment: makeIssueComment({
+          id: 123_456,
+          updated_at: "2026-02-10T12:07:00Z",
+        }),
+      }),
+      action: "deleted",
+    };
+    await handleIssueComment(event);
+
+    expect(mockApplyExternal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: "org-uuid-123",
+        branchArtifactId: "branch-artifact-1",
+        pullRequestDetailId: "pr-detail-1",
+        events: [
+          {
+            kind: GitHubExternalEventKind.CommentDelete,
+            threadKind: GitHubCommentThreadKind.ISSUE_COMMENT,
+            githubCommentId: 123_456,
+            providerUpdatedAt: new Date("2026-02-10T12:07:00Z"),
+          },
+        ],
+      })
+    );
+    expect(mockPersistGitHubBranchActivity).toHaveBeenCalledOnce();
+  });
+
   it("does not treat a null current pull request pointer as stale webhook context", async () => {
     const prDetail = makePrDetailRow({
       id: "pr-detail-1",
@@ -223,8 +232,7 @@ describe("handleIssueComment", () => {
 
     await handleIssueComment(makeIssueCommentEvent());
 
-    expect(mockUpsertGitHubIssueCommentThread).toHaveBeenCalledWith(
-      mockTx,
+    expect(mockApplyExternal).toHaveBeenCalledWith(
       expect.objectContaining({
         branchArtifactId: "branch-artifact-1",
         pullRequestDetailId: "pr-detail-1",
@@ -249,7 +257,7 @@ describe("handleIssueComment", () => {
       observedAt: new Date("2026-08-12T14:00:00.000Z"),
     });
 
-    expect(mockUpsertGitHubIssueCommentThread).not.toHaveBeenCalled();
+    expect(mockApplyExternal).not.toHaveBeenCalled();
     expect(mockPersistGitHubBranchActivity).toHaveBeenCalledWith({
       eventName: GitHubBranchActivityEventName.IssueComment,
       deliveryId: "issue-comment-older-associated-pr",
@@ -262,7 +270,7 @@ describe("handleIssueComment", () => {
     });
   });
 
-  it("dedupes duplicate created PR issue comment deliveries via the upsert helper", async () => {
+  it("hands each duplicate created PR issue comment delivery to applyExternal and emits no workstream event", async () => {
     const prDetail = makePrDetailRow({
       id: "pr-detail-1",
       artifactId: "legacy-pr-artifact",
@@ -283,21 +291,19 @@ describe("handleIssueComment", () => {
         body: "Conversation note",
       }),
     });
-    mockUpsertGitHubIssueCommentThread
+    mockApplyExternal
       .mockResolvedValueOnce({
-        threadId: "thread-1",
-        commentIds: ["comment-1"],
-        createdGithubCommentIds: ["123456"],
+        outcomes: [ApplyExternalOutcome.Applied],
+        changedThreadIds: ["thread-1"],
       })
       .mockResolvedValueOnce({
-        threadId: "thread-1",
-        commentIds: ["comment-1"],
-        createdGithubCommentIds: [],
+        outcomes: [ApplyExternalOutcome.Unchanged],
+        changedThreadIds: [],
       });
 
     await Promise.all([handleIssueComment(event), handleIssueComment(event)]);
 
-    expect(mockUpsertGitHubIssueCommentThread).toHaveBeenCalledTimes(2);
+    expect(mockApplyExternal).toHaveBeenCalledTimes(2);
     expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
   });
 
@@ -322,14 +328,10 @@ describe("handleIssueComment", () => {
         body: "Conversation note",
       }),
     });
-    mockUpsertGitHubIssueCommentThread.mockRejectedValueOnce(
-      new GitHubProjectionNoWriteError("ambiguous_thread_projection", {
-        branchArtifactId: "branch-artifact-1",
-        pullRequestDetailId: "pr-detail-1",
-        rootCommentId: 123_456,
-        reviewThreadId: null,
-      })
-    );
+    mockApplyExternal.mockResolvedValueOnce({
+      outcomes: [ApplyExternalOutcome.NoWrite],
+      changedThreadIds: [],
+    });
 
     const response = await handleIssueComment(event);
 
@@ -338,7 +340,8 @@ describe("handleIssueComment", () => {
       ok: true,
       message: "Event processed successfully",
     });
-    expect(mockUpsertGitHubIssueCommentThread).toHaveBeenCalledTimes(1);
+    expect(mockApplyExternal).toHaveBeenCalledTimes(1);
+    expect(mockPersistGitHubBranchActivity).not.toHaveBeenCalled();
     expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
   });
 
@@ -350,7 +353,7 @@ describe("handleIssueComment", () => {
       workstreamId: "branch-workstream",
     });
     mockOwnerResolutionSuccess(prDetail);
-    const event = {
+    const event: IssueCommentEditedEvent = {
       ...makeIssueCommentEvent({
         issue: makeIssue({
           number: 42,
@@ -363,14 +366,11 @@ describe("handleIssueComment", () => {
       }),
       action: "edited",
       changes: { body: { from: "Conversation note" } },
-    } as IssueCommentEditedEvent;
-    mockUpsertGitHubIssueCommentThread.mockRejectedValueOnce(
-      new GitHubProjectionNoWriteError("external_id_conflict", {
-        branchArtifactId: "branch-artifact-1",
-        githubCommentId: 123_456,
-        pullRequestDetailId: "pr-detail-1",
-      })
-    );
+    };
+    mockApplyExternal.mockResolvedValueOnce({
+      outcomes: [ApplyExternalOutcome.NoWrite],
+      changedThreadIds: [],
+    });
 
     const response = await handleIssueComment(event);
 
@@ -379,7 +379,8 @@ describe("handleIssueComment", () => {
       ok: true,
       message: "Event processed successfully",
     });
-    expect(mockUpsertGitHubIssueCommentThread).toHaveBeenCalledTimes(1);
+    expect(mockApplyExternal).toHaveBeenCalledTimes(1);
+    expect(mockPersistGitHubBranchActivity).not.toHaveBeenCalled();
     expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
   });
 });
@@ -393,29 +394,67 @@ function makeIssueCommentEvent(
     comment: makeIssueComment(),
     repository: createRepository(789),
     sender: createSender({ login: "reviewer", id: 99_999 }),
-    installation: { id: 99 },
+    installation: createInstallationLite(),
     ...overrides,
-  } as IssueCommentCreatedEvent;
+  };
 }
 
-function makeIssue(overrides: Record<string, unknown> = {}) {
+/** A pull request's conversation, which GitHub delivers as an issue. */
+function makeIssue(
+  overrides: Partial<IssueCommentCreatedEvent["issue"]> = {}
+): IssueCommentCreatedEvent["issue"] {
+  const number = overrides.number ?? 42;
+  const apiUrl = `https://api.github.com/repos/owner/test-repo/issues/${number}`;
+  const htmlUrl = `https://github.com/owner/test-repo/pull/${number}`;
   return {
+    url: apiUrl,
+    repository_url: "https://api.github.com/repos/owner/test-repo",
+    labels_url: `${apiUrl}/labels{/name}`,
+    comments_url: `${apiUrl}/comments`,
+    events_url: `${apiUrl}/events`,
+    html_url: htmlUrl,
     id: 42,
-    number: 42,
+    node_id: "PR_42",
+    number,
     title: "Test PR",
-    html_url: "https://github.com/owner/test-repo/pull/42",
+    user: createSender(),
+    labels: [],
+    state: "open",
+    locked: false,
+    assignee: null,
+    assignees: [],
+    milestone: null,
+    comments: 1,
+    created_at: "2026-02-10T00:00:00Z",
+    updated_at: "2026-02-10T12:00:00Z",
+    closed_at: null,
+    author_association: "MEMBER",
+    active_lock_reason: null,
+    draft: false,
     pull_request: {
-      url: "https://api.github.com/repos/owner/test-repo/pulls/42",
+      url: `https://api.github.com/repos/owner/test-repo/pulls/${number}`,
+      html_url: htmlUrl,
+      diff_url: `${htmlUrl}.diff`,
+      patch_url: `${htmlUrl}.patch`,
+      merged_at: null,
     },
+    body: null,
+    reactions: createReactions(apiUrl),
+    timeline_url: `${apiUrl}/timeline`,
+    state_reason: null,
     ...overrides,
-  } as any;
+  };
 }
 
-function makeIssueComment(overrides: Record<string, unknown> = {}) {
+function makeIssueComment(overrides: Partial<IssueComment> = {}): IssueComment {
+  const id = overrides.id ?? 123_456;
+  const apiUrl = `https://api.github.com/repos/owner/test-repo/issues/comments/${id}`;
   return {
-    id: 123_456,
-    node_id: "IC_123456",
-    body: "Conversation note",
+    url: apiUrl,
+    html_url: `https://github.com/owner/test-repo/pull/42#issuecomment-${id}`,
+    issue_url: "https://api.github.com/repos/owner/test-repo/issues/42",
+    id,
+    node_id: `IC_${id}`,
     user: createSender({
       login: "reviewer",
       id: 99_999,
@@ -423,9 +462,12 @@ function makeIssueComment(overrides: Record<string, unknown> = {}) {
     }),
     created_at: "2026-02-10T12:00:00Z",
     updated_at: "2026-02-10T12:00:00Z",
-    html_url: "https://github.com/owner/test-repo/pull/42#issuecomment-123456",
+    author_association: "CONTRIBUTOR",
+    body: "Conversation note",
+    reactions: createReactions(apiUrl),
+    performed_via_github_app: null,
     ...overrides,
-  } as any;
+  };
 }
 
 function mockOwnerResolutionSuccess(
@@ -477,4 +519,35 @@ function mockExternalAuthorResolution() {
     userId: "shadow-99999",
     user: null,
   });
+}
+
+function createMockTx() {
+  return {
+    gitHubInstallation: {
+      findMany: vi.fn(),
+    },
+    gitHubInstallationRepository: {
+      findMany: vi.fn(),
+    },
+    pullRequestDetail: {
+      findMany: vi.fn(),
+      findUnique: vi.fn(),
+    },
+    gitHubCommentProjection: {
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
+    gitHubUserConnection: {
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
+    externalCommentAuthor: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      upsert: vi.fn(),
+    },
+    user: {
+      upsert: vi.fn(),
+    },
+    workstreamEvent: {
+      create: vi.fn(),
+    },
+  };
 }

@@ -6,7 +6,13 @@ import {
   isImageMimeType,
   MAX_ATTACHMENT_FILE_SIZE_BYTES,
 } from "@repo/api/src/types/attachment";
-import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { useDocSyncExtension } from "@repo/collaboration/client/doc-sync-extension";
+import {
+  type DocSyncRoomHandle,
+  useDocSyncIsSynced,
+  useDocSyncRoom,
+  useIsOnDocSync,
+} from "@repo/collaboration/client/doc-sync-room";
 import {
   useIsEditorReady,
   useLiveblocksExtension,
@@ -20,8 +26,6 @@ import {
   useResolveInlineImages,
   useUploadInlineImage,
 } from "../hooks/use-attachments";
-
-export const INLINE_DOCUMENT_IMAGES_FEATURE_FLAG_KEY = "inline-document-images";
 
 type RichTextEditorHostProps = {
   documentId?: string;
@@ -86,12 +90,9 @@ type InlineImageEditorOptions = Pick<
 export function useInlineImageEditorOptions(
   documentId?: string
 ): InlineImageEditorOptions {
-  const inlineImagesEnabled = useFeatureFlagEnabled(
-    INLINE_DOCUMENT_IMAGES_FEATURE_FLAG_KEY
-  );
   const uploadInlineImage = useUploadInlineImage(documentId ?? "");
   const resolveInlineImages = useResolveInlineImages(documentId ?? "");
-  const canUseInlineImages = inlineImagesEnabled && !!documentId;
+  const canUseInlineImages = !!documentId;
 
   const validateInlineImageFile = useCallback((file: File) => {
     if (!isImageMimeType(file.type)) {
@@ -148,10 +149,8 @@ export function RichTextEditorHost({
   externalToolbar,
 }: Readonly<RichTextEditorHostProps>) {
   const shouldUseLiveblocks = editorUsesLiveblocksContent;
-  const mermaidEnhancementsEnabled = useFeatureFlagEnabled(
-    "mermaid-enhancements"
-  );
   const inlineImageOptions = useInlineImageEditorOptions(documentId);
+  const isOnDocSync = useIsOnDocSync();
 
   // If no roomId, render without Liveblocks
   if (!shouldUseLiveblocks) {
@@ -166,7 +165,6 @@ export function RichTextEditorHost({
         <RichTextEditor
           externalToolbar={externalToolbar}
           {...inlineImageOptions}
-          mermaidEnhancementsEnabled={mermaidEnhancementsEnabled}
           onChange={onChange}
           onEditorReady={onEditorReady}
           placeholder={placeholder}
@@ -178,13 +176,29 @@ export function RichTextEditorHost({
     );
   }
 
+  if (isOnDocSync) {
+    return (
+      <RichTextEditorHostWithDocSync
+        className={className}
+        externalToolbar={externalToolbar}
+        inlineImageOptions={inlineImageOptions}
+        onChange={onChange}
+        onContentReady={onContentReady}
+        onEditorReady={onEditorReady}
+        placeholder={placeholder}
+        readOnly={readOnly}
+        scrollMode={scrollMode}
+        value={value}
+      />
+    );
+  }
+
   // Has roomId, render with Liveblocks
   return (
     <RichTextEditorHostWithLiveblocks
       className={className}
       externalToolbar={externalToolbar}
       inlineImageOptions={inlineImageOptions}
-      mermaidEnhancementsEnabled={mermaidEnhancementsEnabled}
       onChange={onChange}
       onContentReady={onContentReady}
       onEditorReady={onEditorReady}
@@ -205,7 +219,6 @@ type RichTextEditorHostWithLiveblocksProps = Omit<
   "editorUsesLiveblocksContent" | "enableLiveblocks"
 > & {
   inlineImageOptions: InlineImageEditorOptions;
-  mermaidEnhancementsEnabled: boolean;
 };
 
 function RichTextEditorHostWithLiveblocks({
@@ -219,7 +232,6 @@ function RichTextEditorHostWithLiveblocks({
   scrollMode = "inner",
   externalToolbar,
   inlineImageOptions,
-  mermaidEnhancementsEnabled,
 }: Readonly<RichTextEditorHostWithLiveblocksProps>) {
   const liveblocksExtension = useLiveblocksExtension();
   const isEditorReady = useIsEditorReady();
@@ -261,7 +273,6 @@ function RichTextEditorHostWithLiveblocks({
         key={editorKeyRef.current}
         liveblocksExtension={liveblocksExtension}
         liveblocksIsReady={isEditorReady}
-        mermaidEnhancementsEnabled={mermaidEnhancementsEnabled}
         onChange={onChange}
         onEditorReady={onEditorReady}
         placeholder={placeholder}
@@ -272,3 +283,96 @@ function RichTextEditorHostWithLiveblocks({
     </div>
   );
 }
+
+/**
+ * Fills the editor's collaboration slot from the nearest `DocSyncRoom`
+ * (PLN-2189 T-3.3). Renders nothing until the room exists; a room that never
+ * syncs is covered by the scaffold's editor-ready timeout.
+ */
+function RichTextEditorHostWithDocSync({
+  className,
+  scrollMode = "inner",
+  ...editorProps
+}: Readonly<RichTextEditorHostWithLiveblocksProps>) {
+  const room = useDocSyncRoom()?.room ?? null;
+  return (
+    <div
+      className={cn(
+        "flex min-h-0 flex-1 flex-col",
+        scrollMode !== "outer" && "overflow-hidden",
+        className
+      )}
+    >
+      {room ? (
+        <DocSyncRichTextEditor
+          {...editorProps}
+          key={docSyncRoomKey(room)}
+          scrollMode={scrollMode}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Mounted once per room, so `onContentReady` fires once per room. It never
+ * seeds an empty document from `value`: the service seeds a never-opened
+ * document from its latest version when the token is issued, and a failed
+ * server seed is not backfilled here (ISS-12508; PLN-2229 AC-010, A-1): the
+ * room reports it failed, and the editor never becomes ready (OQ-3).
+ */
+function DocSyncRichTextEditor({
+  value,
+  onChange,
+  onEditorReady,
+  onContentReady,
+  placeholder,
+  readOnly,
+  scrollMode,
+  externalToolbar,
+  inlineImageOptions,
+}: Readonly<Omit<RichTextEditorHostWithLiveblocksProps, "className">>) {
+  const extension = useDocSyncExtension();
+  const isSynced = useDocSyncIsSynced();
+
+  const hasSignalledReady = useRef(false);
+  useEffect(() => {
+    if (isSynced && !hasSignalledReady.current) {
+      hasSignalledReady.current = true;
+      onContentReady?.();
+    }
+  }, [isSynced, onContentReady]);
+
+  if (!extension) {
+    return null;
+  }
+  return (
+    <RichTextEditor
+      externalToolbar={externalToolbar}
+      {...inlineImageOptions}
+      liveblocksExtension={extension}
+      liveblocksIsReady={isSynced}
+      onChange={onChange}
+      onEditorReady={onEditorReady}
+      placeholder={placeholder}
+      readOnly={readOnly}
+      scrollMode={scrollMode}
+      skipEmptyRoomSeed
+      value={value}
+    />
+  );
+}
+
+/** A stable key per provider, so a new room remounts the editor binding. */
+function docSyncRoomKey(room: DocSyncRoomHandle): number {
+  let key = docSyncRoomKeys.get(room.provider);
+  if (key === undefined) {
+    nextDocSyncRoomKey += 1;
+    key = nextDocSyncRoomKey;
+    docSyncRoomKeys.set(room.provider, key);
+  }
+  return key;
+}
+
+const docSyncRoomKeys = new WeakMap<object, number>();
+let nextDocSyncRoomKey = 0;

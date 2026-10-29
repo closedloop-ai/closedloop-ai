@@ -1,3 +1,4 @@
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import type {
   DeletePublicRepositoryResponse,
   PublicRepositoryResponse,
@@ -5,6 +6,11 @@ import type {
 import { Status } from "@repo/api/src/types/result";
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
+import { recordOrganizationWrite } from "@/lib/organization-write-receipt";
 import { isPublicGithubReposEnabled } from "@/lib/public-github-repos-feature";
 import {
   badRequestResponse,
@@ -33,60 +39,75 @@ const addPublicRepositoryValidator = z.object({
 export const POST = withAnyAuth<
   PublicRepositoryResponse,
   "/integrations/github/public-repositories"
->(async ({ clerkUserId, user }, request) => {
-  if (!(await isPublicGithubReposEnabled({ clerkUserId, userId: user.id }))) {
-    return forbiddenResponse();
-  }
+>(
+  withOperationReceipts(
+    OperationKind.OrganizationWrite,
+    async ({ clerkUserId, user }, request, _params, receipts) => {
+      if (
+        !(await isPublicGithubReposEnabled({ clerkUserId, userId: user.id }))
+      ) {
+        return forbiddenResponse();
+      }
 
-  const { body, errorResponse: parseError } = await parseBody(
-    request,
-    addPublicRepositoryValidator
-  );
-  if (parseError) {
-    return parseError;
-  }
+      const { body, errorResponse: parseError } = await parseBody(
+        request,
+        addPublicRepositoryValidator
+      );
+      if (parseError) {
+        return parseError;
+      }
 
-  const result = await publicRepositoryService.addPublicRepository(
-    user.organizationId,
-    user.id,
-    body.url
-  );
+      const result = await publicRepositoryService.addPublicRepository(
+        user.organizationId,
+        user.id,
+        body.url,
+        recordOrganizationWrite(receipts)
+      );
 
-  if (result.ok) {
-    return successResponse({
-      id: result.value.id,
-      url: result.value.htmlUrl,
-      fullName: result.value.fullName,
-      name: result.value.name,
-      owner: result.value.owner,
-      private: false,
-      lastPushedAt: null,
-    });
-  }
+      if (result.ok) {
+        return successResponse(
+          withOperationReceipt(
+            {
+              id: result.value.id,
+              url: result.value.htmlUrl,
+              fullName: result.value.fullName,
+              name: result.value.name,
+              owner: result.value.owner,
+              private: false,
+              lastPushedAt: null,
+            },
+            receipts
+          )
+        );
+      }
 
-  if (result.error === Status.NotFound) {
-    return notFoundResponse("GitHub repository");
-  }
+      if (result.error === Status.NotFound) {
+        return notFoundResponse("GitHub repository");
+      }
 
-  if (result.error === Status.Error) {
-    return errorResponse(
-      "GitHub API error",
-      new Error("GitHub API request failed")
-    );
-  }
+      if (result.error === Status.Error) {
+        return errorResponse(
+          "GitHub API error",
+          new Error("GitHub API request failed")
+        );
+      }
 
-  if (result.error === Status.Conflict) {
-    return conflictResponse("Repository already added to this organization");
-  }
+      if (result.error === Status.Conflict) {
+        return conflictResponse(
+          "Repository already added to this organization"
+        );
+      }
 
-  if (result.error === AddPublicRepositoryErrorCode.RepositoryNotPublic) {
-    return badRequestResponse(
-      "This repository is private. Only public repositories can be added."
-    );
-  }
+      if (result.error === AddPublicRepositoryErrorCode.RepositoryNotPublic) {
+        return badRequestResponse(
+          "This repository is private. Only public repositories can be added."
+        );
+      }
 
-  return badRequestResponse("Invalid GitHub repository URL");
-});
+      return badRequestResponse("Invalid GitHub repository URL");
+    }
+  )
+);
 
 /**
  * DELETE /integrations/github/public-repositories
@@ -96,17 +117,28 @@ export const POST = withAnyAuth<
 export const DELETE = withAnyAuth<
   DeletePublicRepositoryResponse,
   "/integrations/github/public-repositories"
->(async ({ clerkUserId, user }, request) => {
-  if (!(await isPublicGithubReposEnabled({ clerkUserId, userId: user.id }))) {
-    return forbiddenResponse();
-  }
+>(
+  withOperationReceipts(
+    OperationKind.OrganizationWrite,
+    async ({ clerkUserId, user }, request, _params, receipts) => {
+      if (
+        !(await isPublicGithubReposEnabled({ clerkUserId, userId: user.id }))
+      ) {
+        return forbiddenResponse();
+      }
 
-  const id = request.nextUrl.searchParams.get("id");
-  if (!id) {
-    return badRequestResponse("id query parameter is required");
-  }
+      const id = request.nextUrl.searchParams.get("id");
+      if (!id) {
+        return badRequestResponse("id query parameter is required");
+      }
 
-  await publicRepositoryService.removePublicRepository(user.organizationId, id);
+      await publicRepositoryService.removePublicRepository(
+        user.organizationId,
+        id,
+        recordOrganizationWrite(receipts)
+      );
 
-  return successResponse({ deleted: true });
-});
+      return successResponse(withOperationReceipt({ deleted: true }, receipts));
+    }
+  )
+);

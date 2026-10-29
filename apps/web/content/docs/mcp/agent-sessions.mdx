@@ -48,22 +48,22 @@ list-agent-sessions(
   startDate?: string,    // ISO 8601 date/timestamp — activity window on lastActivityAt (on or after)
   endDate?: string,      // ISO 8601 date/timestamp — activity window on lastActivityAt (on or before)
   harness?: string,      // Single agent harness (e.g. "claude-code", "codex")
-  status?: string,       // "active" | "waiting" | "inactive" | "error" | "stale" | "unknown" — "inactive" covers finished (non-failed) runs
-  userId?: string,       // UUID — filter to a single user's sessions
+  status?: string,       // "active" | "inactive" | "error" — "inactive" covers finished (non-failed) runs
+  userId?: string,       // UUID — filter to sessions whose Owner (assignee) is this user
   quality?: string,      // "substantive" | "idle" | "all" — defaults to "substantive" (hides idle 0-turn/0-token/0-tool sessions)
   viewerScope?: string,  // "self" | "organization" | "team"
   teamId?: string,       // UUID — required when viewerScope is "team", omit otherwise
   limit?: number,        // Maximum sessions to return
-  offset?: number        // Starting offset for pagination (default 0)
+  offset?: number        // Starting offset for pagination (0-10000, default 0)
 )
 ```
 
 <Callout>
-  `startDate`/`endDate` here are an **activity window** on `lastActivityAt`, not a session start-date filter: it keeps the sessions whose `lastActivityAt` falls within the window. So a session that started before `startDate` is still included if its last activity landed inside the window — but one that was active during the window and then active again after `endDate` is excluded, because only that final `lastActivityAt` is tested. A row with no `lastActivityAt` (pre-backfill) falls back to its `sessionStartedAt` for this window rather than being dropped. `get-agent-session-usage` windows on that same basis, but it accepts neither `status` nor `userId` — only the shared filters — so its totals reconcile with this list only when the list is narrowed by the shared filters alone. Narrow the list by `status` or `userId` and the usage totals still include the rows the list filtered out. Only `get-agent-session-analytics` is a session start-date filter (on `sessionStartedAt`).
+  `startDate`/`endDate` here are an **activity window** on `lastActivityAt`, not a session start-date filter: it keeps the sessions whose `lastActivityAt` falls within the window. So a session that started before `startDate` is still included if its last activity landed inside the window — but one that was active during the window and then active again after `endDate` is excluded, because only that final `lastActivityAt` is tested. `get-agent-session-usage` windows on that same basis, but it accepts neither `status` nor `userId` — only the shared filters — so its totals reconcile with this list only when the list is narrowed by the shared filters alone. Narrow the list by `status` or `userId` and the usage totals still include the rows the list filtered out. Only `get-agent-session-analytics` is a session start-date filter (on `sessionStartedAt`).
 </Callout>
 
 <Callout>
-  The `status` values above are what you may **send** as a filter. A returned session's `status` is not simply the raw stored value: the server derives it at read time, so a run stored as `active` can come back as `waiting` (awaiting user input on a run that has not ended) or as `stale` (silent past the display staleness cutoff), and a stored value the server does not recognize generally comes back as `unknown` — the awaiting-input derivation runs first, so even an unrecognized row can surface as `waiting`. Where no derivation applies the stored value passes through unchanged. A retired `completed`/`abandoned` from a not-yet-migrated row is no longer recognized (ISS-5592), so it comes back as `unknown` like any other unrecognized spelling. So do not assume a returned `status` is one of the filter values above, nor that re-sending a returned value as a filter always finds the row that carried it.
+  The `status` values above are what you may **send** as a filter. A returned session's `status` is not simply the raw stored value: the server derives it at read time, so a run stored as `active` can come back as `waiting` (awaiting user input on a run that has not ended) or as `stale` (silent past the display staleness cutoff), and a stored value the server does not recognize generally comes back as `unknown` — the awaiting-input derivation runs first, so even an unrecognized row can surface as `waiting`. Where no derivation applies the stored value passes through unchanged. A retired `completed`/`abandoned` from a not-yet-migrated row is no longer recognized (ISS-5592), so it comes back as `unknown` like any other unrecognized spelling. `waiting`, `stale` and `unknown` are read-back spellings only — ISS-10629 retired them as filter values, so sending one selects nothing. So do not assume a returned `status` is one of the filter values above, nor that re-sending a returned value as a filter always finds the row that carried it.
 </Callout>
 
 ### Get Agent-Session Usage
@@ -82,7 +82,7 @@ get-agent-session-usage(
 )
 ```
 
-Returns an aggregated usage summary: total session count, input/output/cache token totals, estimated cost split into subscription-covered vs. API-key compute, and breakdowns by user, model, harness, and repository.
+Returns an aggregated usage summary: total session count, input/output/cache token totals, estimated cost split into subscription-covered vs. API-key compute, and breakdowns by Owner (the session's assignee), model, harness, and repository.
 
 ### Get Agent-Session Analytics
 

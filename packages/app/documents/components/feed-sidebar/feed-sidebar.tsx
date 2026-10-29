@@ -1,10 +1,6 @@
 "use client";
 
-import {
-  FeedRail,
-  FeedRailTab,
-} from "@repo/design-system/components/ui/feed-rail";
-import type { ReactNode } from "react";
+import { FeedRail } from "@repo/design-system/components/ui/feed-rail";
 import { FeedComposerSlot } from "./feed-composer-slot";
 import { FeedFilterBar } from "./feed-filter-bar";
 import { FeedFilterProvider } from "./feed-filter-context";
@@ -14,9 +10,6 @@ import { FeedSourcesProvider } from "./feed-sources-context";
 import { FeedStream } from "./feed-stream";
 import { FeedRuntime } from "./source-items-registry";
 import type { FeedArtifactType } from "./types";
-
-export const FeedTab = FeedRailTab;
-export type FeedTab = FeedRailTab;
 
 export type FeedSidebarProps = {
   artifactType: FeedArtifactType;
@@ -37,12 +30,6 @@ export type FeedSidebarProps = {
    * provider's `setSourceState`. Caller MUST also memoize this object.
    */
   initialSourceState?: Record<string, unknown>;
-  /**
-   * Optional chat content. When omitted, only the Feed tab is shown.
-   */
-  chatPanel?: ReactNode;
-  activeTab: FeedTab;
-  onActiveTabChange: (next: FeedTab) => void;
 };
 
 /**
@@ -66,14 +53,8 @@ export function FeedSidebar({
   onClose,
   sources,
   initialSourceState,
-  chatPanel,
-  activeTab,
-  onActiveTabChange,
 }: Readonly<FeedSidebarProps>) {
   const [width, setWidth] = useFeedRailWidth(organizationId, artifactType);
-
-  const hasChat = chatPanel !== undefined && chatPanel !== null;
-  const effectiveTab: FeedTab = hasChat ? activeTab : FeedTab.Feed;
 
   const feedPanel = (
     <FeedSourcesProvider sources={sources}>
@@ -91,12 +72,8 @@ export function FeedSidebar({
 
   return (
     <FeedRail
-      activeTab={effectiveTab}
-      chatPanel={chatPanel ?? null}
       feedPanel={feedPanel}
-      hasChat={hasChat}
       onClose={onClose}
-      onTabChange={onActiveTabChange}
       onWidthChange={setWidth}
       visible={visible}
       width={width}

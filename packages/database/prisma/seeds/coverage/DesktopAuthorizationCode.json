@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Single-use, short-lived code for the Desktop PKCE sign-in; read only by the token endpoint."
+}

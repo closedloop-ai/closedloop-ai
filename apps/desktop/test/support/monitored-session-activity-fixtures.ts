@@ -4,7 +4,7 @@ import type { ArtifactRefRecord } from "../../src/main/collectors/parsing/artifa
 import type { NormalizedSession } from "../../src/main/collectors/types.js";
 import { makeSession as baseSession } from "../normalized-session-test-utils.js";
 
-export const MONITORED_ACTIVITY_TEST_REPOSITORY = "closedloop-ai/example-repo";
+export const MONITORED_ACTIVITY_TEST_REPOSITORY = "closedloop-ai/closedloop-ai";
 export const MONITORED_ACTIVITY_TEST_BRANCH = "feat/iss-6060";
 export const MONITORED_ACTIVITY_TEST_READ_AT = "2026-08-12T12:00:00.000Z";
 export const MONITORED_ACTIVITY_TEST_ACTION_AT = "2026-08-12T12:05:00.000Z";

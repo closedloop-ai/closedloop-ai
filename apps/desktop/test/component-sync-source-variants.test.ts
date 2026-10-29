@@ -7,13 +7,20 @@
  * regression on exactly the rows this lane means to enrich).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { computeDefinitionHash } from "@repo/api/src/definition-fingerprint";
+import { AgentComponentKind } from "@repo/api/src/types/agent-component";
 import {
+  SYNCED_COMPONENT_CONTENT_MAX_SERIALIZED_BYTES,
   SYNCED_COMPONENT_VARIANTS_MAX,
   SYNCED_COMPONENT_VARIANTS_MAX_SERIALIZED_BYTES,
   SyncedComponentVariantsTruncatedReason,
   serializedJsonUtf8ByteSize,
 } from "@repo/api/src/types/synced-component-content";
+import {
+  SYNTHETIC_GITHUB_TOKEN,
+  SYNTHETIC_GOOGLE_TOKEN,
+} from "@repo/lib/security/synthetic-secrets.test-helpers";
+import { test } from "vitest";
 import { loadSyncedComponentRows } from "../src/main/database/component-sync-source.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 
@@ -138,6 +145,61 @@ test("carries a retained variant and never re-sends the primary revision", async
   // The hash is the desktop's stored value forwarded VERBATIM — this lane never
   // re-derives or widens a content-hash preimage (FEA-4335 content identity).
   assert.equal(component.contentHash, "hash-primary");
+});
+
+test("ISS-4965: redacts secrets in the primary body and every variant body", async () => {
+  const primary = `PRIMARY ${SYNTHETIC_GITHUB_TOKEN}`;
+  const variant = `VARIANT ${SYNTHETIC_GITHUB_TOKEN}`;
+  const { prisma } = fakePrisma(
+    [componentRow({ component_kind: "skill", content: primary })],
+    [
+      versionRow({
+        component_kind: "skill",
+        content_hash: "hash-variant",
+        content: variant,
+      }),
+    ]
+  );
+  const [component] = await loadSyncedComponentRows(prisma, ["cmp-1"]);
+  assert.equal(component.content, "PRIMARY [REDACTED:ghp]");
+  assert.equal(component.variants?.[0].content, "VARIANT [REDACTED:ghp]");
+  assert.equal(component.contentHash, "hash-primary");
+  // Perrin, 2026-10-05: each redacted body carries the usage digest of the text
+  // as written, which its usage rows are stamped with.
+  assert.equal(component.usageScopeHash, rawUsageDigest(primary));
+  assert.equal(component.variants?.[0].usageScopeHash, rawUsageDigest(variant));
+});
+
+test("ISS-4965: a clean body sends no usage digest", async () => {
+  const { prisma } = fakePrisma(
+    [componentRow()],
+    [versionRow({ content_hash: "hash-variant", content: "VARIANT BODY" })]
+  );
+  const [component] = await loadSyncedComponentRows(prisma, ["cmp-1"]);
+  assert.equal(Object.hasOwn(component, "usageScopeHash"), false);
+  assert.equal(
+    Object.hasOwn(component.variants?.[0] ?? {}, "usageScopeHash"),
+    false
+  );
+  assert.equal(component.variants?.[0].content, "VARIANT BODY");
+});
+
+test("ISS-4965: clamps the redacted body, so a marker cannot push it past the budget", async () => {
+  const tail = ` ${SYNTHETIC_GOOGLE_TOKEN}`;
+  const raw = `${"x".repeat(
+    SYNCED_COMPONENT_CONTENT_MAX_SERIALIZED_BYTES - tail.length
+  )}${tail}`;
+  assert.equal(
+    serializedJsonUtf8ByteSize(raw),
+    SYNCED_COMPONENT_CONTENT_MAX_SERIALIZED_BYTES
+  );
+  const { prisma } = fakePrisma([componentRow({ content: raw })], []);
+  const [component] = await loadSyncedComponentRows(prisma, ["cmp-1"]);
+  assert.ok(
+    serializedJsonUtf8ByteSize(component.content ?? "") <=
+      SYNCED_COMPONENT_CONTENT_MAX_SERIALIZED_BYTES
+  );
+  assert.ok(!component.content?.includes(SYNTHETIC_GOOGLE_TOKEN));
 });
 
 test("stops filling variants at the serialized-byte budget instead of over-filling the component", async () => {
@@ -680,4 +742,17 @@ function isRankableVersionRow(row: VersionRow): boolean {
     typeof contentHash === "string" &&
     contentHash.length > 0
   );
+}
+
+/**
+ * ISS-4965: the digest the cloud's version-usage read matches usage rows on,
+ * computed straight from `computeDefinitionHash` over the RAW body so a
+ * regression in the production helper cannot move both sides at once.
+ */
+function rawUsageDigest(body: string): string {
+  return computeDefinitionHash({
+    frontmatter: "",
+    body,
+    kind: AgentComponentKind.Skill,
+  }).definitionHash;
 }

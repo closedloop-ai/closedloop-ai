@@ -34,6 +34,12 @@ export function createDesktopCloudApiAdapter(
   return {
     resolveApiOrigin: () => DESKTOP_CLOUD_API_PLACEHOLDER_ORIGIN,
     fetch: createCloudIpcFetch(desktopApi),
+    // ISS-9741: says out loud what `createCloudIpcFetch` documents below — the
+    // signal does not cross the bridge, so an abort settles the renderer's
+    // promise while the main-process request runs on. Callers that would trade
+    // away a real behavior (query-core's in-flight dedupe) in exchange for a
+    // cancellation must not be allowed to believe this transport delivers one.
+    honorsAbortSignal: false,
   };
 }
 
@@ -121,11 +127,9 @@ function createCloudIpcFetch(desktopApi: DesktopApi): ApiTransportFetch {
  * `getFriendlyError` renders the timeout copy instead of a generic transport
  * failure.
  *
- * The gain is CLASSIFICATION, not retry avoidance — be precise about this. The
- * unlabeled path was never retried either: `isResponseBackedError` short-
- * circuits on `error instanceof ApiError` without reading the status, so every
- * `ApiError` this client throws (status 0 included) already failed fast. What
- * changes is that the failure now says which failure it was.
+ * The classification also decides retry. The unlabeled path becomes
+ * `ApiError(message, 0)`, which `shouldRetryQuery` retries as a transport blip
+ * (ISS-5083); the labeled timeout fails fast to the "we stopped waiting" state.
  *
  * An ABSENT or UNKNOWN `reason` deliberately falls through to the `TypeError`
  * below — the version-skew rule, and what keeps an older or newer main process

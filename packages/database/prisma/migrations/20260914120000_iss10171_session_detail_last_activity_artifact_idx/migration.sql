@@ -1,0 +1,91 @@
+-- ISS-10171: back the phantom sweep's terminal sort key with an index that can
+-- actually produce it, instead of an incremental sort over each tied group.
+--
+-- WHAT ASKS FOR IT. `purgePhantomSessionsBatch`
+-- (apps/api/app/agent-sessions/phantom-retention-service.ts) selects the next
+-- page of phantom candidates with
+--   ORDER BY last_activity_at ASC, artifact_id ASC LIMIT <batchSize>
+-- ISS-10171 added the `artifact_id` terminal key so a `take`-bounded page has a
+-- DEFINED membership rather than one the planner picks among rows tied on
+-- `last_activity_at`. Raised in review by whitlockk on #7218.
+--
+-- WHY THE EXISTING INDEX DOES NOT SETTLE IT. `session_detail` carries
+-- `@@index([lastActivityAt])`, which orders the LEADING key only. A btree on one
+-- column cannot emit the secondary `artifact_id` ordering, so Postgres must sort
+-- to satisfy the second key. On PG13+ that is an Incremental Sort: it reads one
+-- `last_activity_at` group at a time and sorts within it, so the work is bounded
+-- by the LARGEST TIED GROUP rather than by the whole candidate population. That
+-- is a narrower claim than "unbounded", and it is the honest one — but the tied
+-- backlog is exactly the population this sweep drains, and the sort happens
+-- inside the interactive transaction the batch runs in, so a large tie is paid
+-- against that timeout. A composite `(last_activity_at, artifact_id)` removes the
+-- sort node entirely: the ordering is read straight off the index and `LIMIT`
+-- stops the scan at the page boundary.
+--
+-- MEASURED, not asserted (packages/database/AGENTS.md: an index's rationale must
+-- be pinned to the real access path). Postgres 16.10, scratch database, 200,000
+-- `session_detail` rows ALL sharing ONE `last_activity_at` — the degenerate tie
+-- this sweep drains — running the walk's own ordering core:
+--   SELECT ... WHERE last_activity_at < :cutoff
+--    ORDER BY last_activity_at ASC, artifact_id ASC LIMIT 500
+--
+--   BEFORE  Parallel Seq Scan on session_detail (66,667 rows x 3 workers)
+--           -> Sort  Sort Key: last_activity_at, artifact_id
+--                    Sort Method: top-N heapsort  Memory: 136kB
+--           Buffers: shared hit=6338     Execution Time: 46.785 ms
+--
+--   AFTER   Index Scan using session_detail_last_activity_at_artifact_id_idx
+--           Index Cond: (last_activity_at < :cutoff)   -- no Sort node at all
+--           Buffers: shared hit=505      Execution Time: 2.489 ms
+--
+-- CORRECTING THE OBVIOUS GUESS, because it was measured rather than assumed. The
+-- expected BEFORE plan was an Incremental Sort reading the single-column index in
+-- `last_activity_at` order and sorting only within each tied group — which would
+-- bound the work by the LARGEST TIE rather than the population. That is not what
+-- the planner does when one tie group IS the population: it ignores the
+-- single-column index entirely and parallel-seq-scans all 200,000 rows, then
+-- top-N heapsorts them. So the tied case is worse than the incremental-sort
+-- reading suggests, not better.
+--
+-- SCOPE OF THE MEASUREMENT, stated so a later reader does not over-read it. This
+-- pins the ORDERING CORE — the range predicate, the two-key ORDER BY, and the
+-- LIMIT — which is what decides whether a sort node is needed. The sweep's other
+-- predicates (origin, the idle SSOT, the no-PR guard, `pending_chunk_revision IS
+-- NULL`, the no-generations guard) are filters that narrow rows; they do not
+-- change whether the requested ordering can be read off an index.
+--
+-- WHY THIS SHAPE. The leading key matches the range predicate the sweep already
+-- filters on (`last_activity_at < cutoff`), and `artifact_id` is
+-- `SessionDetail`'s `@id`, which is what makes the ordering total. Non-unique:
+-- it is a perf index over an ordering, never a correctness constraint, which is
+-- also what makes it preview-skippable below.
+--
+-- NOT PARTIAL. The sweep's other predicates (origin, the idle SSOT, the no-PR
+-- guard, `pending_chunk_revision IS NULL`, the no-generations guard) are
+-- re-evaluated per call and several are relation subqueries, so a partial index
+-- pinned to today's predicate set would go stale the moment one moves, and a
+-- partial index must carry a byte-exact normalized `raw(...)` declaration in
+-- schema.prisma (packages/database/AGENTS.md).
+--
+-- WHY CONCURRENTLY. `session_detail` is the hot session-ingest table — desktop
+-- sync and API writes land there continuously — so a plain build would hold a
+-- write-blocking lock for the whole build. `IF NOT EXISTS` is deliberately
+-- ABSENT: with CONCURRENTLY a cancelled build leaves a same-named INVALID index,
+-- and the guard in `scripts/lint/destructive-migrations/index-ddl.ts` requires the
+-- retry to fail closed on it rather than silently mark the migration applied.
+--
+-- ONE BARE STATEMENT, deliberately. `CREATE INDEX CONCURRENTLY` cannot run inside
+-- a transaction block (SQLSTATE 25001), and Prisma wraps the whole file when its
+-- statement splitter cannot confidently split it. Keep this file to the single
+-- statement below.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations-core.mjs). A perf-only,
+-- non-unique index is pure cost on an ephemeral preview, and an unregistered
+-- CONCURRENTLY build re-arms the ISS-4437 P1002 advisory-lock amplifier.
+--
+-- Purely additive: index-only, no data mutation, no result change — an index
+-- alters plan choice only.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "session_detail_last_activity_at_artifact_id_idx" ON "session_detail"("last_activity_at", "artifact_id");

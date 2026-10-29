@@ -6,7 +6,7 @@
  * owner. Session-only since PLN-1437 Phase 4a (the static-key fallback is gone).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { resolveDesktopCloudCredential } from "../src/main/auth/desktop-cloud-credential.js";
 
 const TOKEN_READ_ERROR_PATTERN = /keychain locked/;

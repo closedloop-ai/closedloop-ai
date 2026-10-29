@@ -1,10 +1,13 @@
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
 
-// GA4 measurement IDs are `G-` followed by alphanumerics only. Used to gate
-// rendering of <GoogleAnalytics> so placeholder values (e.g. "G-placeholder-GAID")
-// don't send beacons to a non-existent property. Kept out of the env schema so a
-// placeholder env value can't hard-fail the build/deploy — it just disables GA.
+// GA4 measurement IDs are `G-` followed by alphanumerics only. Gates every
+// consumer of the ID so placeholder values (e.g. "G-placeholder-GAID") don't
+// send beacons to a non-existent property: the <GoogleAnalytics> mount in
+// `provider.tsx`, and `apps/app`'s CSP `connect-src` allowlist, which must not
+// open GA's hosts for an ID the mount will refuse (ISS-8950). Kept out of the
+// env schema so a placeholder env value can't hard-fail the build/deploy — it
+// just disables GA.
 export const GA_MEASUREMENT_ID_REGEX = /^G-[A-Z0-9]+$/i;
 
 /** True when the value is a real-shaped GA4 measurement ID (not a placeholder). */
@@ -19,7 +22,8 @@ export const keys = () =>
       NEXT_PUBLIC_POSTHOG_KEY: z.string().startsWith("phc_").optional(),
       NEXT_PUBLIC_POSTHOG_HOST: z.url().optional(),
       // Stays permissive (`G-` prefix) so a placeholder env value can't fail the
-      // build; the placeholder is filtered at render time via isValidGaMeasurementId.
+      // build; the placeholder is filtered by isValidGaMeasurementId at each
+      // consumer instead.
       NEXT_PUBLIC_GA_MEASUREMENT_ID: z.string().startsWith("G-").optional(),
       NEXT_PUBLIC_VERCEL_ANALYTICS_ENABLED: z
         .enum(["true", "false"])

@@ -7,6 +7,18 @@
  * (cached per path), and debounces search. All state is derived from those
  * read-only calls — the Help view never mutates anything.
  */
+import {
+  firstNavigablePath,
+  isSearchHitsUnreadable,
+  readSearchHits,
+} from "@repo/app/help/lib/docs-help-payload-guard";
+// Imported, not re-declared: a side inventory loses `tsc` in one direction —
+// widening the surface's union would leave this host silently never producing
+// the new member.
+import type {
+  DocsHelpBundleStatus as DocsHelpBundleState,
+  DocsHelpPageState,
+} from "@repo/app/help/lib/docs-help-source";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   DocsHelpGetPageResult,
@@ -15,18 +27,9 @@ import type {
   DocsHelpSearchHit,
   DocsHelpStatus,
 } from "../../../shared/docs-help-contract";
+import { getDocsHelpApi } from "./docs-help-api";
 
 const SEARCH_DEBOUNCE_MS = 150;
-
-/** Bundle availability lifecycle for the left/right panes. */
-export type DocsHelpBundleState = "loading" | "unavailable" | "ready";
-
-/** Per-page reader lifecycle. */
-export type DocsHelpPageState =
-  | { kind: "idle" }
-  | { kind: "loading" }
-  | { kind: "found"; page: DocsHelpPage }
-  | { kind: "missing" };
 
 export type UseDocsHelp = {
   bundleState: DocsHelpBundleState;
@@ -44,9 +47,9 @@ export type UseDocsHelp = {
   setSearchQuery: (query: string) => void;
   searchHits: readonly DocsHelpSearchHit[];
   isSearching: boolean;
+  /** The search IPC rejected. See the search effect's catch. */
+  searchFailed: boolean;
 };
-
-type DocsHelpApi = NonNullable<Window["desktopApi"]>["docsHelp"];
 
 /**
  * An externally-requested page (and optional heading anchor) to open in the
@@ -69,13 +72,6 @@ export type UseDocsHelpOptions = {
    */
   initialTarget?: DocsHelpInitialTarget | null;
 };
-
-function getDocsHelpApi(): DocsHelpApi | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  return window.desktopApi?.docsHelp ?? null;
-}
 
 export function useDocsHelp(options: UseDocsHelpOptions = {}): UseDocsHelp {
   const { initialTarget = null } = options;
@@ -100,6 +96,7 @@ export function useDocsHelp(options: UseDocsHelpOptions = {}): UseDocsHelp {
     []
   );
   const [isSearching, setIsSearching] = useState(false);
+  const [searchFailed, setSearchFailed] = useState(false);
 
   // Per-path page cache so re-selecting a visited page is instant and doesn't
   // re-cross IPC. Lives in a ref (not state) — it's a cache, not rendered.
@@ -135,12 +132,22 @@ export function useDocsHelp(options: UseDocsHelpOptions = {}): UseDocsHelp {
           setBundleState(nextStatus.available ? "ready" : "unavailable");
           return;
         }
-        const firstPath = groups[0]?.pages[0]?.path ?? null;
-        // A bundle that reports available but exposes no navigable page is a
-        // broken/empty snapshot: there is nothing to select, so treat it as
-        // unavailable (the "view online" escape hatch) rather than leaving the
-        // reader on an idle prompt the user can never satisfy.
-        setBundleState(firstPath ? "ready" : "unavailable");
+        // Through the shared guard: `groups[0].pages` throws on a malformed
+        // first group, and the catch below would then write off the whole
+        // bundle — discarding every group that arrived intact (AC2).
+        const firstPath = firstNavigablePath(groups);
+        // READY even when nothing is navigable (whitlockk review). This used to
+        // answer `unavailable` whenever `firstNavigablePath` came back null,
+        // which is the same answer a snapshot that never arrived gets — so the
+        // corrupt-vs-empty distinction the guard had just established was spent
+        // one line after it was made, before the surface could render it.
+        //
+        // Both bodies already have the better state: the nav pane draws
+        // "Nothing to browse" with the view-online escape hatch on an empty
+        // tree, and the refusal notice above it says whether groups were
+        // dropped or the index was unreadable. `unavailable` collapses all
+        // three claims into one.
+        setBundleState(nextStatus.available ? "ready" : "unavailable");
         if (firstPath) {
           setSelectedPath(firstPath);
         }
@@ -155,8 +162,9 @@ export function useDocsHelp(options: UseDocsHelpOptions = {}): UseDocsHelp {
     };
   }, []);
 
-  // Fetch the selected page (cached per path). getPage resolves to found/missing;
-  // "missing" drives the reader's not-found state.
+  // Fetch the selected page (cached per path). getPage RESOLVES to found/missing;
+  // "missing" drives the reader's not-found state. A REJECTION is a different
+  // answer and gets a different state (ISS-10044) — see the catch.
   useEffect(() => {
     if (selectedPath === null) {
       setPageState({ kind: "idle" });
@@ -183,13 +191,29 @@ export function useDocsHelp(options: UseDocsHelpOptions = {}): UseDocsHelp {
         if (result.kind === "found") {
           pageCacheRef.current.set(result.page.path, result.page);
           setPageState({ kind: "found", page: result.page });
-        } else {
-          setPageState({ kind: "missing" });
+          return;
         }
+        // whitlockk review: `missing` is a claim about what the snapshot CONTAINS,
+        // so only a main process saying exactly that earns it.
+        // `DocsHelpGetPageResult` is a compile-time union and nothing enforces
+        // it across IPC, so an older or newer main process can answer with a
+        // kind this renderer has never heard of. That supports no claim about
+        // contents, and reads as `error` for the reason a rejection does.
+        // Widened deliberately: narrowed to the union the check below would
+        // read as dead code, and the version-skew case it covers is not.
+        const resultKind: string = result.kind;
+        if (resultKind === "missing") {
+          setPageState({ kind: "missing" });
+          return;
+        }
+        setPageState({ kind: "error" });
       })
       .catch(() => {
         if (!cancelled) {
-          setPageState({ kind: "missing" });
+          // ISS-10044: NOT `missing`. That kind reads as "the snapshot has no
+          // such page", which is a claim about contents this rejection has no
+          // standing to make — the page is very likely right there.
+          setPageState({ kind: "error" });
         }
       });
     return () => {
@@ -203,8 +227,13 @@ export function useDocsHelp(options: UseDocsHelpOptions = {}): UseDocsHelp {
     if (trimmed.length === 0) {
       setSearchHits([]);
       setIsSearching(false);
+      setSearchFailed(false);
       return;
     }
+    // Cleared BEFORE the bridge check, not after: that guard returns early, so
+    // a reset below it lets a previous query's failure outlive it and colour
+    // results it never spoke for.
+    setSearchFailed(false);
     const api = getDocsHelpApi();
     if (!api) {
       setSearchHits([]);
@@ -217,7 +246,18 @@ export function useDocsHelp(options: UseDocsHelpOptions = {}): UseDocsHelp {
         .search(trimmed)
         .then((result) => {
           if (!cancelled) {
-            setSearchHits(result.hits);
+            // Through the shared guard, like the nav and the page: a reply
+            // missing `hits` throws on `hits.length` before a row is reached,
+            // and a row whose title came back as an object throws inside React
+            // — either one takes down the Help route (davetho review).
+            setSearchHits(readSearchHits(result.hits));
+            // whitlockk review: that guard answers `[]` for a REFUSED reply as
+            // well as for a search that ran and matched nothing, so a resolved
+            // corrupt payload used to settle as `No results for "…"` — the
+            // same false claim about the corpus the rejection path was given
+            // `searchFailed` to avoid, reached by version skew instead of by
+            // an outage. Asked of the guard, not re-derived here.
+            setSearchFailed(isSearchHitsUnreadable(result.hits));
             setIsSearching(false);
           }
         })
@@ -225,6 +265,10 @@ export function useDocsHelp(options: UseDocsHelpOptions = {}): UseDocsHelp {
           if (!cancelled) {
             setSearchHits([]);
             setIsSearching(false);
+            // ISS-10044: zero hits alone renders `No results for "…"`, which
+            // tells the reader their query matched nothing against an index
+            // that was never consulted.
+            setSearchFailed(true);
           }
         });
     }, SEARCH_DEBOUNCE_MS);
@@ -278,6 +322,7 @@ export function useDocsHelp(options: UseDocsHelpOptions = {}): UseDocsHelp {
       setSearchQuery,
       searchHits,
       isSearching,
+      searchFailed,
     }),
     [
       bundleState,
@@ -291,6 +336,7 @@ export function useDocsHelp(options: UseDocsHelpOptions = {}): UseDocsHelp {
       searchQuery,
       searchHits,
       isSearching,
+      searchFailed,
     ]
   );
 }

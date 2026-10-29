@@ -12,8 +12,8 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { test } from "vitest";
 import { slugifyHeading } from "../src/renderer/components/help/help-slug.js";
 import {
   NAV_DOCS_ANCHORS,

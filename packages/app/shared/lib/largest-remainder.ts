@@ -97,11 +97,20 @@ function distributeSurplus(
  * two passes over the rows regardless of how large the deficit is — the loop is
  * bounded by the ROW COUNT, not by the magnitude.
  *
+ * Not dead code: the contract above lets `targetUnits` differ from the sum of
+ * the parts. `largestRemainderPercents` arrives here on a negative value, where
+ * the clamp above zeroes that part while its target is still summed from the
+ * UNCLAMPED shares — pinned by `percent-shares.test.ts`.
+ *
+ * Nor is the live caller set a licence to delete it: `branch-cost-to-merge.tsx`
+ * pairs its rows (`canonicalMetrics.phaseCostUsd`) with a separately-rolled-up
+ * total (`canonicalMetrics.totalCostUsd`), so a target that is not the sum of
+ * the parts is already what a shipped caller hands over.
+ *
  * The trade-off of taking a whole row at once is that it empties the
- * smallest-remainder rows rather than shaving every row evenly. That is
- * acceptable because no caller reaches this path today (both pass a `targetUnits`
- * derived from the same values), and a bounded, provably-terminating reclaim is
- * worth more here than a fairer distribution of a deficit that should not exist.
+ * smallest-remainder rows rather than shaving every row evenly. That is accepted
+ * because a bounded, provably-terminating reclaim is worth more here than a
+ * fairer split of a discrepancy the caller is already rendering.
  */
 function reclaimDeficit(
   units: number[],

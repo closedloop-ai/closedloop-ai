@@ -26,8 +26,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
-import { selectComponentUsageRows } from "../src/main/database/sync-source.js";
+import { test } from "vitest";
+import { selectComponentUsageRows } from "../src/main/database/component-sync-source.js";
 import { openTestDb } from "./agent-db-test-utils.js";
 import { makePopulatedSession as makeSession } from "./normalized-session-test-utils.js";
 

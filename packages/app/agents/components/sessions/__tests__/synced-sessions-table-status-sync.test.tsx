@@ -4,6 +4,10 @@ import { getTranscriptDispositionLabel } from "@repo/app/agents/lib/session-sync
 import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import { screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  CloudSyncDisclosure,
+  getCloudSyncDisclosureCopy,
+} from "../cloud-sync-state-badge";
 import { createAgentSessionListItemFixture } from "../session-list-fixtures";
 import { SyncedSessionsTable } from "../synced-sessions-table";
 import {
@@ -119,7 +123,9 @@ describe("SyncedSessionsTable — ISS-4774 sync state in the Status pill", () =>
     expect(screen.queryByText(LOCAL_ONLY_LABEL_REGEX)).not.toBeInTheDocument();
     const nameCell = screen.getByText("Uploading session").closest("span");
     expect(nameCell?.textContent).not.toContain("Syncing");
-    expect(nameCell?.textContent).not.toContain("Local only");
+    expect(nameCell?.textContent).not.toContain(
+      getCloudSyncDisclosureCopy(CloudSyncDisclosure.LocalOnly).label
+    );
   });
 
   it("an ERROR row that is uploading keeps its 'Failed' Status pill (never painted over as 'Syncing')", () => {

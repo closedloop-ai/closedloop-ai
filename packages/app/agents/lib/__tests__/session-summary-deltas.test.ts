@@ -2,6 +2,7 @@ import type { AgentSessionUsageSummary } from "@repo/api/src/types/agent-session
 import type { AgentSessionUsageComparisonDeltas } from "@repo/api/src/types/agent-session-usage-comparison";
 import {
   buildSessionSummaryDeltas,
+  isSessionComparisonPending,
   sessionPriorWindowLabel,
   shouldSuppressSessionComparison,
 } from "@repo/app/agents/lib/session-summary-deltas";
@@ -71,38 +72,35 @@ describe("buildSessionSummaryDeltas (ISS-5315 / ISS-5809)", () => {
     });
   });
 
-  // #4480: the Cost card's headline is `meteredEstimatedCost` under the honesty
-  // flag and `apiEstimatedCost` otherwise, so a single "cost" delta would have
-  // graded whichever basis this module picked against whatever the card actually
-  // rendered. Both are emitted; the card reads the one it resolved.
-  it("grades spend on BOTH bases the Cost card can render, lower being better", () => {
+  // #4480: the Cost card reads the entry matching the basis its headline
+  // resolved, so the grading has to survive on that entry specifically. ISS-8791
+  // retired the metered basis and ISS-10734 the API one, leaving `totalCost` as
+  // the only basis any mode headlines — but the polarity is the point: spend is
+  // the same substance as token volume, so a rise is a regression.
+  it("grades spend lower-is-better on the basis the Cost card renders", () => {
     const deltas = buildSessionSummaryDeltas({
-      current: compared({ apiCost: 50, meteredCost: -50 }),
+      current: compared({ totalCost: -50 }),
       dateRange: "30d",
     });
 
-    expect(deltas?.apiCost).toEqual({
-      delta: 50,
-      deltaPolarity: MetricPolarity.LowerIsBetter,
-    });
-    // The two bases move in OPPOSITE directions here, which is exactly why one
-    // shared entry would have been wrong on one of the two cards.
-    expect(deltas?.meteredCost).toEqual({
+    expect(deltas?.totalCost).toEqual({
       delta: -50,
       deltaPolarity: MetricPolarity.LowerIsBetter,
     });
   });
 
   // An absent spend figure is "not computed", never a zero to divide by — the
-  // producer omits the key and the card gets no chip.
+  // producer omits the key and the card gets no chip. The `sessions` entry is
+  // present on the same payload, so this cannot pass by the whole comparison
+  // being dropped.
   it("emits no cost movement for a basis the producer did not compare", () => {
     const deltas = buildSessionSummaryDeltas({
-      current: compared({ apiCost: 50 }),
+      current: compared({ sessions: 20 }),
       dateRange: "30d",
     });
 
-    expect(deltas?.apiCost).toBeDefined();
-    expect(deltas?.meteredCost).toBeUndefined();
+    expect(deltas?.sessions).toBeDefined();
+    expect(deltas?.totalCost).toBeUndefined();
   });
 
   // It still returns an OBJECT in every no-comparison case: calling this at all
@@ -126,8 +124,7 @@ describe("buildSessionSummaryDeltas (ISS-5315 / ISS-5809)", () => {
     });
     expect(deltas.sessions).toBeUndefined();
     expect(deltas.tokens).toBeUndefined();
-    expect(deltas.meteredCost).toBeUndefined();
-    expect(deltas.apiCost).toBeUndefined();
+    expect(deltas.totalCost).toBeUndefined();
     // The caption still names the window it WOULD compare against, so the
     // placeholder is not the only thing distinguishing "not yet" from "never".
     expect(deltas.label).toBe("vs. prior 7 days");
@@ -197,6 +194,24 @@ describe("buildSessionSummaryDeltas (ISS-5315 / ISS-5809)", () => {
         dateRange: "all",
       }).deliveryCompared
     ).toBe(true);
+    // The no-deltas return (source :378-379) — comparisonV2Enabled but current
+    // carries no comparison object.
+    expect(
+      buildSessionSummaryDeltas({
+        comparisonV2Enabled: true,
+        current: usage({ totalSessions: 120 }),
+        dateRange: "7d",
+      }).deliveryCompared
+    ).toBe(true);
+    // The suppressed return (source :373-376).
+    expect(
+      buildSessionSummaryDeltas({
+        comparisonV2Enabled: true,
+        current: usage({ totalSessions: 120 }),
+        dateRange: "7d",
+        suppressed: true,
+      }).deliveryCompared
+    ).toBe(true);
   });
 
   // Cross-repo skew: a newer producer may compare a metric this build has no card
@@ -223,6 +238,7 @@ describe("buildSessionSummaryDeltas (ISS-5315 / ISS-5809)", () => {
 // decision table.
 describe("shouldSuppressSessionComparison (ISS-5809)", () => {
   const settled = {
+    isPending: false,
     isLoading: false,
     isError: false,
     isPlaceholderData: false,
@@ -255,6 +271,111 @@ describe("shouldSuppressSessionComparison (ISS-5809)", () => {
     expect(
       shouldSuppressSessionComparison({ ...settled, isFetching: true })
     ).toBe(true);
+  });
+
+  // ISS-6382: the case none of the four above covers. A read held closed by the
+  // restore gate on a WARM cache is not loading, not errored, not placeholder
+  // and not fetching — the observer reports a settled success carrying the
+  // PREVIOUS view's figures. Without this flag the chip grades a scope this
+  // mount never read.
+  it("suppresses a pending read, which a warm cache reports as settled", () => {
+    expect(
+      shouldSuppressSessionComparison({ ...settled, isPending: true })
+    ).toBe(true);
+  });
+
+  // ISS-7422. The gate relaxes EXACTLY one arm; every case below pins which.
+  describe("with the honest-loading gate on", () => {
+    it("keeps a comparison through a plain revalidation", () => {
+      expect(
+        shouldSuppressSessionComparison({ ...settled, isFetching: true }, true)
+      ).toBe(false);
+    });
+
+    it("still suppresses loading, error and placeholder data", () => {
+      expect(
+        shouldSuppressSessionComparison({ ...settled, isLoading: true }, true)
+      ).toBe(true);
+      expect(
+        shouldSuppressSessionComparison({ ...settled, isError: true }, true)
+      ).toBe(true);
+      // A refetch over the PREVIOUS scope's figures is still a different
+      // population, so `isFetching` being forgiven must not forgive this.
+      expect(
+        shouldSuppressSessionComparison(
+          { ...settled, isFetching: true, isPlaceholderData: true },
+          true
+        )
+      ).toBe(true);
+    });
+
+    // ISS-6382 × ISS-7422: the honest-loading gate forgives a REVALIDATION, and
+    // a read held closed by the restore gate is not one. Nothing has been read
+    // for this view yet, so the arm the flag relaxes must not relax this.
+    it("still suppresses a read the restore gate holds closed", () => {
+      expect(
+        shouldSuppressSessionComparison({ ...settled, isPending: true }, true)
+      ).toBe(true);
+    });
+  });
+});
+
+/**
+ * ISS-7422 — "may I show a chip" and "is one on its way" are different
+ * questions, and the error arm is where they part.
+ */
+describe("isSessionComparisonPending (ISS-7422)", () => {
+  const settled = {
+    isPending: false,
+    isLoading: false,
+    isError: false,
+    isPlaceholderData: false,
+    isFetching: false,
+  };
+
+  it("is not pending once the read has settled", () => {
+    expect(isSessionComparisonPending(settled)).toBe(false);
+  });
+
+  it("is pending while loading, refetching, or on placeholder data", () => {
+    expect(isSessionComparisonPending({ ...settled, isLoading: true })).toBe(
+      true
+    );
+    expect(isSessionComparisonPending({ ...settled, isFetching: true })).toBe(
+      true
+    );
+    expect(
+      isSessionComparisonPending({ ...settled, isPlaceholderData: true })
+    ).toBe(true);
+  });
+
+  // The distinction the first cut of ISS-7422 collapsed: an errored read has
+  // settled, on a failure. Announcing a wait there promises an arrival from a
+  // fetch that has stopped — and `shouldSuppressSessionComparison` says `true`
+  // for this same input, which is why the two cannot share one answer.
+  it("is not pending on an errored read, even one still fetching", () => {
+    expect(isSessionComparisonPending({ ...settled, isError: true })).toBe(
+      false
+    );
+    expect(
+      isSessionComparisonPending({
+        ...settled,
+        isError: true,
+        isFetching: true,
+      })
+    ).toBe(false);
+    expect(shouldSuppressSessionComparison({ ...settled, isError: true })).toBe(
+      true
+    );
+  });
+
+  // ISS-6382: the restore gate has not opened, so the comparison is still on its
+  // way — the slot shimmers rather than printing the settled "No prior period"
+  // over a scope this mount has not read.
+  it("is pending while the restore gate holds the read closed", () => {
+    expect(isSessionComparisonPending({ ...settled, isPending: true })).toBe(
+      true
+    );
   });
 });
 

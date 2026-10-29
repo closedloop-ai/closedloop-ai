@@ -3,7 +3,6 @@ import { readdirSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import {
   TokenCostBasis,
@@ -13,6 +12,7 @@ import {
   TokenSourceIdentityUnavailableReason,
 } from "@repo/api/src/types/token-cost-provenance";
 import { claudeTranscriptEntryUuidScheme } from "@repo/lib/harness/usage-dedup";
+import { test } from "vitest";
 import { compareMigrationDirNames } from "../scripts/migration-order.mjs";
 import {
   HistoricalParseWorkerResponseType,
@@ -447,6 +447,43 @@ test("sync omits absent legacy fields and degrades malformed or unknown stored s
     completeness: TokenCostCompleteness.Unavailable,
     reason: TokenCostCompletenessReason.Unknown,
   });
+});
+
+test("mapSyncedTokenEvent omits estimatedCostUsd for non-finite, negative, over-ceiling, and non-number cells", () => {
+  const badValues: unknown[] = [1e8, -1, Number.POSITIVE_INFINITY, "12"];
+  for (const bad of badValues) {
+    const row = sqliteTokenRow({
+      cost_usd_estimated: bad as number,
+      transport_id: `transport-bad-${String(bad)}`,
+    });
+    const result = mapSyncedTokenEvent("cost-guard-session", row);
+    assert.equal(
+      "estimatedCostUsd" in result,
+      false,
+      `expected estimatedCostUsd to be absent for ${String(bad)}`
+    );
+  }
+
+  const valid = mapSyncedTokenEvent(
+    "cost-guard-session",
+    sqliteTokenRow({
+      cost_usd_estimated: 0.5,
+      transport_id: "transport-valid-cost",
+    })
+  );
+  assert.equal(valid.estimatedCostUsd, 0.5);
+
+  // ISS-9076 review (marisolashgrove): routing through the shared guard newly
+  // canonicalizes this field to the `Decimal(14, 6)` column width. `0.5` is
+  // identical either way, so it cannot tell canonicalization from passthrough.
+  const canonicalized = mapSyncedTokenEvent(
+    "cost-guard-session",
+    sqliteTokenRow({
+      cost_usd_estimated: 0.123_456_789,
+      transport_id: "transport-canonical-cost",
+    })
+  );
+  assert.equal(canonicalized.estimatedCostUsd, 0.123_457);
 });
 
 test("0043 upgrades a legacy store without backfill and enforces non-null transport uniqueness", async () => {

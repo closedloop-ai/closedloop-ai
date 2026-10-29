@@ -1,0 +1,42 @@
+-- ISS-10053 / ISS-9963 / ISS-10043 (PLN-2028 M1): the durable lane RUN.
+--
+-- Migration 0082 made the END of an environmental run durable
+-- (`lane_gave_up_at`), but only as a bare instant. Three columns complete it:
+--
+-- - `lane_stalled_since`: when the lane's current unbroken environmental run
+--   OPENED, as an ISO instant. Without it a desktop that restarts inside an
+--   outage opens a fresh 24h run on every launch and rarely reaches the give-up
+--   at all (ISS-10053) - the invariant-5 gap `main/sync/AGENTS.md` names.
+-- - `lane_gave_up_reason`: the `SyncReason` the give-up was for, so a resumed
+--   give-up can describe itself (ISS-9963).
+-- - `lane_gave_up_source`: which producer wrote `lane_gave_up_at` -
+--   `environmental_gate` or `row_ceiling` - because the session lane has two and
+--   nothing recorded which one wrote the stamp (ISS-10043).
+--
+-- NULL in each is every existing row and every build that predates this
+-- migration. A NULL source does not mean "unknown" to the lanes that adopt it:
+-- it resolves per lane (PLN-2028 D3) - the component lane to
+-- `environmental_gate`, its only producer, and the session lane to
+-- `row_ceiling`, its only producer before ISS-8610.
+--
+-- WHICH ROW (PLN-2028 D2). These four columns are one record per (lane, compute
+-- target), and that SUPERSEDES migration 0082's assumption that `source_key`
+-- alone names that row. The session lane's key carries the negotiated
+-- monitored-activity revision and flips between `agent_sessions:<revision>:<target>`
+-- and `agent_sessions:<target>` on every socket disconnect, so a run keyed by the
+-- whole key would split across two rows and resume a stale one. The store
+-- therefore reads and writes the lane-run columns on the target's SHORT-key row
+-- for the session lane; every other lane's key is its own lane-run key. Stamps
+-- already written under a revision-key row are not migrated: the column is under
+-- a week old, and a lost stamp costs one repeated 24h run. 0082 itself is
+-- checksummed and is not edited.
+--
+-- Reason and source are free text with no CHECK constraint, for the reason
+-- `lane_gave_up_at` has none: the vocabularies are grow-only, and values are
+-- validated where they are read. Purely additive: three nullable columns, no
+-- existing row rewritten.
+
+-- AlterTable
+ALTER TABLE "sync_state" ADD COLUMN "lane_stalled_since" TEXT;
+ALTER TABLE "sync_state" ADD COLUMN "lane_gave_up_reason" TEXT;
+ALTER TABLE "sync_state" ADD COLUMN "lane_gave_up_source" TEXT;

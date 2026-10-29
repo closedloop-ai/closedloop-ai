@@ -2,7 +2,11 @@
 
 import * as React from "react";
 import { Cell, Pie, PieChart } from "recharts";
-import { chartColor } from "./chart-colors";
+import { CHART_OTHER_SERIES_COLOR, chartColor } from "./chart-colors";
+import {
+  chartOtherSeriesLabel,
+  resolveAggregateKey,
+} from "./chart-series-fold";
 import {
   type ChartConfig,
   ChartContainer,
@@ -69,6 +73,9 @@ export function DonutChart({
   textureByKey,
   textureMarkColorByKey,
   showSharePercent = false,
+  total,
+  omittedCount,
+  otherSeriesLabel,
 }: {
   data: DonutDatum[];
   emptyMessage?: string;
@@ -99,13 +106,27 @@ export function DonutChart({
   // leaves the reader eyeballing the arc. Opt-in, so existing donuts that answer
   // a "how much?" question keep their plain legend.
   showSharePercent?: boolean;
+  // ISS-9842: the summed value of the WHOLE population when `data` is a capped
+  // prefix of it. A donut's ring is a completeness claim, so a prefix drawn
+  // against its own sum overstates every slice; with this set, the ring is
+  // drawn against the population and the remainder becomes an "Other" slice.
+  // Ignored unless it exceeds the slice sum and `omittedCount` is usable.
+  total?: number;
+  // How many categories the cap dropped — the count the "Other" slice's label
+  // carries, so it can never be mistaken for one more real category. A residual
+  // without it is not drawn: the wedge is only honest with its count.
+  omittedCount?: number;
+  // The noun the "Other" slice is named with ("Other tools" renders as "Other
+  // tools (7)"). Same contract as `TimeSeriesAreaChart`'s prop of the same
+  // name; the owning surface supplies the word, the count is always appended.
+  otherSeriesLabel?: string;
 }) {
   // Before the zero-total early return: a hook cannot sit behind a branch.
   // Scopes this chart's `<pattern>` ids so two donuts on one dashboard cannot
   // collide on a document-global id.
   const instanceId = React.useId();
-  const total = data.reduce((sum, slice) => sum + slice.value, 0);
-  if (total === 0) {
+  const sliceSum = data.reduce((sum, slice) => sum + slice.value, 0);
+  if (sliceSum === 0) {
     return (
       <div className="grid h-full min-h-24 place-items-center rounded-md border border-dashed bg-muted/20 p-4 text-center text-muted-foreground text-xs">
         {emptyMessage}
@@ -119,15 +140,32 @@ export function DonutChart({
   // Shares are allocated across the whole ring rather than each rounded on its
   // own, so the printed percentages always add up to 100 — three equal slices
   // read 34/33/33, never three 33s against a ring that is visibly full.
-  const shares = showSharePercent ? allocateShares(data, total) : [];
+  // The residual is appended BEFORE the config/colour loop and the share
+  // allocation so it gets a legend entry, a fill and a share like any slice.
+  // It is last, so the real slices keep their palette index.
+  const residual = residualSlice({
+    data,
+    sliceSum,
+    total,
+    omittedCount,
+    otherSeriesLabel,
+  });
+  const slices = residual ? [...data, residual] : data;
+  const denominator = sliceSum + (residual?.value ?? 0);
+  const shares = showSharePercent ? allocateShares(slices, denominator) : [];
   const config: ChartConfig = {};
   const resolvedColorByKey: Record<string, string> = {};
-  for (let i = 0; i < data.length; i++) {
-    const slice = data[i];
+  for (let i = 0; i < slices.length; i++) {
+    const slice = slices[i];
     // OWN-key reads throughout: slice keys are server-supplied, so `?.[key]`
     // would resolve a bucket named `constructor` through `Object.prototype` and
     // hand this a function where a colour or a texture belongs.
-    const color = ownValue(colorByKey, slice.key) ?? chartColor(i);
+    // The residual is the one slice that is NOT an entity, so it takes the
+    // neutral aggregate colour rather than a palette slot or a semantic entry.
+    const color =
+      slice === residual
+        ? CHART_OTHER_SERIES_COLOR
+        : (ownValue(colorByKey, slice.key) ?? chartColor(i));
     const swatchTexture = donutSliceTextureBackground(
       ownValue(textureByKey, slice.key),
       color,
@@ -171,7 +209,7 @@ export function DonutChart({
           }
         />
         <Pie
-          data={data}
+          data={slices}
           dataKey="value"
           innerRadius="55%"
           nameKey={DONUT_SERIES_KEY}
@@ -179,7 +217,7 @@ export function DonutChart({
           stroke={DONUT_SLICE_SEPARATOR_COLOR}
           strokeWidth={DONUT_SLICE_SEPARATOR_WIDTH}
         >
-          {data.map((slice) => (
+          {slices.map((slice) => (
             <Cell
               fill={
                 isTexturedSlice(ownValue(textureByKey, slice.key))
@@ -241,4 +279,47 @@ function allocateShares(data: DonutDatum[], total: number): number[] {
     leftover -= 1;
   }
   return shares;
+}
+
+/**
+ * ISS-9842: the synthetic "Other" slice for a ring whose `data` is a capped
+ * PREFIX of a larger population. Drawn only when the population exceeds the
+ * slice sum AND the caller says how many categories the cap dropped — a wedge
+ * that could not name its count would read as one more category, which is the
+ * lie the count-carrying label exists to prevent. Everything short of that (no
+ * total, a total the slices already reach, a non-finite / fractional / zero
+ * count) leaves the ring exactly as it renders without the props.
+ *
+ * Keyed through the same collision guard the area-chart fold uses, so a
+ * server-supplied category literally keyed `__chartOtherSeries` cannot be
+ * overwritten by the residual.
+ */
+function residualSlice({
+  data,
+  sliceSum,
+  total,
+  omittedCount,
+  otherSeriesLabel,
+}: {
+  data: DonutDatum[];
+  sliceSum: number;
+  total: number | undefined;
+  omittedCount: number | undefined;
+  otherSeriesLabel: string | undefined;
+}): DonutDatum | undefined {
+  if (total === undefined || !Number.isFinite(total) || total <= sliceSum) {
+    return undefined;
+  }
+  if (
+    omittedCount === undefined ||
+    !Number.isInteger(omittedCount) ||
+    omittedCount < 1
+  ) {
+    return undefined;
+  }
+  return {
+    key: resolveAggregateKey(data),
+    label: chartOtherSeriesLabel(omittedCount, otherSeriesLabel),
+    value: total - sliceSum,
+  };
 }

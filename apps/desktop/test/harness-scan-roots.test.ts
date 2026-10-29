@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { Harness, HarnessValues } from "@repo/lib/harness/types";
+import { describe, test } from "vitest";
 import { harnessScanRoots } from "../src/main/collectors/engine/harness-scan-roots.js";
 
 // FEA-3639: the file-access probe must cover every harness collector-manager

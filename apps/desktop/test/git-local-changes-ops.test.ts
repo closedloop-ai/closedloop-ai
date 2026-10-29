@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { OperationDispatcher } from "../src/server/operation-dispatcher.js";
 import {
   GitLocalChangesRoute,

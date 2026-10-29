@@ -21,10 +21,15 @@
  * There are no down-migrations: the policy is forward-only on user machines.
  */
 
+import { performance } from "node:perf_hooks";
 import {
   DesktopMigrationError,
   MigrationRefusalKind,
 } from "../../lifecycle/migration-refusal.js";
+import {
+  type MigrationStepDiagnostics,
+  MigrationStepOutcome,
+} from "../../telemetry/telemetry-protocol.js";
 
 /** Minimal SQLite surface the runner needs (satisfied by SqliteClient). */
 type MigrationExecutor = {
@@ -79,7 +84,33 @@ export type RunMigrationsOptions = {
   legacySentinelTable?: string;
   now?: () => string;
   log?: (message: string) => void;
+  /**
+   * ISS-6339: called once per EXECUTED migration with how long it took and how
+   * it finished, including the failure that aborts the boot. Fired for the
+   * statement-by-statement idempotent re-apply as its own outcome
+   * ({@link MigrationStep.outcome} `reapplied`) rather than folded into
+   * `applied`, because that path means the store arrived untracked or partial
+   * and how often that happens is the thing worth knowing.
+   *
+   * Baselining and rebaselining execute no DDL, so they have no meaningful
+   * duration and are reported by {@link MigrationOutcome} instead.
+   *
+   * Never awaited and never allowed to fail the migration: a telemetry sink that
+   * throws must not brick a boot the schema change itself completed. Omit it and
+   * the runner behaves exactly as before.
+   */
+  onStep?: (step: MigrationStep) => void;
 };
+
+/**
+ * ISS-6339: one executed migration's duration and outcome.
+ *
+ * The WIRE shape, aliased rather than mirrored: `sqlite.ts` hands this object
+ * straight to `reportMigrationStep`, so a private copy would let a field added
+ * to the event silently stop being filled. Same reasoning as
+ * `QueryPerfFamilySample` in `db-host/db-host-query-perf.ts`.
+ */
+export type MigrationStep = MigrationStepDiagnostics;
 
 export type MigrationOutcome = {
   /** Migration names recorded as applied via baselining (not executed). */
@@ -146,7 +177,8 @@ export async function runDesktopMigrations(
     options.migrations,
     applied,
     now,
-    log
+    log,
+    options.onStep
   );
 
   return { baselined, applied: appliedNow, rebaselined };
@@ -527,9 +559,10 @@ const LINE_COMMENT_PATTERN = /--[^\n]*/g;
 /**
  * Split a migration into its individual statements for the idempotent-heal retry
  * (so a `duplicate column` on one ALTER cannot skip later statements). Strips
- * line comments and splits on `;`. Desktop migrations are plain DDL — no
- * triggers, and no semicolons inside string literals (asserted by the migration
- * guard tests) — so this split is exact for them.
+ * line comments and splits on `;`. It cannot carry a trigger body (its inner `;`
+ * would split it), so a migration containing a trigger must stay on idempotent
+ * statements that never reach this heal. String literals holding `;` are
+ * asserted absent by the migration guard tests.
  */
 function splitSqlStatements(sql: string): string[] {
   return sql
@@ -544,7 +577,8 @@ async function applyPendingMigrations(
   migrations: readonly EmbeddedMigration[],
   applied: ReadonlyMap<string, string>,
   now: () => string,
-  log: (message: string) => void
+  log: (message: string) => void,
+  onStep?: (step: MigrationStep) => void
 ): Promise<readonly string[]> {
   const appliedNow: string[] = [];
   const laterDroppedColumns = buildLaterDroppedColumns(migrations);
@@ -552,65 +586,133 @@ async function applyPendingMigrations(
     if (applied.has(migration.name)) {
       continue;
     }
-    // Each migration in its own transaction: a failure mid-migration rolls back
-    // wholesale, leaving the DB at the prior version with no tracking row written.
+    // ISS-6339: monotonic, so a wall-clock step mid-migration cannot report a
+    // negative duration for a migration that plainly ran.
+    const startedAt = performance.now();
+    let outcome: MigrationStepOutcome = MigrationStepOutcome.Applied;
     try {
-      await db.transaction(async (tx) => {
-        await tx.exec(migration.sql);
-        await tx.query(
-          `INSERT INTO ${TRACKING_TABLE} ("name", "checksum", "applied_at")
-           VALUES ($1, $2, $3)`,
-          [migration.name, migration.checksum, now()]
-        );
-      });
-    } catch (error) {
-      if (!isIdempotentReapplyError(error)) {
-        throw error;
-      }
-      // Idempotent heal for an untracked/partial store (tracking wiped but schema
-      // already present). SQLite cannot express `ADD COLUMN IF NOT EXISTS`, so a
-      // re-applied ADD COLUMN throws `duplicate column name`, and a re-applied
-      // DROP COLUMN throws `no such column`. The whole-migration attempt above
-      // rolled back, so RE-APPLY statement-by-statement, skipping ONLY the
-      // statements whose change is already present — every other statement
-      // still runs. This guarantees a multi-statement migration can never be
-      // recorded as applied while partially applied (the tracking row is written
-      // only after the full statement list is processed inside one transaction).
-      // CREATE TABLE/INDEX migrations self-heal via their own IF NOT EXISTS and
-      // never reach here.
-      await db.transaction(async (tx) => {
-        for (const statement of splitSqlStatements(migration.sql)) {
-          try {
-            await tx.exec(statement);
-          } catch (statementError) {
-            if (
-              !isAlreadyAppliedStatement(
-                statement,
-                statementError,
-                laterDroppedColumns[index]
-              )
-            ) {
-              throw statementError;
-            }
-            // Change already present — skip this one, continue the remaining
-            // statements so the schema ends fully in sync.
-          }
-        }
-        await tx.query(
-          `INSERT INTO ${TRACKING_TABLE} ("name", "checksum", "applied_at")
-           VALUES ($1, $2, $3)
-           ON CONFLICT ("name") DO NOTHING`,
-          [migration.name, migration.checksum, now()]
-        );
-      });
-      log(
-        `migration ${migration.name} re-applied idempotently (already present)`
+      outcome = await applyOneMigration(
+        db,
+        migration,
+        laterDroppedColumns[index],
+        now,
+        log
       );
+    } catch (error) {
+      // ISS-6339: ONE reporting site for every way this step can fail — the
+      // first attempt, and the statement-by-statement heal that follows it.
+      // Reporting per throw site is how the heal path ends up silently
+      // unreported, which is exactly the case this signal exists to name.
+      reportStep(
+        onStep,
+        migration.name,
+        MigrationStepOutcome.Failed,
+        startedAt
+      );
+      throw error;
     }
     appliedNow.push(migration.name);
+    reportStep(onStep, migration.name, outcome, startedAt);
     log(`applied migration ${migration.name}`);
   }
   return appliedNow;
+}
+
+/**
+ * Apply ONE pending migration and report which way it landed. Extracted from
+ * {@link applyPendingMigrations} so the loop has a single failure boundary
+ * (ISS-6339) and stays inside the cognitive-complexity budget.
+ */
+async function applyOneMigration(
+  db: MigrationDb,
+  migration: EmbeddedMigration,
+  laterDroppedColumns: ReadonlySet<string>,
+  now: () => string,
+  log: (message: string) => void
+): Promise<MigrationStepOutcome> {
+  // Each migration in its own transaction: a failure mid-migration rolls back
+  // wholesale, leaving the DB at the prior version with no tracking row written.
+  try {
+    await db.transaction(async (tx) => {
+      await tx.exec(migration.sql);
+      await tx.query(
+        `INSERT INTO ${TRACKING_TABLE} ("name", "checksum", "applied_at")
+           VALUES ($1, $2, $3)`,
+        [migration.name, migration.checksum, now()]
+      );
+    });
+  } catch (error) {
+    if (!isIdempotentReapplyError(error)) {
+      throw error;
+    }
+    // Idempotent heal for an untracked/partial store (tracking wiped but schema
+    // already present). SQLite cannot express `ADD COLUMN IF NOT EXISTS`, so a
+    // re-applied ADD COLUMN throws `duplicate column name`, and a re-applied
+    // DROP COLUMN throws `no such column`. The whole-migration attempt above
+    // rolled back, so RE-APPLY statement-by-statement, skipping ONLY the
+    // statements whose change is already present — every other statement
+    // still runs. This guarantees a multi-statement migration can never be
+    // recorded as applied while partially applied (the tracking row is written
+    // only after the full statement list is processed inside one transaction).
+    // CREATE TABLE/INDEX migrations self-heal via their own IF NOT EXISTS and
+    // never reach here.
+    await db.transaction(async (tx) => {
+      for (const statement of splitSqlStatements(migration.sql)) {
+        try {
+          await tx.exec(statement);
+        } catch (statementError) {
+          if (
+            !isAlreadyAppliedStatement(
+              statement,
+              statementError,
+              laterDroppedColumns
+            )
+          ) {
+            throw statementError;
+          }
+          // Change already present — skip this one, continue the remaining
+          // statements so the schema ends fully in sync.
+        }
+      }
+      await tx.query(
+        `INSERT INTO ${TRACKING_TABLE} ("name", "checksum", "applied_at")
+           VALUES ($1, $2, $3)
+           ON CONFLICT ("name") DO NOTHING`,
+        [migration.name, migration.checksum, now()]
+      );
+    });
+    log(
+      `migration ${migration.name} re-applied idempotently (already present)`
+    );
+    return MigrationStepOutcome.Reapplied;
+  }
+  return MigrationStepOutcome.Applied;
+}
+
+/**
+ * ISS-6339: hand one step to the sink, absorbing anything it throws. The
+ * migration itself has already committed (or already failed) by the time this
+ * runs, so letting a telemetry failure escape would misreport a durable schema
+ * change as a refusal — the exact class of lie this signal exists to end.
+ */
+function reportStep(
+  onStep: ((step: MigrationStep) => void) | undefined,
+  name: string,
+  outcome: MigrationStepOutcome,
+  startedAt: number
+): void {
+  if (!onStep) {
+    return;
+  }
+  try {
+    onStep({
+      name,
+      outcome,
+      durationMs: Math.round(performance.now() - startedAt),
+    });
+  } catch {
+    // Nowhere to report to that is not the channel that just failed.
+  }
 }
 
 /** A recorded migration whose bundled SQL no longer matches what was applied. */

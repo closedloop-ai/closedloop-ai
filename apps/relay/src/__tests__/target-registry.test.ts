@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { InstanceInfo, TargetMetadata } from "../target-registry";
+import {
+  type InstanceInfo,
+  ReclaimOutcome,
+  RegistryLookupOutcome,
+  type TargetMetadata,
+  TargetRegistryBackend,
+} from "../target-registry";
 
 // ---------------------------------------------------------------------------
 // Mock Redis
@@ -69,12 +75,16 @@ describe("InMemoryTargetRegistry", () => {
     await registry.register("target-1", metadata);
 
     const result = await registry.lookup("target-1");
-    expect(result).toEqual(metadata);
+    expect(result).toEqual({ outcome: RegistryLookupOutcome.Found, metadata });
   });
 
-  it("returns null for an unregistered target", async () => {
+  it("returns missing for an unregistered target", async () => {
     const result = await registry.lookup("nonexistent");
-    expect(result).toBeNull();
+    expect(result).toEqual({ outcome: RegistryLookupOutcome.Missing });
+  });
+
+  it("identifies the in-memory backend", () => {
+    expect(registry.backend).toBe(TargetRegistryBackend.InMemory);
   });
 
   it("deregisters a target when ownerToken matches", async () => {
@@ -85,7 +95,7 @@ describe("InMemoryTargetRegistry", () => {
     expect(removed).toBe(true);
 
     const afterRemoval = await registry.lookup("target-1");
-    expect(afterRemoval).toBeNull();
+    expect(afterRemoval).toEqual({ outcome: RegistryLookupOutcome.Missing });
   });
 
   it("refuses to deregister when ownerToken does not match", async () => {
@@ -96,7 +106,10 @@ describe("InMemoryTargetRegistry", () => {
     expect(removed).toBe(false);
 
     const stillExists = await registry.lookup("target-1");
-    expect(stillExists).toEqual(metadata);
+    expect(stillExists).toEqual({
+      outcome: RegistryLookupOutcome.Found,
+      metadata,
+    });
   });
 
   it("returns false when deregistering a nonexistent target", async () => {
@@ -121,9 +134,16 @@ describe("InMemoryTargetRegistry", () => {
     const count = await registry.deregisterAllByInstance("inst-1");
     expect(count).toBe(2);
 
-    expect(await registry.lookup("target-a")).toBeNull();
-    expect(await registry.lookup("target-b")).toBeNull();
-    expect(await registry.lookup("target-c")).not.toBeNull();
+    expect(await registry.lookup("target-a")).toEqual({
+      outcome: RegistryLookupOutcome.Missing,
+    });
+    expect(await registry.lookup("target-b")).toEqual({
+      outcome: RegistryLookupOutcome.Missing,
+    });
+    expect(await registry.lookup("target-c")).toEqual({
+      outcome: RegistryLookupOutcome.Found,
+      metadata: expect.objectContaining({ instanceId: "inst-2" }),
+    });
   });
 
   it("returns 0 when deregisterAllByInstance finds no matches", async () => {
@@ -141,12 +161,12 @@ describe("InMemoryTargetRegistry", () => {
     await registry.registerInstance("inst-1", info);
 
     const result = await registry.lookupInstance("inst-1");
-    expect(result).toEqual(info);
+    expect(result).toEqual({ outcome: RegistryLookupOutcome.Found, info });
   });
 
-  it("returns null for an unregistered instance", async () => {
+  it("returns missing for an unregistered instance", async () => {
     const result = await registry.lookupInstance("nonexistent");
-    expect(result).toBeNull();
+    expect(result).toEqual({ outcome: RegistryLookupOutcome.Missing });
   });
 
   it("removes instance info on deregisterInstance", async () => {
@@ -155,7 +175,7 @@ describe("InMemoryTargetRegistry", () => {
     await registry.deregisterInstance("inst-1");
 
     const result = await registry.lookupInstance("inst-1");
-    expect(result).toBeNull();
+    expect(result).toEqual({ outcome: RegistryLookupOutcome.Missing });
   });
 
   it("refreshTtl always returns true (no-op for in-memory)", async () => {
@@ -166,16 +186,26 @@ describe("InMemoryTargetRegistry", () => {
 
   it("reclaim creates a missing entry and reports it", async () => {
     const meta = makeTargetMetadata();
-    expect(await registry.reclaim("target-1", meta)).toBe(true);
-    expect(await registry.lookup("target-1")).toEqual(meta);
+    expect(await registry.reclaim("target-1", meta)).toEqual({
+      outcome: ReclaimOutcome.Reclaimed,
+    });
+    expect(await registry.lookup("target-1")).toEqual({
+      outcome: RegistryLookupOutcome.Found,
+      metadata: meta,
+    });
   });
 
   it("reclaim never clobbers an existing entry", async () => {
     const original = makeTargetMetadata();
     await registry.register("target-1", original);
     const usurper = { ...makeTargetMetadata(), ownerToken: "other-owner" };
-    expect(await registry.reclaim("target-1", usurper)).toBe(false);
-    expect(await registry.lookup("target-1")).toEqual(original);
+    expect(await registry.reclaim("target-1", usurper)).toEqual({
+      outcome: ReclaimOutcome.Refused,
+    });
+    expect(await registry.lookup("target-1")).toEqual({
+      outcome: RegistryLookupOutcome.Found,
+      metadata: original,
+    });
   });
 });
 
@@ -193,6 +223,10 @@ describe("RedisTargetRegistry", () => {
     mockRedis = createMockRedis();
     const mod = await import("../target-registry");
     registry = new mod.RedisTargetRegistry(mockRedis as never);
+  });
+
+  it("identifies the Redis backend", () => {
+    expect(registry.backend).toBe(TargetRegistryBackend.Redis);
   });
 
   describe("register", () => {
@@ -236,22 +270,41 @@ describe("RedisTargetRegistry", () => {
       mockRedis.get.mockResolvedValue(JSON.stringify(metadata));
 
       const result = await registry.lookup("target-1");
-      expect(result).toEqual(metadata);
+      expect(result).toEqual({
+        outcome: RegistryLookupOutcome.Found,
+        metadata,
+      });
       expect(mockRedis.get).toHaveBeenCalledWith("target:target-1");
     });
 
-    it("returns null when key does not exist", async () => {
+    it("returns missing when key does not exist", async () => {
       mockRedis.get.mockResolvedValue(null);
 
       const result = await registry.lookup("target-1");
-      expect(result).toBeNull();
+      expect(result).toEqual({ outcome: RegistryLookupOutcome.Missing });
     });
 
-    it("returns null on Redis error", async () => {
-      mockRedis.get.mockRejectedValue(new Error("connection lost"));
+    it("returns an error outcome on Redis error", async () => {
+      const error = new Error("connection lost");
+      mockRedis.get.mockRejectedValue(error);
 
       const result = await registry.lookup("target-1");
-      expect(result).toBeNull();
+      expect(result).toEqual({
+        outcome: RegistryLookupOutcome.Error,
+        error,
+      });
+    });
+
+    it("returns unreadable for a value that parses but is not a target entry", async () => {
+      // Valid JSON is not the same fact as a valid entry. Returning the
+      // half-populated object let a caller route a dispatch at an `undefined`
+      // socketId; an explicit unreadable outcome keeps it distinct from a miss.
+      mockRedis.get.mockResolvedValue(
+        JSON.stringify({ instanceId: "instance-1" })
+      );
+
+      const result = await registry.lookup("target-1");
+      expect(result).toEqual({ outcome: RegistryLookupOutcome.Unreadable });
     });
   });
 
@@ -323,7 +376,7 @@ describe("RedisTargetRegistry", () => {
         const meta = makeTargetMetadata();
 
         const result = await registry.reclaim("target-1", meta);
-        expect(result).toBe(true);
+        expect(result).toEqual({ outcome: ReclaimOutcome.Reclaimed });
 
         expect(mockRedis.set).toHaveBeenCalledWith(
           "target:target-1",
@@ -334,16 +387,27 @@ describe("RedisTargetRegistry", () => {
         );
       });
 
-      it("reports false when the key already exists (NX refused)", async () => {
+      it("reports a refusal when the key already exists (NX refused)", async () => {
         mockRedis.set.mockResolvedValue(null);
         const result = await registry.reclaim("target-1", makeTargetMetadata());
-        expect(result).toBe(false);
+        expect(result).toEqual({ outcome: ReclaimOutcome.Refused });
       });
 
-      it("degrades to false on a Redis failure instead of throwing", async () => {
-        mockRedis.set.mockRejectedValue(new Error("connection lost"));
+      // ISS-6213: a Redis failure used to answer with the SAME value as an NX
+      // refusal, so a transient registry outage was indistinguishable from
+      // "somebody else legitimately owns this key" and healed nothing silently.
+      it("reports a distinct error outcome carrying the cause on a Redis failure", async () => {
+        const cause = new Error("connection lost");
+        mockRedis.set.mockRejectedValue(cause);
+
         const result = await registry.reclaim("target-1", makeTargetMetadata());
-        expect(result).toBe(false);
+
+        expect(result).toEqual({
+          outcome: ReclaimOutcome.Error,
+          error: cause,
+        });
+        // The discriminating half: Error must not read as the NX refusal.
+        expect(result).not.toEqual({ outcome: ReclaimOutcome.Refused });
       });
     });
   });
@@ -375,6 +439,98 @@ describe("RedisTargetRegistry", () => {
 
       const count = await registry.deregisterAllByInstance("inst-1");
       expect(count).toBe(0);
+    });
+
+    it("skips a corrupt value and keeps sweeping the rest (ISS-7976)", async () => {
+      // One unparseable `relay:target:*` value used to abort the whole sweep
+      // from inside the outer try, so every REMAINING entry of a dying
+      // instance survived to TARGET_TTL_MS and peers kept routing to it.
+      const matchingMeta = makeTargetMetadata({ instanceId: "inst-1" });
+      mockRedis.scan.mockResolvedValueOnce([
+        "0",
+        ["relay:target:t1", "relay:target:t2", "relay:target:t3"],
+      ]);
+      mockRedis.get
+        .mockResolvedValueOnce(JSON.stringify(matchingMeta))
+        .mockResolvedValueOnce("{not json at all")
+        .mockResolvedValueOnce(JSON.stringify(matchingMeta));
+      mockRedis.del.mockResolvedValue(1);
+
+      const count = await registry.deregisterAllByInstance("inst-1");
+
+      // t3 is the load-bearing one: it is AFTER the poison entry, so it only
+      // gets deleted if the sweep survived t2.
+      expect(mockRedis.del).toHaveBeenCalledWith("target:t3");
+      expect(mockRedis.del).not.toHaveBeenCalledWith("target:t2");
+      expect(count).toBe(2);
+    });
+
+    it("returns the entries actually deleted when the scan aborts mid-sweep (ISS-7976)", async () => {
+      // A flat 0 here reported a false fact to the caller that logs it: one
+      // deletion HAD landed before Redis went away.
+      const matchingMeta = makeTargetMetadata({ instanceId: "inst-1" });
+      mockRedis.scan
+        .mockResolvedValueOnce(["7", ["relay:target:t1"]])
+        .mockRejectedValueOnce(new Error("connection lost"));
+      mockRedis.get.mockResolvedValueOnce(JSON.stringify(matchingMeta));
+      mockRedis.del.mockResolvedValue(1);
+
+      const count = await registry.deregisterAllByInstance("inst-1");
+
+      expect(mockRedis.del).toHaveBeenCalledWith("target:t1");
+      expect(count).toBe(1);
+      // Must not read as "the sweep deleted nothing" — that is the old flat 0.
+      expect(count).not.toBe(0);
+    });
+
+    it("skips a valid-JSON value that is not a target entry, and does not delete it", async () => {
+      // A half-written or legacy record can parse cleanly while carrying no
+      // usable socketId or owner. Matching on `instanceId` alone deleted it
+      // and counted it, so the shutdown log claimed a target this sweep never
+      // could have been routing to.
+      const matchingMeta = makeTargetMetadata({ instanceId: "inst-1" });
+      mockRedis.scan.mockResolvedValueOnce([
+        "0",
+        ["relay:target:t1", "relay:target:t2", "relay:target:t3"],
+      ]);
+      mockRedis.get
+        .mockResolvedValueOnce(JSON.stringify(matchingMeta))
+        // Valid JSON, matching instanceId, everything else missing.
+        .mockResolvedValueOnce(JSON.stringify({ instanceId: "inst-1" }))
+        .mockResolvedValueOnce(JSON.stringify(matchingMeta));
+      mockRedis.del.mockResolvedValue(1);
+
+      const count = await registry.deregisterAllByInstance("inst-1");
+
+      expect(mockRedis.del).not.toHaveBeenCalledWith("target:t2");
+      // t3 proves the malformed record was skipped, not fatal.
+      expect(mockRedis.del).toHaveBeenCalledWith("target:t3");
+      expect(count).toBe(2);
+    });
+
+    it("does not count a DEL that removed nothing (GET/DEL race)", async () => {
+      // The key lapsed its TTL between GET and DEL, so Redis answered 0. The
+      // count is the actual-deleted fact the shutdown log reports, so a
+      // no-op DEL must not inflate it.
+      const matchingMeta = makeTargetMetadata({ instanceId: "inst-1" });
+      mockRedis.scan.mockResolvedValueOnce([
+        "0",
+        ["relay:target:t1", "relay:target:t2"],
+      ]);
+      mockRedis.get
+        .mockResolvedValueOnce(JSON.stringify(matchingMeta))
+        .mockResolvedValueOnce(JSON.stringify(matchingMeta));
+      mockRedis.del
+        .mockResolvedValueOnce(0) // t1 vanished between GET and DEL
+        .mockResolvedValueOnce(1); // t2 really was deleted
+
+      const count = await registry.deregisterAllByInstance("inst-1");
+
+      // Both were attempted — the discriminator is the count, not the calls.
+      expect(mockRedis.del).toHaveBeenCalledWith("target:t1");
+      expect(mockRedis.del).toHaveBeenCalledWith("target:t2");
+      expect(count).toBe(1);
+      expect(count).not.toBe(2);
     });
 
     it("skips a key whose GET returns null (SCAN/GET race: key expired between scan and get)", async () => {
@@ -428,22 +584,35 @@ describe("RedisTargetRegistry", () => {
       mockRedis.get.mockResolvedValue(JSON.stringify(info));
 
       const result = await registry.lookupInstance("inst-1");
-      expect(result).toEqual(info);
+      expect(result).toEqual({ outcome: RegistryLookupOutcome.Found, info });
       expect(mockRedis.get).toHaveBeenCalledWith("instance:inst-1");
     });
 
-    it("returns null when key does not exist", async () => {
+    it("returns missing when key does not exist", async () => {
       mockRedis.get.mockResolvedValue(null);
 
       const result = await registry.lookupInstance("inst-1");
-      expect(result).toBeNull();
+      expect(result).toEqual({ outcome: RegistryLookupOutcome.Missing });
     });
 
-    it("returns null on Redis error", async () => {
-      mockRedis.get.mockRejectedValue(new Error("connection lost"));
+    it("returns an error outcome on Redis error", async () => {
+      const error = new Error("connection lost");
+      mockRedis.get.mockRejectedValue(error);
 
       const result = await registry.lookupInstance("inst-1");
-      expect(result).toBeNull();
+      expect(result).toEqual({
+        outcome: RegistryLookupOutcome.Error,
+        error,
+      });
+    });
+
+    it("returns unreadable when instance info is malformed", async () => {
+      mockRedis.get.mockResolvedValue(
+        JSON.stringify({ privateIp: "10.0.0.1" })
+      );
+
+      const result = await registry.lookupInstance("inst-1");
+      expect(result).toEqual({ outcome: RegistryLookupOutcome.Unreadable });
     });
   });
 

@@ -44,6 +44,15 @@ vi.mock("@/app/branches/branch-service", () => ({
   },
 }));
 
+vi.mock("@/app/branches/branch-push-contribution-service", () => ({
+  invalidateBranchPushCoverageAfterWebhook: vi.fn(),
+}));
+vi.mock("@/app/branches/branch-push-backfill-service", () => ({
+  branchPushBackfillService: {
+    captureWebhookPush: vi.fn(async () => undefined),
+  },
+}));
+
 vi.mock("@/app/branches/file-cache-service", () => ({
   refreshBranchFileChangeCache: vi.fn(),
 }));
@@ -58,12 +67,8 @@ vi.mock("@/app/webhooks/github/handlers/dirty-scope-publisher", () => ({
   publishGitHubDirtyScopes: vi.fn(),
 }));
 
-vi.mock("@/app/webhooks/github/handlers/branch-activity-producer", () => ({
-  GitHubBranchActivityEventName: { Push: "push" },
-  persistGitHubBranchActivity: vi.fn().mockResolvedValue({
-    status: "no_write",
-    reason: "missing_authoritative_timestamp",
-  }),
+vi.mock("@/app/webhooks/github/handlers/push-loc-evidence", () => ({
+  capturePushBranchActivity: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { withDb } from "@repo/database";
@@ -73,15 +78,12 @@ import { waitUntil } from "@vercel/functions";
 import { branchService } from "@/app/branches/branch-service";
 import { refreshBranchFileChangeCache } from "@/app/branches/file-cache-service";
 import { commitService } from "@/app/commits/commit-service";
-import {
-  GitHubBranchActivityEventName,
-  persistGitHubBranchActivity,
-} from "@/app/webhooks/github/handlers/branch-activity-producer";
 import { publishGitHubDirtyScopes } from "@/app/webhooks/github/handlers/dirty-scope-publisher";
 import {
   handlePush,
   PushSourceSkipReason,
 } from "@/app/webhooks/github/handlers/push-handler";
+import { capturePushBranchActivity } from "@/app/webhooks/github/handlers/push-loc-evidence";
 import { persistedGitHubRepositoryAuthority } from "../fixtures/repository-default-authority";
 
 const mockWithDb = withDb as unknown as Mock;
@@ -98,8 +100,8 @@ const mockRecordWebhookCommits =
   commitService.recordWebhookCommits as unknown as Mock;
 const mockLogDebug = log.debug as unknown as Mock;
 const mockLogWarn = log.warn as unknown as Mock;
-const mockPersistGitHubBranchActivity =
-  persistGitHubBranchActivity as unknown as Mock;
+const mockCapturePushBranchActivity =
+  capturePushBranchActivity as unknown as Mock;
 
 const mockDb = {
   $executeRaw: vi.fn(),
@@ -393,14 +395,15 @@ describe("handlePush", () => {
           isCreate: false,
         })
       );
-      expect(mockPersistGitHubBranchActivity).toHaveBeenCalledWith({
-        eventName: GitHubBranchActivityEventName.Push,
+      // ISS-10009: the handler no longer calls the producer itself. It schedules
+      // the capture, which resolves the push's own line delta first and then
+      // writes through the same producer.
+      expect(mockCapturePushBranchActivity).toHaveBeenCalledWith({
+        branchArtifactId: "branch-artifact-1",
         deliveryId: "push-delivery-1",
-        payload: event,
-        attribution: {
-          organizationId: "org-1",
-          branchArtifactId: "branch-artifact-1",
-        },
+        event,
+        installationId: "123456",
+        organizationId: "org-1",
       });
       expect(mockWaitUntil).toHaveBeenCalled();
     });
@@ -411,7 +414,7 @@ describe("handlePush", () => {
         repositoryFullName: "owner/repo",
         ref: "refs/heads/main",
       });
-      (event.repository as any).pushed_at = "2024-06-15T10:00:00Z";
+      event.repository.pushed_at = "2024-06-15T10:00:00Z";
       mockDb.gitHubInstallationRepository.updateMany.mockResolvedValueOnce({
         count: 0,
       });
@@ -493,6 +496,9 @@ describe("handlePush", () => {
         })
       );
       expect(mockWaitUntil).not.toHaveBeenCalled();
+      // ISS-10009 AC2: a branch delete has no commits, so no occurrence time and
+      // no range to measure — no capture is even scheduled.
+      expect(mockCapturePushBranchActivity).not.toHaveBeenCalled();
     });
 
     it("matches repository by githubRepoId and installationId from the push payload", async () => {
@@ -530,7 +536,7 @@ describe("handlePush", () => {
         repositoryFullName: "owner/repo",
       });
 
-      (event.repository as any).pushed_at = 1_718_444_200;
+      event.repository.pushed_at = 1_718_444_200;
 
       mockDb.gitHubInstallationRepository.updateMany.mockResolvedValue({
         count: 1,
@@ -576,7 +582,7 @@ describe("handlePush", () => {
         repositoryFullName: "owner/repo",
         after: "abc123",
       });
-      (event1.repository as any).pushed_at = "2024-06-15T10:00:00Z";
+      event1.repository.pushed_at = "2024-06-15T10:00:00Z";
       await handlePush(event1);
 
       const firstCallTime = (
@@ -589,7 +595,7 @@ describe("handlePush", () => {
         repositoryFullName: "owner/repo",
         after: "def456",
       });
-      (event2.repository as any).pushed_at = "2024-06-15T11:00:00Z";
+      event2.repository.pushed_at = "2024-06-15T11:00:00Z";
       await handlePush(event2);
 
       const secondCallTime = (
@@ -639,7 +645,7 @@ describe("handlePush", () => {
         repositoryFullName: "owner/repo",
       });
 
-      (event as any).installation = undefined;
+      event.installation = undefined;
 
       const response = await handlePush(event);
 
@@ -649,7 +655,7 @@ describe("handlePush", () => {
       });
       expect(mockWithDb).not.toHaveBeenCalled();
       expect(mockWithDbTx).not.toHaveBeenCalled();
-      expect(mockPersistGitHubBranchActivity).not.toHaveBeenCalled();
+      expect(mockCapturePushBranchActivity).not.toHaveBeenCalled();
       expect(
         mockDb.gitHubInstallationRepository.findFirst
       ).not.toHaveBeenCalled();

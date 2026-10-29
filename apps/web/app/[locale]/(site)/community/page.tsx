@@ -9,7 +9,8 @@ import { createPageMetadata } from "@/lib/site";
 export const generateMetadata = async () =>
   createPageMetadata(
     "Community",
-    "Meetups, contributors, and the builder community around Closedloop.ai."
+    "Meetups, contributors, and the builder community around Closedloop.ai.",
+    "/community"
   );
 
 const CommunityPage = () => (

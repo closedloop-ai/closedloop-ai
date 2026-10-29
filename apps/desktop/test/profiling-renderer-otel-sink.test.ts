@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { createRendererOtelExportHandler } from "../src/main/ipc/renderer-otel-ipc.js";
 import type { DesktopOtelRuntime } from "../src/main/telemetry/app-otel-runtime.js";
 import type { ProfilingRenderCommitRow } from "../src/shared/profiling.js";
@@ -72,6 +72,14 @@ describe("renderer otel render-commit profiling sink", () => {
       profilingSink: sink,
       records: [
         buildRenderCommitBridgeRecord({
+          view: RendererRenderView.BranchesList,
+          phase: RendererRenderPhase.Mount,
+          cause: RendererRenderCause.Mount,
+          itemCount: 20,
+          actualMs: 12.4,
+          baseMs: 10.2,
+        }),
+        buildRenderCommitBridgeRecord({
           view: RendererRenderView.SessionsList,
           phase: RendererRenderPhase.Update,
           cause: RendererRenderCause.Paginate,
@@ -93,6 +101,13 @@ describe("renderer otel render-commit profiling sink", () => {
     handler({ sender: {} }, {});
 
     assert.deepEqual(sink.rows, [
+      {
+        view: RendererRenderView.BranchesList,
+        phase: RendererRenderPhase.Mount,
+        cause: RendererRenderCause.Mount,
+        actualMs: 12.4,
+        ts: 1_700_000_000_000,
+      },
       {
         view: RendererRenderView.SessionsList,
         phase: RendererRenderPhase.Update,

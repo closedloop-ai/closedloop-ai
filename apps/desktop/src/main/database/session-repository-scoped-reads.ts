@@ -8,9 +8,13 @@ import {
   SESSION_LAST_ACTIVITY_AT_TS_EXPR,
   SESSION_STARTED_AT_TS_EXPR,
 } from "../agent-sync/session-date-window.js";
-import type { DesktopPrisma } from "./prisma-client.js";
+import { REPOSITORY_PAIR_KEY_EXPR } from "./db-constants.js";
+import type { DesktopPrisma, DesktopPrismaReader } from "./prisma-client.js";
 import { resolveRepositoryFullNameStoredFirst } from "./repository-facet.js";
-import { buildListCursorFilterClause } from "./session-aggregate-filters.js";
+import {
+  buildListCursorFilterClause,
+  lastActivityTieNarrowing,
+} from "./session-aggregate-filters.js";
 
 /**
  * The SQLite Repository-scoped session-id read: the pre-hydration half of the
@@ -20,9 +24,8 @@ import { buildListCursorFilterClause } from "./session-aggregate-filters.js";
  * which taught this read the list's date window and sort. It is one cohesive
  * responsibility — resolve which session ids belong to a repository selection,
  * in the order and window the list asked for, without hydrating anything — and
- * it is deliberately NOT part of the generic cursor-page read, because the repo
- * identity is resolved in JS (a filesystem-aware precedence the SQL has no
- * expression for) rather than by a WHERE clause.
+ * its grouped identity resolver is now shared with cursor paging and usage
+ * aggregates, which bind the resolved pair keys into their own SQL predicates.
  */
 
 /**
@@ -106,6 +109,9 @@ export async function listSqliteRepositoryScopedSessionIds(
     limitClause = `LIMIT $${idParams.length}`;
   }
   const direction = options?.sortDir === "asc" ? "ASC" : "DESC";
+  // The id tie closes DESCENDING in both directions, matching the cursor page
+  // and the cloud (FEA-4329, ISS-9584). A last-activity tie narrows by start
+  // first, as the cursor page does.
   const sortExpression = repositoryScopedSortExpression(options?.sortBy);
   const rows = await prisma.read((reader) =>
     reader.$queryRawUnsafe<{ id: string }[]>(
@@ -113,7 +119,7 @@ export async function listSqliteRepositoryScopedSessionIds(
         SELECT s.id AS id
         FROM sessions s
         ${where}
-        ORDER BY ${sortExpression} ${direction}, s.id ${direction}
+        ORDER BY ${sortExpression} ${direction}, ${lastActivityTieNarrowing(options?.sortBy, "s.started_at")}s.id DESC
         ${limitClause}
       `,
       ...idParams
@@ -153,25 +159,6 @@ function repositoryScopedSortExpression(
 }
 
 /**
- * ISS-5625: the SQLite expression that keys a session row by the
- * `(cwd, repo_full_name)` pair its repository identity is a pure function of.
- * BOTH reads render this one expression — the grouped read selects it, the id
- * read matches against the keys that resolved into the selection — so the two
- * cannot key rows differently.
- *
- * A NULL/blank stored name is collapsed to `''` — `TRIM` over `COALESCE`, the
- * same normalization `resolveRepositoryFullNameStoredFirst` applies before its
- * `if (stored)` test and the same one `applyRepoFullNameFillBacks` admits rows
- * by — and a NULL cwd likewise, since a falsy cwd short-circuits that resolver.
- * So the collapse can only merge rows the resolver would have answered
- * identically. `CHAR(31)` — the ASCII unit separator — delimits the halves: it
- * occurs in neither a filesystem path nor a repository full name, so no pair
- * can forge another pair's key.
- */
-const REPOSITORY_PAIR_KEY_EXPR =
-  "COALESCE(s.cwd, '') || CHAR(31) || TRIM(COALESCE(s.repo_full_name, ''))";
-
-/**
  * ISS-5625: the {@link REPOSITORY_PAIR_KEY_EXPR} keys whose repository identity
  * is one of `repositories`, resolved ONCE per distinct `(cwd, repo_full_name)`
  * pair over a grouped read of the same windowed population.
@@ -181,14 +168,15 @@ const REPOSITORY_PAIR_KEY_EXPR =
  * helper by construction — only the number of times it is asked changes, from
  * once per session row to once per distinct worktree/stored-name pair.
  */
-async function resolveMatchedRepositoryPairKeys(
+export async function resolveMatchedRepositoryPairKeys(
   prisma: DesktopPrisma,
   repositories: readonly string[],
   cache: SessionAttributionResolverCache,
-  window: { clause: string; params: unknown[] }
+  window: { clause: string; params: unknown[] },
+  snapshot?: DesktopPrismaReader
 ): Promise<string[]> {
   const selected = new Set(repositories);
-  const pairs = await prisma.read((reader) =>
+  const readPairs = (reader: DesktopPrismaReader) =>
     reader.$queryRawUnsafe<
       { pair_key: string; cwd: string | null; repo_full_name: string | null }[]
     >(
@@ -202,8 +190,10 @@ async function resolveMatchedRepositoryPairKeys(
         GROUP BY pair_key
       `,
       ...window.params
-    )
-  );
+    );
+  const pairs = snapshot
+    ? await readPairs(snapshot)
+    : await prisma.read(readPairs);
   const matchedKeys: string[] = [];
   // ISS-5272 (M3/C5): the shared path memo turns most of these resolutions into
   // microtask-only work, removing the per-row `execFile` await that used to hand

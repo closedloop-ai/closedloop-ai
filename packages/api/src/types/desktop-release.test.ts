@@ -1,20 +1,27 @@
 import { describe, expect, it } from "vitest";
 import {
+  DesktopMacosTestNodeValidationContext,
   DesktopPackagingValidationContext,
   DesktopPublicMirrorRepo,
+  DesktopReleaseCandidateChannel,
   DesktopReleaseChannel,
   DesktopReleaseMetadataAssetName,
+  DesktopReleaseMetadataSchema,
   DesktopReleaseOwner,
   DesktopReleaseRepo,
+  DesktopReleaseRing,
   DesktopReleaseUpdaterMetadataAssetName,
   DesktopTestValidationContext,
+  desktopReleaseChannelsForRing,
   getDesktopReleaseDmgAssetName,
   getDesktopReleaseLegacyDmgAssetName,
   getDesktopReleaseLegacyZipAssetName,
   getDesktopReleaseSeries,
   getDesktopReleaseTag,
+  getDesktopReleaseUpdaterVersionFromFeed,
   getDesktopReleaseUpdaterZipAssetNameFromFeed,
   getDesktopReleaseUpdaterZipAssetNameFromMetadata,
+  getDesktopReleaseVersionFromUpdaterZipAssetName,
   getDesktopReleaseZipAssetName,
   getHighestDesktopReleaseVersion,
   getPublicDesktopReleaseDownloadUrl,
@@ -23,9 +30,14 @@ import {
   isAllowedDesktopReleaseAssetRedirectUrl,
   isAllowedDesktopReleaseDownloadUrl,
   isDesktopReleaseUpdaterZipAssetName,
+  isSafeDesktopReleaseAssetBasename,
   parseDesktopReleaseVersion,
   resolveDesktopReleaseVersion,
 } from "./desktop-release";
+import {
+  getDesktopReleaseUpdaterZipAssetNameForAsset,
+  isDesktopReleaseUpdaterBlockmapAssetName,
+} from "./desktop-release-blockmap";
 
 const BEHIND_SERIES_ERROR = /behind the highest released series/;
 const VERSION = "0.15.115";
@@ -61,6 +73,29 @@ describe("isDesktopReleaseUpdaterZipAssetName", () => {
     ["blockmap", `${ZIP_ASSET}.blockmap`],
   ])("rejects %s", (_name, assetName) => {
     expect(isDesktopReleaseUpdaterZipAssetName(assetName)).toBe(false);
+  });
+});
+
+describe("getDesktopReleaseVersionFromUpdaterZipAssetName", () => {
+  it("extracts the version from current and legacy updater ZIP basenames", () => {
+    expect(getDesktopReleaseVersionFromUpdaterZipAssetName(ZIP_ASSET)).toBe(
+      VERSION
+    );
+    expect(
+      getDesktopReleaseVersionFromUpdaterZipAssetName(LEGACY_ZIP_ASSET)
+    ).toBe(VERSION);
+  });
+
+  it.each([
+    ["DMG", DMG_ASSET],
+    ["path traversal", `../${ZIP_ASSET}`],
+    ["encoded separator", `Closedloop-%2F${VERSION}-universal-mac.zip`],
+    ["non-semver", "Closedloop-latest-universal-mac.zip"],
+    ["blockmap", `${ZIP_ASSET}.blockmap`],
+  ])("returns null for %s", (_name, assetName) => {
+    expect(
+      getDesktopReleaseVersionFromUpdaterZipAssetName(assetName)
+    ).toBeNull();
   });
 });
 
@@ -154,6 +189,24 @@ describe("getDesktopReleaseUpdaterZipAssetNameFromFeed", () => {
     ["non-semver", "url: Closedloop-latest-universal-mac.zip\n"],
   ])("rejects %s", (_name, feedText) => {
     expect(getDesktopReleaseUpdaterZipAssetNameFromFeed(feedText)).toBeNull();
+  });
+});
+
+describe("getDesktopReleaseUpdaterVersionFromFeed", () => {
+  it("returns the updater version from latest-mac.yml", () => {
+    expect(
+      getDesktopReleaseUpdaterVersionFromFeed(
+        `version: ${VERSION}\npath: ${ZIP_ASSET}\nsha512: abc\n`
+      )
+    ).toBe(VERSION);
+  });
+
+  it.each([
+    ["missing", `path: ${ZIP_ASSET}\n`],
+    ["non-semver", "version: latest\n"],
+    ["prerelease", "version: 0.15.115-rc.1\n"],
+  ])("returns null for %s version", (_name, feedText) => {
+    expect(getDesktopReleaseUpdaterVersionFromFeed(feedText)).toBeNull();
   });
 });
 
@@ -258,7 +311,7 @@ describe("isAllowedDesktopReleaseAssetRedirectUrl", () => {
 });
 
 describe("isAllowedDesktopReleaseDownloadUrl", () => {
-  it("allows the versioned example-repo Desktop DMG asset", () => {
+  it("allows the versioned closedloop-ai Desktop DMG asset", () => {
     expect(isAllowedDesktopReleaseDownloadUrl(VALID_DOWNLOAD_URL)).toBe(true);
   });
 
@@ -320,7 +373,7 @@ describe("isAllowedDesktopReleaseDownloadUrl", () => {
     ],
     [
       "other repo",
-      `https://github.com/${DesktopReleaseOwner}/not-example-repo/releases/download/${RELEASE_TAG}/${DMG_ASSET}`,
+      `https://github.com/${DesktopReleaseOwner}/not-closedloop-ai/releases/download/${RELEASE_TAG}/${DMG_ASSET}`,
     ],
     [
       "non-HTTPS",
@@ -346,7 +399,7 @@ describe("isAllowedDesktopReleaseDownloadUrl", () => {
     ],
     ["extra path segment", `${VALID_DOWNLOAD_URL}/extra`],
     [
-      "non-Desktop example-repo release tag",
+      "non-Desktop closedloop-ai release tag",
       `https://github.com/${DesktopReleaseOwner}/${DesktopReleaseRepo}/releases/download/v${VERSION}/${DMG_ASSET}`,
     ],
     [
@@ -532,14 +585,194 @@ describe("resolveDesktopReleaseVersion", () => {
   });
 });
 
-describe("commit-status validation contexts (FEA-3902)", () => {
-  it("pins the desktop-test/validated context and keeps it distinct from packaging", () => {
-    // SSOT for the producing workflow (desktop-test-validation.yml) and the
-    // consumer (the per-episode alerter now, a release gate later). Must never
-    // collide with the packaging context or the two backstops' verdicts merge.
-    expect(DesktopTestValidationContext).toBe("desktop-test/validated");
-    expect(DesktopTestValidationContext).not.toBe(
-      DesktopPackagingValidationContext
+describe("commit-status validation contexts (FEA-3902, FEA-4224)", () => {
+  it("pins every backstop context and keeps them pairwise distinct", () => {
+    // SSOT for each producing workflow and for the per-episode alerter that
+    // consumes them. All three write verdicts for the SAME `main` SHAs, so any
+    // two sharing a spelling merges their verdicts and their episode state.
+    expect(DesktopPackagingValidationContext).toBe(
+      "desktop-packaging/validated"
     );
+    expect(DesktopTestValidationContext).toBe("desktop-test/validated");
+    expect(DesktopMacosTestNodeValidationContext).toBe(
+      "desktop-testnode-macos/validated"
+    );
+
+    const contexts = [
+      DesktopPackagingValidationContext,
+      DesktopTestValidationContext,
+      DesktopMacosTestNodeValidationContext,
+    ];
+    expect(new Set(contexts).size).toBe(contexts.length);
+  });
+});
+
+describe("isSafeDesktopReleaseAssetBasename", () => {
+  // Exported for ISS-9637 so every per-platform asset-name guard composes ONE
+  // traversal check instead of each platform's pattern being trusted to imply
+  // it. Covered directly here, at its owning module, because it is now public
+  // surface rather than an implementation detail of the macOS ZIP guard.
+  it.each([
+    ["current DMG", DMG_ASSET],
+    ["current updater ZIP", ZIP_ASSET],
+    ["pre-rename DMG", LEGACY_DMG_ASSET],
+  ])("allows a plain %s basename", (_label, assetName) => {
+    expect(isSafeDesktopReleaseAssetBasename(assetName)).toBe(true);
+  });
+
+  it.each([
+    ["empty", ""],
+    ["forward-slash path", `releases/${DMG_ASSET}`],
+    ["backslash path", `releases\\${DMG_ASSET}`],
+    ["parent traversal", `../${DMG_ASSET}`],
+    ["percent-encoded separator", "Closedloop-%2F0.15.115-universal.dmg"],
+    ["percent-encoded dot", "Closedloop-0.15.115-universal%2Edmg"],
+    ["malformed percent escape", "Closedloop-%zz-universal.dmg"],
+  ])("rejects a %s basename", (_label, assetName) => {
+    expect(isSafeDesktopReleaseAssetBasename(assetName)).toBe(false);
+  });
+});
+
+describe("desktopReleaseChannelsForRing (ISS-9165)", () => {
+  it("prefers the candidate for the internal ring and falls back to the promoted one", () => {
+    expect(desktopReleaseChannelsForRing(DesktopReleaseRing.Internal)).toEqual([
+      DesktopReleaseCandidateChannel,
+      DesktopReleaseChannel,
+    ]);
+  });
+
+  it("never offers the candidate to the general ring, at any position", () => {
+    // The load-bearing asymmetry. The internal list falls back to the promoted
+    // channel because no candidate is published before the candidate workflow's
+    // first run; the general list must have NO such second entry, or a missing
+    // or re-pointed candidate would walk a customer onto one.
+    expect(desktopReleaseChannelsForRing(DesktopReleaseRing.General)).toEqual([
+      DesktopReleaseChannel,
+    ]);
+    expect(
+      desktopReleaseChannelsForRing(DesktopReleaseRing.General)
+    ).not.toContain(DesktopReleaseCandidateChannel);
+  });
+
+  it("gives every ring a non-empty list, so a new one cannot resolve to no channel", () => {
+    for (const ring of Object.values(DesktopReleaseRing)) {
+      expect(desktopReleaseChannelsForRing(ring).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps the two channels distinct wire strings", () => {
+    // The whole mechanism is one string picking one GitHub release. If these
+    // ever collapsed to the same literal every assertion above would still pass
+    // and the internal ring would silently be the general ring.
+    expect(DesktopReleaseCandidateChannel).toBe("desktop-candidate");
+    expect(DesktopReleaseCandidateChannel).not.toBe(DesktopReleaseChannel);
+  });
+
+  it("accepts a candidate channel in release metadata and rejects an unknown one", () => {
+    const base = {
+      owner: DesktopReleaseOwner,
+      repo: DesktopReleaseRepo,
+      version: "0.15.115",
+      tagName: getDesktopReleaseTag("0.15.115"),
+      targetCommitish: "0".repeat(40),
+      assets: {
+        dmg: getDesktopReleaseDmgAssetName("0.15.115"),
+        zip: getDesktopReleaseZipAssetName("0.15.115"),
+        updaterMetadata: DesktopReleaseUpdaterMetadataAssetName,
+      },
+      downloadUrl: "https://github.com/closedloop-ai/closedloop-ai/x.dmg",
+    };
+
+    expect(
+      DesktopReleaseMetadataSchema.safeParse({
+        ...base,
+        channel: DesktopReleaseCandidateChannel,
+      }).success
+    ).toBe(true);
+    expect(
+      DesktopReleaseMetadataSchema.safeParse({
+        ...base,
+        channel: DesktopReleaseChannel,
+      }).success
+    ).toBe(true);
+    expect(
+      DesktopReleaseMetadataSchema.safeParse({
+        ...base,
+        channel: "desktop-beta",
+      }).success
+    ).toBe(false);
+  });
+});
+
+// ISS-10424. Every name is written out rather than built from the module's own
+// suffix or pattern: a fixture derived from the predicate agrees with it by
+// construction, so these rows could not fail.
+describe("updater blockmap asset names (ISS-10424)", () => {
+  it.each([
+    [
+      "the updater ZIP",
+      "Closedloop-0.17.20-universal-mac.zip",
+      "Closedloop-0.17.20-universal-mac.zip",
+    ],
+    [
+      "the updater ZIP's blockmap",
+      "Closedloop-0.17.20-universal-mac.zip.blockmap",
+      "Closedloop-0.17.20-universal-mac.zip",
+    ],
+    [
+      "a pre-rename ZIP's blockmap (FEA-2101)",
+      "ClosedLoop-0.16.1635-universal-mac.zip.blockmap",
+      "ClosedLoop-0.16.1635-universal-mac.zip",
+    ],
+  ])("resolves %s to the ZIP it is served through", (_name, asset, zip) => {
+    expect(getDesktopReleaseUpdaterZipAssetNameForAsset(asset)).toBe(zip);
+  });
+
+  it("recognizes only the ZIP's blockmap as a blockmap", () => {
+    expect(
+      isDesktopReleaseUpdaterBlockmapAssetName(
+        "Closedloop-0.17.20-universal-mac.zip.blockmap"
+      )
+    ).toBe(true);
+    expect(
+      isDesktopReleaseUpdaterBlockmapAssetName(
+        "Closedloop-0.17.20-universal-mac.zip"
+      )
+    ).toBe(false);
+  });
+
+  it.each([
+    // electron-builder writes one, but the macOS updater never asks for it.
+    ["a DMG blockmap", "Closedloop-0.17.20-universal.dmg.blockmap"],
+    ["a feed blockmap", "latest-mac.yml.blockmap"],
+    ["a metadata blockmap", "desktop-release.json.blockmap"],
+    ["an arbitrary blockmap", "notes.blockmap"],
+    ["a bare suffix", ".blockmap"],
+    [
+      "a doubled suffix",
+      "Closedloop-0.17.20-universal-mac.zip.blockmap.blockmap",
+    ],
+    [
+      "a differently cased suffix",
+      "Closedloop-0.17.20-universal-mac.zip.BLOCKMAP",
+    ],
+    [
+      "a non-semver ZIP's blockmap",
+      "Closedloop-latest-universal-mac.zip.blockmap",
+    ],
+    ["path traversal", "../Closedloop-0.17.20-universal-mac.zip.blockmap"],
+    ["a nested path", "x/Closedloop-0.17.20-universal-mac.zip.blockmap"],
+    [
+      "a backslash path",
+      String.raw`x\Closedloop-0.17.20-universal-mac.zip.blockmap`,
+    ],
+    [
+      "an encoded separator",
+      "Closedloop-%2F0.17.20-universal-mac.zip.blockmap",
+    ],
+    ["an encoded suffix", "Closedloop-0.17.20-universal-mac.zip%2Eblockmap"],
+  ])("serves nothing for %s", (_name, assetName) => {
+    expect(getDesktopReleaseUpdaterZipAssetNameForAsset(assetName)).toBeNull();
+    expect(isDesktopReleaseUpdaterBlockmapAssetName(assetName)).toBe(false);
   });
 });

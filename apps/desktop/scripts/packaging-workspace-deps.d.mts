@@ -14,9 +14,3 @@ export declare function resolveWorkspaceDependencyTarget(
 ): string;
 
 export declare function isWorkspaceProtocolSpec(spec: unknown): boolean;
-
-export declare function resolveStagedPackageRuntimeFile(
-  stageAppDir: string,
-  packageName: string,
-  relativeFile: string
-): string;

@@ -1,5 +1,4 @@
 /**
- * @file plugin-pack-view.test.ts
  * @description Unit tests for the desktop catalog → PackView adapter. Pure
  * mapping logic (no React / design-system), so it runs fast and isolates the
  * field-mapping contract the Plugins UX depends on.
@@ -34,7 +33,6 @@ function makeEntry(over: Partial<CatalogEntry> = {}): CatalogEntry {
     installNotes: null,
     placeholderReason: null,
     verified: true,
-    readmeExcerpt: null,
     stars: 2140,
     forks: null,
     lastRelease: null,
@@ -101,6 +99,16 @@ describe("catalogEntryToPackView", () => {
         type: "skill",
         content: { body: "not a string" },
       } as unknown as CatalogContentItem,
+      {
+        name: "missing-description",
+        type: "plugin",
+        description: null,
+      },
+      {
+        name: "bad-description",
+        type: "plugin",
+        description: { text: "not a string" },
+      } as unknown as CatalogContentItem,
     ];
     const view = catalogEntryToPackView(
       makeEntry({ contentsCache: contents }),
@@ -129,6 +137,18 @@ describe("catalogEntryToPackView", () => {
       {
         name: "malformed",
         kind: PackContentKind.Skill,
+        description: null,
+        content: null,
+      },
+      {
+        name: "missing-description",
+        kind: PackContentKind.Plugin,
+        description: null,
+        content: null,
+      },
+      {
+        name: "bad-description",
+        kind: PackContentKind.Plugin,
         description: null,
         content: null,
       },
@@ -234,7 +254,7 @@ describe("buildPackViewsFromInstalledMap", () => {
 
 /**
  * ISS-6462: the desktop half of the merged-PR coverage carry. `mergedPrs` is a
- * count over the first `COHORT_SCAN_CAP` cohort sessions, and this mapper used
+ * count over a bounded sample of the cohort sessions, and this mapper used
  * to drop the flag that says so, so the overlay's Performance tile printed a
  * capped scan as an exact count.
  */
@@ -273,6 +293,31 @@ describe("packAnalyticsToBlocks merged-PR coverage", () => {
     ).toBe(false);
   });
 
+  it("carries a declared baseline sample size in both directions (ISS-9853)", () => {
+    expect(
+      packAnalyticsToBlocks(makeAnalytics({ baselineSampleSize: 500 }))
+        .performance.baselineSampleSize
+    ).toBe(500);
+    // `null` is a DECLARED state here — "the comparator was not a strict
+    // sample" — unlike the truncation flag's null, so it must ride through.
+    expect(
+      packAnalyticsToBlocks(makeAnalytics({ baselineSampleSize: null }))
+        .performance.baselineSampleSize
+    ).toBeNull();
+  });
+
+  it("preserves an omitted baseline sample size as undeclared (ISS-9853)", () => {
+    const analytics = makeAnalytics({ baselineSampleSize: 500 });
+    Reflect.deleteProperty(analytics, "baselineSampleSize");
+
+    const { performance } = packAnalyticsToBlocks(analytics);
+
+    // A producer predating the field sampled the same way and could not say so;
+    // folding that to `null` would assert a whole-window comparison.
+    expect(performance.baselineSampleSize).toBeUndefined();
+    expect(performance.baselineSampleSize).not.toBeNull();
+  });
+
   it("preserves an omitted flag as unknown rather than folding it to false", () => {
     // A cloud predating the disclosure applies the same cap and cannot report
     // it, so reading omission as "not truncated" would re-assert full-cohort
@@ -284,5 +329,49 @@ describe("packAnalyticsToBlocks merged-PR coverage", () => {
 
     expect(performance.mergedPrsTruncated).toBeUndefined();
     expect(performance.mergedPrsTruncated).not.toBe(false);
+  });
+
+  /**
+   * ISS-6768: the desktop shell's half of the roster. `PackDetail` is shared with
+   * the web Packs catalog, and both adapters now map ONE cloud-produced roster
+   * through `packInstallersFromNames` — so the render-key property the web suite
+   * pins has to hold on this adapter too, on the payload this shell actually
+   * receives. `owners` is the desktop wire field; a same-named pair arriving on it
+   * must still reach `PackDetail` as two rows under two keys.
+   */
+  it("maps the cloud roster to distinct render ids, same-named installers included", () => {
+    const { teamUsage } = packAnalyticsToBlocks(
+      makeAnalytics({ owners: ["Alex", "Alex", "Alex#2"] })
+    );
+
+    expect(teamUsage.installers?.map((user) => user.name)).toEqual([
+      "Alex",
+      "Alex",
+      "Alex#2",
+    ]);
+    // The ids are `PackDetail`'s React keys at both render sites; a duplicate
+    // makes React reconcile two different people onto one row.
+    const ids = teamUsage.installers?.map((user) => user.id) ?? [];
+    expect(new Set(ids).size).toBe(ids.length);
+    // Headcount is the roster length, not a name-deduped set.
+    expect(teamUsage.installedCount).toBe(3);
+  });
+
+  it("prefers the exact installerCount over owners.length (ISS-9854)", () => {
+    const { teamUsage } = packAnalyticsToBlocks(
+      makeAnalytics({ owners: ["Alice", "Bob"], installerCount: 7000 })
+    );
+
+    expect(teamUsage.installedCount).toBe(7000);
+    expect(teamUsage.installers).toHaveLength(2);
+  });
+
+  it("falls back to owners.length when installerCount is absent (ISS-9854 version skew)", () => {
+    const analytics = makeAnalytics({ owners: ["Alice", "Bob"] });
+    Reflect.deleteProperty(analytics, "installerCount");
+
+    const { teamUsage } = packAnalyticsToBlocks(analytics);
+
+    expect(teamUsage.installedCount).toBe(2);
   });
 });

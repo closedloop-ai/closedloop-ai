@@ -20,7 +20,7 @@ Scopes:
 
 Flags:
 
-- `--github` — CI handoff mode, posts inline comments via `gh`
+- `--github` — CI handoff mode, posts inline comments through the GitHub integration
 - `--hygiene-only` — run only the deterministic hygiene pass
 - `--base <ref>` — override the base ref
 - `--since-last-review` — incremental review since the last stored review hash
@@ -35,7 +35,7 @@ Flags:
 5. **Finding collection** — aggregates findings into `code-review-findings.json`.
 6. **Validation** — runs Pydantic validation (reusing `validate_judge_report.py` from `judges`).
 7. **Summary and verdict** — writes `code-review-summary.md` and `verdict.json` (`approve | needs_attention | changes_requested`).
-8. **GitHub posting** (`--github`) — posts inline comments and a summary comment to the PR via `gh`, resolves outdated threads.
+8. **GitHub posting** (`--github`) — posts inline comments and a summary comment to the PR through the GitHub integration, resolves outdated threads.
 
 ## Caching
 

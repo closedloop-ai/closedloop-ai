@@ -151,9 +151,7 @@ const goldenModelUsage = goldenFixture.sections.agents.charts
   .modelUsageOverTime as TimeSeries;
 
 describe("AutonomyTrendChart / ModelUsageChart render contracts", () => {
-  // ---------------------------------------------------------------------------
   // FEA-3238: fully-manual day (autonomy=0) is distinct from no-activity (null)
-  // ---------------------------------------------------------------------------
   it("FEA-3238: fully-manual day renders 0, no-activity day renders null", () => {
     const series: TimeSeries = {
       series: [{ key: "autonomy", label: "Autonomy" }],
@@ -174,9 +172,7 @@ describe("AutonomyTrendChart / ModelUsageChart render contracts", () => {
     );
   });
 
-  // ---------------------------------------------------------------------------
   // undefined → skeleton vs data → chart
-  // ---------------------------------------------------------------------------
   describe("AutonomyTrendChart skeleton vs chart", () => {
     it("renders skeleton when series is undefined", () => {
       render(<AutonomyTrendChart series={undefined} />);
@@ -230,7 +226,6 @@ describe("AutonomyTrendChart / ModelUsageChart render contracts", () => {
     });
   });
 
-  // ---------------------------------------------------------------------------
   // providerOf regroup
   //
   // providerOf matching rules (from model-usage-chart.tsx):
@@ -240,7 +235,6 @@ describe("AutonomyTrendChart / ModelUsageChart render contracts", () => {
   //   - everything else            → Other
   //
   // groupByProvider sums model values per provider per point.
-  // ---------------------------------------------------------------------------
   describe("providerOf regroup", () => {
     const series: TimeSeries = {
       series: [
@@ -357,9 +351,7 @@ describe("AutonomyTrendChart / ModelUsageChart render contracts", () => {
     });
   });
 
-  // ---------------------------------------------------------------------------
   // providerOf — unit-level matching rules
-  // ---------------------------------------------------------------------------
   describe("providerOf matching rules (exercised through provider-mode render)", () => {
     it("maps codex models to OpenAI", () => {
       const series: TimeSeries = {
@@ -410,9 +402,7 @@ describe("AutonomyTrendChart / ModelUsageChart render contracts", () => {
     });
   });
 
-  // ---------------------------------------------------------------------------
   // Currency wiring
-  // ---------------------------------------------------------------------------
   it("passes a currency formatter ($ prefix) to the chart", () => {
     const series: TimeSeries = {
       series: [{ key: "claude-opus-4-8", label: "claude-opus-4-8" }],
@@ -430,9 +420,7 @@ describe("AutonomyTrendChart / ModelUsageChart render contracts", () => {
     expect(formatter!(1500)).toMatch(DOLLAR_PREFIX_REGEX);
   });
 
-  // ---------------------------------------------------------------------------
   // FEA-3497: $ / # metric toggle
-  // ---------------------------------------------------------------------------
   describe("metric toggle ($ spend vs # tokens)", () => {
     const spend: TimeSeries = {
       series: [{ key: "claude-opus-4-8", label: "claude-opus-4-8" }],
@@ -679,9 +667,7 @@ describe("AutonomyTrendChart / ModelUsageChart render contracts", () => {
     });
   });
 
-  // ---------------------------------------------------------------------------
   // Golden fixture sanity
-  // ---------------------------------------------------------------------------
   describe("golden fixture sanity", () => {
     it("AutonomyTrendChart renders golden autonomyTrend without NaN or undefined in DOM", () => {
       const { container } = render(

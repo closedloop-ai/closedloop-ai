@@ -5,33 +5,38 @@
  * CPU-spin that never settles — see `bounded-parse.ts`). The manager records a
  * failed-this-pass attempt for such a source; after `maxAttempts` the source is
  * QUARANTINED so it is not re-parsed on every launch (which would re-wedge the
- * worker turn and re-peg a CPU core each boot). The store survives restarts (a
- * best-effort JSON file, mirroring `catchup-cache.ts`), keyed by absolute source
- * path, so a poison transcript is quarantined ONCE, not every cold start.
+ * worker turn and re-peg a CPU core each boot). The store survives restarts
+ * (ISS-9838: a best-effort row in the local SQLite store, mirroring
+ * `catchup-cache.ts`), keyed by absolute source path, so a poison transcript is
+ * quarantined ONCE, not every cold start.
+ *
+ * ISS-6115 added a SECOND stage to it, and ISS-12036 a second CAUSE for that
+ * stage — so the file name now understates the store: it is every reason a
+ * source stops being re-offered at full cost on every pass. The two stages are
+ * {@link SourceTimeoutStage}; the causes, and each stage's exit, are
+ * `collector-pending-sources.ts:settleSourceQuarantine`.
  *
  * This is deliberately a SEPARATE store from the catchup cache: the catchup cache
  * says "this file was successfully imported, skip it", whereas the quarantine says
- * "this file poisons the parser, stop retrying it". A quarantined source is never
- * marked seen in the catchup cache, so if a human deletes the quarantine file (or
- * the transcript is edited so its identity changes) it is re-attempted from scratch.
+ * "retrying this file at full cost is not converging, stop". A quarantined source
+ * is never marked seen in the catchup cache, so if the persisted store is cleared
+ * (or the transcript is edited so its identity changes) it is re-attempted from
+ * scratch.
  */
-import {
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import path from "node:path";
 import { z } from "zod";
 import {
   type QuarantinedStageCounts,
   SourceTimeoutStage,
 } from "../../../shared/ingest-quarantine-contract.js";
+import type {
+  IngestStorePort,
+  IngestStoreSnapshot,
+} from "./ingest-store-port.js";
 
 /**
- * Bump when the persisted quarantine format changes so a differently-shaped file
- * from an older build is discarded wholesale rather than mis-parsed.
+ * Bump when the persisted quarantine format changes so a differently-shaped
+ * snapshot from an older build is discarded wholesale rather than mis-parsed
+ * (ISS-9837 R3: the version discriminates the STORE, never a row).
  */
 const PERSIST_VERSION = 1;
 
@@ -74,7 +79,7 @@ export type QuarantineFingerprint = {
 export const IMPORT_QUARANTINE_COOLDOWN_MS = 6 * 60 * 60_000;
 
 type QuarantineEntry = {
-  /** Wedging-parse attempts observed so far for this source. */
+  /** Failed attempts observed so far for this source, at any stage. */
   attempts: number;
   /** True once `attempts >= maxAttempts` — the source is no longer retried. */
   quarantined: boolean;
@@ -111,8 +116,10 @@ export type ParseQuarantine = {
    */
   hasEntry(source: string): boolean;
   /**
-   * Record one wedging-parse attempt for a source and return whether it is NOW
-   * quarantined (attempts reached the threshold this call). Marks the store dirty.
+   * Record one failed attempt for a source — a wedging parse, or (ISS-6115 /
+   * ISS-12036) an import that burned its bound or never landed — and return
+   * whether it is NOW quarantined (attempts reached the threshold this call).
+   * Marks the store dirty.
    * The optional `fingerprint` is stored so a later content change invalidates the
    * entry; a fingerprint that differs from the stored one resets the attempt count
    * (a changed file starts its wedge tally over).
@@ -133,7 +140,7 @@ export type ParseQuarantine = {
    * be SAVED, and only the latter can leave a session partly written.
    */
   quarantinedCountsByStage(): QuarantinedStageCounts;
-  /** Persist the store to disk (best-effort; no-op when not dirty / no path). */
+  /** Persist the store (best-effort; no-op when not dirty / no store port). */
   flush(): void;
   /** Drop entries whose source is no longer present in `currentPaths`. */
   pruneTo(currentPaths: string[]): void;
@@ -212,7 +219,7 @@ function fingerprintsMatch(
 
 export function createParseQuarantine(
   options: {
-    persistPath?: string;
+    store?: IngestStorePort;
     maxAttempts?: number;
     /** Injected so the import-stage cooldown is drivable from tests. */
     now?: () => number;
@@ -221,10 +228,7 @@ export function createParseQuarantine(
 ): ParseQuarantine {
   const now = options.now ?? Date.now;
   const cooldownMs = options.cooldownMs ?? IMPORT_QUARANTINE_COOLDOWN_MS;
-  const persistPath =
-    typeof options.persistPath === "string" && options.persistPath.length > 0
-      ? options.persistPath
-      : null;
+  const store = options.store ?? null;
   // The attempt threshold is the conservative default; the injected `maxAttempts`
   // option is the only override (the test seam). There is intentionally no
   // environment knob — ISS-4444 requires quarantine after N attempts, not an
@@ -237,28 +241,22 @@ export function createParseQuarantine(
   const entries = new Map<string, QuarantineEntry>();
   let dirty = false;
 
-  if (persistPath) {
-    try {
-      const parsed = JSON.parse(readFileSync(persistPath, "utf8")) as {
-        version?: number;
-        entries?: Record<string, unknown>;
-      };
-      const persistedEntries =
-        parsed?.version === PERSIST_VERSION ? parsed.entries : undefined;
-      if (persistedEntries && typeof persistedEntries === "object") {
-        for (const [key, value] of Object.entries(persistedEntries)) {
-          const entry = parseQuarantineEntry(value);
-          if (entry) {
-            // Re-derive `quarantined` from the current threshold so lowering the
-            // env override can retire a borderline entry, and raising it can give
-            // a previously-quarantined source another attempt.
-            entry.quarantined = entry.attempts >= maxAttempts;
-            entries.set(key, entry);
-          }
-        }
+  // ISS-9837 R1: resolved before this constructor ran, so the load is
+  // synchronous. R3: a snapshot at a different PERSIST_VERSION is discarded
+  // WHOLE rather than partially retained.
+  const hydrated = store?.hydrated ?? null;
+  const persistedEntries =
+    hydrated?.version === PERSIST_VERSION ? hydrated.entries : undefined;
+  if (persistedEntries) {
+    for (const [key, value] of Object.entries(persistedEntries)) {
+      const entry = parseQuarantineEntry(value);
+      if (entry) {
+        // Re-derive `quarantined` from the current threshold so lowering the
+        // env override can retire a borderline entry, and raising it can give
+        // a previously-quarantined source another attempt.
+        entry.quarantined = entry.attempts >= maxAttempts;
+        entries.set(key, entry);
       }
-    } catch {
-      /* missing or corrupt quarantine file — start empty, non-fatal */
     }
   }
 
@@ -382,40 +380,41 @@ export function createParseQuarantine(
   }
 
   function flush(): void {
-    if (!(persistPath && dirty)) {
+    if (!(store && dirty)) {
       return;
     }
-    // davetho review (ISS-4444): write to a same-directory temp file and
-    // atomically rename it over the store, and clear `dirty` only AFTER the write
-    // succeeds. The prior code cleared `dirty` up front and wrote in place, so a
-    // write failure was not retryable (the next flush no-oped) and a crash /
-    // partial write could truncate the last valid JSON — which would make the next
-    // launch discard every quarantine attempt and re-parse the poison sources this
-    // store exists to skip. The rename is atomic on the same filesystem, so a
-    // reader (this or the next process) always sees either the old valid file or
-    // the new complete one, never a truncated one.
-    const tmpPath = `${persistPath}.${process.pid}.${Date.now()}.tmp`;
+    // davetho review (ISS-4444): a failed write must stay retryable on the
+    // next flush rather than no-oping — which would make the next launch discard
+    // every quarantine attempt and re-parse the poison sources this store exists
+    // to skip. whitlockk review (ISS-9838): the write is ASYNCHRONOUS now that the
+    // backing store is SQLite, so `save` RETURNING proves only that it was
+    // queued. `dirty` is therefore restored when the port reports the snapshot
+    // was not accepted, however late that lands. The temp-file-plus-rename dance
+    // the JSON writer needed for torn-write safety is gone with the file:
+    // ISS-9838 replaced it with a single-row upsert, so a reader always sees
+    // either the previous complete snapshot or the new one.
+    const snapshot: IngestStoreSnapshot = {
+      version: PERSIST_VERSION,
+      entries: {},
+    };
+    for (const [key, value] of entries) {
+      snapshot.entries[key] = value;
+    }
+    const markRetryable = (): void => {
+      dirty = true;
+    };
+    dirty = false;
     try {
-      mkdirSync(path.dirname(persistPath), { recursive: true });
-      const out: Record<string, QuarantineEntry> = {};
-      for (const [key, value] of entries) {
-        out[key] = value;
-      }
-      writeFileSync(
-        tmpPath,
-        JSON.stringify({ version: PERSIST_VERSION, entries: out })
-      );
-      renameSync(tmpPath, persistPath);
-      dirty = false;
+      store
+        .save(snapshot)
+        .then((accepted) => {
+          if (!accepted) {
+            markRetryable();
+          }
+        })
+        .catch(markRetryable);
     } catch {
-      // Best-effort persistence — the store stays correct in memory and `dirty`
-      // stays set so a later flush retries. Clean up the temp file if the failure
-      // was after it was written; leaving the previous valid store untouched.
-      try {
-        rmSync(tmpPath, { force: true });
-      } catch {
-        /* the temp file may not exist — ignore */
-      }
+      markRetryable();
     }
   }
 
@@ -428,13 +427,8 @@ export function createParseQuarantine(
     quarantinedCountsByStage,
     pruneTo,
     flush,
-    persisted: persistPath != null,
+    persisted: store != null,
   };
-}
-
-/** Absolute path to the persisted parse-quarantine store for a named source. */
-export function parseQuarantinePath(stateDir: string, name: string): string {
-  return path.join(stateDir, `parse-quarantine-${name}.json`);
 }
 
 /**

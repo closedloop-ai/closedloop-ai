@@ -81,9 +81,10 @@ export class SyncPassRun {
       outcome: this.outcome,
     };
     const line = formatSyncPassTrace(sample);
-    // A pass that sent, failed, or was slow anywhere is INFO (the ISS-5993
-    // evidence); a fast idle sweep is debug so a healthy 5s cadence does not
-    // write ~17k lines/day.
+    // A pass that sent, failed, or took too long END TO END is INFO (the
+    // ISS-5993 evidence); a fast idle sweep is debug so a healthy 5s cadence
+    // does not write ~17k lines/day. ISS-6214: "end to end", not "slow
+    // anywhere" — the threshold is on total elapsed, never a single stage gap.
     if (
       this.outcome === SyncPassOutcome.Sent ||
       this.outcome === SyncPassOutcome.Failed ||

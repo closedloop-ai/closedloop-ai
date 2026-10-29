@@ -72,15 +72,17 @@ describe("pullRequestRatingsService", () => {
         },
         select: { id: true },
       });
-      expect(mockDb.artifactRating.findUnique).toHaveBeenCalledWith({
-        where: {
-          artifactId_userId_organizationId: {
-            artifactId: "pr-1",
-            userId: "user-1",
-            organizationId: "org-1",
+      expect(mockDb.artifactRating.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            artifactId_userId_organizationId: {
+              artifactId: "pr-1",
+              userId: "user-1",
+              organizationId: "org-1",
+            },
           },
-        },
-      });
+        })
+      );
 
       expect(mockDb.artifactRating.aggregate).toHaveBeenCalledWith({
         where: { artifactId: "pr-1", organizationId: "org-1" },

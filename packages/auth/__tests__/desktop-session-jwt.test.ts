@@ -10,7 +10,6 @@ import {
   issueDesktopAccessToken,
   verifyDesktopAccessToken,
 } from "../desktop-session-jwt";
-import { RUNNER_JWT_SECRET_ENV } from "../runner-jwt-base";
 
 const TEST_SECRET = "desktop-session-secret-min-32-chars-1234";
 
@@ -154,10 +153,8 @@ describe("desktop-session-jwt", () => {
     await expect(verifyDesktopAccessToken(token)).rejects.toThrow();
   });
 
-  it("uses a dedicated secret, never the runner or gateway JWT secret", () => {
+  it("uses a dedicated secret", () => {
     expect(DESKTOP_SESSION_JWT_SECRET_ENV).toBe("DESKTOP_SESSION_JWT_SECRET");
-    expect(DESKTOP_SESSION_JWT_SECRET_ENV).not.toBe(RUNNER_JWT_SECRET_ENV);
-    expect(DESKTOP_SESSION_JWT_SECRET_ENV).not.toBe("LOCAL_GATEWAY_JWT_SECRET");
   });
 
   it("fails clearly when the secret is missing", async () => {
@@ -195,6 +192,15 @@ describe("desktop-session-jwt", () => {
       })
     ).rejects.toThrow(TOO_SHORT_ERROR);
   });
+
+  it.each(MISSING_CLAIM_CASES)(
+    "rejects a correctly signed token missing $claim",
+    async ({ omit, payload, error }) => {
+      const token = await craftTokenOmitting(omit, payload);
+
+      await expect(verifyDesktopAccessToken(token)).rejects.toThrow(error);
+    }
+  );
 });
 
 describe("isDesktopSessionToken", () => {
@@ -236,3 +242,133 @@ describe("isDesktopSessionToken", () => {
     expect(isDesktopSessionToken("a.b.c")).toBe(false);
   });
 });
+
+type StandardClaim = "sub" | "jti" | "iat" | "exp";
+
+const MISSING_SUB_ERROR = /missing sub/;
+const MISSING_JTI_ERROR = /missing jti/;
+const MISSING_ORG_ID_ERROR = /missing orgId/;
+const MISSING_SID_ERROR = /missing sid/;
+const MISSING_IAT_ERROR = /missing iat/;
+const MISSING_EXP_ERROR = /missing exp/;
+
+const MISSING_CLAIM_CASES: Array<{
+  claim: string;
+  omit: StandardClaim[];
+  payload: Record<string, unknown>;
+  error: RegExp;
+}> = [
+  {
+    claim: "sub",
+    omit: ["sub"],
+    payload: { orgId: "org-1", sid: "session-1" },
+    error: MISSING_SUB_ERROR,
+  },
+  {
+    claim: "jti",
+    omit: ["jti"],
+    payload: { orgId: "org-1", sid: "session-1" },
+    error: MISSING_JTI_ERROR,
+  },
+  {
+    claim: "a string sub",
+    omit: ["sub"],
+    payload: { sub: 42, orgId: "org-1", sid: "session-1" },
+    error: MISSING_SUB_ERROR,
+  },
+  {
+    claim: "a string jti",
+    omit: ["jti"],
+    payload: { jti: 42, orgId: "org-1", sid: "session-1" },
+    error: MISSING_JTI_ERROR,
+  },
+  {
+    claim: "orgId",
+    omit: [],
+    payload: { sid: "session-1" },
+    error: MISSING_ORG_ID_ERROR,
+  },
+  {
+    claim: "a string orgId",
+    omit: [],
+    payload: { orgId: 42, sid: "session-1" },
+    error: MISSING_ORG_ID_ERROR,
+  },
+  {
+    claim: "sid",
+    omit: [],
+    payload: { orgId: "org-1" },
+    error: MISSING_SID_ERROR,
+  },
+  {
+    claim: "a string sid",
+    omit: [],
+    payload: { orgId: "org-1", sid: 42 },
+    error: MISSING_SID_ERROR,
+  },
+  {
+    claim: "a non-empty sub",
+    omit: ["sub"],
+    payload: { sub: "", orgId: "org-1", sid: "session-1" },
+    error: MISSING_SUB_ERROR,
+  },
+  {
+    claim: "a non-empty jti",
+    omit: ["jti"],
+    payload: { jti: "", orgId: "org-1", sid: "session-1" },
+    error: MISSING_JTI_ERROR,
+  },
+  {
+    claim: "a non-empty orgId",
+    omit: [],
+    payload: { orgId: "", sid: "session-1" },
+    error: MISSING_ORG_ID_ERROR,
+  },
+  {
+    claim: "a non-empty sid",
+    omit: [],
+    payload: { orgId: "org-1", sid: "" },
+    error: MISSING_SID_ERROR,
+  },
+  {
+    claim: "iat",
+    omit: ["iat"],
+    payload: { orgId: "org-1", sid: "session-1" },
+    error: MISSING_IAT_ERROR,
+  },
+  {
+    claim: "exp",
+    omit: ["exp"],
+    payload: { orgId: "org-1", sid: "session-1" },
+    error: MISSING_EXP_ERROR,
+  },
+];
+
+/**
+ * Sign a desktop-typ token with the configured secret, issuer and audience but
+ * without the named standard claims, so each verifier guard is reached on its
+ * own after `jwtVerify` accepts the signature.
+ */
+function craftTokenOmitting(
+  omit: StandardClaim[],
+  payload: Record<string, unknown>
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const jwt = new SignJWT(payload)
+    .setProtectedHeader({ alg: "HS256", typ: DESKTOP_SESSION_JWT_TYP })
+    .setAudience(DESKTOP_SESSION_AUDIENCE)
+    .setIssuer(DESKTOP_SESSION_ISSUER);
+  if (!omit.includes("sub")) {
+    jwt.setSubject("user-1");
+  }
+  if (!omit.includes("jti")) {
+    jwt.setJti("token-1");
+  }
+  if (!omit.includes("iat")) {
+    jwt.setIssuedAt(now);
+  }
+  if (!omit.includes("exp")) {
+    jwt.setExpirationTime(now + 60);
+  }
+  return jwt.sign(secretBytes());
+}

@@ -11,12 +11,12 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   AgentComponentInvocationAnchorKind,
   AgentComponentInvocationAttributionStatus,
   AgentComponentInvocationKind,
 } from "@repo/api/src/types/agent-component-invocation";
+import { test } from "vitest";
 import { getAgentComponentDetailLocal } from "../src/main/dashboard/shared-agent-components-api.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import {

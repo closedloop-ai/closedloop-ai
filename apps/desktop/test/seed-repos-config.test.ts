@@ -3,7 +3,8 @@ import { mkdirSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
+import { gatewayLog } from "../src/main/logging/gateway-logger.js";
 import { seedReposConfig } from "../src/main/settings/seed-repos-config.js";
 import {
   loadReposConfig,
@@ -178,7 +179,23 @@ test("seeding failure does not throw but logs to console.error", async () => {
 });
 
 test("empty string sandbox is a no-op", async () => {
-  // Should not throw or create any files
-  await seedReposConfig("");
-  await seedReposConfig("   ");
+  // A blank sandbox falling through would resolve `.closedloop-ai` against the
+  // process cwd, so run from an empty dir and prove nothing lands in it.
+  const cwd = makeTempSandbox();
+  const originalCwd = process.cwd();
+  // The buffer is a 500-entry ring, so a length delta reads 0 once it is full.
+  gatewayLog.clear();
+  process.chdir(cwd);
+  try {
+    await seedReposConfig("");
+    await seedReposConfig("   ");
+  } finally {
+    process.chdir(originalCwd);
+  }
+
+  assert.deepEqual(await fs.readdir(cwd), []);
+  assert.deepEqual(
+    gatewayLog.getEntries().filter((entry) => entry.level === "error"),
+    []
+  );
 });

@@ -1,17 +1,33 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { createStubRoutineRegistrar, type TaskUpsert } from "@repo/crewd";
-import { createScheduledTasksWriter } from "@repo/crewd/native-scheduled-tasks";
 import { captureRepoIdentity as captureRepoIdentityFn } from "../enrichment/repo-identity.js";
+import type { ClaudeCodeOtelSideTableSignal } from "../otel/claude-code-otel-signal-contract.js";
+import {
+  isTokenUsageOtelSignal,
+  persistClaudeCodeOtelSignals,
+} from "../otel/claude-code-persistence.js";
+import { createClaudeCodeSignalDropRecorder } from "../otel/claude-code-signal-drop.js";
 import { parseCodexOtelBatch } from "../otel/codex-otel-contract.js";
 import { persistCodexOtelBatch } from "../otel/codex-otel-writer.js";
-import { SchedulerService } from "../scheduler/scheduler-service.js";
+import {
+  reportMigrationStep,
+  reportStorePerfSample,
+} from "../telemetry/store-perf-telemetry.js";
 import { recomputeAnalyticsRollupsFor } from "./analytics-recompute.js";
 import { startBootMaintenance } from "./boot-maintenance.js";
 import { createBranchCanonicalActivityReadMethods } from "./branch-activity-read.js";
 import { createBranchMetricEventEvidenceMethods } from "./branch-metric-event-provenance.js";
+import {
+  loadCollectorIngestStores,
+  saveCollectorIngestStore,
+} from "./collector-ingest-store.js";
 import { createSqliteDashboardQueries } from "./dashboard-queries.js";
 import { safe } from "./db-helpers.js";
+import { createQueryPerfRecorder } from "./db-host/db-host-query-perf.js";
+import {
+  type StorePerfSampler,
+  startStorePerfSampler,
+} from "./db-host/store-perf-sampler.js";
 import { createDiagnosticsMethods } from "./diagnostics-methods.js";
 import { createSqliteLifecycle } from "./live-hook.js";
 import {
@@ -51,7 +67,7 @@ import { normalizeStoredTimestampFormats as normalizeStoredTimestampFormatsFn } 
 import { healSessionLastActivityAtFloor } from "./token-cost-maintenance.js";
 import { createTranscriptSyncStore } from "./transcript-sync-store.js";
 import { createSqliteImporter } from "./write-core.js";
-import { createWriteQueue } from "./write-queue.js";
+import { createWriteQueue, withCommittedWriteObserver } from "./write-queue.js";
 
 /*
  * ISS-5400: the facade/proxy/options TYPE CONTRACT moved verbatim to
@@ -98,6 +114,10 @@ export async function openSqliteAgentDatabase(
       baselineMigrations: BASELINE_MIGRATIONS,
       collapsedMigrations: COLLAPSED_MIGRATIONS,
       log,
+      // ISS-6339: one event per executed migration. Injected rather than emitted
+      // by the runner so the runner keeps no telemetry dependency and the tests
+      // that drive it (and `prisma-test-utils`) stay emit-free.
+      onStep: options.onMigrationStep ?? reportMigrationStep,
     });
   } catch (error) {
     // Close the handle so the DB stays closed on refusal, but never let a
@@ -107,20 +127,50 @@ export async function openSqliteAgentDatabase(
     throw error;
   }
   const nowFn = options.now ?? (() => new Date().toISOString());
-  const queue = createWriteQueue();
+  const queue = createWriteQueue(options.onWriteTaskPhase);
+  // ISS-7110: observe committed writes at the single-writer boundary every
+  // `prisma.write` path flows through — backfill, importer, sync, live hooks,
+  // maintenance alike. The db-host worker wires `onCommittedWrite` to the
+  // FEA-2055 insights-cache epoch bump; before this seam the bump rode only the
+  // live-hook `emit`, so importer/backfill writes never invalidated the cache
+  // and a dashboard response computed over the pre-backfill (empty) store was
+  // re-served on every refetch. The raw `queue` keeps serving `cancel`/`drain`
+  // and the facade's `writeQueue` untouched.
+  const writeSerializer = options.onCommittedWrite
+    ? withCommittedWriteObserver(queue, options.onCommittedWrite)
+    : queue;
   // The single Prisma layer (writer + reader pool) over the same file; writes
   // serialize through the shared queue. Built before the stores so their reads
   // can run on it. If construction fails partway (a connection or PRAGMA
   // throwing), createDesktopPrisma disconnects its own opened clients, but the
   // boot-time migration `db` is ours to close — mirror the migration-refusal
   // cleanup so a post-migration boot failure leaks nothing.
+  // ISS-6339: the query-duration accumulator, wired at the adapter boundary
+  // every statement crosses. Bounded cardinality by construction — it keeps a
+  // per-statement-FAMILY histogram and never retains the SQL text.
+  const queryPerf = createQueryPerfRecorder();
   let prisma: DesktopPrisma;
   try {
-    prisma = await createDesktopPrisma(dbConfig, queue);
+    prisma = await createDesktopPrisma(dbConfig, writeSerializer, {
+      onStatementSettled: queryPerf.record,
+    });
   } catch (error) {
     await db.close().catch(() => undefined);
     throw error;
   }
+  // ISS-6339: drains that accumulator and reads the store/WAL file sizes on the
+  // store-integrity heartbeat cadence. Started AFTER the client exists so the
+  // first window cannot span construction.
+  const storePerfSampler: StorePerfSampler = startStorePerfSampler({
+    databasePath: options.dataDir,
+    recorder: queryPerf,
+    emit: options.onStorePerfSample ?? reportStorePerfSample,
+    ...(options.storePerfSampleIntervalMs === undefined
+      ? {}
+      : { intervalMs: options.storePerfSampleIntervalMs }),
+    log,
+  });
+  options.onStorePerfSamplerStarted?.(storePerfSampler);
   // FEA-2038 + the heal/backfill wave: the background boot-maintenance chain
   // (ordering + per-pass .catch isolation live in the module). Fire-and-forget:
   // never awaited here, exposed via `whenBootMaintenanceSettled()` below.
@@ -131,52 +181,24 @@ export async function openSqliteAgentDatabase(
   const tokenUsage = createSqliteTokenUsageStore(prisma);
   const events = createSqliteEventStore(prisma);
   const sessions = createSqliteSessionStore(prisma);
+  // ISS-10717: the dropped-signal counter behind the completeness signal. Its
+  // own `warn` goes to the same store log as every other write here, so a
+  // refused count is visible rather than silently coerced.
+  const signalDropRecorder = createClaudeCodeSignalDropRecorder({
+    prisma,
+    warn: (message) => log(message),
+  });
   const agents = createSqliteAgentStore(prisma, events);
-  const dashboard = createSqliteDashboardQueries(prisma);
+  // ISS-9279: on the STORE's clock, not `new Date()` — a store opened with an
+  // injected `now` must read its date-windowed dashboards through the same
+  // instant it wrote them at.
+  const dashboard = createSqliteDashboardQueries(prisma, nowFn);
 
   // ISS-4591: resolved once per database, OUTSIDE any transaction, so a prepare
   // error can never land mid-rebuild. See the module for the caching contract
   // (conclusive results only — a transient failure is retried).
-  const supportsRowDigest = createRowDigestProbe(prisma.client, log);
-
-  // FEA-3813 (PRD-553 M1): the local crewd scheduler host. Constructed here (in
-  // the db host) so its daemon + SQLite-mirrored `SqliteTaskStore` can own a
-  // `prisma.write` writer connection — the store's synchronous `StorePort`
-  // contract can only be backed from inside this process. NOT started here: the
-  // main process starts it from `boot()` gated on the `scheduledTasks` Labs flag
-  // (default off ⇒ the daemon never runs), and disposes it at shutdown / `close`.
-  const scheduler = new SchedulerService({
-    store: {
-      write: (fn) => prisma.write(fn),
-      read: (fn) => prisma.read(fn),
-      now: () => new Date(nowFn()),
-      log,
-    },
-    now: () => new Date(nowFn()),
-    log,
-    // FEA-4143: the child→main proxy that runs a scheduled `review` task through
-    // the main-process AuditService. Unwired ⇒ the dispatch degrades to a
-    // recorded skip (fires + persists, spawns nothing).
-    runReview: options.runScheduledReview,
-    // FEA-3814 (PRD-553 M2): forward store mutations up so the worker can push a
-    // `desktop:scheduled-tasks:changed` to the renderer (no-op when unwired).
-    onChange: options.onSchedulerChanged,
-    // FEA-3816 (PRD-553 M4): the capability broker's cloud-routine registration
-    // seam. When a task's broker `route` flips to `claude-routine`, the store
-    // fires `register(task)` (and `deregister(task)` on the reverse). There is no
-    // in-repo Claude cloud-routine registration API yet (the ClosedLoop REST
-    // client has no routine endpoint), so we inject the honest stub: it logs the
-    // intent and reports `ok:false` ("not wired"), while the persisted `route`
-    // stays authoritative. When the routine API lands, swap this one line for the
-    // concrete registrar — the store/daemon are untouched.
-    routineRegistrar: createStubRoutineRegistrar(log),
-    // FEA-3958 (PLN-1492) Slice A: the NATIVE local-scheduler seam. When a task's
-    // broker `route` is `claude-scheduled-tasks`, the store materializes it into
-    // Claude Code's local `~/.claude/scheduled_tasks.json` via this writer (and
-    // removes it on the reverse flip / delete). Additive and inert by default —
-    // nothing routes here unless a task is explicitly opted in (a later slice).
-    scheduledTasksRegistrar: createScheduledTasksWriter({ log }),
-  });
+  const supportsRowDigest =
+    options.rowDigestSupportProbe ?? createRowDigestProbe(prisma.client, log);
 
   // FEA-3743: normalize any non-canonical (offset-form) timestamp text left by
   // an earlier build's Codex OTel writer into the canonical UTC 'Z' form BEFORE
@@ -377,6 +399,9 @@ export async function openSqliteAgentDatabase(
       // provider the live-hook lifecycle below uses. Omitting it here is what
       // left every imported session unattributed.
       getUserIdentity: options.getUserIdentity,
+      // ISS-8757: the same probe the rebuild gate uses, so the event-content
+      // bracket in the incremental import folds with the real row digest.
+      supportsRowDigest,
       now: nowFn,
       log,
       onPostImport: (cwd) => {
@@ -398,13 +423,70 @@ export async function openSqliteAgentDatabase(
       // without ever taking an unrelated healthy session's transaction as victim.
       cancelInFlightWrite: (sessionId, reason) =>
         queue.cancel(sessionId, reason),
+      // ISS-7256: the read-only counterpart, so the bound can tell a session that
+      // WEDGED the writer from one that only ever waited behind another owner's
+      // write — without evicting the latter to find out. This is the IN-PROCESS
+      // answer, read straight off the queue. In DB-host mode the same op path is
+      // answered by the dispatcher's mirror instead and never reaches here, for
+      // the reason `write-dispatch-mirror.ts` gives.
+      hasUndispatchedWrite: (sessionId) =>
+        queue.probeUndispatchedTask(sessionId),
     }),
     syncSource: createSqliteSessionSyncSource(prisma, log),
     transcriptSync: createTranscriptSyncStore(prisma),
+    collectorIngestStores: {
+      loadAll: () => loadCollectorIngestStores(prisma),
+      save: (storeKey, formatVersion, payload) =>
+        saveCollectorIngestStore(prisma, storeKey, formatVersion, payload),
+    },
     sessions,
     agents,
     events,
     tokenUsage,
+    claudeCodeOtel: {
+      // ISS-7352: the production caller `persistClaudeCodeOtelSignals` never
+      // had. Signals arrive already narrowed by the OTLP normalizer; the
+      // persister re-validates and reports each rejection, so a single
+      // malformed signal costs its own row and not the batch.
+      persistSignals: async (signals: ClaudeCodeOtelSideTableSignal[]) => {
+        // The parameter type excludes `token_usage`, but this facade is a
+        // process boundary: the db-host receives whatever IPC hands it. A
+        // transcript-owned total must not be overwritable through here, so the
+        // discriminant is re-checked at runtime and offenders are counted as
+        // rejected rather than silently dropped.
+        const admissible: ClaudeCodeOtelSideTableSignal[] = [];
+        let refused = 0;
+        for (const signal of signals) {
+          if (isTokenUsageOtelSignal(signal)) {
+            refused += 1;
+            log(
+              "claude-code otel signal rejected: token_usage is owned by the transcript parser and cannot be written through the OTel lane"
+            );
+            continue;
+          }
+          admissible.push(signal);
+        }
+        if (admissible.length === 0) {
+          return { accepted: 0, rejected: refused };
+        }
+        const summary = await persistClaudeCodeOtelSignals(
+          { prisma, events: admissible },
+          {
+            warn: (warning) =>
+              log(
+                `claude-code otel signal ${warning.index} (${warning.signalType ?? "untyped"}) rejected: ${warning.issues.join("; ")}`
+              ),
+            // ISS-10720: the invocation-attribution refresh's per-session tally.
+            log,
+          }
+        );
+        return {
+          accepted: summary.accepted,
+          rejected: summary.rejected + refused,
+        };
+      },
+      recordSignalDrop: (input) => signalDropRecorder.record(input),
+    },
     codexOtel: {
       persistBatch: async (batch: unknown) => {
         const parsedBatch = parseCodexOtelBatch(batch);
@@ -473,39 +555,13 @@ export async function openSqliteAgentDatabase(
       supportsRowDigest,
       tokenUsage,
     }),
-    ...createDiagnosticsMethods(prisma),
+    ...createDiagnosticsMethods(prisma, log),
     ...createBranchCanonicalActivityReadMethods(prisma),
     ...createBranchMetricEventEvidenceMethods(prisma),
-    scheduler: {
-      start: () => scheduler.start(),
-      stop: () => scheduler.dispose(),
-      tickOnce: () => scheduler.tickOnce(),
-      isRunning: () => Promise.resolve(scheduler.isRunning()),
-      // FEA-3814 (PRD-553 M2): read-only reads over the in-memory mirror. Both
-      // return plain arrays (clone-safe) so the main-process proxy can forward
-      // them; empty before `start()` (see SchedulerService).
-      list: () => Promise.resolve(scheduler.listTasks()),
-      runs: (taskId?: string, limit?: number) =>
-        Promise.resolve(scheduler.listRuns(taskId, limit)),
-      // FEA-3853 (PRD-553 M3): mutations over the store. Args are the already-
-      // validated save payload / ids (the IPC handler runs the Zod schema before
-      // crossing the proxy), and every return is a plain clone-safe value.
-      upsert: (input: TaskUpsert) =>
-        Promise.resolve(scheduler.upsertTask(input)),
-      remove: (id: string) => Promise.resolve(scheduler.removeTask(id)),
-      setEnabled: (id: string, enabled: boolean) =>
-        Promise.resolve(scheduler.setEnabled(id, enabled) ?? null),
-      runNow: (id: string) => Promise.resolve(scheduler.runNow(id)),
-      previewSchedule: (cron: string, timezone: string, count?: number) =>
-        Promise.resolve(
-          SchedulerService.previewSchedule(cron, timezone, count)
-        ),
-    },
     close: async () => {
-      // Dispose the scheduler FIRST so its daemon timer stops and any in-flight
-      // run + pending write-behind drains onto the writer connection before we
-      // tear the queue/connection down.
-      await scheduler.dispose().catch(() => undefined);
+      // ISS-6339: stop the perf timer before anything else so a tick cannot fire
+      // against a torn-down connection.
+      storePerfSampler.stop();
       await queue.drain();
       await prisma.disconnect().catch(() => undefined);
       await db.close();

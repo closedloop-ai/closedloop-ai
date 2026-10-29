@@ -194,6 +194,30 @@ describe("evaluateSeedGuards — destructive reset needs its OWN opt-in", () => 
 });
 
 describe("evaluateSeedGuards — perf profile and shared stage", () => {
+  it("needs no STAGE_PGHOST for a localhost target — a local DB cannot be stage (ISS-5288)", () => {
+    // The tripwire exists to stop a perf seed aimed at shared stage. A
+    // localhost target cannot be that, so demanding the deployed DB's hostname
+    // here would only make a local flow depend on production secrets.
+    expect(
+      guards({
+        profile: SeedProfileName.Perf,
+        databaseUrl:
+          "postgresql://postgres:postgres@localhost:5432/closedloop_perf",
+      })
+    ).toMatchObject({ ok: true });
+  });
+
+  it("ignores a configured STAGE_PGHOST for a localhost target", () => {
+    expect(
+      guards({
+        profile: SeedProfileName.Perf,
+        databaseUrl:
+          "postgresql://postgres:postgres@127.0.0.1:5432/closedloop_perf",
+        stagePgHost: "db.internal.example",
+      })
+    ).toMatchObject({ ok: true });
+  });
+
   it("refuses the perf profile when STAGE_PGHOST is unconfigured", () => {
     expect(
       guards({

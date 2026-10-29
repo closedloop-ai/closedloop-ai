@@ -1,7 +1,4 @@
-import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "@repo/api/src/types/session-status";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { getDurationScaleMinutes } from "@repo/app/shared/lib/format-utils";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -214,55 +211,37 @@ describe("resolveSessionDurationWindow (ISS-5131)", () => {
     ).toBeNull();
   });
 
-  it("bounds the LEGACY terminal statuses too (ISS-4586 version skew)", () => {
-    // Stored rows and older desktop builds still carry `completed`/`abandoned`.
-    // Falling through to the running branch would measure a long-finished legacy
-    // row against `now()` — the same growing-forever number, on the population
-    // least likely to be looked at closely.
-    for (const status of ["completed", "abandoned"]) {
+  /**
+   * ISS-10364 (operator ruling, Cosimo Corrigan, 2026-09-23/24): "Unparsable
+   * status are already converted to Active on import. Don't distinguish
+   * between active and stale." `resolveSessionDurationLifecycle` now answers
+   * `Running` for ANY status it doesn't recognize as a canonical lifecycle
+   * member — legacy retired spellings (`completed`, `abandoned`), the retired
+   * display-only words (`stale`, `unknown`), and a genuinely future spelling
+   * all take the identical fail-open path `normalizeSessionStatus` already
+   * applied elsewhere. A `Running` lifecycle short-circuits the window logic
+   * before it ever looks at `endedAt`, so ALL of these now measure to `now()`
+   * regardless of whether an end instant is present. This replaces the three
+   * pre-ISS-10364 cases that pinned the retired evidence-bounded behavior.
+   */
+  it("ISS-10364: measures ANY unrecognized or retired status against now, evidence or not", () => {
+    for (const status of [
+      "completed",
+      "abandoned",
+      "stale",
+      "unknown",
+      "some-future-status",
+    ]) {
       expect(resolveSessionDurationWindow(status, REPRO_ENDED_AT)).toEqual({
-        kind: "ended",
-        end: REPRO_ENDED_AT,
+        kind: "running",
       });
       expect(resolveSessionDurationWindow(status, null)).toEqual({
-        kind: "unmeasurable",
+        kind: "running",
       });
     }
   });
 
-  it("stops timing a STALE session, so its Duration cannot contradict its Status", () => {
-    // #4409 review: with `sessions-honest-unknown-states` on, the Sessions list
-    // hands this the DISPLAYED status, so a row silent past the cutoff arrives
-    // as `stale`. Keeping it on the running branch put a Status cell reading
-    // "Unknown" beside a Duration confidently claiming 73h and climbing — one
-    // row both disclaiming knowledge of the state and still timing the run.
-    expect(
-      resolveSessionDurationWindow(DISPLAYED_SESSION_STATUS.STALE, null)
-    ).toEqual({
-      kind: "unmeasurable",
-    });
-    expect(
-      resolveSessionDurationWindow(DISPLAYED_SESSION_STATUS.UNKNOWN, null)
-    ).toEqual({
-      kind: "unmeasurable",
-    });
-    // Evidence still wins where there IS evidence: a stale row that does carry
-    // an end instant is bounded by it rather than blanked.
-    expect(
-      resolveSessionDurationWindow(DISPLAYED_SESSION_STATUS.STALE, ENDED_AT)
-    ).toEqual({ kind: "ended", end: ENDED_AT });
-  });
-
-  it("resolves an UNRECOGNIZED or ABSENT status by evidence, never by reaching for the clock", () => {
-    // ISS-4997: an unknown status asserts nothing about the lifecycle. An
-    // `endedAt` is evidence the session ended; its ABSENCE is not evidence that
-    // it is still going, so the span is unmeasurable rather than live.
-    expect(
-      resolveSessionDurationWindow("some-future-status", ENDED_AT)
-    ).toEqual({ kind: "ended", end: ENDED_AT });
-    expect(resolveSessionDurationWindow("some-future-status", null)).toEqual({
-      kind: "unmeasurable",
-    });
+  it("an ABSENT status is still evidence-bounded, since there is no lifecycle fold to answer Running for it", () => {
     expect(resolveSessionDurationWindow(null, null)).toEqual({
       kind: "unmeasurable",
     });

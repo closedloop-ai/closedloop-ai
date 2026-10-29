@@ -18,6 +18,8 @@ import type { ReactNode } from "react";
 // Insights reuses the existing cross-surface GitHub connect affordance so copy
 // and desktop/web CTA behavior stay aligned with Branches.
 import { ConnectGitHubIndicator } from "../../branches/components/connect-github-indicator";
+import type { GitHubConnectTarget } from "../../github/lib/github-connect-target";
+import { GatedMetricIndicatorVariant } from "../../shared/components/gated-metric-indicator";
 import type { InsightsTileAvailability } from "../lib/tile-availability";
 import {
   type ChartTileDescriptor,
@@ -31,7 +33,6 @@ import { ResizeButtons } from "./resize-buttons";
 import {
   InsightsChartContent,
   type InsightsSectionData,
-  selectChartTitle,
   selectKpi,
 } from "./tile-content";
 
@@ -48,8 +49,9 @@ export function InsightsTile({
   showResizeControls = false,
   variant = "compact",
   availability,
-  githubConnectHref,
-  onConnectGitHub,
+  githubConnect,
+  notice,
+  withSupportingCopy = false,
 }: {
   tile: TileDescriptor;
   sections: InsightsSectionData;
@@ -70,21 +72,39 @@ export function InsightsTile({
    */
   variant?: "compact" | "section";
   availability?: InsightsTileAvailability;
-  githubConnectHref?: string;
-  onConnectGitHub?: () => void | Promise<void>;
+  githubConnect?: GitHubConnectTarget;
+  /**
+   * The Overview dashboard's gated ask on a chart tile: the card wording, with
+   * the supporting sentence, instead of the centred Insights-grid wording. The
+   * sentence names a session-linked population, so only the dashboard opts in.
+   */
+  withSupportingCopy?: boolean;
+  /**
+   * ISS-10414: an optional disclosure about the tile's own content — today, the
+   * overview dashboard's "still showing the previous range and scope" chip.
+   * Rendered inside the chart card, which is the subtree `ExpandableWidget`
+   * relocates into the fullscreen dialog, so the modal carries the same
+   * disclosure the grid does (review thread). Omitted everywhere else, so the
+   * Insights page's tiles render exactly as before.
+   */
+  notice?: ReactNode;
 }) {
   const isSection = variant === "section";
-  const bodyOverride = renderTileAvailabilityOverride({
-    availability,
-    githubConnectHref,
-    onConnectGitHub,
-  });
   // KPI tiles render as the design-system MetricCard composite with the pin /
   // info / drag affordances overlaid; chart tiles use the titled card shell.
+  //
+  // ISS-7866: the two shapes take the availability override through DIFFERENT
+  // slots. A chart tile has a body to replace; a KPI tile does not — replacing
+  // its card wholesale is what dropped the metric's name, leaving a bare
+  // "Connect GitHub" ask the reader could not attribute to a metric. The KPI
+  // path keeps the card and fills its caption slot instead.
   if (tile.kind === TileKind.Kpi) {
     return (
       <KpiMetricTile
-        bodyOverride={bodyOverride}
+        availabilityDetail={renderTileAvailabilityDetail({
+          availability,
+          githubConnect,
+        })}
         kpi={selectKpi(tile, sections)}
         onEditTile={onEditTile}
         onResizeWidth={onResizeWidth}
@@ -102,10 +122,15 @@ export function InsightsTile({
 
   return (
     <ChartTile
-      bodyOverride={bodyOverride}
+      bodyOverride={renderTileAvailabilityOverride({
+        availability,
+        githubConnect,
+        withSupportingCopy,
+      })}
       comparisonLabel={comparisonLabel}
       comparisonSections={comparisonSections}
       isSection={isSection}
+      notice={notice}
       onEditTile={onEditTile}
       onResizeWidth={onResizeWidth}
       onTogglePin={onTogglePin}
@@ -144,6 +169,7 @@ function ChartTile({
   onResizeWidth,
   showDragHandle,
   showResizeControls,
+  notice,
 }: {
   tile: ChartTileDescriptor;
   sections: InsightsSectionData;
@@ -157,12 +183,15 @@ function ChartTile({
   onResizeWidth?: (id: string, width: number) => void;
   showDragHandle: boolean;
   showResizeControls: boolean;
+  /** ISS-10414 — see {@link InsightsTile}'s `notice`. */
+  notice?: ReactNode;
 }) {
-  // ISS-5507: the heading names the population the RESPONSE sent, not the
-  // catalog's cloud wording — see `selectChartTitle`. Used for the card heading,
-  // the expanded modal's accessible name, and the expand control's label, so all
-  // three name the same chart.
-  const title = selectChartTitle(tile, sections);
+  // Used for the card heading, the expanded modal's accessible name, and the
+  // expand control's label, so all three name the same chart.
+  const title = tile.title;
+  // On a touch pointer there is no hover to reveal these controls, so
+  // `touch:opacity-100` keeps the pin / edit / info / expand cluster visible;
+  // the mouse hover reveal (`group-hover:opacity-100`) is unchanged.
   const controls = ({
     expandButton,
     isExpanded = false,
@@ -179,9 +208,6 @@ function ChartTile({
     // hovering over a widget that no longer exists on the dashboard behind it.
     collapse?: () => void;
   } = {}) => (
-    // On a touch pointer there is no hover to reveal these controls, so
-    // `touch:opacity-100` keeps the pin / edit / info / expand cluster visible;
-    // the mouse hover reveal (`group-hover:opacity-100`) is unchanged.
     <div className="relative z-[10000] flex shrink-0 items-center gap-0.5 rounded-md border bg-background/95 p-0.5 opacity-0 touch:opacity-100 shadow-sm transition-opacity focus-within:opacity-100 group-hover:opacity-100">
       {showDragHandle && !isExpanded ? (
         <GripVerticalIcon className="insights-drag-handle size-4 shrink-0 cursor-move text-muted-foreground" />
@@ -260,6 +286,12 @@ function ChartTile({
         </div>
         {headerControls}
       </CardHeader>
+      {/* Inside the card, so it relocates into the expand dialog with the
+          chart it describes. Outside `CardContent`'s `flex-1` body, so the
+          container-sized chart's height math is untouched. Bare rather than
+          padded: the notice carries its own gutter, so its always-mounted
+          `sr-only` half (out of flow) costs a settled tile no layout. */}
+      {notice}
       <CardContent
         className={isSection ? "min-h-0 flex-1 px-6" : "min-h-0 flex-1 p-3"}
       >
@@ -316,32 +348,93 @@ function ChartTile({
   );
 }
 
-export function renderTileAvailabilityOverride({
+/**
+ * What a non-Available tile says, with NO layout of its own (ISS-7866): the
+ * connect affordance when the tile is gated, the unavailable sentence
+ * otherwise, and `null` when the tile can render its real value.
+ *
+ * Hosts own the container. A KPI card puts this in its `MetricCard` caption
+ * slot and keeps its label; a chart tile fills its body with it via
+ * {@link renderTileAvailabilityOverride}.
+ */
+export function renderTileAvailabilityDetail({
   availability,
-  githubConnectHref,
-  onConnectGitHub,
+  githubConnect,
+  withSupportingCopy = false,
 }: {
   availability: InsightsTileAvailability | undefined;
-  githubConnectHref: string | undefined;
-  onConnectGitHub: (() => void | Promise<void>) | undefined;
-}) {
+  githubConnect: GitHubConnectTarget | undefined;
+  /**
+   * ISS-11476's supporting sentence, which the Overview dashboard's cards pass
+   * and the Insights grid's tiles do not: the sentence names a session-linked
+   * population, and this node's own rule holds explanatory copy to its producer
+   * (`packages/app/insights/AGENTS.md`). The cloud KPI tiles are a provider-PR
+   * population with no authoring-session link, so it would be a false claim
+   * there. Codex review on #8169.
+   */
+  withSupportingCopy?: boolean;
+}): ReactNode {
   if (!availability || availability.state === BranchKpiState.Available) {
     return null;
   }
   if (availability.state === BranchKpiState.Gated) {
+    // A KPI caption sits beside the card's own label, so the verb alone is
+    // unambiguous here.
+    return (
+      <ConnectGitHubIndicator
+        connect={githubConnect}
+        variant={GatedMetricIndicatorVariant.Card}
+        withSupportingCopy={withSupportingCopy}
+      />
+    );
+  }
+  return TILE_UNAVAILABLE_MESSAGE;
+}
+
+/**
+ * The same content sized to FILL a chart tile's body. Chart tiles have a body
+ * to replace, so the override is centred in the card's content area; KPI tiles
+ * take {@link renderTileAvailabilityDetail} directly instead.
+ */
+export function renderTileAvailabilityOverride({
+  availability,
+  githubConnect,
+  withSupportingCopy = false,
+}: {
+  availability: InsightsTileAvailability | undefined;
+  githubConnect: GitHubConnectTarget | undefined;
+  /** See {@link InsightsTile}'s `withSupportingCopy`. */
+  withSupportingCopy?: boolean;
+}): ReactNode {
+  if (!availability || availability.state === BranchKpiState.Available) {
+    return null;
+  }
+  // ISS-7866 review: a chart tile REPLACES its whole body, so unlike the KPI
+  // caption above there is no card label beside the ask to say which metric is
+  // dark. It takes the centred treatment, which keeps the explanation. Building
+  // it here rather than reusing `renderTileAvailabilityDetail` is the point —
+  // sharing that helper is what made one narrowing silently empty both.
+  if (availability.state === BranchKpiState.Gated) {
     return (
       <div className="grid h-full min-h-24 place-items-center px-3">
         <ConnectGitHubIndicator
-          compact
-          connectHref={githubConnectHref}
-          onConnect={onConnectGitHub}
+          connect={githubConnect}
+          variant={
+            withSupportingCopy
+              ? GatedMetricIndicatorVariant.Card
+              : GatedMetricIndicatorVariant.Centered
+          }
+          withSupportingCopy={withSupportingCopy}
         />
       </div>
     );
   }
   return (
     <div className="grid h-full min-h-24 place-items-center px-3 text-center text-muted-foreground text-xs">
-      This GitHub metric is unavailable for the selected scope.
+      {TILE_UNAVAILABLE_MESSAGE}
     </div>
   );
 }
+
+const TILE_UNAVAILABLE_MESSAGE =
+  "This GitHub metric is unavailable for the selected scope.";

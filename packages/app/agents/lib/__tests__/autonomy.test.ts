@@ -43,14 +43,12 @@ const cases: Case[] = [
 ];
 
 describe("autonomy classification", () => {
-  it.each(cases)("value $value → $tier", ({
-    value,
-    tier,
-    label,
-    shortLabel,
-  }) => {
-    expect(getAutonomyTier(value)).toBe(tier);
-    expect(getAutonomyLabel(value)).toBe(label);
-    expect(getAutonomyShortLabel(value)).toBe(shortLabel);
-  });
+  it.each(cases)(
+    "value $value → $tier",
+    ({ value, tier, label, shortLabel }) => {
+      expect(getAutonomyTier(value)).toBe(tier);
+      expect(getAutonomyLabel(value)).toBe(label);
+      expect(getAutonomyShortLabel(value)).toBe(shortLabel);
+    }
+  );
 });

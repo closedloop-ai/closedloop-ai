@@ -43,7 +43,7 @@ function sessionRow(
     id: "session-1",
     lossClass: LossClass.Actionable,
     minutes: 30,
-    repo: "closedloop-ai/example-repo",
+    repo: "closedloop-ai/closedloop-ai",
     title: "Investigate the failing gate",
     ...overrides,
   };

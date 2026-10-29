@@ -142,6 +142,13 @@ export function normalizeSpanStatus(status: {
   }
 }
 
+/**
+ * Terminal means "no later export in this window can succeed", so latching the
+ * renderer off is honest. It is an ALLOW-LIST on purpose (ISS-6329): a reason
+ * nobody classified degrades to retryable, which costs a few bounded IPC calls,
+ * whereas the opposite default silently blinds the window for its whole life.
+ * `NotStarted` is deliberately absent — it is a boot race, not a dead sink.
+ */
 export function isTerminalRendererOtelResult(
   result: RendererOtelExportResult
 ): boolean {

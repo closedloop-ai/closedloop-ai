@@ -9,12 +9,52 @@
   --lb-destructive-foreground: var(--destructive-foreground);
   --lb-background: var(--background);
   --lb-foreground: var(--foreground);
+
+  /* ISS-10022: the 1px edge of every floating Liveblocks surface -- the inbox
+     row's "More" menu and its tooltip among them -- is painted by
+     `.lb-elevation::after` / `.lb-tooltip::after`, and both read it from
+     `--lb-inset-shadow`. `@liveblocks/react-ui/styles.css` REFERENCES that
+     token without ever declaring it: the only declaration ships in
+     `styles/dark/attributes.css`, which nothing here imports. An undeclared
+     custom property makes `box-shadow: var(--lb-inset-shadow)` invalid at
+     computed-value time, so the pseudo-element painted nothing in EITHER theme
+     and the menu opened with no border while every other menu in the product
+     (`DropdownMenu`) draws one.
+
+     `--border` carries its own per-theme alpha, so this is the same hairline
+     those menus border with rather than a second answer to the same question. */
+  --lb-inset-shadow: inset 0 0 0 1px var(--border);
+
+  /* The shadows Liveblocks ships are black at 4-12% alpha, tuned for a white
+     page. Over the dark theme's `--background` a black shadow is no shadow,
+     which left the open "More" menu -- on `--popover`, three hundredths of a
+     lightness step away -- with nothing to separate it from the list behind
+     it. `--shadow-inset` is the design-system's own drop shadow and is defined
+     per theme (0.08 alpha light, 0.35 dark). The 1px ring the Liveblocks
+     elevation values carried is now `--lb-inset-shadow` above, so dropping it
+     here costs no edge. */
+  --lb-elevation-shadow: var(--shadow-inset);
+  --lb-elevation-shadow-moderate: var(--shadow-inset);
+  --lb-tooltip-shadow: var(--shadow-inset);
 }
 
-/* Elevated surfaces (popovers, tooltips) use the popover token */
-.lb-root:where(.lb-elevation, .lb-tooltip) {
+/* Elevated surfaces -- the "More" dropdown, comment popovers -- sit on the
+   popover pair, matching `DropdownMenu`'s `bg-popover text-popover-foreground`. */
+.lb-root:where(.lb-elevation) {
   --lb-background: var(--popover);
   --lb-foreground: var(--popover-foreground);
+}
+
+/* ISS-10022: tooltips are INVERTED, here as everywhere else -- the design-system
+   `TooltipContent` is `bg-foreground text-background`, and Liveblocks' own
+   `.lb-tooltip` ships `#222`/`#fff` for the same reason. Folding tooltips in
+   with the elevated surfaces above overrode that (ours is the later stylesheet
+   at equal specificity), which repainted the "More" tooltip as a popover: on
+   the light theme a near-white label over a near-white page, separated only by
+   blur, and the one tooltip in the product that was not inverted. */
+.lb-root:where(.lb-tooltip) {
+  --lb-background: var(--foreground);
+  --lb-foreground: var(--background);
 }
 
 /* ISS-5010: notification rows gained their first avatars. A member with no
@@ -32,7 +72,8 @@
    Both rules here are scoped to the flagged rows. Unscoped they would also
    repaint the built-in Liveblocks thread rows, which already show avatars in
    this list with the flag off. */
-.cl-inbox-notification-actor-row .lb-inbox-notification-aside
+.cl-inbox-notification-actor-row
+  .lb-inbox-notification-aside
   :where(.lb-avatar) {
   background: var(--muted);
   color: inherit;

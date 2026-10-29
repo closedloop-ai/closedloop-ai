@@ -144,7 +144,7 @@ describe("isBuildMigrateEnabled (kill-switch, default ON)", () => {
     }
   });
 
-  it("reads `0`, the token example-infrastructure actually writes, as disabled", () => {
+  it("reads `0`, the token infrastructure actually writes, as disabled", () => {
     // Pinned separately because a `!== "false"` implementation passes every
     // other case above and breaks exactly this one, in production only.
     expect(isBuildMigrateEnabled({ BUILD_MIGRATE_ENABLED: "0" })).toBe(false);
@@ -165,6 +165,8 @@ describe("formatBuildMigrateSkipLine", () => {
       })
     );
 
+    expect(line.status).toBe("info");
+    expect(line.level).toBe("info");
     expect(line.message).toBe("build_migrate_skipped");
     expect(line.reason).toBe("BUILD_MIGRATE_ENABLED=0");
     expect(line.schema).toBe("preview_iss4489_abc12345");

@@ -3,6 +3,7 @@ import {
   CustomFieldType,
   LinkType,
   NumberFormat,
+  ReferenceTargetSource,
 } from "../../generated/client";
 import type { TransactionClient } from "../../generated/internal/prismaNamespace";
 import { pickRequired } from "./allocations";
@@ -30,13 +31,17 @@ export type CustomizationSeedResult = {
   multiEnumFieldId: string;
   dateFieldId: string;
   peopleFieldId: string;
+  referenceFieldId: string;
+  referenceMultiFieldId: string;
   enumOptionIds: string[];
   multiEnumOptionIds: string[];
 };
 
 /**
- * Seeds CustomField definitions covering all 6 CustomFieldType values:
- * TEXT, NUMBER, ENUM, MULTI_ENUM, DATE, PEOPLE.
+ * Seeds one CustomField definition per CustomFieldType value: TEXT, NUMBER,
+ * ENUM, MULTI_ENUM, DATE, PEOPLE, REFERENCE, REFERENCE_MULTI. A new member of
+ * that enum needs a block here, or the domain seed integration test that
+ * iterates the enum will fail.
  *
  * For ENUM and MULTI_ENUM fields, 3 CustomFieldEnumOption rows are created each.
  *
@@ -379,6 +384,83 @@ export async function seedCustomizationEntities(
     counts,
   });
 
+  // -------------------------------------------------------------------------
+  // REFERENCE / REFERENCE_MULTI fields
+  //
+  // Both carry a non-empty `referenceTargetSources`: an empty list is what the
+  // permit check treats as "points at nothing", so a sourceless seeded field
+  // would be one no value could ever be written to.
+  // -------------------------------------------------------------------------
+
+  const referenceFieldId = deterministicUuid(
+    `custom-field:${organizationId}:reference:parent-issue`
+  );
+
+  await upsertRow({
+    model: "CustomField",
+    id: referenceFieldId,
+    upsert: () =>
+      prisma.customField.upsert({
+        where: { id: referenceFieldId },
+        create: {
+          id: referenceFieldId,
+          organizationId,
+          name: "Parent Issue",
+          description: "The issue this item rolls up to.",
+          fieldType: CustomFieldType.REFERENCE,
+          createdById: userId,
+          entityTypes: [CustomFieldEntityType.DOCUMENT],
+          referenceTargetSources: [ReferenceTargetSource.ISSUE],
+          isGlobalToOrg: true,
+          showInTable: true,
+          isSearchable: false,
+          isSortable: false,
+        },
+        update: {
+          name: "Parent Issue",
+          description: "The issue this item rolls up to.",
+        },
+        select: { id: true },
+      }),
+    counts,
+  });
+
+  const referenceMultiFieldId = deterministicUuid(
+    `custom-field:${organizationId}:reference-multi:related-work`
+  );
+
+  await upsertRow({
+    model: "CustomField",
+    id: referenceMultiFieldId,
+    upsert: () =>
+      prisma.customField.upsert({
+        where: { id: referenceMultiFieldId },
+        create: {
+          id: referenceMultiFieldId,
+          organizationId,
+          name: "Related Work",
+          description: "Sessions and branches related to this item.",
+          fieldType: CustomFieldType.REFERENCE_MULTI,
+          createdById: userId,
+          entityTypes: [CustomFieldEntityType.DOCUMENT],
+          referenceTargetSources: [
+            ReferenceTargetSource.SESSION,
+            ReferenceTargetSource.BRANCH,
+          ],
+          isGlobalToOrg: true,
+          showInTable: false,
+          isSearchable: false,
+          isSortable: false,
+        },
+        update: {
+          name: "Related Work",
+          description: "Sessions and branches related to this item.",
+        },
+        select: { id: true },
+      }),
+    counts,
+  });
+
   logUpsertSummary(counts);
 
   const customizationResult: CustomizationSeedResult = {
@@ -388,6 +470,8 @@ export async function seedCustomizationEntities(
     multiEnumFieldId,
     dateFieldId,
     peopleFieldId,
+    referenceFieldId,
+    referenceMultiFieldId,
     enumOptionIds,
     multiEnumOptionIds,
   };

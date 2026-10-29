@@ -15,11 +15,11 @@
  * raise safe in either deploy order.
  */
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
 import {
   SYNC_DECOMPRESSED_BYTE_CEILING,
   SYNC_DECOMPRESSED_CHUNK_TARGET_BYTES,
 } from "@repo/api/src/types/agent-session-sync-limits";
+import { describe, it } from "vitest";
 import { prepareAgentSessionPayload } from "../src/main/agent-sync/agent-session-sync-payload.js";
 
 describe("ISS-5992: decompressed-size skew margin", () => {

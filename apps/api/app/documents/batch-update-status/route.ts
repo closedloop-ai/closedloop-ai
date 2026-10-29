@@ -1,87 +1,145 @@
-import { AuditAction, AuditObjectType } from "@repo/api/src/types/audit";
+import { ArtifactFieldEditField } from "@repo/api/src/types/artifact-field-edit-receipt";
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
+import type { BatchMutationRoute } from "@repo/api/src/types/batch-mutation-routes";
 import {
-  dispatchAuditEvents,
-  userAuditActor,
-} from "@/app/audit/audit-emit-service";
-import { captureBatchStatusChange } from "@/lib/artifact-activity-capture";
+  batchSelectionErrorResponse,
+  resolveBatchSelection,
+  withLockedBatchSelection,
+} from "@/app/documents/batch-selection-resolver";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { newBulkTransactionId } from "@/lib/bulk-mutation-transaction";
+import { statusMutationErrorResponse } from "@/lib/mutation-error-response";
+import { withOperationReceipts } from "@/lib/operation-receipts/operation-receipt-recorder";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
-import { documentService } from "../document-service";
+import { emitBatchFieldEditRefusalAnalytics } from "../batch-field-edit-refusal-analytics";
+import {
+  captureBatchStatusActivity,
+  emitBatchStatusSideEffects,
+} from "../batch-status-side-effects";
+import { batchFieldUpdateReceiptRecorder } from "../document-batch-field-receipts";
+import {
+  documentStatusMutationService,
+  validateUndoTransactionReference,
+} from "../document-status-mutation-service";
 import { batchUpdateStatusValidator } from "../validators";
 
 /**
  * POST /documents/batch-update-status
  * Update the status of multiple documents atomically.
  */
-export const POST = withAnyAuth(
-  async ({ authMethod, user }, request) => {
-    try {
-      const { body, errorResponse: parseError } = await parseBody(
-        request,
-        batchUpdateStatusValidator
-      );
-      if (parseError) {
-        return parseError;
-      }
-
-      // Snapshot the "before" status per artifact so the activity feed can
-      // record each status transition. Best-effort: read failures are ignored
-      // and simply mean a change goes uncaptured, never that the write fails.
-      const beforeStatuses = await Promise.resolve(
-        documentService.getStatusesByIds(body.documentIds, user.organizationId)
-      ).catch(() => new Map<string, string>());
-
-      const { updatedIds, changedIds } =
-        await documentService.batchUpdateStatus(
-          body.documentIds,
-          body.status,
-          user.organizationId
-        );
-
-      // Record each real transition on the tamper-evident audit ledger
-      // (FEA-3862). Only `changedIds` — documents already at the target status
-      // did not transition, so emitting for them would forge ledger entries for
-      // events that never happened (mirrors the single-document PUT guard).
-      // Non-blocking and best-effort: a SINGLE bulk outbox insert off the
-      // response path, so ledger emission never fails the batch update and the
-      // enqueue is one pooled write regardless of batch size (not one per doc).
-      const actor = userAuditActor(user.id);
-      dispatchAuditEvents(
-        changedIds.map((documentId) => ({
-          organizationId: user.organizationId,
-          actor,
-          action: AuditAction.DocumentStatusChanged,
-          objectType: AuditObjectType.Document,
-          objectId: documentId,
-          detail: { to: body.status, batch: true },
-        }))
-      );
-
-      // Capture the status transitions into the activity feed (FEA-3864).
-      // Keyed off `changedIds` — the same real-transition set the audit ledger
-      // uses — so a no-op re-apply (before === target) is never recorded as a
-      // change on either hook. Non-blocking and isolated — never fails the write
-      // (defense-in-depth guard so a synchronous throw can't 500 a batch that
-      // already committed).
+export const POST = withAnyAuth<
+  string[],
+  typeof BatchMutationRoute.DocumentsUpdateStatus
+>(
+  withOperationReceipts(
+    OperationKind.UpdateFields,
+    async ({ authMethod, user }, request, _params, receipts) => {
       try {
-        captureBatchStatusChange({
-          organizationId: user.organizationId,
-          actor: { userId: user.id, authMethod },
-          changes: changedIds.flatMap((id) => {
-            const before = beforeStatuses.get(id);
-            return before === undefined
-              ? []
-              : [{ artifactId: id, before, after: body.status }];
-          }),
-        });
-      } catch {
-        // Swallowed by design: activity capture must never fail the write.
-      }
+        const { body, errorResponse: parseError } = await parseBody(
+          request,
+          batchUpdateStatusValidator
+        );
+        if (parseError) {
+          return parseError;
+        }
 
-      return successResponse(updatedIds);
-    } catch (error) {
-      return errorResponse("Failed to update document statuses", error);
+        // ISS-10458 review (tamsinb, whitlockk): an undo may only name a transaction
+        // this organization actually committed. Checked BEFORE the write, so a
+        // bad reference costs nothing and no receipt can claim to reverse a
+        // transaction that does not exist here.
+        const undoReference = await validateUndoTransactionReference(
+          user.organizationId,
+          body.undoOfTransactionId
+        );
+        if (!undoReference.ok) {
+          return statusMutationErrorResponse(undoReference.error);
+        }
+
+        const plan = await resolveBatchSelection(body, user.organizationId);
+        if (!plan.ok) {
+          return batchSelectionErrorResponse(plan.error);
+        }
+
+        const transactionId = newBulkTransactionId();
+
+        // ISS-10993: the batch write and its activity receipt share ONE
+        // transaction. `withDb.tx` joins an ambient transaction, so the service's
+        // own `withDb.tx` runs on this one and a receipt that cannot be written
+        // rolls the status change back with it. ISS-9579 puts the selection lock
+        // on that same transaction, ahead of the service call — this route
+        // refuses the WHOLE batch over a missing id, so a server-resolved id that
+        // vanished first would 400 a select-all over a row nobody named.
+        const sideEffectInput = {
+          user,
+          authMethod,
+          status: body.status,
+          surface: body.surface,
+          transactionId,
+          undoOfTransactionId: body.undoOfTransactionId,
+        };
+        const recordReceipts = batchFieldUpdateReceiptRecorder(
+          receipts,
+          ArtifactFieldEditField.Status
+        );
+        const outcome = await withLockedBatchSelection(
+          plan.value,
+          user.organizationId,
+          async (tx, documentIds) => {
+            const written =
+              await documentStatusMutationService.batchUpdateStatus(
+                documentIds,
+                body.status,
+                user.organizationId,
+                body.expectedStatusById
+              );
+            if (written.ok) {
+              await captureBatchStatusActivity(tx, {
+                ...sideEffectInput,
+                transitions: written.value.transitions,
+                changedIds: written.value.changedIds,
+              });
+              await recordReceipts?.(tx, {
+                appliedIds: written.value.updatedIds,
+                changedIds: written.value.changedIds,
+              });
+            }
+            return written;
+          }
+        );
+        if (!outcome.ok) {
+          return batchSelectionErrorResponse(outcome.error);
+        }
+        const updateResult = outcome.value;
+        if (!updateResult.ok) {
+          emitBatchFieldEditRefusalAnalytics({
+            organizationId: user.organizationId,
+            userId: user.id,
+            authMethod,
+            field: ArtifactFieldEditField.Status,
+            surface: body.surface,
+            after: body.status,
+            error: updateResult.error,
+          });
+          return statusMutationErrorResponse(updateResult.error);
+        }
+        const { updatedIds, changedIds, transitions } = updateResult.value;
+
+        await emitBatchStatusSideEffects({
+          ...sideEffectInput,
+          transitions,
+          changedIds,
+        });
+
+        return successResponse(updatedIds);
+      } catch (error) {
+        return errorResponse("Failed to update document statuses", error);
+      }
     }
-  },
+  ),
+  // The literal, not `DOCUMENT_STATUS_MUTATION_REQUIRED_SCOPES[...Bulk]`:
+  // `undo-registry-routes.test.ts` reads this array off the AST and only
+  // understands string literals, so a spread of the imported constant parses as
+  // zero scopes and the route reads as enforcing none. The table is kept honest
+  // instead by two tests pinning this same hand-written value.
   { requiredScopes: ["write"] }
 );

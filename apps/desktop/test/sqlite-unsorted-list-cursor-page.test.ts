@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
+import { createSessionAttributionResolverCache } from "../src/main/agent-sync/agent-session-attribution.js";
 import { SessionListCursorSortKey } from "../src/main/agent-sync/agent-session-read-model.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
-import { createSessionAttributionResolverCache } from "../src/main/session/shared-agent-sessions-api.js";
 import { insertSqliteSession } from "./sqlite-session-fixtures.js";
 
 /**

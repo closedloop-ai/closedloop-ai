@@ -383,11 +383,9 @@ function makeWorkflow(
 ): WorkflowQueryData {
   const totalSessions = opts.totalSessions ?? 10;
   return {
-    cooccurrence: [],
     effectiveness: [],
     orchestration: {
       compactions: { sessions: 0, total: 0 },
-      edges: [],
       mainCount: totalSessions,
       outcomes: [],
       sessionCount: totalSessions,
@@ -406,13 +404,11 @@ function makeWorkflow(
       avgDurationSec: opts.avgDurationSec ?? 100,
       avgSubagents: 1,
       successRate: 0.9,
-      topFlow: null,
       totalAgents: 20,
       totalCompactions: 0,
       totalSessions,
       totalSubagents: 12,
     },
-    toolFlow: { toolCounts: [], transitions: [] },
   } as unknown as WorkflowQueryData;
 }
 

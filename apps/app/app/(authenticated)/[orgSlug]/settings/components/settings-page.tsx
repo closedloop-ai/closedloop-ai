@@ -1,16 +1,27 @@
 "use client";
 
-import { useFeatureFlag } from "@repo/analytics/client";
-import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
+import type { GitHubErrorCode } from "@repo/api/src/types/github-status";
 import { APPROVER_ROLE_OPTIONS, ApproverRole } from "@repo/api/src/types/user";
 import { AgentComplianceSettingsTab } from "@repo/app/agents/components/agent-compliance-settings-tab";
 import { CustomFieldsSettingsTab } from "@repo/app/custom-fields/components/custom-fields-settings-tab";
 import { githubKeys } from "@repo/app/github/hooks/use-github-integration";
+import { PenseroCredentialCard } from "@repo/app/settings/v2/panels/api-keys/pensero-credential-card";
+import { GoogleDriveCard } from "@repo/app/settings/v2/panels/plugins/google-drive-card";
 import {
   FeatureFlagPending,
   useFeatureFlagSettleDeadline,
 } from "@repo/app/shared/components/feature-flag-pending";
 import { UserLink } from "@repo/app/shared/components/user-link";
+import { FeatureFlagged } from "@repo/app/shared/feature-flags/feature-flagged";
+import {
+  useFeatureFlagEnabled,
+  useFeatureFlagResolved,
+} from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import {
+  ARTIFACT_TAGS_FEATURE_FLAG_KEY,
+  PENSERO_INTEGRATION_FEATURE_FLAG_KEY,
+} from "@repo/app/shared/lib/feature-flags";
+import { hasAdminRole } from "@repo/app/shared/lib/role-utils";
 import { TagsSettingsTab } from "@repo/app/tags/components/tags-settings-tab";
 import {
   useOrganizationUsers,
@@ -21,11 +32,6 @@ import {
   embeddedOrganizationProfileAppearance,
   embeddedProfileAppearance,
 } from "@repo/auth/components/appearance";
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@repo/design-system/components/ui/avatar";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Card,
@@ -35,6 +41,7 @@ import {
   CardTitle,
 } from "@repo/design-system/components/ui/card";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
+import { PersonAvatar } from "@repo/design-system/components/ui/person-avatar";
 import {
   Select,
   SelectContent,
@@ -56,21 +63,16 @@ import { useQueryClient } from "@tanstack/react-query";
 import { TriangleAlertIcon } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { useFeatureFlagsSettledForUser } from "@/components/feature-flags-settled";
+import { ThirdPartyHeadingScope } from "@/components/third-party-heading-scope";
 import {
   DEFAULT_SETTINGS_TAB,
   SETTINGS_TAB_PARAM,
   SettingsTab,
 } from "../settings-tabs";
-import { AnthropicApiKeyCard } from "./anthropic-api-key-card";
 import { ApiKeysSettingsPanel } from "./api-keys-settings-panel";
-import { CloudComputeModeCard } from "./cloud-compute-mode-card";
 import { GitHubIntegrationCard } from "./github-integration-card";
-import { GoogleIntegrationCard } from "./google-integration-card";
-import { LinearIntegrationCard } from "./linear-integration-card";
-import { LocalComputeTargetsCard } from "./local-compute-targets-card";
 import { OrganizationSlugSettings } from "./organization-slug-settings";
 import { SessionFrustrationCard } from "./session-frustration-card";
-import { SessionSyncPolicyCard } from "./session-sync-policy-card";
 import { TranscriptSearchCard } from "./transcript-search-card";
 
 export type SettingsPageProperties = {
@@ -89,7 +91,10 @@ export function SettingsPage({
   // one, and `?tab=tags` is server-allowlisted regardless because the flag is
   // unknown server-side. All three flag states are therefore this component's
   // problem, and each gets a different answer below.
-  const tagsFlagEnabled = useFeatureFlag("artifact-tags")?.enabled;
+  const tagsFlagEnabled = useFeatureFlagEnabled(ARTIFACT_TAGS_FEATURE_FLAG_KEY);
+  const tagsFlagResolved = useFeatureFlagResolved(
+    ARTIFACT_TAGS_FEATURE_FLAG_KEY
+  );
 
   // `Tabs` is CONTROLLED, so the URL, the user's click, and a late-resolving
   // flag all move one piece of state. The uncontrolled `defaultValue` plus
@@ -148,7 +153,8 @@ export function SettingsPage({
   // fallback exists to prevent. Render-time state adjustment, the same pattern
   // as the `requestedTab` reconciliation above.
   const flagsSettledForUser = useFeatureFlagsSettledForUser();
-  const tagsFlagDisabled = tagsFlagEnabled === false && flagsSettledForUser;
+  const tagsFlagDisabled =
+    tagsFlagResolved && !tagsFlagEnabled && flagsSettledForUser;
   if (selectedTab === SettingsTab.Tags && tagsFlagDisabled) {
     setSelectedTab(DEFAULT_SETTINGS_TAB);
   }
@@ -192,8 +198,13 @@ export function SettingsPage({
 
     if (githubStatus === "connected") {
       toast.success("GitHub connected successfully");
-    } else if (githubStatus === "error" && errorCode) {
-      const message = GITHUB_ERROR_MESSAGES[errorCode] ?? "An error occurred.";
+    } else if (githubStatus === "error") {
+      // Report EVERY `github=error`, including one whose `code` is absent or
+      // empty. The block below strips the callback params, so skipping the
+      // toast would leave the user with no error and no evidence of one.
+      // "" is never a table key, so a missing code lands on the fallback.
+      const message =
+        GITHUB_ERROR_MESSAGES[errorCode ?? ""] ?? "An error occurred.";
       toast.error(message);
     }
     if (isTerminalGithubStatus) {
@@ -274,7 +285,7 @@ export function SettingsPage({
           {tagsSelected ? (
             TAGS_TAB_TRIGGER
           ) : (
-            <FeatureFlagged flag="artifact-tags">
+            <FeatureFlagged flag={ARTIFACT_TAGS_FEATURE_FLAG_KEY}>
               {TAGS_TAB_TRIGGER}
             </FeatureFlagged>
           )}
@@ -295,10 +306,12 @@ export function SettingsPage({
         <TabsContent className="mt-3 space-y-6" value={SettingsTab.Profile}>
           <Card>
             <CardContent>
-              <UserProfile
-                appearance={embeddedProfileAppearance}
-                routing="hash"
-              />
+              <ThirdPartyHeadingScope>
+                <UserProfile
+                  appearance={embeddedProfileAppearance}
+                  routing="hash"
+                />
+              </ThirdPartyHeadingScope>
             </CardContent>
           </Card>
         </TabsContent>
@@ -309,15 +322,16 @@ export function SettingsPage({
         >
           <Card>
             <CardContent>
-              <OrganizationProfile
-                appearance={embeddedOrganizationProfileAppearance}
-                routing="hash"
-              />
+              <ThirdPartyHeadingScope>
+                <OrganizationProfile
+                  appearance={embeddedOrganizationProfileAppearance}
+                  routing="hash"
+                />
+              </ThirdPartyHeadingScope>
             </CardContent>
           </Card>
           <OrganizationSlugSettings isAdmin={isAdmin} />
           <TranscriptSearchCard isAdmin={isAdmin} />
-          <SessionSyncPolicyCard isAdmin={isAdmin} />
           <SessionFrustrationCard isAdmin={isAdmin} />
           {isAdmin && SHOW_CLOSEDLOOP_ROLES && <ClosedloopRolesSection />}
         </TabsContent>
@@ -334,7 +348,10 @@ export function SettingsPage({
           {/* Only reachable while the flag is enabled or still unresolved,
               because a resolved-off flag moves the selection off Tags. The
               fallback here is therefore the unresolved window, not a decision. */}
-          <FeatureFlagged fallback={<TagsFlagPending />} flag="artifact-tags">
+          <FeatureFlagged
+            fallback={<TagsFlagPending />}
+            flag={ARTIFACT_TAGS_FEATURE_FLAG_KEY}
+          >
             <TagsSettingsTab />
           </FeatureFlagged>
         </TabsContent>
@@ -343,16 +360,13 @@ export function SettingsPage({
           className="mt-3 space-y-6"
           value={SettingsTab.Integrations}
         >
-          <FeatureFlagged flag="the-one-flag">
-            <CloudComputeModeCard />
-          </FeatureFlagged>
-          <LocalComputeTargetsCard />
-          <AnthropicApiKeyCard isAdmin={isAdmin} />
           <GitHubIntegrationCard />
           <FeatureFlagged flag="google-drive">
-            <GoogleIntegrationCard />
+            <GoogleDriveCard />
           </FeatureFlagged>
-          <LinearIntegrationCard />
+          <FeatureFlagged flag={PENSERO_INTEGRATION_FEATURE_FLAG_KEY}>
+            <PenseroCredentialCard isAdmin={isAdmin} />
+          </FeatureFlagged>
         </TabsContent>
 
         <TabsContent className="mt-3 space-y-6" value={SettingsTab.ApiKeys}>
@@ -391,9 +405,7 @@ function AdminOnlyTabContent({
             </CardHeader>
           </Card>
         }
-        when={(
-          has: (params: { role: string } | { permission: string }) => boolean
-        ) => has({ role: "org:admin" }) || has({ role: "org:owner" })}
+        when={hasAdminRole}
       >
         {children}
       </Show>
@@ -403,18 +415,19 @@ function AdminOnlyTabContent({
 
 /**
  * Error code to user-friendly message mapping for GitHub.
- * Must match GITHUB_ERROR_CODES from github-utils.ts
+ * The `satisfies` check keeps this exhaustive with GITHUB_ERROR_CODES.
  */
-const GITHUB_ERROR_MESSAGES: Record<string, string> = {
-  not_authenticated: "Please sign in to connect GitHub.",
-  not_configured: "GitHub integration is not configured.",
-  missing_params: "Invalid authorization request. Please try again.",
-  invalid_state: "Security validation failed. Please try again.",
-  invalid_request: "Invalid authorization request. Please try again.",
-  connection_failed: "Failed to connect to GitHub. Please try again.",
-  oauth_failed: "Authorization failed. Please try again.",
-  token_exchange_failed: "Token exchange failed. Please try again.",
-};
+const GITHUB_ERROR_MESSAGES: Record<string, string> = Object.assign(
+  Object.create(null),
+  {
+    not_authenticated: "Please sign in to connect GitHub.",
+    not_configured: "GitHub integration is not configured.",
+    missing_params: "Invalid authorization request. Please try again.",
+    invalid_state: "Security validation failed. Please try again.",
+    connection_failed: "Failed to connect to GitHub. Please try again.",
+    oauth_failed: "Authorization failed. Please try again.",
+  } satisfies Record<GitHubErrorCode, string>
+);
 
 // Toggle to show Closedloop Roles section in the Organization tab.
 // Hidden until the roles feature is further defined.
@@ -459,16 +472,18 @@ function ClosedloopRolesSection() {
               key={user.id}
             >
               <div className="flex items-center gap-3">
-                <Avatar className="size-8">
-                  <AvatarImage alt={name} src={user.avatarUrl ?? undefined} />
-                  <AvatarFallback className="text-xs">
-                    {(
-                      user.firstName?.[0] ??
-                      user.email[0] ??
-                      "?"
-                    ).toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
+                <PersonAvatar
+                  avatarUrl={user.avatarUrl}
+                  className="size-8"
+                  fallbackClassName="text-xs"
+                  imageAlt={name}
+                  initials={(
+                    user.firstName?.[0] ??
+                    user.email[0] ??
+                    "?"
+                  ).toUpperCase()}
+                  name={name}
+                />
                 <div className="min-w-0">
                   <UserLink
                     className="truncate font-medium text-sm hover:underline"
@@ -524,10 +539,11 @@ function ClosedloopRolesSection() {
  * Scrolls a card-anchored deep link into view once, after the tab content has
  * actually rendered.
  *
- * A cold load of `?tab=integrations#anthropic-api-key` cannot rely on the
- * browser's own fragment scroll: the browser looks for the element before
- * React has rendered the tab, finds nothing, and gives up silently — leaving
- * the arriving user at the top of a six-card stack. Running after mount is the
+ * A cold load of a card-anchored link cannot rely on the browser's own
+ * fragment scroll: the browser looks for the element before React has rendered
+ * the tab, finds nothing, and gives up silently — leaving the arriving user at
+ * the top of a six-card stack. This page now renders only for the `?github=`
+ * callback; the v2 shell does the same job with `useSettingsFragmentScroll`. Running after mount is the
  * point of the Effect. In-app navigation to the same fragment is already
  * handled by the App Router, which scrolls on push.
  *

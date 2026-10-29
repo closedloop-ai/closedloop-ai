@@ -88,18 +88,21 @@ describe("effectiveKeyScopes", () => {
       ["superuser", "org:admin"],
       "all_unrecognized",
     ],
-  ])("fails closed and reports %s on the shared monitor", (_label, scopes, expectedReason) => {
-    expect(effectiveKeyScopes(contextFor(scopes))).toBeNull();
-    expect(logError).toHaveBeenCalledWith(
-      API_KEY_SCOPES_UNRESOLVABLE_EVENT,
-      expect.objectContaining({
-        surface: "mcp_oauth",
-        reason: expectedReason,
-        userId: "user_1",
-        organizationId: "org_1",
-      })
-    );
-  });
+  ])(
+    "fails closed and reports %s on the shared monitor",
+    (_label, scopes, expectedReason) => {
+      expect(effectiveKeyScopes(contextFor(scopes))).toBeNull();
+      expect(logError).toHaveBeenCalledWith(
+        API_KEY_SCOPES_UNRESOLVABLE_EVENT,
+        expect.objectContaining({
+          surface: "mcp_oauth",
+          reason: expectedReason,
+          userId: "user_1",
+          organizationId: "org_1",
+        })
+      );
+    }
+  );
 });
 
 describe("resolveRefreshGrantScopes", () => {

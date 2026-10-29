@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRateLimiter } from "../rate-limiter";
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 describe("createRateLimiter", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("limits after maxPerWindow events in the window", () => {
     const limiter = createRateLimiter(2, 10_000);
     expect(limiter.isRateLimited("k")).toBe(false);
@@ -20,10 +20,16 @@ describe("createRateLimiter", () => {
     expect(limiter.isRateLimited("a")).toBe(true);
   });
 
-  it("prune() evicts keys whose window has aged out but keeps active keys", async () => {
+  it("prune() evicts keys whose window has aged out but keeps active keys", () => {
+    // The limiter reads Date.now(), so a pinned clock replaces the real-clock
+    // margin the aged-out window used to be proven with.
+    vi.useFakeTimers();
+    const startedAt = new Date("2026-01-01T00:00:00.000Z").getTime();
+    vi.setSystemTime(startedAt);
+
     const limiter = createRateLimiter(5, 20);
     limiter.isRateLimited("stale");
-    await delay(40); // "stale" key's only timestamp ages past the 20ms window
+    vi.setSystemTime(startedAt + 40); // "stale" ages past the 20ms window
     limiter.isRateLimited("fresh"); // fresh key inside the window
 
     limiter.prune();
@@ -39,7 +45,7 @@ describe("createRateLimiter", () => {
     // even though we'd already recorded one event before pruning).
     const limiter2 = createRateLimiter(1, 20);
     limiter2.isRateLimited("stale");
-    await delay(40);
+    vi.setSystemTime(startedAt + 80);
     limiter2.prune();
     expect(limiter2.isRateLimited("stale")).toBe(false);
   });
@@ -50,34 +56,5 @@ describe("createRateLimiter", () => {
     expect(limiter.isRateLimited("k")).toBe(true);
     limiter.remove("k");
     expect(limiter.isRateLimited("k")).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Module-level TELEMETRY_RATE_LIMIT_PER_MINUTE validation (L4 arm0 fallback)
-// ---------------------------------------------------------------------------
-
-describe("module-level TELEMETRY_RATE_LIMIT_PER_MINUTE validation", () => {
-  // Reset the module registry before each test so dynamic import gets a fresh
-  // module instance with the current process.env value.
-  beforeEach(() => vi.resetModules());
-  afterEach(() => {
-    Reflect.deleteProperty(process.env, "TELEMETRY_RATE_LIMIT_PER_MINUTE");
-  });
-
-  it("falls back to 60 when the env var is non-numeric, allowing many requests in the window", async () => {
-    process.env.TELEMETRY_RATE_LIMIT_PER_MINUTE = "abc";
-    const { isRateLimited } = await import("../rate-limiter");
-    // Fallback is 60, so the first two calls must be allowed (not rate-limited).
-    expect(isRateLimited("probe-nan")).toBe(false);
-    expect(isRateLimited("probe-nan")).toBe(false);
-  });
-
-  it("falls back to 60 when the env var is zero (non-positive)", async () => {
-    process.env.TELEMETRY_RATE_LIMIT_PER_MINUTE = "0";
-    const { isRateLimited } = await import("../rate-limiter");
-    // A zero limit would block every call; fallback to 60 means these pass.
-    expect(isRateLimited("probe-zero")).toBe(false);
-    expect(isRateLimited("probe-zero")).toBe(false);
   });
 });

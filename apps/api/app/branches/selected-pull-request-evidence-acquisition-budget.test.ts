@@ -10,7 +10,7 @@ import {
 const KEY = {
   organizationId: "org-1",
   userId: "user-1",
-  repositoryFullName: "ClosedLoop-AI/Example-Repo",
+  repositoryFullName: "ClosedLoop-AI/ClosedLoop-AI",
   pullRequestNumber: 5180,
 };
 
@@ -105,7 +105,7 @@ describe("SelectedPullRequestEvidenceAcquisitionBudget", () => {
       firstFactory
     );
     const joined = budget.acquireEvidence(
-      { ...KEY, repositoryFullName: "closedloop-ai/example-repo" },
+      { ...KEY, repositoryFullName: "closedloop-ai/closedloop-ai" },
       new AbortController().signal,
       joinedFactory
     );
@@ -137,58 +137,54 @@ describe("SelectedPullRequestEvidenceAcquisitionBudget", () => {
     expect(joinedFactory).not.toHaveBeenCalled();
   });
 
-  it.each(
-    ISOLATION_CASES
-  )("keeps evidence isolated when only $name differs", async ({
-    left,
-    right,
-  }) => {
-    const budget = createBudget<string>();
-    const leftResult = deferred<string>();
-    const rightResult = deferred<string>();
-    const leftFactory = vi.fn(() => leftResult.promise);
-    const rightFactory = vi.fn(() => rightResult.promise);
+  it.each(ISOLATION_CASES)(
+    "keeps evidence isolated when only $name differs",
+    async ({ left, right }) => {
+      const budget = createBudget<string>();
+      const leftResult = deferred<string>();
+      const rightResult = deferred<string>();
+      const leftFactory = vi.fn(() => leftResult.promise);
+      const rightFactory = vi.fn(() => rightResult.promise);
 
-    const leftRead = budget.acquireEvidence(
-      left,
-      new AbortController().signal,
-      leftFactory
-    );
-    const rightRead = budget.acquireEvidence(
-      right,
-      new AbortController().signal,
-      rightFactory
-    );
+      const leftRead = budget.acquireEvidence(
+        left,
+        new AbortController().signal,
+        leftFactory
+      );
+      const rightRead = budget.acquireEvidence(
+        right,
+        new AbortController().signal,
+        rightFactory
+      );
 
-    expect(leftFactory).toHaveBeenCalledOnce();
-    expect(rightFactory).toHaveBeenCalledOnce();
-    leftResult.resolve("left");
-    rightResult.resolve("right");
-    await expect(Promise.all([leftRead, rightRead])).resolves.toEqual([
-      { admitted: true, value: "left" },
-      { admitted: true, value: "right" },
-    ]);
-  });
-
-  it.each(
-    ISOLATION_CASES
-  )("keeps content permits isolated when only $name differs", ({
-    left,
-    right,
-  }) => {
-    const budget = createBudget<string>({ contentMaxActive: 1 });
-    const leftPermit = budget.acquireContent(left);
-    const rightPermit = budget.acquireContent(right);
-
-    expect(leftPermit.admitted).toBe(true);
-    expect(rightPermit.admitted).toBe(true);
-    if (leftPermit.admitted) {
-      leftPermit.release();
+      expect(leftFactory).toHaveBeenCalledOnce();
+      expect(rightFactory).toHaveBeenCalledOnce();
+      leftResult.resolve("left");
+      rightResult.resolve("right");
+      await expect(Promise.all([leftRead, rightRead])).resolves.toEqual([
+        { admitted: true, value: "left" },
+        { admitted: true, value: "right" },
+      ]);
     }
-    if (rightPermit.admitted) {
-      rightPermit.release();
+  );
+
+  it.each(ISOLATION_CASES)(
+    "keeps content permits isolated when only $name differs",
+    ({ left, right }) => {
+      const budget = createBudget<string>({ contentMaxActive: 1 });
+      const leftPermit = budget.acquireContent(left);
+      const rightPermit = budget.acquireContent(right);
+
+      expect(leftPermit.admitted).toBe(true);
+      expect(rightPermit.admitted).toBe(true);
+      if (leftPermit.admitted) {
+        leftPermit.release();
+      }
+      if (rightPermit.admitted) {
+        rightPermit.release();
+      }
     }
-  });
+  );
 
   it("coalesces repository aliases for evidence and content accounting", async () => {
     const budget = createBudget<string>({ contentMaxActive: 1 });
@@ -201,7 +197,7 @@ describe("SelectedPullRequestEvidenceAcquisitionBudget", () => {
       canonicalFactory
     );
     const aliasRead = budget.acquireEvidence(
-      { ...KEY, repositoryFullName: "closedloop-ai/example-repo" },
+      { ...KEY, repositoryFullName: "closedloop-ai/closedloop-ai" },
       new AbortController().signal,
       aliasFactory
     );
@@ -216,7 +212,7 @@ describe("SelectedPullRequestEvidenceAcquisitionBudget", () => {
     const canonicalPermit = budget.acquireContent(KEY);
     const aliasPermit = budget.acquireContent({
       ...KEY,
-      repositoryFullName: "closedloop-ai/example-repo",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
     });
     expect(canonicalPermit.admitted).toBe(true);
     expect(aliasPermit).toEqual(

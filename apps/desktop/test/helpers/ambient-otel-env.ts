@@ -23,17 +23,8 @@
  */
 import { ClaudeCodeOtelEnvVar } from "../../src/server/otel/claude-code-env.js";
 
-export const CLAUDE_CODE_OTEL_ENV_KEYS: readonly string[] =
+const CLAUDE_CODE_OTEL_ENV_KEYS: readonly string[] =
   Object.values(ClaudeCodeOtelEnvVar);
-
-/** The values the provider injects once the OTLP receiver reports ready. */
-export const READY_CLAUDE_CODE_OTEL_ENV: Readonly<Record<string, string>> = {
-  [ClaudeCodeOtelEnvVar.EnableTelemetry]: "1",
-  [ClaudeCodeOtelEnvVar.MetricsExporter]: "otlp",
-  [ClaudeCodeOtelEnvVar.LogsExporter]: "otlp",
-  [ClaudeCodeOtelEnvVar.OtlpProtocol]: "http/protobuf",
-  [ClaudeCodeOtelEnvVar.OtlpEndpoint]: "http://127.0.0.1:4318",
-};
 
 /**
  * Remove every Claude Code OTel env var from `process.env` and return a
@@ -74,22 +65,4 @@ export function omitClaudeCodeOtelEnv(
     Reflect.deleteProperty(copy, key);
   }
   return copy;
-}
-
-/**
- * Establish, for an entire test FILE, that no Claude Code OTel env var is
- * present, and hand the exact prior state back when the file finishes.
- *
- * Use this in files whose code under test reads the REAL `process.env` — i.e.
- * no `withShellPathEnvForTest` context is active — where the coupling is
- * otherwise invisible until someone runs the suite from inside Claude Code.
- *
- * @param registerAfter node:test's `after` hook, passed in so this module does
- *   not import the runner and can stay usable from any harness.
- */
-export function installHermeticClaudeCodeOtelEnv(
-  registerAfter: (fn: () => void) => void
-): void {
-  const restore = stripAmbientClaudeCodeOtelEnv();
-  registerAfter(restore);
 }

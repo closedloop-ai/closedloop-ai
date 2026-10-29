@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "No writer since #9013 (ISS-12749) removed PUT /compute-targets/:id/health-check; only the GET route and target deletes touch it, no screen calls that GET, and the table stays for ISS-12784."
+}

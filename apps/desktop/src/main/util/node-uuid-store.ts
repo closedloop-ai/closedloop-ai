@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
+// ISS-10503: the v4 pattern moved to the canonical constants module
+// (`@repo/api/src/types/onboarding-analytics`) so the API schema's injection
+// control and this store validate with one declaration.
+import { isUuidV4 } from "@repo/api/src/types/onboarding-analytics";
 import Store from "electron-store";
 
 export const DESKTOP_NODE_IDENTITY_STORE_NAME = "desktop-node-identity";
 export const NODE_UUID_STORE_KEY = "nodeUuid";
-
-export const UUID_V4_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type NodeUuidStoreSchema = {
   nodeUuid?: string;
@@ -36,8 +37,4 @@ export class NodeUuidStore {
     this.store.set(NODE_UUID_STORE_KEY, fresh);
     return fresh;
   }
-}
-
-function isUuidV4(value: unknown): value is string {
-  return typeof value === "string" && UUID_V4_PATTERN.test(value);
 }

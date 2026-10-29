@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   DESKTOP_EXISTING_USER_IPC_CHANNELS,
   DesktopExistingUserIpcChannel,
   type DesktopExistingUserManagerPort,
   registerDesktopExistingUserIpcHandlers,
 } from "../src/main/ipc/desktop-existing-user-ipc.js";
-import type { DesktopExistingUserResolution } from "../src/main/session/desktop-session-manager.js";
+import type { DesktopExistingUserResolution } from "../src/shared/contracts.js";
 
 type IpcHandler = (event: unknown) => unknown;
 

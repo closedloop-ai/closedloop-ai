@@ -103,12 +103,26 @@ const ToneBadgeGallery = () => (
 );
 
 const meta = {
-  title: "Design System/Primitives/Status Badge",
+  title: "Primitives v1.0/Feedback & Status/Status Badge",
   component: ToneBadgeGallery,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof ToneBadgeGallery>;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
-export const Default: Story = {};
+
+/** A single default-tone badge, the atomic state every other tone builds on. */
+export const Default: Story = {
+  render: () => <ToneBadge label="Default" tone="default" />,
+};
+
+/**
+ * Every tone, plus the pulse/pulseRing/showDot/bg-current-inherit
+ * treatments, composed together for comparison — see the file doc comment
+ * for why each group is composed the way it is.
+ */
+export const AllTones: Story = {
+  tags: ["!manifest"],
+  parameters: { controls: { disable: true } },
+};

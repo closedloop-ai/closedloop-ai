@@ -8,6 +8,7 @@ import {
   JudgesAnalyticsDateRangePreset,
   judgesAnalyticsAllTimeRange,
 } from "@repo/app/judges-analytics/lib/judges-analytics";
+import { MY_TASKS_RECENCY_SHOW_ALL_LABEL } from "@repo/app/my-tasks/lib/my-tasks-recency-window";
 import { LABS_NAV_SECTION_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import {
   Alert,
@@ -125,7 +126,7 @@ function JudgesAnalyticsContent() {
         <EmptyState
           action={
             <Button onClick={handleShowAllTime} variant="outline">
-              Show all time
+              {MY_TASKS_RECENCY_SHOW_ALL_LABEL}
             </Button>
           }
           description="There are no judge evaluations in the selected date range."

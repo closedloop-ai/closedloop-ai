@@ -6,6 +6,8 @@ import {
   isLifecycleBranchWriteRelation,
   type SyncedBranchLifecycleEvent,
 } from "@repo/api/src/types/session-artifact-link";
+import type { SqliteArtifactLinkRow } from "./db-row-types.js";
+import { COMMIT_SHA_CORRELATION_METHOD } from "./pr-link-maintenance.js";
 
 export type DesktopBranchLifecycleEvidence = {
   linkId?: string | null;
@@ -72,4 +74,34 @@ function validTimestamp(value: string | null | undefined): string | undefined {
     return undefined;
   }
   return Number.isFinite(Date.parse(value)) ? value : undefined;
+}
+
+/** Map a persisted branch link to its lifecycle evidence. */
+export function branchLifecycleEventsForPersistedBranchLink(
+  link: SqliteArtifactLinkRow,
+  relation: ArtifactRefRelation,
+  observedAt: string | undefined
+): SyncedBranchLifecycleEvent[] {
+  return branchLifecycleEventsForBranchLink({
+    linkId: link.link_id,
+    observedAt,
+    relation,
+  });
+}
+
+/** Map a persisted PR link without treating maintenance time as PR creation. */
+export function branchLifecycleEventsForPersistedPrLink(
+  link: SqliteArtifactLinkRow,
+  relation: ArtifactRefRelation,
+  observedAt: string | undefined
+): SyncedBranchLifecycleEvent[] {
+  return branchLifecycleEventsForPrLink({
+    linkId: link.link_id,
+    method: link.method,
+    observedAt:
+      link.method === COMMIT_SHA_CORRELATION_METHOD
+        ? (link.pr_opened_at ?? undefined)
+        : observedAt,
+    relation,
+  });
 }

@@ -5,7 +5,7 @@
  * Extracted from `SettingsPanel.tsx` (ISS-5309) when the Labs tab moved to its
  * own module. ISS-5310 then moved the Gateway Health rollup out of Labs into
  * Relay / Gateway → Connection Status, so the Labs tab no longer uses this row —
- * it stays extracted because the file it came from is grandfathered shrink-only.
+ * it stays extracted so the file it came from does not grow again.
  */
 export function ConfigRow({
   label,

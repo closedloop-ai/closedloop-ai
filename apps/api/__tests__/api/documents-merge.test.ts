@@ -1,6 +1,9 @@
+import { DocumentType } from "@repo/api/src/types/document";
 import { Result, Status } from "@repo/api/src/types/result";
 import { v7 as uuidv7 } from "uuid";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeDocument } from "@/__tests__/support/documents/document.test-fixtures";
+import { toWireJson } from "@/__tests__/support/wire-json.test-helpers";
 import { POST } from "@/app/documents/merge/route";
 import { documentMergeService } from "@/app/documents/merge-service";
 import type { AuthContext } from "@/lib/auth/with-auth";
@@ -14,7 +17,11 @@ const SAME_PROJECT_REGEX = /same project/i;
 const TEMPLATE_REGEX = /TEMPLATE/i;
 
 let mockAuthContext: AuthContext = {
-  user: { id: "test-user", organizationId: "test-org" } as any,
+  user: {
+    ...createTestAuthContext().user,
+    id: "test-user",
+    organizationId: "test-org",
+  },
   clerkUserId: "clerk_test",
   clerkOrgId: "org_test",
   authMethod: "session",
@@ -22,8 +29,10 @@ let mockAuthContext: AuthContext = {
 };
 
 vi.mock("@/lib/auth/with-auth", () => ({
-  withAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context.params),
+  withAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context.params),
 }));
 vi.mock("@/app/documents/merge-service");
 vi.mock("@repo/ai/server", () => ({
@@ -36,21 +45,25 @@ describe("POST /api/artifacts/merge", () => {
     vi.clearAllMocks();
 
     mockAuthContext = createTestAuthContext({
-      user: { id: "user-123", organizationId: "org-123" } as any,
+      user: {
+        ...createTestAuthContext().user,
+        id: "user-123",
+        organizationId: "org-123",
+      },
     });
   });
 
   it("returns 200 with merged artifact on same-type merge success", async () => {
     const primaryId = uuidv7();
     const secondaryId = uuidv7();
-    const mockArtifact = {
+    const mockArtifact = makeDocument({
       id: primaryId,
       title: "Merged PRD",
-      type: "PRD",
-    };
+      type: DocumentType.Prd,
+    });
 
     vi.mocked(documentMergeService.merge).mockResolvedValue(
-      Result.ok(mockArtifact as any)
+      Result.ok(mockArtifact)
     );
 
     const request = createMockRequest({
@@ -66,20 +79,20 @@ describe("POST /api/artifacts/merge", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-    expect(json.data).toEqual(mockArtifact);
+    expect(json.data).toEqual(toWireJson(mockArtifact));
   });
 
   it("calls merge with correct args for cross-type merge", async () => {
     const primaryId = uuidv7();
     const secondaryId = uuidv7();
-    const mockArtifact = {
+    const mockArtifact = makeDocument({
       id: primaryId,
       title: "Merged Artifact",
-      type: "PRD",
-    };
+      type: DocumentType.Prd,
+    });
 
     vi.mocked(documentMergeService.merge).mockResolvedValue(
-      Result.ok(mockArtifact as any)
+      Result.ok(mockArtifact)
     );
 
     const request = createMockRequest({
@@ -217,14 +230,22 @@ describe("POST /api/artifacts/merge", () => {
   it("passes user organizationId to service for org-scoping", async () => {
     const primaryId = uuidv7();
     const secondaryId = uuidv7();
-    const mockArtifact = { id: primaryId, title: "Merged", type: "PRD" };
+    const mockArtifact = makeDocument({
+      id: primaryId,
+      title: "Merged",
+      type: DocumentType.Prd,
+    });
 
     mockAuthContext = createTestAuthContext({
-      user: { id: "user-abc", organizationId: "specific-org-id" } as any,
+      user: {
+        ...createTestAuthContext().user,
+        id: "user-abc",
+        organizationId: "specific-org-id",
+      },
     });
 
     vi.mocked(documentMergeService.merge).mockResolvedValue(
-      Result.ok(mockArtifact as any)
+      Result.ok(mockArtifact)
     );
 
     const request = createMockRequest({

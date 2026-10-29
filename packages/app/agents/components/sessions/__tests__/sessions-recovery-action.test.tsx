@@ -62,16 +62,19 @@ describe("SessionsRecoveryAction (ISS-4534)", () => {
     ["shiftKey", { shiftKey: true }],
     ["altKey", { altKey: true }],
     ["middle button", { button: 1 }],
-  ])("a modified/non-primary click (%s) does NOT clear filters — the current tab's scope is preserved", (_label, eventInit) => {
-    const onClearFilters = vi.fn();
-    render(
-      <SessionsRecoveryAction href={HREF} onClearFilters={onClearFilters} />
-    );
+  ])(
+    "a modified/non-primary click (%s) does NOT clear filters — the current tab's scope is preserved",
+    (_label, eventInit) => {
+      const onClearFilters = vi.fn();
+      render(
+        <SessionsRecoveryAction href={HREF} onClearFilters={onClearFilters} />
+      );
 
-    fireEvent.click(
-      screen.getByRole("link", { name: "Clear filters and reload" }),
-      eventInit
-    );
-    expect(onClearFilters).not.toHaveBeenCalled();
-  });
+      fireEvent.click(
+        screen.getByRole("link", { name: "Clear filters and reload" }),
+        eventInit
+      );
+      expect(onClearFilters).not.toHaveBeenCalled();
+    }
+  );
 });

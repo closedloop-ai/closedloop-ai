@@ -51,6 +51,7 @@ function buildField(name: string): CustomFieldWithOptions {
     customLabelPosition: null,
     isGlobalToOrg: false,
     entityTypes: [],
+    referenceTargetSources: [],
     showInTable: false,
     isSearchable: false,
     isSortable: false,

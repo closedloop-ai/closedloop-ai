@@ -10,15 +10,16 @@ import { NextResponse } from "next/server";
  * Ownership boundary for the System Check Repair operation (ISS-5389).
  *
  * Repair mutates the target machine: it clears binary-path overrides and runs
- * `claude plugin enable`. A target shared with you by a teammate is theirs to
- * heal.
+ * `claude plugin enable`. A teammate's target is theirs to heal.
  *
- * The app's gateway-relay forwarder already refuses this early for UX, but that
- * is not the boundary. Command creation authorizes with `findAccessibleById`,
- * which intentionally includes org-shared targets, and accepts any
- * `/api/gateway/*` path in the body, so anyone holding a session token could
- * reach the repair by POSTing the command directly (ISS-5389 review). This is
- * the check that actually holds.
+ * Command creation authorizes with `findAccessibleById`, which is owner-only
+ * since ISS-12617 retired target sharing, and accepts any `/api/gateway/*`
+ * path in the body. When targets could be shared, anyone holding a session
+ * token could reach the repair by POSTing the command directly (ISS-5389
+ * review).
+ *
+ * Current Desktop builds no longer serve repair (ISS-12749); installed older
+ * builds still do, so this guard stays as defense in depth until none remain.
  */
 
 export function isHealthCheckRepairCommand(

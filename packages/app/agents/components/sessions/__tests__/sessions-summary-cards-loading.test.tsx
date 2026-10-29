@@ -1,7 +1,8 @@
-import { LOC_PER_DOLLAR_MERGED_LABEL } from "@repo/api/src/utils/loc-per-dollar";
+import { TOTAL_ESTIMATED_COST_ALIAS_LABEL } from "@repo/api/src/types/total-estimated-cost-copy";
+import { LOC_PER_DOLLAR_LABEL } from "@repo/api/src/utils/loc-per-dollar";
+import { KPI_NO_VALUE } from "@repo/app/shared/lib/format-utils";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { SESSIONS_COST_METRIC_CARD_LABEL } from "../cost-metric-card";
 import {
   PRS_SHIPPED_METRIC_CARD_LABEL,
   SESSIONS_METRIC_CARD_LABEL,
@@ -36,16 +37,16 @@ describe("SessionsSummaryCards loading state (ISS-5366)", () => {
     for (const label of [
       SESSIONS_METRIC_CARD_LABEL,
       TOTAL_TOKENS_METRIC_CARD_LABEL,
-      SESSIONS_COST_METRIC_CARD_LABEL,
+      TOTAL_ESTIMATED_COST_ALIAS_LABEL,
       PRS_SHIPPED_METRIC_CARD_LABEL,
-      LOC_PER_DOLLAR_MERGED_LABEL,
+      LOC_PER_DOLLAR_LABEL,
     ]) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
     // ...and none of them states a value. The em-dash sentinel is the ERROR
     // state's honest "we tried and failed"; a pending read must not borrow it,
     // and must certainly not paint a zero it has not read.
-    expect(screen.queryByText("—")).toBeNull();
+    expect(screen.queryByText(KPI_NO_VALUE)).toBeNull();
     expect(screen.queryByText("0")).toBeNull();
     // The row says it is updating, so assistive tech does not read the empty
     // value slots as settled content.

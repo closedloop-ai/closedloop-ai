@@ -1,3 +1,4 @@
+import { DesktopCommandStatus } from "@repo/api/src/types/compute-target";
 import { Result } from "@repo/api/src/types/result";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { computeTargetsService } from "@/app/compute-targets/service";
@@ -6,7 +7,7 @@ import { desktopCommandStore } from "@/lib/desktop-command-store";
 import { relayEventBus } from "@/lib/relay-event-bus";
 import {
   INTERNAL_SECRET,
-  makeEnvelope,
+  makeHelloAckEnvelope,
   makeSocketEventRequest,
   mockGatewayOwnerAuthContext,
   mockTarget,
@@ -109,13 +110,14 @@ describe("POST /internal/relay/socket-event — reconnect (re-hello with existin
     ).mockResolvedValue([
       {
         commandId: "cmd-old",
+        computeTargetId: "target-1",
         lastSequenceAcked: 5,
         operationId: "op-1",
-        status: "running",
+        status: DesktopCommandStatus.Running,
         method: "POST",
         path: "/api/gateway/symphony/chat/abc",
         createdAt: new Date().toISOString(),
-      } as any,
+      },
     ]);
 
     const request = makeSocketEventRequest(
@@ -137,7 +139,7 @@ describe("POST /internal/relay/socket-event — reconnect (re-hello with existin
     const result = await response.json();
     expect(result.emit[0].event).toBe("desktop.hello.ack");
     expect(result.emit[0].payload).toEqual(
-      makeEnvelope({
+      makeHelloAckEnvelope({
         computeTargetId: "target-1",
         sessionId: expect.any(String),
         serverTime: expect.any(String),

@@ -128,6 +128,8 @@ export type CodexParserCoverage = Record<
  * `compacted` is architecturally a RolloutItem, but this parser decodes it
  * through the event registry (classify's bare-`type` fallback), so it is
  * inventoried under `event_msg` alongside the events it is dispatched with.
+ * `token_usage_record` (ISS-12552) is the same: a top-level per-request record
+ * decoded through that fallback for its `response_id`.
  */
 export const CODEX_PROTOCOL_INVENTORY: CodexProtocolInventory = {
   // Outer RolloutLine envelope discriminators. classify() also accepts the
@@ -177,6 +179,7 @@ export const CODEX_PROTOCOL_INVENTORY: CodexProtocolInventory = {
     { name: "agent_reasoning" },
     { name: "agent_reasoning_section_break" },
     { name: "token_count" },
+    { name: "token_usage_record" },
     { name: "task_started" },
     { name: "compacted" },
     { name: "context_compacted" },
@@ -267,6 +270,7 @@ export const CODEX_PARSER_COVERAGE: CodexParserCoverage = {
     { name: "agent_reasoning", disposition: "decoded" },
     { name: "agent_reasoning_section_break", disposition: "decoded" },
     { name: "token_count", disposition: "decoded" },
+    { name: "token_usage_record", disposition: "decoded" },
     { name: "task_started", disposition: "decoded" },
     { name: "compacted", disposition: "decoded" },
     { name: "context_compacted", disposition: "decoded" },

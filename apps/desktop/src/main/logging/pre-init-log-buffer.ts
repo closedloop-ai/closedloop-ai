@@ -6,7 +6,7 @@
  * electron-log's file transport resolves the DEFAULT (production) path until
  * `initializePersistentLogging` configures the redirect, so any write before
  * that point lands in the operator's real `main.log` even on a redirected
- * launch — the macOS GPU-workaround line, the single-instance-lock line and the
+ * launch. The launch line, the single-instance-lock line and the
  * userData-migration lines all do exactly that. Those writes are buffered here
  * instead and replayed once the transport points at the right file.
  *

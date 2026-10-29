@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
+import { createSessionAttributionResolverCache } from "../src/main/agent-sync/agent-session-attribution.js";
 import { hydrateSyncCandidates } from "../src/main/agent-sync/agent-session-hydration-budget.js";
 import { findSqliteLocallyOversizedSessions } from "../src/main/database/sync-source-session-rows.js";
-import {
-  createSessionAttributionResolverCache,
-  getSharedAgentSessions,
-} from "../src/main/session/shared-agent-sessions-api.js";
+import { getSharedAgentSessions } from "../src/main/session/shared-agent-sessions-api.js";
 import {
   createFakeSource,
   cursor,

@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { BranchProviderAvailability } from "../branch-provider-availability";
 
-const STALE_TEXT = /stale/i;
+const STALE_MESSAGE = "GitHub comments may be stale.";
 
 describe("BranchProviderAvailability", () => {
   it("renders simultaneous stale, mixed, capped, omitted, and shortened states", () => {
@@ -21,9 +21,7 @@ describe("BranchProviderAvailability", () => {
       />
     );
 
-    expect(
-      screen.getByText("GitHub comments may be stale.")
-    ).toBeInTheDocument();
+    expect(screen.getByText(STALE_MESSAGE)).toBeInTheDocument();
     expect(
       screen.getByText(
         "GitHub comments combine evidence collected at different times."
@@ -66,7 +64,9 @@ describe("BranchProviderAvailability", () => {
     expect(
       screen.getByText("1 GitHub comment body is shortened.")
     ).toBeInTheDocument();
-    expect(screen.queryByText(STALE_TEXT)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(STALE_MESSAGE, { exact: false })
+    ).not.toBeInTheDocument();
   });
 
   it("honors stale state and uses neutral copy when cap cause is absent", () => {
@@ -84,9 +84,7 @@ describe("BranchProviderAvailability", () => {
       />
     );
 
-    expect(
-      screen.getByText("GitHub comments may be stale.")
-    ).toBeInTheDocument();
+    expect(screen.getByText(STALE_MESSAGE)).toBeInTheDocument();
 
     rerender(
       <BranchProviderAvailability

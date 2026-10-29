@@ -10,9 +10,9 @@ import type { Meta, StoryObj } from "@storybook/react";
  * outer arc color. Supports a "thinking" spinner overlay for AI processing.
  */
 const meta = {
-  title: "Design System/Data Display/Status Icon",
+  title: "Composites v1.0/Feedback & Status/Status Icon",
   component: StatusIcon,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {
     status: {
       control: "select",
@@ -25,6 +25,7 @@ const meta = {
         "executed",
         "complete",
         "wont-do",
+        "failed",
       ],
     },
     size: { control: "select", options: [16, 20] },
@@ -72,6 +73,16 @@ export const WontDo: Story = {
   args: { status: "wont-do" },
 };
 
+/**
+ * Terminal and went wrong — distinct from `wont-do` beside it, which is
+ * terminal by decision, and from the `--warning` exclamation Blocked and
+ * Changes requested draw. Its own bolt carries both distinctions on shape, so
+ * none of the three are told apart by hue alone.
+ */
+export const Failed: Story = {
+  args: { status: "failed" },
+};
+
 const ALL_STATUSES: StatusIconStatus[] = [
   "backlog",
   "todo",
@@ -81,11 +92,16 @@ const ALL_STATUSES: StatusIconStatus[] = [
   "executed",
   "complete",
   "wont-do",
+  "failed",
 ];
 
-/** All statuses at default size (16px). */
+/**
+ * All statuses at default size (16px), not one concept per story — kept out of
+ * the AI manifest for that reason.
+ */
 export const AllStatuses: Story = {
   args: { status: "backlog" },
+  tags: ["!manifest"],
   render: () => (
     <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
       {ALL_STATUSES.map((s) => (
@@ -104,11 +120,16 @@ export const AllStatuses: Story = {
       ))}
     </div>
   ),
+  parameters: { controls: { disable: true } },
 };
 
-/** All statuses at 20px. */
+/**
+ * All statuses at 20px, not one concept per story — kept out of the AI
+ * manifest for that reason.
+ */
 export const Size20: Story = {
   args: { status: "in-progress", size: 20 },
+  tags: ["!manifest"],
   render: () => (
     <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
       {ALL_STATUSES.map((s) => (
@@ -127,11 +148,17 @@ export const Size20: Story = {
       ))}
     </div>
   ),
+  parameters: { controls: { disable: true } },
 };
 
-/** Thinking spinner on arc-based statuses — inner fill stays visible. */
+/**
+ * Thinking spinner on arc-based statuses — inner fill stays visible. Every
+ * arc-based status at once, not one concept per story — kept out of the AI
+ * manifest for that reason.
+ */
 export const Thinking: Story = {
   args: { status: "in-progress", thinking: true },
+  tags: ["!manifest"],
   render: () => (
     <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
       {(
@@ -159,11 +186,16 @@ export const Thinking: Story = {
       ))}
     </div>
   ),
+  parameters: { controls: { disable: true } },
 };
 
-/** Side-by-side: normal vs thinking. */
+/**
+ * Side-by-side: normal vs thinking. Two states per row, not one concept per
+ * story — kept out of the AI manifest for that reason.
+ */
 export const NormalVsThinking: Story = {
   args: { status: "in-progress" },
+  tags: ["!manifest"],
   render: () => (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       {(["started", "in-progress", "in-review", "executed"] as const).map(
@@ -199,4 +231,5 @@ export const NormalVsThinking: Story = {
       )}
     </div>
   ),
+  parameters: { controls: { disable: true } },
 };

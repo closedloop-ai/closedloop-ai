@@ -4,19 +4,20 @@ import { Prisma, withDb } from "@repo/database";
 import type { UsageContentScope } from "../content-hash-identity";
 import {
   type DetailOrphanUsageRow,
+  detailOrphanUsageWhere,
   detailUsageNameKeys,
-  fetchDetailOrphanUsage,
+  fetchDetailOrphanUsageLane,
 } from "../detail-usage-reads";
+import {
+  type DetailUsageTotals,
+  fetchDetailUsageTotals,
+} from "../detail-usage-totals";
 import {
   createHarnessAccumulator,
   foldUsageHarness,
   type HarnessAccumulator,
 } from "../harness-attribution";
-import {
-  familyIdentitySlug,
-  type UsageGroupRow,
-  usageIdentitySlug,
-} from "../identity";
+import { familyIdentitySlug, type UsageGroupRow } from "../identity";
 import {
   loadUsageGroupsForInventory,
   loadUsageGroupsLinkedElsewhere,
@@ -99,17 +100,7 @@ export function filterUsageGroupsToDetailIdentity(
   usageGroups: UsageGroupRow[],
   identity: DetailUsageIdentity
 ): UsageGroupRow[] {
-  const detailSlugs = collectDetailSlugs(identity);
-  // No derivable slug for this detail at all (a malformed or empty key): there
-  // is nothing to compare against, so keep today's behavior rather than silently
-  // emptying the detail's usage.
-  if (detailSlugs.size === 0) {
-    return usageGroups;
-  }
-  return usageGroups.filter((group) => {
-    const ownSlug = usageIdentitySlug(group);
-    return ownSlug === undefined || detailSlugs.has(ownSlug);
-  });
+  return usageGroups.filter(detailUsageIdentityMatcher(identity));
 }
 
 function collectDetailSlugs(identity: DetailUsageIdentity): Set<string> {
@@ -234,7 +225,13 @@ export async function loadDetailUsageGroups(params: {
 }): Promise<DetailUsageLanes> {
   const { identity, liveInventoryWhere, organizationId, contentScope } = params;
   const nameKeys = detailUsageNameKeys(identity.key, identity.keys);
-  const { inventoryLinked, elsewhereLinked, orphanUsages } = await withDb.tx(
+  const {
+    inventoryLinked,
+    elsewhereLinked,
+    orphanUsages,
+    orphanTotals,
+    orphanTruncated,
+  } = await withDb.tx(
     async (tx) => {
       // ISS-6180 (davetho re-review on #5039): this family's OWN live ids are
       // derived HERE, not handed in from the caller's pooled read. They are the
@@ -284,7 +281,7 @@ export async function loadDetailUsageGroups(params: {
         otherInventoryIds,
         contentScope
       );
-      const orphanLane = await fetchDetailOrphanUsage(
+      const orphanLane = await fetchDetailOrphanUsageLane(
         tx,
         organizationId,
         identity.kind,
@@ -294,10 +291,17 @@ export async function loadDetailUsageGroups(params: {
         [...identity.keys],
         contentScope
       );
+      const totals = await resolveOrphanLaneTotals(
+        tx,
+        { organizationId, identity, contentScope },
+        orphanLane.truncated
+      );
       return {
         inventoryLinked: inventoryLane,
         elsewhereLinked: elsewhereLane,
-        orphanUsages: orphanLane,
+        orphanUsages: orphanLane.rows,
+        orphanTotals: totals,
+        orphanTruncated: orphanLane.truncated,
       };
     },
     {
@@ -311,6 +315,8 @@ export async function loadDetailUsageGroups(params: {
       identity
     ),
     orphanUsages,
+    orphanTotals,
+    orphanTruncated,
   };
 }
 
@@ -320,6 +326,19 @@ export type DetailUsageLanes = {
   usageGroups: UsageGroupRow[];
   /** The no-live-inventory-owner lane (ISS-6180), read in the same snapshot. */
   orphanUsages: DetailOrphanUsageRow[];
+  /**
+   * ISS-9852: the orphan lane's whole-population totals, present only when that
+   * lane reported its `take` bound and the aggregate resolved. The FK lanes are
+   * `groupBy` reads with no row cap, so they need no counterpart.
+   */
+  orphanTotals: DetailUsageTotals | null;
+  /**
+   * ISS-9853: whether the orphan lane hit its `take` — the lane's OWN bound,
+   * not `orphanTotals !== null`, which also reads null when the bounded lane's
+   * aggregate rejected. It is the only thing that can tell the cohort read that
+   * the session ids it is handed are a sample of the identity's sessions.
+   */
+  orphanTruncated: boolean;
 };
 
 /**
@@ -333,3 +352,53 @@ export type DetailUsageLanes = {
  * slowly could start erroring. The row caps keep the real cost far below this.
  */
 export const DETAIL_USAGE_SNAPSHOT_TX_TIMEOUT_MS = 30_000;
+
+/**
+ * ISS-9852: the orphan lane's whole-population totals, read ONLY when that lane
+ * hit its `take` — its rows are then a floor for the Invocations/Sessions cards,
+ * and the lane orders `lastInvokedAt desc`, so the dropped rows are the oldest
+ * usage. Issued over the SAME predicate inside the SAME snapshot; `null` (and
+ * free) when the lane was not bound, or when the aggregate rejected (logged).
+ * Orphan-only on purpose: the FK-linked population is already covered by the
+ * uncapped `groupBy` lanes, so widening here would double-count it.
+ */
+function resolveOrphanLaneTotals(
+  db: Parameters<Parameters<typeof withDb>[0]>[0],
+  scope: {
+    organizationId: string;
+    identity: DetailUsageIdentity;
+    contentScope: UsageContentScope | null;
+  },
+  truncated: boolean
+): Promise<DetailUsageTotals | null> {
+  if (!truncated) {
+    return Promise.resolve(null);
+  }
+  return fetchDetailUsageTotals(
+    db,
+    [
+      detailOrphanUsageWhere(
+        scope.organizationId,
+        scope.identity.kind,
+        scope.identity.key,
+        scope.identity.keys,
+        scope.contentScope
+      ),
+    ],
+    { organizationId: scope.organizationId, kind: scope.identity.kind }
+  );
+}
+
+/** Shared admission test for compact usage identities and the existing grouped detail lane. */
+export function detailUsageIdentityMatcher(
+  identity: DetailUsageIdentity
+): (group: {
+  componentKind?: string | null;
+  componentKey?: string | null;
+}) => boolean {
+  const slugs = collectDetailSlugs(identity);
+  return (group) => {
+    const ownSlug = familyIdentitySlug(group.componentKind, group.componentKey);
+    return slugs.size === 0 || ownSlug === undefined || slugs.has(ownSlug);
+  };
+}

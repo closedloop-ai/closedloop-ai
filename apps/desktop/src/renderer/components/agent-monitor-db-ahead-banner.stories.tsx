@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { AgentMonitorRuntimeStatusKind } from "../../shared/agent-monitor-status";
-import { __resetRuntimeStatusPollForTests } from "../hooks/use-ingest-progress";
+import { __resetRuntimeStatusPollForTests } from "../hooks/use-runtime-status-poll";
 import { AgentMonitorDbAheadBanner } from "./agent-monitor-db-ahead-banner";
 
 /**
@@ -21,7 +21,8 @@ import { AgentMonitorDbAheadBanner } from "./agent-monitor-db-ahead-banner";
  * wrapper with no main process behind it.
  */
 const meta = {
-  title: "Desktop/App Shell/Agent Monitor DB Ahead Banner",
+  title: "Composites v1.0/Desktop Shell/Agent Monitor DB Ahead Banner",
+  tags: ["deprecated"],
   component: AgentMonitorDbAheadBanner,
   parameters: {
     layout: "fullscreen",

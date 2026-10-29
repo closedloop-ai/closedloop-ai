@@ -1,14 +1,23 @@
 import { DEFAULT_DD_SITE } from "@repo/api/src/types/datadog-sites";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TelemetryCategory } from "../telemetry/schema";
+import { TelemetryDropReason, TelemetryFlushFailure } from "../log-buffer";
+import { TelemetryCategory } from "../telemetry/telemetry-category";
 import {
+  type DropReport,
   deleteEnvForTest,
+  findReport,
+  flushWithBackoff,
   importLogWithFetch,
+  importModuleWithFetch,
+  parseDropReports,
   parseFlushedBody,
+  silenceConsole,
+  useDeterministicTimers,
 } from "./test-helpers";
 
 const DDTAGS_RE = /env:[^,]+,version:[^,]+,git_sha:[^,]+/;
 const DDTAGS_SEGMENT_RE = /^[^:]+:[^:]+$/;
+const TWO_BATCH_ENTRY_COUNT = 101;
 
 // ---------------------------------------------------------------------------
 // log.ts — ddtags field and module-load-time warning behaviour
@@ -22,6 +31,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.doUnmock("../keys");
+  vi.useRealTimers();
 });
 
 // ---------------------------------------------------------------------------
@@ -711,7 +721,7 @@ describe("flush() batching and empty-buffer behaviour", () => {
 // ---------------------------------------------------------------------------
 
 describe("HTTP response handling — retryable and non-retryable status codes", () => {
-  it("treats HTTP 200 as success and resets retryCount", async () => {
+  it("treats HTTP 200 as success without retrying", async () => {
     vi.stubEnv("DD_API_KEY", "test-key");
     vi.stubEnv("DD_ENV", "test");
     vi.stubEnv("RELEASE_VERSION", "1.0.0");
@@ -724,6 +734,49 @@ describe("HTTP response handling — retryable and non-retryable status codes", 
     await log.flush();
 
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("restores the full retry budget after a recovered batch", async () => {
+    useDeterministicTimers();
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_ENV", "test");
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "abc123");
+    silenceConsole();
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 429 })
+      .mockResolvedValueOnce({ ok: true, status: 202 })
+      .mockRejectedValue(new Error("intake unavailable"));
+    const log = await importLogWithFetch(fetchMock);
+
+    for (let index = 0; index < TWO_BATCH_ENTRY_COUNT; index++) {
+      log.info(`entry-${index}`);
+    }
+    await flushWithBackoff(log);
+
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("clears the last failure after a recovered batch", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_ENV", "test");
+    vi.stubEnv("RELEASE_VERSION", "1.0.0");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "abc123");
+    silenceConsole();
+
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("intake unavailable"))
+      .mockResolvedValueOnce({ ok: true, status: 202 });
+    const log = await importLogWithFetch(fetchMock);
+
+    log.info("recovered");
+    await log.flush();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(log.droppedStats().lastFlushFailure).toBeUndefined();
   });
 
   it("retries on HTTP 429 — does not drop the batch", async () => {
@@ -758,34 +811,48 @@ describe("HTTP response handling — retryable and non-retryable status codes", 
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it("drops batch on HTTP 401 without retry", async () => {
-    vi.stubEnv("DD_API_KEY", "test-key");
-    vi.stubEnv("DD_ENV", "test");
-    vi.stubEnv("RELEASE_VERSION", "1.0.0");
-    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "abc123");
+  // A FULL intake batch, not one entry: `recordRejected` is passed
+  // `entries.length`, so a single-entry batch cannot tell it apart from a
+  // hardcoded `1` — the count half of the accounting would pin nothing.
+  // MAX_BATCH_SIZE comes off the module under test rather than a local literal
+  // so the batch seam has one source.
+  it.each([401, 403])(
+    "drops the whole batch on HTTP %i without retry and reports its accounting",
+    async (status) => {
+      vi.stubEnv("DD_API_KEY", "test-key");
+      vi.stubEnv("DD_ENV", "test");
+      vi.stubEnv("RELEASE_VERSION", "1.0.0");
+      vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "abc123");
+      const errorSpy = silenceConsole();
 
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 401 });
-    const log = await importLogWithFetch(fetchMock);
+      const fetchMock = vi.fn().mockResolvedValue({ ok: false, status });
+      const { log, MAX_BATCH_SIZE } = await importModuleWithFetch(
+        fetchMock,
+        () => import("../log")
+      );
 
-    log.info("unauthorized");
-    await log.flush();
+      for (let index = 0; index < MAX_BATCH_SIZE; index++) {
+        log.info(`rejected-${status}-${index}`);
+      }
+      await log.flush();
 
-    // Non-retryable — exactly one call, no retries
-    expect(fetchMock).toHaveBeenCalledOnce();
-  });
-
-  it("drops batch on HTTP 403 without retry", async () => {
-    vi.stubEnv("DD_API_KEY", "test-key");
-    vi.stubEnv("DD_ENV", "test");
-    vi.stubEnv("RELEASE_VERSION", "1.0.0");
-    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "abc123");
-
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 403 });
-    const log = await importLogWithFetch(fetchMock);
-
-    log.info("forbidden");
-    await log.flush();
-
-    expect(fetchMock).toHaveBeenCalledOnce();
-  });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(parseFlushedBody(fetchMock)).toHaveLength(MAX_BATCH_SIZE);
+      const reports = parseDropReports<DropReport>(errorSpy);
+      expect(
+        findReport(reports, TelemetryDropReason.IntakeRejected, status)
+      ).toMatchObject({
+        count: MAX_BATCH_SIZE,
+        httpStatus: status,
+        cause: TelemetryFlushFailure.ClientError,
+        cumulativeDropped: MAX_BATCH_SIZE,
+        cumulativeByReason: expect.objectContaining({
+          [TelemetryDropReason.IntakeRejected]: MAX_BATCH_SIZE,
+        }),
+        // The rejected batch left the buffer for good; the live gauge is the
+        // remainder, not the tally.
+        bufferLength: 0,
+      });
+    }
+  );
 });

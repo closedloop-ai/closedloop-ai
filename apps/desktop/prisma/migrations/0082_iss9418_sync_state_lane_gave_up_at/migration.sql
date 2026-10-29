@@ -1,0 +1,33 @@
+-- ISS-9418 (PRD-699 Appendix A): the durable lane-level GIVE-UP stamp.
+--
+-- The approved standard bounds every ENVIRONMENTAL retry by a 24h wall clock
+-- "-> lane give-up", and the retry invariant requires every bound to end in a
+-- terminal path with a recovery door. Until now no lane-level terminal state
+-- existed anywhere in the codebase: `sync_abandoned` appeared only in two
+-- comments, and the two lanes that DO measure the ceiling
+-- (`transcript_sync_state.lane_stalled_since`, migration 0062;
+-- `agent_session_sync_outbox.lane_stalled_since`, migration 0068) record when a
+-- run OPENED, never that it ended.
+--
+-- `lane_gave_up_at` is that end, as an ISO instant, and it is DURABLE for the
+-- reason the two stall clocks are: an in-memory ceiling never fires for a
+-- desktop that keeps restarting inside a long outage, which is the invariant-5
+-- violation the budget exemption was supposed to avoid.
+--
+-- It sits on `sync_state` because that table is already exactly one row per
+-- (lane, compute target): each lane keys it under its own `source_key` prefix
+-- (`buildAgentComponentSyncSourceKey` vs `buildAgentSessionSyncSourceKey`), so
+-- the two never share a row. Additive and nullable, exactly like
+-- `dead_letter_attempts` (migration 0080): NULL means "this lane has not given
+-- up", which is what every existing row and every build that predates this
+-- column reads it as.
+--
+-- CAVEAT, recorded so the next reader does not file it as a bug: the COMPONENT
+-- lane's source key embeds the payload revision
+-- (`agent-components:<revision>:<computeTargetId>`), so bumping that revision
+-- mints a NEW `sync_state` row and the give-up clock resets with it. That is the
+-- same one-time-replay behaviour the cursor in this table already has on a
+-- revision bump, and it is acceptable for the same reason: a revision bump means
+-- the payload contract changed, so the previous contract's give-up is no longer
+-- a statement about what this lane would send today.
+ALTER TABLE "sync_state" ADD COLUMN "lane_gave_up_at" TEXT;

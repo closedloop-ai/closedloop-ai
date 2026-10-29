@@ -3,6 +3,7 @@ import { fonts } from "@repo/design-system/lib/fonts";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { brandMarkSrc } from "@/lib/brand-mark";
+import { StyleLabLivePreviewBridge } from "./style-browser-live-preview-bridge";
 
 import "./styles.css";
 
@@ -22,7 +23,10 @@ type RootLayoutProperties = {
 const RootLayout = ({ children }: RootLayoutProperties) => (
   <html className={fonts} lang="en" suppressHydrationWarning>
     <body className="bg-background">
-      <DesignSystemProvider>{children}</DesignSystemProvider>
+      <DesignSystemProvider>
+        <StyleLabLivePreviewBridge />
+        {children}
+      </DesignSystemProvider>
     </body>
   </html>
 );

@@ -19,7 +19,7 @@
  * a function, an `Error`, or the DB-host proxy in `args` must NOT clone.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { createDbHostAgentDatabase } from "../src/main/database/db-host/db-host-agent-database.js";
 import type { DbHostClient } from "../src/main/database/db-host/db-host-client.js";
 import {
@@ -35,12 +35,16 @@ import {
  * a fixture is added for it — the previous flat `DbHostRequest[]` accepted any
  * subset of kinds and let a new kind ship uncovered. Each kind lists every
  * variant whose optional fields must be exercised (all `Init.options` fields, the
- * null vs populated identity, and both the `ok:true`/`value` and `ok:false`/
- * `error` legs of a ScheduledReviewResult) so a new optional non-cloneable field
- * fails the round-trip loop below.
+ * null vs populated identity) so a new optional non-cloneable field fails the
+ * round-trip loop below.
  */
 const CLONE_SAFE_REQUESTS_BY_KIND: Record<DbHostRequestKind, DbHostRequest[]> =
   {
+    // ISS-9802: the cancellation forward. A plain string token, which is the
+    // point — an `AbortSignal` is what could NOT cross this boundary.
+    [DbHostRequestKind.CancelRead]: [
+      { kind: DbHostRequestKind.CancelRead, token: "renderer-1-7" },
+    ],
     [DbHostRequestKind.Init]: [
       // Minimal: only the required dataDir.
       { kind: DbHostRequestKind.Init, id: 1, options: { dataDir: "/tmp/db" } },
@@ -62,6 +66,15 @@ const CLONE_SAFE_REQUESTS_BY_KIND: Record<DbHostRequestKind, DbHostRequest[]> =
         id: 3,
         op: "dashboard.getInsights",
         args: ["overview", "30d"],
+      },
+      // ISS-9802: the same shape carrying a cancellation token, so the new
+      // optional field is exercised by the round-trip rather than assumed safe.
+      {
+        kind: DbHostRequestKind.Invoke,
+        id: 31,
+        op: "syncSource.aggregateAnalytics",
+        args: [{ startDate: "2026-09-01" }],
+        cancellationToken: "renderer-1-7",
       },
       // The ISS-4620 root-cause path: the component-sync cursor persist. The FIXED
       // caller dispatches exactly this — `syncSource.advanceSyncState` with a plain
@@ -90,31 +103,9 @@ const CLONE_SAFE_REQUESTS_BY_KIND: Record<DbHostRequestKind, DbHostRequest[]> =
       },
     ],
     [DbHostRequestKind.Close]: [{ kind: DbHostRequestKind.Close, id: 6 }],
-    [DbHostRequestKind.ScheduledReviewResult]: [
-      // Failure leg: the serialized error variant.
-      {
-        kind: DbHostRequestKind.ScheduledReviewResult,
-        id: 7,
-        generation: "gen-1",
-        ok: false,
-        error: { message: "boom", name: "Error", stack: "Error: boom\n  at x" },
-      },
-      // Success leg: the full ScheduledReviewResult `value` (exercises the optional
-      // `value` field a new non-cloneable ScheduledReviewResult member would fail).
-      {
-        kind: DbHostRequestKind.ScheduledReviewResult,
-        id: 8,
-        generation: "gen-2",
-        ok: true,
-        value: {
-          ok: true,
-          created: 2,
-          skipped: 1,
-          failed: 0,
-          summary: "filed 2, skipped 1",
-          error: null,
-        },
-      },
+    // ISS-12022: main's pull for the next page of a paged result.
+    [DbHostRequestKind.ResultPagePull]: [
+      { kind: DbHostRequestKind.ResultPagePull, id: 9, offset: 262_144 },
     ],
   };
 

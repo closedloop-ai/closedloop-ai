@@ -28,12 +28,12 @@ describe("deriveComponentSource", () => {
   it("reports the repository for a repo-linked component with no pack", () => {
     expect(
       deriveComponentSource({
-        sourceUrl: "https://github.com/closedloop-ai/example-repo",
+        sourceUrl: "https://github.com/closedloop-ai/closedloop-ai",
         scope: ComponentScope.Project,
-        projectPath: "/w/example-repo",
+        projectPath: "/w/closedloop-ai",
         identityKeys: ["review-soul"],
       })
-    ).toBe("https://github.com/closedloop-ai/example-repo");
+    ).toBe("https://github.com/closedloop-ai/closedloop-ai");
   });
 
   it("strips embedded credentials out of the repository identity", () => {
@@ -117,12 +117,15 @@ describe("deriveComponentSource", () => {
   it.each([
     ["an install path", { installPath: "/w/.claude/skills/triage.md" }],
     ["a settings scope", { scope: ComponentScope.User }],
-    ["a project root", { projectPath: "/w/example-repo" }],
-  ])("reports `organic` for a locally-authored component known only by %s", (_label, provenance) => {
-    expect(
-      deriveComponentSource({ ...provenance, identityKeys: ["triage"] })
-    ).toBe(ComponentSourceToken.Organic);
-  });
+    ["a project root", { projectPath: "/w/closedloop-ai" }],
+  ])(
+    "reports `organic` for a locally-authored component known only by %s",
+    (_label, provenance) => {
+      expect(
+        deriveComponentSource({ ...provenance, identityKeys: ["triage"] })
+      ).toBe(ComponentSourceToken.Organic);
+    }
+  );
 
   it("reports `unknown` only when no provenance was captured at all", () => {
     expect(deriveComponentSource({ identityKeys: ["Explore"] })).toBe(
@@ -159,11 +162,14 @@ describe("deriveComponentSource", () => {
   it.each([
     ["pack id", { packId: OVER_CAP }],
     ["repository", { sourceUrl: `https://example.com/${OVER_CAP}` }],
-  ])("never emits an over-cap %s — a caller cannot amplify one field into megabytes of response", (_label, provenance) => {
-    const derived = deriveComponentSource(provenance);
-    expect(derived).toBe(ComponentSourceToken.Unknown);
-    expect(derived.length).toBeLessThanOrEqual(MAX_COMPONENT_SOURCE_LENGTH);
-  });
+  ])(
+    "never emits an over-cap %s — a caller cannot amplify one field into megabytes of response",
+    (_label, provenance) => {
+      const derived = deriveComponentSource(provenance);
+      expect(derived).toBe(ComponentSourceToken.Unknown);
+      expect(derived.length).toBeLessThanOrEqual(MAX_COMPONENT_SOURCE_LENGTH);
+    }
+  );
 });
 
 describe("classifyComponentSource", () => {
@@ -209,19 +215,17 @@ describe("classifyComponentSource", () => {
 });
 
 describe("resolveComponentSource", () => {
-  it.each([
-    [""],
-    ["   "],
-    [null],
-    [undefined],
-  ])("derives when the persisted value is the %p sentinel", (stored) => {
-    expect(
-      resolveComponentSource(stored, {
-        packId: "gstack",
-        identityKeys: ["browser"],
-      })
-    ).toEqual({ value: "gstack", kind: ComponentSourceKind.Pack });
-  });
+  it.each([[""], ["   "], [null], [undefined]])(
+    "derives when the persisted value is the %p sentinel",
+    (stored) => {
+      expect(
+        resolveComponentSource(stored, {
+          packId: "gstack",
+          identityKeys: ["browser"],
+        })
+      ).toEqual({ value: "gstack", kind: ComponentSourceKind.Pack });
+    }
+  );
 
   it("keeps a persisted value once one has been written, and states no kind for it", () => {
     expect(
@@ -289,7 +293,7 @@ describe("unionComponentSourceProvenance", () => {
   it("falls through to the repository when no observer saw a pack", () => {
     const folded = unionComponentSourceProvenance(
       [
-        { scope: ComponentScope.Project, projectPath: "/w/example-repo" },
+        { scope: ComponentScope.Project, projectPath: "/w/closedloop-ai" },
         { sourceUrl: "https://github.com/acme/skills" },
       ],
       ["browser"]

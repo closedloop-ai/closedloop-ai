@@ -1,5 +1,16 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  IPC_WRAPPER_PHRASE,
+  ipcWrappedError,
+  LEAKY_IPC_CHANNEL,
+} from "../../../__tests__/ipc-wrapper-error-fixture";
 import { LogsPanel } from "../LogsPanel";
 
 // Behavioral replacement for the old renderer-logs-static source-text guard:
@@ -52,15 +63,29 @@ afterEach(() => {
 
 describe("LogsPanel diagnostics IPC wiring", () => {
   it("loads logs and the log file path on mount and renders entries", async () => {
-    const api = installLogsApi();
-    render(<LogsPanel />);
+    const originalTz = process.env.TZ;
+    process.env.TZ = "UTC";
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-07-01T12:00:00.000Z"));
+    try {
+      const api = installLogsApi();
+      render(<LogsPanel />);
 
-    expect(
-      await screen.findByText("boom while starting gateway")
-    ).toBeDefined();
-    expect(api.getLogs).toHaveBeenCalled();
-    await waitFor(() => expect(api.getLogFilePath).toHaveBeenCalled());
-    expect(screen.getByText("/tmp/closedloop/desktop.log")).toBeDefined();
+      expect(
+        await screen.findByText("boom while starting gateway")
+      ).toBeDefined();
+      expect(api.getLogs).toHaveBeenCalled();
+      await waitFor(() => expect(api.getLogFilePath).toHaveBeenCalled());
+      expect(screen.getByText("/tmp/closedloop/desktop.log")).toBeDefined();
+      expect(screen.getByText("12:00:00 PM")).toBeDefined();
+      expect(screen.queryByText("2026-07-01T12:00:00.000Z")).toBeNull();
+    } finally {
+      if (originalTz === undefined) {
+        Reflect.deleteProperty(process.env, "TZ");
+      } else {
+        process.env.TZ = originalTz;
+      }
+    }
   });
 
   it("re-invokes getLogs when Refresh is clicked", async () => {
@@ -244,6 +269,51 @@ describe("LogsPanel — pausing", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(api.getLogs.mock.calls.length).toBeGreaterThan(callsAfterPause);
   });
+
+  it("drops a read already in flight instead of committing it after Pause", async () => {
+    vi.useFakeTimers();
+    let releaseSecondRead: ((logs: unknown) => void) | undefined;
+    const api = installLogsApi({
+      getLogs: vi
+        .fn()
+        .mockResolvedValueOnce([{ level: "info", message: "before pause" }])
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              releaseSecondRead = resolve;
+            })
+        )
+        .mockResolvedValue([{ level: "info", message: "after resume" }]),
+    });
+    render(<LogsPanel />);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(screen.getByText("before pause")).toBeTruthy();
+
+    // Start the read the user is waiting on, then stop waiting for it.
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(releaseSecondRead).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+
+    await act(async () => {
+      releaseSecondRead?.([{ level: "error", message: "arrived after pause" }]);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // Pause means the log stops moving. Without the guard the in-flight answer
+    // lands anyway and the rows the user paused on are replaced.
+    expect(screen.queryByText("arrived after pause")).toBeNull();
+    expect(screen.getByText("before pause")).toBeTruthy();
+
+    // ...and the panel is not stranded on the loading text by the read it
+    // dropped: Resume commits normally.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText("after resume")).toBeTruthy();
+    expect(api.getLogs).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe("LogsPanel — tolerating the shape of a log stream", () => {
@@ -308,5 +378,59 @@ describe("LogsPanel — tolerating the shape of a log stream", () => {
 
     const row = (await screen.findByText("no clock")).parentElement;
     expect(row?.firstElementChild?.textContent).toBe("");
+  });
+});
+
+/**
+ * ISS-7599: all three of this panel's IPC catches render the caught message, so
+ * all three must route it through `cleanIpcError`. An untreated catch puts
+ * Electron's `Error invoking remote method '<channel>': ` wrapper — and the
+ * private channel name inside it — straight into the alert the user reads.
+ */
+describe("LogsPanel — Electron IPC wrapper never reaches the user", () => {
+  it("cleans a wrapped getLogs rejection", async () => {
+    installLogsApi({
+      getLogs: vi.fn(() =>
+        Promise.reject(ipcWrappedError("log store unreadable"))
+      ),
+    });
+    render(<LogsPanel />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("log store unreadable");
+    expect(alert.textContent).not.toContain(LEAKY_IPC_CHANNEL);
+    expect(alert.textContent).not.toContain(IPC_WRAPPER_PHRASE);
+  });
+
+  it("cleans a wrapped clearLogs rejection", async () => {
+    installLogsApi({
+      clearLogs: vi.fn(() => Promise.reject(ipcWrappedError("file locked"))),
+    });
+    render(<LogsPanel />);
+    await screen.findByText("boom while starting gateway");
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("file locked");
+    expect(alert.textContent).not.toContain(LEAKY_IPC_CHANNEL);
+    expect(alert.textContent).not.toContain(IPC_WRAPPER_PHRASE);
+  });
+
+  it("cleans a wrapped openLogFile rejection", async () => {
+    installLogsApi({
+      openLogFile: vi.fn(() =>
+        Promise.reject(ipcWrappedError("shell missing"))
+      ),
+    });
+    render(<LogsPanel />);
+    await screen.findByText("boom while starting gateway");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open File" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("shell missing");
+    expect(alert.textContent).not.toContain(LEAKY_IPC_CHANNEL);
+    expect(alert.textContent).not.toContain(IPC_WRAPPER_PHRASE);
   });
 });

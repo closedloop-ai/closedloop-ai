@@ -9,7 +9,7 @@
  */
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { test } from "node:test";
+import { test } from "vitest";
 import type { TranscriptSyncStore } from "../src/main/database/transcript-sync-store.js";
 import type { DesktopTranscriptsClient } from "../src/main/transcript/desktop-transcripts-client.js";
 import {
@@ -39,6 +39,7 @@ function fingerprint(): TranscriptFingerprint {
     missingSourceCount: 0,
     nextAttemptAt: null,
     lastError: null,
+    laneStalledSince: null,
   };
 }
 
@@ -59,7 +60,7 @@ function fakeStore(counters: Counters): TranscriptSyncStore {
     observe: () => Promise.resolve(fingerprint()),
     markUploading: () => {
       counters.uploadingMarks += 1;
-      return Promise.resolve();
+      return Promise.resolve(true);
     },
     markIdle: () => {
       counters.idles += 1;
@@ -68,7 +69,11 @@ function fakeStore(counters: Counters): TranscriptSyncStore {
     markDead: () => Promise.resolve(),
     recordUploaded: () => Promise.resolve(),
     recordFailure: () => Promise.resolve(),
-    requeueStale: () => Promise.resolve(0),
+    requeueExpiredUploadLeases: () => Promise.resolve(0),
+    // ISS-9884: the lane-recovery slice every drain consults — a healthy lane.
+    loadLaneGiveUp: () => Promise.resolve(null),
+    recordLaneGiveUp: () => Promise.resolve(),
+    reviveEnvironmentUnavailableDeadLetters: () => Promise.resolve(0),
   };
   return store as unknown as TranscriptSyncStore;
 }

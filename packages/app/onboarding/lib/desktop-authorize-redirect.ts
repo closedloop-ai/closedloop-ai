@@ -1,3 +1,10 @@
+import {
+  DESKTOP_ACCOUNT_CREATED_QUERY_PARAM,
+  DESKTOP_ACCOUNT_CREATED_TRUE,
+  DESKTOP_BOOTSTRAP_QUERY_PARAM,
+  DESKTOP_BOOTSTRAP_TRUE,
+} from "@repo/api/src/types/desktop-authorize-url";
+
 /**
  * Browser→desktop hand-off for the loopback authorization-code flow (FEA-2460 /
  * PLN-843 Amendment 1). After a successful mint the browser is navigated to the
@@ -12,15 +19,33 @@
 /**
  * Build the loopback callback URL: the (already loopback-validated)
  * `redirect_uri` plus `code` and `state`. Pure and testable.
+ *
+ * ISS-10913: `accountCreated` rides along as an ADDITIVE param, and only when
+ * it is true. Omission is the honest encoding of "no creation was observed on
+ * the way here" and is also what every installed desktop build that predates
+ * the param already sees, so neither side has to change together — an older
+ * desktop ignores an unknown key, and a newer desktop reading an older web
+ * app's callback simply observes no creation.
  */
 export function buildLoopbackRedirectUrl(
   redirectUri: string,
   code: string,
-  state: string
+  state: string,
+  accountCreated = false,
+  desktopBootstrap = false
 ): string {
   const url = new URL(redirectUri);
   url.searchParams.set("code", code);
   url.searchParams.set("state", state);
+  if (accountCreated) {
+    url.searchParams.set(
+      DESKTOP_ACCOUNT_CREATED_QUERY_PARAM,
+      DESKTOP_ACCOUNT_CREATED_TRUE
+    );
+  }
+  if (desktopBootstrap) {
+    url.searchParams.set(DESKTOP_BOOTSTRAP_QUERY_PARAM, DESKTOP_BOOTSTRAP_TRUE);
+  }
   return url.toString();
 }
 

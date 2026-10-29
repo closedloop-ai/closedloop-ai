@@ -11,7 +11,7 @@
  * (`foreign_key_check`), but it guards its two predecessors equally.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { createWiredStoreIntegrityProbe } from "../src/main/database/store-integrity-wiring.js";
 import type { StoreIntegrityDiagnostics } from "../src/main/telemetry/telemetry-protocol.js";
 
@@ -40,6 +40,7 @@ const readerServingEveryCheck = {
       outOfRangeTokenRows: 0,
       outOfRangeCostRows: 0,
       nonSubagentUsageRows: 0,
+      invalidLineRows: 0,
     }),
   runForeignKeyIntegrityCheck: () =>
     Promise.resolve({
@@ -47,12 +48,15 @@ const readerServingEveryCheck = {
       violationTables: [],
       orphanEventAgentRows: 0,
     }),
-  runRepositoryDefaultAuthorityIntegrityCheck: () =>
-    Promise.resolve({ malformedRows: 0 }),
+  runInvocationSyncOutboxIntegrityCheck: () =>
+    Promise.resolve({ unreadableCreatedAtRows: 0 }),
+  readStorageExhaustionHealth: () =>
+    Promise.resolve({ failures: 0, lastReason: null, active: false }),
+  runSessionMetadataIntegrityCheck: () => Promise.resolve({ malformedRows: 0 }),
 };
 
 describe("createWiredStoreIntegrityProbe registers every schema-aware check", () => {
-  test("all four optional checks reach checksRun through the production wiring", async () => {
+  test("every remaining optional check reaches checksRun through the production wiring", async () => {
     const probe = createWiredStoreIntegrityProbe({
       agentDatabase: readerServingEveryCheck,
       emit: (_: StoreIntegrityDiagnostics) => {},
@@ -66,6 +70,18 @@ describe("createWiredStoreIntegrityProbe registers every schema-aware check", ()
     assert.ok(diag.checksRun.includes("token_parity"));
     assert.ok(diag.checksRun.includes("invocation_telemetry"));
     assert.ok(diag.checksRun.includes("foreign_key_check"));
-    assert.ok(diag.checksRun.includes("repository_default_authority"));
+    // ISS-6209: the invocation-outbox timestamp check is what routes a corrupt
+    // `created_at` to the monitored store-integrity event, so losing its
+    // registration would silently return that corruption to being unreported.
+    assert.ok(diag.checksRun.includes("invocation_sync_outbox"));
+    // ISS-6337: the disk-full tally is the ONLY signal a customer whose disk
+    // filled produces, so losing its registration returns that install to being
+    // remotely indistinguishable from a healthy one.
+    assert.ok(diag.checksRun.includes("storage_exhaustion"));
+    // ISS-8259: every reader of `sessions.metadata` degrades silently on a
+    // malformed blob, so this check is the only thing that reports the condition
+    // at all. Losing its registration returns it to being unreported from every
+    // path at once.
+    assert.ok(diag.checksRun.includes("session_metadata"));
   });
 });

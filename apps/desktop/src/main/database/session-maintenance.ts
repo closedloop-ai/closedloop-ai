@@ -16,9 +16,12 @@ import {
   EVENT_INSERT_PARAM_CAP,
   TERMINAL_STATUS_SET,
 } from "./db-constants.js";
+import { MS_PER_DAY } from "./db-helpers.js";
 import type { Prisma } from "./generated/client.js";
+import { deleteInvocationSyncStateForSessions } from "./invocation-sync-orphan-maintenance.js";
 import type { DesktopPrisma } from "./prisma-client.js";
 import {
+  AGENT_ENDED_AT_VALUE_SQL,
   isCanonicalUtcTimestamp,
   SESSION_STARTED_AT_FLOOR_SQL,
   sessionStartedAtFloor,
@@ -65,28 +68,27 @@ const TERMINAL_STATUS_VALUES = [...TERMINAL_STATUS_SET];
 export const SWEEP_ID_CHUNK = EVENT_INSERT_PARAM_CAP - 1;
 
 /**
- * The agent-scoped reading of {@link SESSION_STARTED_AT_FLOOR_SQL}. The
- * expression references an UNQUALIFIED `started_at`, so inside an
- * `UPDATE agents` it resolves to the agent's own start — the same GLOB guard
- * and 1970 fallback, applied to the other table. Aliased rather than re-spelled
- * so the two floors cannot drift.
- */
-const AGENT_STARTED_AT_FLOOR_SQL = SESSION_STARTED_AT_FLOOR_SQL;
-
-/**
  * How long a session may sit `active` with no write before a sweep declares it
  * terminal. Shared by both entry points so the live and boot sweeps cannot
  * drift to different thresholds.
  */
 export const DEFAULT_STALE_SESSION_MINUTES = 180;
 
-// Default data-governance retention window, in days. Terminal sessions whose
-// last activity predates this window are purged outright — see
-// `sweepExpiredSessions`. 90 days bounds how long the local store keeps full
-// session history (transcripts, tool calls, token usage, agents).
-const DEFAULT_RETENTION_DAYS = 90;
-
-const MS_PER_DAY = 24 * 60 * 60_000;
+/**
+ * Default data-governance retention window, in days. Terminal sessions whose
+ * last activity predates this window are purged outright — see
+ * `sweepExpiredSessions`. 90 days bounds how long the local store keeps full
+ * session history (transcripts, tool calls, token usage, agents).
+ *
+ * ISS-6751: exported because it is also a defensible default ceiling for how
+ * far back an `events` read looks — past it, a reader is largely paying for
+ * rows this sweep is already entitled to delete — so `listPackSessions` bounds
+ * its scan here rather than re-declaring a second 90. That is an approximation,
+ * NOT an equivalence, and the ways the two diverge (this sweep is anchored on
+ * `sessions.last_activity_at` and only purges TERMINAL sessions; `retentionDays`
+ * is overridable) are enumerated where the reader makes the trade.
+ */
+export const DEFAULT_SESSION_RETENTION_DAYS = 90;
 
 /**
  * ISS-5429: the outcome of one stale-session sweep.
@@ -287,41 +289,36 @@ async function sweepStaleChunk(
   // `avg_duration`. `recomputeSessionLastActivityAt` wraps its own COALESCE the
   // same way.
   //
-  // ISS-5497 KNOWN GAP — this arm is NO LONGER the recompute's twin. That fold
-  // now canonicalizes each `events.created_at` PER ROW first, so it compares
-  // fixed-width text and writes canonical UTC, because a byte-wise `MAX()` over
-  // that column — raw harness transcript text, and the one timestamp column the
-  // FEA-3743 heal never repairs — returns the EARLIER instant on a
-  // mixed-precision or offset-form column. The same defect is live here on
-  // `agents.ended_at`, and `hasCanonicalTimestampForm` does NOT cover it: that guard
-  // deliberately gates only on the session columns the heal repairs (see its
-  // scope note), so `agents.ended_at` can still be stamped from the wrong event.
-  // Left for its own change rather than folded into ISS-5497, which is scoped to
-  // `sessions.last_activity_at`: correcting this moves swept-agent durations and
-  // wants its own coverage.
+  // ISS-6893: this arm is the recompute's twin again. ISS-5497 taught the
+  // SESSION fold to canonicalize each `events.created_at` PER ROW before folding
+  // it, and left the agent arm on the pre-ISS-5497 byte-wise `MAX()` with the
+  // gap written down in place. That gap was real: `events.created_at` is raw
+  // harness transcript text and the one timestamp column the FEA-3743 heal never
+  // repairs, so a byte-wise fold over a mixed-precision or offset-form column
+  // returns the EARLIER instant — which SHORTENS the swept agent's duration —
+  // and `hasCanonicalTimestampForm` does NOT cover it, because that guard
+  // deliberately gates only on the session columns the heal repairs. The value
+  // is then exported to the cloud verbatim from this column (sync-source.ts), so
+  // the drift is persisted and replicated rather than merely rendered.
+  //
+  // `AGENT_ENDED_AT_VALUE_SQL` is the SAME two-mode expression the session
+  // recompute assigns, scoped to the agent's own events, so the floor above and
+  // the canonicalization discipline are shared by construction rather than by
+  // copy. Its legacy arm IS the expression this replaced, verbatim, so an agent
+  // whose timestamps do not all canonicalize behaves exactly as it did before.
+  //
+  // lexical-timestamp-ok: the fold's comparison operands are canonicalized to
+  // fixed-width UTC inside `AGENT_ENDED_AT_VALUE_SQL` (session-timestamp-form.ts)
+  // before any `MAX` sees them, and the legacy arm it falls back to is `main`'s
+  // shipped expression. ISS-5330's gate cannot follow the interpolated
+  // expression into that module, so the marker is how that is declared.
   const agentPlaceholders = staleIds
     .map((_, index) => `$${index + 2}`)
     .join(", ");
   await tx.$executeRawUnsafe(
     `UPDATE agents
        SET status = '${DESKTOP_AGENT_STATUS.COMPLETED}',
-           ended_at = MAX(
-             ${AGENT_STARTED_AT_FLOOR_SQL},
-             COALESCE(
-               (
-                 SELECT MAX(
-                   CASE
-                     WHEN e.created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
-                       THEN e.created_at
-                     ELSE NULL
-                   END
-                 )
-                 FROM events e
-                 WHERE e.agent_id = agents.id
-               ),
-               ${AGENT_STARTED_AT_FLOOR_SQL}
-             )
-           ),
+           ended_at = ${AGENT_ENDED_AT_VALUE_SQL},
            updated_at = $1
      WHERE session_id IN (${agentPlaceholders})
        AND status NOT IN ('${DESKTOP_AGENT_STATUS.COMPLETED}', '${DESKTOP_AGENT_STATUS.ERROR}')`,
@@ -446,10 +443,9 @@ async function sweepStaleChunk(
 // session-attributable behind: a retention purge has no reimport to rebuild
 // derived state from. So the set is the union of every session-keyed table the
 // codebase deletes — `deleteSessionRow`'s child set (which since FEA-2347 also
-// purges the `session_analytics` / `session_tool_analytics` /
-// `agent_component_session_usage` rollups and since FEA-3132 the
-// `session_turn_bucket` per-turn rollup) plus `pull_requests` /
-// `pr_backfill_seen` (cleared by `rebuildSessionFromParse`). The rollups matter
+// purges the `session_analytics` / `agent_component_session_usage` rollups and
+// since FEA-3132 the `session_turn_bucket` per-turn rollup) plus
+// `pull_requests`. The rollups matter
 // because standalone reads (e.g. the earliest-history delta gate) scan
 // `session_analytics` without a `sessions` join, so an orphaned rollup would
 // otherwise leak a purged session's totals into the dashboard. One atomic write
@@ -474,7 +470,7 @@ async function sweepStaleChunk(
 export function sweepExpiredSessions(
   prisma: DesktopPrisma,
   now: string,
-  retentionDays = DEFAULT_RETENTION_DAYS
+  retentionDays = DEFAULT_SESSION_RETENTION_DAYS
 ): Promise<ExpiredSessionSweepResult> {
   const cutoff = new Date(
     new Date(now).valueOf() - retentionDays * MS_PER_DAY
@@ -547,24 +543,34 @@ async function purgeExpiredChunk(
   await tx.claudeCodeCostEvent.deleteMany({ where });
   await tx.claudeCodePermissionEvent.deleteMany({ where });
   await tx.claudeCodeApiRequest.deleteMany({ where });
+  await tx.claudeCodeErrorEvent.deleteMany({ where });
+  await tx.claudeCodePermissionModeChange.deleteMany({ where });
+  await tx.claudeCodeMcpServerConnection.deleteMany({ where });
+  await tx.claudeCodeAuthEvent.deleteMany({ where });
+  await tx.claudeCodePluginEvent.deleteMany({ where });
+  await tx.claudeCodeLinesOfCode.deleteMany({ where });
+  await tx.claudeCodeSessionStart.deleteMany({ where });
+  await tx.claudeCodeToolResult.deleteMany({ where });
+  await tx.claudeCodeActiveTime.deleteMany({ where });
+  await tx.claudeCodeSessionIdentity.deleteMany({ where });
+  await tx.claudeCodeLlmRequest.deleteMany({ where });
   await tx.sessionArtifactLink.deleteMany({ where });
   await tx.artifactLinkBackfillSeen.deleteMany({ where });
   await tx.activitySegmentBackfillSeen.deleteMany({ where });
   // Pull-request lifecycle detail (no FK cascade): session_id rows carry
   // identifying repo/branch/title/url, so purge them with the session.
   await tx.pullRequest.deleteMany({ where });
-  await tx.prBackfillSeen.deleteMany({ where });
   // Derived rollups (no FK cascade): clear them too so a purged session
   // leaves no cost/token aggregates behind. FEA-2347: includes
   // agent_component_session_usage (previously missed here — same orphan
   // class as the analytics rollups).
   await tx.sessionAnalytics.deleteMany({ where });
-  await tx.sessionToolAnalytics.deleteMany({ where });
   await tx.agentComponentSessionUsage.deleteMany({ where });
   // FEA-2273: session_activity_metrics is the same no-FK derived-rollup class
   // — purge it too so a retention sweep leaves no cohort/coverage row to leak
   // a purged session's spend into the aggregate GROUP BY reads.
   await tx.sessionActivityMetrics.deleteMany({ where });
+  await deleteInvocationSyncStateForSessions(tx, expiredIds);
   // agents cascade via the sessions(id) FK (foreign_keys=ON on the adapter
   // connection); the explicit deletes above cover the no-cascade tables.
   await tx.session.deleteMany({ where: { id: { in: expiredIds } } });

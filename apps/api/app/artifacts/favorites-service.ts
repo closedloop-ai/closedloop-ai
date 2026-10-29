@@ -7,6 +7,10 @@ import type { BasicUser } from "@repo/api/src/types/user";
 import type { TransactionClient } from "@repo/database";
 import { withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
+import {
+  type RecordWriteInTransaction,
+  writeInShape,
+} from "@/lib/record-write-in-transaction";
 
 function toArtifact(row: {
   id: string;
@@ -70,36 +74,84 @@ async function artifactBelongsToOrg(
   return artifact !== null;
 }
 
+/** A favorite write's answer, and whether it changed the user's favorites. */
+export type FavoriteWrite = { favorited: boolean; changed: boolean };
+
 export const artifactFavoritesService = {
   /**
-   * Add an artifact to the user's favorites (idempotent).
+   * Add an artifact to the user's favorites (idempotent). Recorded, the
+   * favorite and `recordWrite` share one transaction, so a receipt that cannot
+   * be stored rolls the favorite back (ISS-12552); unrecorded, it is main's
+   * autocommit upsert (flag-off parity).
    */
-  addFavorite(artifactId: string, userId: string, organizationId: string) {
-    return withDb(async (db) => {
-      if (!(await artifactBelongsToOrg(db, artifactId, organizationId))) {
-        return null;
-      }
-      await db.favoriteArtifact.upsert({
-        where: { userId_artifactId: { userId, artifactId } },
-        create: { userId, artifactId },
-        update: {},
-      });
-      return { favorited: true };
+  addFavorite(
+    artifactId: string,
+    userId: string,
+    organizationId: string,
+    recordWrite?: RecordWriteInTransaction<FavoriteWrite>
+  ) {
+    return writeInShape(recordWrite, {
+      unrecorded: () =>
+        withDb(async (db) => {
+          if (!(await artifactBelongsToOrg(db, artifactId, organizationId))) {
+            return null;
+          }
+          await db.favoriteArtifact.upsert({
+            where: { userId_artifactId: { userId, artifactId } },
+            create: { userId, artifactId },
+            update: {},
+            select: { id: true },
+          });
+          return { favorited: true };
+        }),
+      recorded: (record) =>
+        withDb.tx(async (tx) => {
+          if (!(await artifactBelongsToOrg(tx, artifactId, organizationId))) {
+            return null;
+          }
+          const { count } = await tx.favoriteArtifact.createMany({
+            data: [{ userId, artifactId }],
+            skipDuplicates: true,
+          });
+          await record(tx, { favorited: true, changed: count > 0 });
+          return { favorited: true };
+        }),
     });
   },
 
   /**
-   * Remove an artifact from the user's favorites.
+   * Remove an artifact from the user's favorites. Recorded, `recordWrite`
+   * runs on the delete's transaction (ISS-12552); unrecorded, it is main's
+   * autocommit delete.
    */
-  removeFavorite(artifactId: string, userId: string, organizationId: string) {
-    return withDb(async (db) => {
-      if (!(await artifactBelongsToOrg(db, artifactId, organizationId))) {
-        return null;
-      }
-      await db.favoriteArtifact.deleteMany({
-        where: { userId, artifactId },
-      });
-      return { favorited: false };
+  removeFavorite(
+    artifactId: string,
+    userId: string,
+    organizationId: string,
+    recordWrite?: RecordWriteInTransaction<FavoriteWrite>
+  ) {
+    return writeInShape(recordWrite, {
+      unrecorded: () =>
+        withDb(async (db) => {
+          if (!(await artifactBelongsToOrg(db, artifactId, organizationId))) {
+            return null;
+          }
+          await db.favoriteArtifact.deleteMany({
+            where: { userId, artifactId },
+          });
+          return { favorited: false };
+        }),
+      recorded: (record) =>
+        withDb.tx(async (tx) => {
+          if (!(await artifactBelongsToOrg(tx, artifactId, organizationId))) {
+            return null;
+          }
+          const { count } = await tx.favoriteArtifact.deleteMany({
+            where: { userId, artifactId },
+          });
+          await record(tx, { favorited: false, changed: count > 0 });
+          return { favorited: false };
+        }),
     });
   },
 

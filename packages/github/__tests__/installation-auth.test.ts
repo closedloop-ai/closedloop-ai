@@ -2,7 +2,6 @@ import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  getInstallationAccessToken,
   getInstallationOctokit,
   resetInstallationAuthCachesForTests,
 } from "../installation-auth";
@@ -86,17 +85,6 @@ describe("installation auth", () => {
     expect(init?.signal?.aborted).toBe(false);
   });
 
-  it("returns the installation access token without constructing a user-token client", async () => {
-    await expect(getInstallationAccessToken("789")).resolves.toBe(
-      "installation-token"
-    );
-    expect(mockAuth).toHaveBeenCalledWith({
-      type: "installation",
-      installationId: 789,
-    });
-    expect(installationClientConstructions()).toBe(0);
-  });
-
   it("reuses app auth, installation tokens, and Octokit clients while the token is fresh", async () => {
     mockAuth.mockResolvedValue({
       token: "cached-token",
@@ -105,7 +93,6 @@ describe("installation auth", () => {
 
     await getInstallationOctokit("456");
     await getInstallationOctokit("456");
-    await getInstallationAccessToken("456");
 
     expect(createAppAuth).toHaveBeenCalledTimes(1);
     expect(mockAuth).toHaveBeenCalledTimes(1);

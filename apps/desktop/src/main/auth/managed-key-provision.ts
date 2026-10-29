@@ -1,4 +1,5 @@
 import { unwrapApiResultData } from "../util/api-response-utils.js";
+import { desktopClientAttributionHeaders } from "../util/desktop-client-attribution-provider.js";
 import type { DesktopPopSigner } from "./desktop-pop.js";
 
 /**
@@ -82,6 +83,7 @@ export async function provisionManagedKey(
     response = await fetchFn(url.toString(), {
       method: "POST",
       headers: {
+        ...desktopClientAttributionHeaders(),
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,
         ...popHeaders,

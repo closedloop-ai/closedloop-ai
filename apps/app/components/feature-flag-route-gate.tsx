@@ -1,11 +1,14 @@
 "use client";
 
-import { useFeatureFlag } from "@repo/analytics/client";
 import {
   FEATURE_FLAG_SETTLE_TIMEOUT_MS,
   FeatureFlagPending,
   useFeatureFlagSettleDeadline,
 } from "@repo/app/shared/components/feature-flag-pending";
+import {
+  useFeatureFlagEnabled,
+  useFeatureFlagResolved,
+} from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { notFound } from "next/navigation";
 import { type ReactNode, useEffect, useState } from "react";
@@ -49,7 +52,7 @@ type FeatureFlagRouteGateProps = {
  * has landed. An `enabled: true` at any point renders the body immediately —
  * only the one-way 404 waits for the settled, identified result.
  *
- * ISS-5001: that wait is BOUNDED. `useFeatureFlag` returns `undefined` both for
+ * ISS-5001: that wait is BOUNDED. The flag reads unresolved both for
  * "not loaded yet" and for "this key does not exist / PostHog never
  * initialized", and the two are indistinguishable — so an unresolved flag used
  * to fall through to `pending` forever, which with the old `null` default meant
@@ -79,22 +82,22 @@ export function FeatureFlagRouteGate({
   // change to it would be made once and missed once.
   const settleDeadlineElapsed = useFeatureFlagSettleDeadline();
 
-  const result = useFeatureFlag(flag);
+  const flagEnabled = useFeatureFlagEnabled(flag);
+  const flagResolved = useFeatureFlagResolved(flag);
   const flagsSettledForUser = useFeatureFlagsSettledForUser();
 
   // The body is authoritative the moment the flag reads enabled — render it
   // right away regardless of the identify handshake.
-  if (mounted && result?.enabled === true) {
+  if (mounted && flagEnabled) {
     return <>{children}</>;
   }
 
   // Withhold the one-way notFound() until the flag has resolved OFF for the
-  // identified user: mounted, the flag object present, and the identify
+  // identified user: mounted, the flag resolved, and the identify
   // handshake settled.
-  const identifiedFlagsSettled =
-    mounted && result !== undefined && flagsSettledForUser;
+  const identifiedFlagsSettled = mounted && flagResolved && flagsSettledForUser;
 
-  if (identifiedFlagsSettled && result.enabled !== true) {
+  if (identifiedFlagsSettled && !flagEnabled) {
     notFound();
   }
 

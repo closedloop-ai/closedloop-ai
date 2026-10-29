@@ -7,6 +7,10 @@
  * props, so its skeleton/error branches could never render.
  */
 
+import {
+  PACK_ADMIN_CAPABILITY_META,
+  PackAdminCapability,
+} from "@repo/app/packs/lib/pack-admin-capability";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -28,6 +32,8 @@ vi.mock("../../../admin/catalog/components/catalog-dashboard", () => ({
 import { AdminPacksView } from "../admin-packs-view";
 
 const LOAD_ERROR_COPY = /couldn't load pack permissions/i;
+const AUTHOR_CATALOG_LABEL =
+  PACK_ADMIN_CAPABILITY_META[PackAdminCapability.AuthorCatalog].label;
 
 describe("AdminPacksView", () => {
   beforeEach(() => {
@@ -52,7 +58,7 @@ describe("AdminPacksView", () => {
     expect(
       screen.getByTestId("pack-admin-boundary-skeleton")
     ).toBeInTheDocument();
-    expect(screen.queryByText("Author the catalog")).toBeNull();
+    expect(screen.queryByText(AUTHOR_CATALOG_LABEL)).toBeNull();
   });
 
   it("shows an honest boundary error when the catalog/distributions read fails", () => {
@@ -70,7 +76,7 @@ describe("AdminPacksView", () => {
       screen.getByRole("region", { name: "Pack permissions" })
     ).toBeInTheDocument();
     expect(screen.getByText(LOAD_ERROR_COPY)).toBeInTheDocument();
-    expect(screen.queryByText("Author the catalog")).toBeNull();
+    expect(screen.queryByText(AUTHOR_CATALOG_LABEL)).toBeNull();
   });
 
   it("renders the static capability rows when the read succeeds", () => {
@@ -82,7 +88,7 @@ describe("AdminPacksView", () => {
 
     render(<AdminPacksView />);
 
-    expect(screen.getByText("Author the catalog")).toBeInTheDocument();
+    expect(screen.getByText(AUTHOR_CATALOG_LABEL)).toBeInTheDocument();
     expect(screen.getByText("Distribute packs")).toBeInTheDocument();
     expect(screen.getByText("Install to own machines")).toBeInTheDocument();
   });

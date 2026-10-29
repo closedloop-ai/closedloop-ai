@@ -1,18 +1,25 @@
 /**
- * Shared fixtures for `app-otel-runtime.test.ts`: runtime/transport doubles,
- * renderer bridge records, the manual activity-root timer, and the resource
- * attribute reconciliation used across the suite. Extracted so the suite file
- * carries its assertions, not its scaffolding.
+ * Shared fixtures for the `app-otel-runtime*` suites: runtime/transport doubles,
+ * renderer bridge records, the manual activity-root timer, the tracked-runtime
+ * factory with its teardown, and the resource attribute reconciliation used
+ * across them. Extracted so each suite file carries its assertions, not its
+ * scaffolding.
  */
-import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
+import {
+  TelemetryAttribute,
+  TelemetryServiceName,
+} from "@closedloop-ai/telemetry-contract/attributes";
 import {
   SpanKind,
   SpanStatusCode,
 } from "@closedloop-ai/telemetry-contract/span";
-import type {
-  DesktopActivityRootTimerHandle,
-  DesktopAppLifecycleEventInput,
-  DesktopOtelRuntime,
+import { metrics, trace } from "@opentelemetry/api";
+import { logs } from "@opentelemetry/api-logs";
+import {
+  createDesktopOtelRuntime,
+  type DesktopActivityRootTimerHandle,
+  type DesktopAppLifecycleEventInput,
+  type DesktopOtelRuntime,
 } from "../src/main/telemetry/app-otel-runtime.js";
 import type { DesktopAppLifecycleEvent } from "../src/main/telemetry/app-otel-runtime-lifecycle.js";
 import type { DesktopTelemetryTransport } from "../src/main/telemetry/relay-telemetry-transport.js";
@@ -74,9 +81,22 @@ export function createRejectingRuntime({
     },
     emitAppLifecycleEvent() {},
     emitAppExceptionEvent() {},
+    emitSanitizedAppExceptionEvent() {},
     emitIpcPerfEvent() {},
     emitSyncBatchEvent() {},
     emitImportHealthEvent() {},
+    emitAuthFailureEvent() {
+      return false;
+    },
+    emitDeadEndEvent() {
+      return true;
+    },
+    emitOnboardingEvent() {},
+    emitOnboardingDiscardEvent() {},
+    emitGenAiRequestEvent() {},
+    emitUpdateEvent() {
+      return true;
+    },
     flush() {
       return Promise.resolve();
     },
@@ -111,9 +131,22 @@ export function createRecordingRuntime(
       onEmit(input.event);
     },
     emitAppExceptionEvent() {},
+    emitSanitizedAppExceptionEvent() {},
     emitIpcPerfEvent() {},
     emitSyncBatchEvent() {},
     emitImportHealthEvent() {},
+    emitAuthFailureEvent() {
+      return false;
+    },
+    emitDeadEndEvent() {
+      return true;
+    },
+    emitOnboardingEvent() {},
+    emitOnboardingDiscardEvent() {},
+    emitGenAiRequestEvent() {},
+    emitUpdateEvent() {
+      return true;
+    },
     flush() {
       return Promise.resolve();
     },
@@ -135,14 +168,13 @@ export function createRecordingRuntime(
 }
 
 export function collectAppLifecycleRecords(
-  runtime: DesktopOtelRuntime
+  runtime: DesktopOtelRuntime,
+  signal: DesktopOtelSignal = DesktopOtelSignal.Trace
 ): DesktopOtelBufferedRecord[] {
   return runtime
     .getBufferedRecords()
     .filter(
-      (record) =>
-        record.signal === DesktopOtelSignal.Trace &&
-        record.name === "app.lifecycle"
+      (record) => record.signal === signal && record.name === "app.lifecycle"
     );
 }
 
@@ -155,7 +187,8 @@ export function collectResourceAttributeMismatches(
 
   const mismatches: string[] = [];
   if (
-    resourceAttributes[TelemetryAttribute.ServiceName] !== "closedloop-desktop"
+    resourceAttributes[TelemetryAttribute.ServiceName] !==
+    TelemetryServiceName.Desktop
   ) {
     mismatches.push(TelemetryAttribute.ServiceName);
   }
@@ -252,5 +285,79 @@ export function createLifecycleInputRecordingRuntime(
   return {
     ...createRecordingRuntime(() => {}),
     emitAppLifecycleEvent: onEmit,
+  };
+}
+
+/**
+ * A REAL `DesktopOtelRuntime` on the in-memory buffer transport, with the
+ * defaults every suite here shares.
+ *
+ * Shared rather than duplicated because `pre-init-crash-capture.test.ts` needs
+ * the same real runtime: its stub double cannot show that a queued record
+ * survives schema validation, carries its capture timestamp through to the
+ * span, or is dropped whole when the origin is not a contract member.
+ */
+export function createRealTestRuntime(
+  options: Partial<Parameters<typeof createDesktopOtelRuntime>[0]> = {}
+): DesktopOtelRuntime {
+  return createDesktopOtelRuntime({
+    appVersion: "0.0.0-test",
+    bufferLimit: 100,
+    env: {},
+    getAppInstallationId: () => "install_test",
+    getDeviceId: () => "device_0123456789abcdef",
+    isPackaged: false,
+    metricExportIntervalMs: 60_000,
+    ...options,
+  });
+}
+
+/**
+ * The runtime tracker every `app-otel-runtime*` suite needs: a factory that
+ * remembers the runtime it last built, plus the teardown that shuts it down and
+ * clears the OTel global providers.
+ *
+ * Shared rather than re-declared per suite because the teardown's two halves are
+ * separable and only one of them is loud. Forgetting `runtime.shutdown()` leaks
+ * a timer into the suite that forgot it; forgetting `trace/metrics/logs.disable()`
+ * leaves a registered global provider behind, and node:test runs a file per
+ * process while Vitest's node lane shares one across a fork — so the cost of a
+ * half-copied teardown is the NEXT suite's first assertion, in a file that did
+ * nothing wrong.
+ */
+export function createTrackedRuntimeFactory(): {
+  createTestRuntime: (
+    options?: Parameters<typeof createRealTestRuntime>[0]
+  ) => DesktopOtelRuntime;
+  resetTrackedRuntime: () => Promise<void>;
+} {
+  let activeRuntime: DesktopOtelRuntime | null = null;
+  return {
+    createTestRuntime(options = {}) {
+      activeRuntime = createRealTestRuntime(options);
+      return activeRuntime;
+    },
+    async resetTrackedRuntime() {
+      await activeRuntime?.shutdown();
+      activeRuntime = null;
+      trace.disable();
+      metrics.disable();
+      logs.disable();
+    },
+  };
+}
+
+/**
+ * A lifecycle `setIntervalFn` that hands back its callback instead of
+ * scheduling it, so a heartbeat is driven by the test rather than by a clock.
+ */
+export function manualHeartbeat() {
+  const held: { callback: (() => void) | null } = { callback: null };
+  return {
+    setIntervalFn: (callback: () => void) => {
+      held.callback = callback;
+      return {};
+    },
+    tick: () => held.callback?.(),
   };
 }

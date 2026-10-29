@@ -9,8 +9,8 @@
  * integration harness in codex-otel-writer.test.ts.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
-import { DATA_REVISION } from "../src/main/collectors/engine/data-revision.js";
+import { test } from "vitest";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import {
   CodexOtelSpanStatus,
   CodexOtelTokenUsageSource,
@@ -46,7 +46,7 @@ test("Codex OTel batch persists span (typed), session + token usage (raw), idemp
     assert.equal(spans[0].span_id, "span-1");
     assert.equal(spans[0].duration_ms, 125);
     assert.equal(spans[0].tool_name, "shell");
-    assert.equal(spans[0].revision_id, DATA_REVISION);
+    assert.equal(spans[0].revision_id, effectiveDataRevision());
     const attributes = JSON.parse(spans[0].attributes) as Record<
       string,
       unknown
@@ -67,7 +67,7 @@ test("Codex OTel batch persists span (typed), session + token usage (raw), idemp
       usage[0].usage_source,
       CodexOtelTokenUsageSource.OtelLogPayload
     );
-    assert.equal(usage[0].revision_id, DATA_REVISION);
+    assert.equal(usage[0].revision_id, effectiveDataRevision());
   } finally {
     await close();
   }
@@ -107,7 +107,7 @@ test("Codex OTel session upsert preserves an existing harness/start/billing on r
         "claude",
         "metered_api",
         "{}",
-        DATA_REVISION,
+        effectiveDataRevision(),
       ]
     );
 

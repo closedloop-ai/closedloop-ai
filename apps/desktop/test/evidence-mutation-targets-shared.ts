@@ -5,7 +5,7 @@
  * file (`evidence-model.test.ts` reached the 1,000-line ceiling), so the two files
  * build fixtures identically instead of drifting apart on a one-sided edit.
  */
-import { buildSessionEvidence } from "../src/main/collectors/evidence/build-session-evidence.js";
+import { categoryMixForToolUses } from "../src/main/collectors/evidence/build-session-evidence.js";
 import {
   TOOL_CATEGORY_VALUES,
   ToolCategory,
@@ -38,8 +38,7 @@ export function categoryOf(
   harness: Harness,
   t: NormalizedToolUse
 ): ToolCategory | null {
-  const mix = buildSessionEvidence(sessionWith({ toolUses: [t] }), harness)
-    .structural.categoryMix;
+  const mix = categoryMixForToolUses([t], harness);
   const hit = TOOL_CATEGORY_VALUES.filter(
     (c) =>
       c !== ToolCategory.HumanTurn &&

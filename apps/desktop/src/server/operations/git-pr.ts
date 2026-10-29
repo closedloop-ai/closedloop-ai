@@ -1,9 +1,7 @@
 import type { OperationDispatcher } from "../operation-dispatcher.js";
-import { resolveBinaryFromLoginShell } from "../shell-path.js";
+import type { GitPullRequestApiOptions } from "./git-pr-api-client.js";
 import { registerGitPrCreateRoute } from "./git-pr-create.js";
-import { runRead } from "./git-pr-exec.js";
 import { json } from "./response-utils.js";
-import { getOverrideBinaryPaths } from "./symphony-loop.js";
 
 /**
  * Gateway PR operations.
@@ -16,9 +14,9 @@ import { getOverrideBinaryPaths } from "./symphony-loop.js";
  * `apps/mobile` — the last caller that bypassed the `allowLiveOverlays` gate —
  * was deleted in ISS-5284.
  *
- * What survives here is deliberately small: `/git/user`, which is identity
- * rather than PR data, and the PR CREATE route, which is a write and has real
- * callers. Everything else answers HTTP 410 (see `RETIRED_GITHUB_DATA_ROUTES`).
+ * What survives here is deliberately small: the PR CREATE route, which is a
+ * write and has real callers. Everything else answers HTTP 410 (see
+ * `RETIRED_GITHUB_DATA_ROUTES`).
  *
  * The 410s are registered UNCONDITIONALLY, replacing the previous
  * `enableGithubDataRoutes` flag that defaulted to serving the legacy handlers.
@@ -40,7 +38,7 @@ export const RETIRED_GITHUB_DATA_ROUTE_MESSAGE =
   "Desktop GitHub data is synced from cloud. This local gh-backed route has been retired.";
 
 /**
- * Every local-`gh` PR data route, read and write alike.
+ * Every retired local-`gh` GitHub route, read and write alike.
  *
  * The write ops (`/pr/reply`, `/pr/inline-comment`) are here rather than kept
  * live because they had no caller either — PLN-1535's "PR write/create gateway
@@ -56,6 +54,7 @@ const RETIRED_GITHUB_DATA_ROUTES = [
   { method: "GET", path: "/api/gateway/git/pr/file-diff" },
   { method: "GET", path: "/api/gateway/git/pr/head-sha" },
   { method: "POST", path: "/api/gateway/git/pr/inline-comment" },
+  { method: "GET", path: "/api/gateway/git/user" },
 ] as const;
 
 function registerRetiredGithubDataRoutes(
@@ -73,33 +72,10 @@ function registerRetiredGithubDataRoutes(
 
 export function registerGitPrRoutes(
   dispatcher: OperationDispatcher,
-  getAllowedDirectories: () => string[]
+  getAllowedDirectories: () => string[],
+  apiOptions: GitPullRequestApiOptions = {}
 ): void {
-  registerGitPrCreateRoute(dispatcher, getAllowedDirectories);
-
-  dispatcher.register("GET", "/api/gateway/git/user", async (context) => {
-    try {
-      const ghBin = (
-        await resolveBinaryFromLoginShell("gh", getOverrideBinaryPaths()?.gh)
-      ).path;
-      const login = await runRead(undefined, ghBin, [
-        "api",
-        "user",
-        "--jq",
-        ".login",
-      ]);
-      if (!login) {
-        json(context, 500, { error: "Could not determine GitHub user" });
-        return;
-      }
-      json(context, 200, { login });
-    } catch {
-      json(context, 500, {
-        error:
-          "Failed to get GitHub user. Ensure gh is installed and authenticated.",
-      });
-    }
-  });
+  registerGitPrCreateRoute(dispatcher, getAllowedDirectories, apiOptions);
 
   registerRetiredGithubDataRoutes(dispatcher);
 }

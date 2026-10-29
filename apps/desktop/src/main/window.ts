@@ -8,82 +8,84 @@ import {
 import path from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import electron, {
+import {
   app,
-  BrowserWindow,
-  nativeImage,
+  type BrowserWindow,
   protocol,
-  shell,
+  screen,
   type WebContents,
 } from "electron";
 import { CONTENT_SECURITY_POLICY_HEADER } from "../shared/content-security-policy.js";
+import { DesktopRendererEventChannel } from "../shared/desktop-renderer-event-channel.js";
 import { RendererReadyPhase } from "../shared/renderer-ready-phase.js";
 import {
-  DEFAULT_WINDOW_HEIGHT,
-  DEFAULT_WINDOW_WIDTH,
-} from "../shared/window-defaults.js";
+  APP_RENDERER_HOST,
+  APP_RENDERER_ORIGIN,
+  APP_SCHEME,
+} from "./app-scheme.js";
+import { activateAfterSignIn } from "./auth/activate-after-sign-in.js";
+import { resolveDevRendererUrlWithBridgeToken } from "./browser-bridge-host-token.js";
+import {
+  corsHeadersForDevOrigin,
+  DOCUMENT_ASSET_PATH_PREFIX,
+  serveDocumentAsset,
+} from "./ipc/document-asset-proxy.js";
 import {
   evaluateFrameRecovery,
   evaluateRenderProcessGone,
   isFrameDisposed,
+  isRendererWindowGone,
   isTrustedRendererSender,
   sendToRendererWindow,
 } from "./ipc/renderer-ipc.js";
+import {
+  createDesktopBrowserWindow,
+  GOLDEN_WINDOW_TITLE,
+} from "./lifecycle/create-desktop-browser-window.js";
 import {
   InitialWindowRevealGate,
   WindowRevealReason,
   WindowShowIntent,
 } from "./lifecycle/initial-window-reveal-gate.js";
 import {
-  isWindowRevealSuppressed,
-  windowRevealSuppressedWebPreferences,
-} from "./lifecycle/window-reveal-suppression.js";
-import { gatewayLog } from "./logging/gateway-logger.js";
+  attemptRendererDelivery,
+  completeRendererNavigationReady,
+  prepareRendererRouteOpen,
+  type RendererDelivery,
+  RendererEventDelivery,
+} from "./lifecycle/renderer-event-delivery.js";
+import { installRendererNavigationGuards } from "./lifecycle/renderer-navigation-guards.js";
+import { RendererRecoveryListeners } from "./lifecycle/renderer-recovery-listeners.js";
 import {
-  resolveDevRendererUrl,
-  resolveTranscriptAllowedOrigin,
-} from "./renderer-dev-url.js";
+  applyWindowPresentation,
+  clampWindowBounds,
+  type RendererWindowSessionState,
+  rendererHashFromUrl,
+  rendererUrlWithHash,
+  tryCaptureRendererWindowSessionState,
+  tryDestroyRendererWindow,
+} from "./lifecycle/renderer-window-session-state.js";
+import { isWindowRevealSuppressed } from "./lifecycle/window-reveal-suppression.js";
+import { gatewayLog } from "./logging/gateway-logger.js";
+import { resolveTranscriptAllowedOrigin } from "./renderer-dev-url.js";
 import { loadRendererContent } from "./renderer-load.js";
-import { resolveResourcesDir } from "./resources-dir.js";
-import { isAllowedRendererExternalUrl } from "./settings/external-url-allowlist.js";
+import {
+  createRendererHealthReporter,
+  type RendererHealthReporter,
+} from "./telemetry/renderer-health-telemetry.js";
 import {
   resolveCachedTranscriptFile,
   resolveTranscriptCacheDir,
   TRANSCRIPT_APP_PATH_PREFIX,
 } from "./transcript/transcript-read-cache.js";
 
-const { powerMonitor } = electron;
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const RENDERER_DIR = path.resolve(__dirname, "..", "renderer");
 const DESIGN_RENDERER_DIR = path.join(RENDERER_DIR, "design-system");
 const ASSETS_RENDERER_DIR = path.join(RENDERER_DIR, "assets");
-const DESIGN_RENDERER_URL = "app://renderer/design-system/index.html";
-const APP_PROTOCOL = "app";
-
-// macOS stoplight position for the hidden title bar. y is tuned to the inset
-// shell (renderer globals.css) so the buttons line up with the Topbar; bump it
-// together with the inset/Topbar height if either changes.
-const TRAFFIC_LIGHT_POSITION = { x: 19, y: 17 };
-
-// FEA-2648: window title in golden launch mode. Re-asserted on did-finish-load
-// because the renderer HTML `<title>` would otherwise override the option.
-const GOLDEN_WINDOW_TITLE = "Closedloop — GOLDEN";
-
-// The native window background painted before the renderer document paints. It
-// must match the splash palette in `renderer/design-system/index.html`, which
-// carries the design-system LIGHT `--background` token value (oklch(0.989 0 0))
-// because the mounted app resolves to light by default (`defaultTheme="light"`
-// in `renderer/main.tsx`). The previous hardcoded dark `#0f1723` here and in the
-// splash produced a dark frame in front of a light app on every default boot.
-const INITIAL_WINDOW_BACKGROUND_COLOR = "#fbfbfb";
-
-// FEA-4001: the default size for a FRESH window (no persisted bounds) lives in
-// the electron-free leaf `../shared/window-defaults.js` (ISS-5068) so tests and
-// E2E specs that measure the app at its launch width can import the real value
-// instead of re-declaring 1380 locally. This module still owns where they are
-// APPLIED, the `BrowserWindow` call below.
+const DESIGN_RENDERER_URL = `${APP_RENDERER_ORIGIN}/design-system/index.html`;
+const APP_PROTOCOL = APP_SCHEME;
 
 let appProtocolRegistered = false;
 
@@ -120,30 +122,7 @@ function registerAppProtocol(): void {
   appProtocolRegistered = true;
 }
 
-/**
- * CORS headers for an app:// response, using the single canonical loopback-origin
- * validator {@link resolveTranscriptAllowedOrigin}. Packaged builds serve the
- * renderer from app://renderer (same-origin) and get `{}` — no ACAO is emitted.
- * Only the unpackaged Vite dev renderer fetches app:// assets cross-origin, and
- * it always presents a bare loopback http origin (see {@link resolveDevRendererUrl}).
- * Reflect exactly that origin so the dev renderer can fetch assets; never a
- * wildcard, and never a non-loopback or credentialed origin.
- */
-function corsHeadersForDevOrigin(request: Request): Record<string, string> {
-  const allowedOrigin = resolveTranscriptAllowedOrigin(
-    request.headers.get("Origin")
-  );
-  if (!allowedOrigin) {
-    return {};
-  }
-  return { "Access-Control-Allow-Origin": allowedOrigin, Vary: "Origin" };
-}
-
-function serveAppProtocolAsset(request: Request): Response {
-  if (request.method !== "GET") {
-    return new Response("Method not allowed", { status: 405 });
-  }
-
+function serveAppProtocolAsset(request: Request): Response | Promise<Response> {
   const corsHeaders = corsHeadersForDevOrigin(request);
 
   let url: URL;
@@ -153,7 +132,10 @@ function serveAppProtocolAsset(request: Request): Response {
     return new Response("Bad request", { status: 400 });
   }
 
-  if (url.protocol !== `${APP_PROTOCOL}:` || url.hostname !== "renderer") {
+  if (
+    url.protocol !== `${APP_PROTOCOL}:` ||
+    url.hostname !== APP_RENDERER_HOST
+  ) {
     return new Response("Not found", { status: 404 });
   }
 
@@ -168,6 +150,13 @@ function serveAppProtocolAsset(request: Request): Response {
     return new Response("Not found", { status: 404 });
   }
 
+  if (
+    request.method !== "GET" &&
+    !decodedPathname.startsWith(DOCUMENT_ASSET_PATH_PREFIX)
+  ) {
+    return new Response("Method not allowed", { status: 405 });
+  }
+
   // Cached cloud transcripts (FEA-3324 Option B2) live under userData (outside
   // RENDERER_DIR) and stream rather than buffer, so they take a dedicated path
   // before the bundled-asset resolution below.
@@ -178,6 +167,9 @@ function serveAppProtocolAsset(request: Request): Response {
     return serveTranscriptAsset(decodedPathname, request.headers.get("Origin"));
   }
 
+  if (decodedPathname.startsWith(DOCUMENT_ASSET_PATH_PREFIX)) {
+    return serveDocumentAsset(request, corsHeaders);
+  }
   const assetRoot = resolveAppProtocolRoot(decodedPathname);
   if (!assetRoot) {
     return new Response("Not found", { status: 404 });
@@ -244,8 +236,8 @@ function resolveAppProtocolRoot(pathname: string): string | null {
 /**
  * Serve a prepared cloud transcript (FEA-3324 Option B2) from the userData
  * cache, streamed via the `app://` scheme so the (multi-MB) bytes reach the
- * renderer over Chromium's network stack — not the IPC bridge — and under the
- * unchanged `connect-src 'self' app:`. The main process has already authorized
+ * renderer over Chromium's network stack — not the IPC bridge — with no
+ * transcript origin in `connect-src`. The main process has already authorized
  * and downloaded the file (`transcript-read-ipc.ts`); this only serves bytes
  * already on disk. Path validation + the traversal/realpath guard live in
  * {@link resolveCachedTranscriptFile}.
@@ -325,6 +317,10 @@ export type DesktopWindowOptions = {
    * `DesktopWindow` deliberately does not own.
    */
   onRendererMounted?: () => void;
+  /** Re-arm application-owned readiness when a renderer generation is released. */
+  onRendererReleased?: () => void;
+  /** Publish authoritative state after the replacement renderer can receive it. */
+  onRendererNavigationReady?: () => void;
 };
 
 export class DesktopWindow {
@@ -345,12 +341,19 @@ export class DesktopWindow {
   /** ISS-5346: sequences the one-shot reveal behind the renderer mount. */
   private readonly revealGate: InitialWindowRevealGate;
   private readonly onRendererMounted?: () => void;
+  private readonly onRendererReleased?: () => void;
+  private readonly onRendererNavigationReady?: () => void;
+  private readonly rendererEvents = new RendererEventDelivery();
+  private rendererGeneration = 0;
+  private rendererWindowState: RendererWindowSessionState | null = null;
+  private pendingNativePresentation: RendererWindowSessionState | null = null;
+  private nextRendererHash: string | null = null;
+  private suspending = false;
   private crashReloadTimestamps: number[] = [];
+  /** ISS-6331: reports renderer hangs, load failures, and breaker exhaustion. */
+  private readonly rendererHealth: RendererHealthReporter;
+  private readonly recoveryListeners = new RendererRecoveryListeners();
   private recovering = false;
-  private resumeHandler: (() => void) | null = null;
-  private childProcessGoneHandler:
-    | ((event: Electron.Event, details: Electron.Details) => void)
-    | null = null;
 
   constructor(options?: DesktopWindowOptions) {
     this.golden = options?.golden ?? false;
@@ -359,6 +362,18 @@ export class DesktopWindow {
     });
     this.resolveWebAppOrigin = options?.resolveWebAppOrigin ?? (() => null);
     this.onRendererMounted = options?.onRendererMounted;
+    this.onRendererReleased = options?.onRendererReleased;
+    this.onRendererNavigationReady = options?.onRendererNavigationReady;
+    this.rendererHealth = createRendererHealthReporter({
+      getReloadsInWindow: () => this.crashReloadTimestamps.length,
+      isTearingDown: () => this.disposing || this.quitting || this.suspending,
+      // The dev renderer is tried first and its failure is recovered from by
+      // `loadRendererContent`'s bundled fallback, so it must not be reported.
+      getRecoveredLoadUrl: () =>
+        resolveDevRendererUrlWithBridgeToken(process.argv, {
+          isPackaged: app.isPackaged,
+        }),
+    });
     const waitForInitialRevealReadiness =
       options?.waitForInitialRevealReadiness ??
       (() => Promise.resolve(WindowRevealReason.RendererReady));
@@ -374,64 +389,83 @@ export class DesktopWindow {
   }
 
   init(): void {
-    if (this.browserWindow) {
-      return;
+    this.ensureWindow();
+  }
+
+  private ensureWindow(): BrowserWindow | null {
+    if (this.disposing || this.quitting) {
+      return null;
+    }
+    if (this.browserWindow && !this.browserWindow.isDestroyed()) {
+      return this.browserWindow;
     }
 
+    const generation = this.rendererGeneration + 1;
+    this.rendererGeneration = generation;
+    this.rendererEvents.startGeneration();
+    const restoredState = this.rendererWindowState;
+    const restoredBounds = restoredState
+      ? clampWindowBounds(
+          restoredState.bounds,
+          screen.getDisplayMatching(restoredState.bounds).workArea
+        )
+      : null;
+    const initialHash = this.nextRendererHash ?? restoredState?.hash ?? "";
+    this.pendingNativePresentation = restoredState;
+    this.rendererWindowState = null;
+    this.nextRendererHash = null;
     this.allowedRendererUrl = null;
-    this.browserWindow = new BrowserWindow({
-      width: DEFAULT_WINDOW_WIDTH,
-      height: DEFAULT_WINDOW_HEIGHT,
-      show: false,
-      backgroundColor: INITIAL_WINDOW_BACKGROUND_COLOR,
-      ...(this.golden ? { title: GOLDEN_WINDOW_TITLE } : {}),
-      // macOS: drop the native title bar/title text so the renderer fills to the
-      // top of the window, but keep the stoplight buttons — the renderer nests
-      // them at the top of the sidebar (Sidebar reserves a draggable region and
-      // Topbar pads left when the sidebar is collapsed). Other platforms keep
-      // their native frame so window controls are never lost.
-      ...(process.platform === "darwin"
-        ? {
-            titleBarStyle: "hidden" as const,
-            trafficLightPosition: TRAFFIC_LIGHT_POSITION,
-          }
-        : {
-            icon: nativeImage.createFromPath(
-              path.join(resolveResourcesDir(), "icon-1024.png")
-            ),
-          }),
-      webPreferences: {
-        contextIsolation: true,
-        sandbox: false,
-        preload: this.resolvePreloadPath(),
-        additionalArguments: ["--closedloop-agent-dashboard-design-system"],
-        // ISS-6112: an off-screen e2e launch keeps its renderer unthrottled and
-        // reporting `visible`. Empty for every other launch, so a real user's
-        // window still throttles when they background it.
-        ...windowRevealSuppressedWebPreferences(this.revealSuppressed),
-      },
+    const browserWindow = createDesktopBrowserWindow({
+      bounds: restoredBounds,
+      golden: this.golden,
+      preloadPath: path.join(__dirname, "preload-design-system.cjs"),
+      revealSuppressed: this.revealSuppressed,
     });
-    this.browserWindow.on("close", (event) => {
+    this.browserWindow = browserWindow;
+    browserWindow.on("close", (event) => {
+      if (!this.isCurrentWindow(browserWindow, generation)) {
+        return;
+      }
       if (this.disposing || this.quitting) {
         return;
       }
       event.preventDefault();
-      this.browserWindow?.hide();
+      this.suspendRenderer(browserWindow, generation);
     });
-    this.installNavigationGuards();
-    this.installRenderProcessRecovery();
-    this.installFrameDisposalRecovery();
-    this.installGoldenTitle();
+    installRendererNavigationGuards({
+      browserWindow,
+      isAllowedNavigation: (url) => this.isAllowedNavigation(url),
+      isCurrentWindow: () => this.isCurrentWindow(browserWindow, generation),
+      resolveWebAppOrigin: this.resolveWebAppOrigin,
+    });
+    this.installRenderProcessRecovery(browserWindow, generation);
+    this.installFrameDisposalRecovery(browserWindow, generation);
+    this.rendererHealth.installListeners(browserWindow.webContents);
+    this.installGoldenTitle(browserWindow, generation);
 
-    // loadContent() handles its own load failures internally and always
-    // resolves; the .catch here is belt-and-suspenders so this fire-and-forget
-    // call can never surface an unhandled rejection.
-    void this.loadContent().catch((error) => {
-      gatewayLog.error(
-        "renderer-load",
-        `Initial renderer load failed unexpectedly: ${error instanceof Error ? error.message : String(error)}`
-      );
-    });
+    void this.loadContent(browserWindow, generation, initialHash).catch(
+      (error) => {
+        if (!this.isCurrentWindow(browserWindow, generation)) {
+          return;
+        }
+        gatewayLog.error(
+          "renderer-load",
+          `Initial renderer load failed unexpectedly: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    );
+    return browserWindow;
+  }
+
+  private isCurrentWindow(
+    browserWindow: BrowserWindow,
+    generation: number
+  ): boolean {
+    return (
+      this.rendererGeneration === generation &&
+      this.browserWindow === browserWindow &&
+      !browserWindow.isDestroyed()
+    );
   }
 
   /**
@@ -444,61 +478,33 @@ export class DesktopWindow {
    * resolves — callers invoke it fire-and-forget (`void this.loadContent()`) and
    * an unhandled rejection would crash the process.
    */
-  private async loadContent(): Promise<void> {
-    const devRendererUrl = resolveDevRendererUrl(process.argv, {
+  private async loadContent(
+    browserWindow: BrowserWindow,
+    generation: number,
+    hash = ""
+  ): Promise<void> {
+    const devRendererUrl = resolveDevRendererUrlWithBridgeToken(process.argv, {
       isPackaged: app.isPackaged,
     });
 
     await loadRendererContent({
-      devRendererUrl,
-      bundledRendererUrl: DESIGN_RENDERER_URL,
-      loadUrl: (url) => this.browserWindow!.loadURL(url),
-      allowRendererUrl: (url) => this.allowRendererUrl(url),
+      devRendererUrl: devRendererUrl
+        ? rendererUrlWithHash(devRendererUrl, hash)
+        : null,
+      bundledRendererUrl: rendererUrlWithHash(DESIGN_RENDERER_URL, hash),
+      loadUrl: (url) => {
+        if (!this.isCurrentWindow(browserWindow, generation)) {
+          return Promise.resolve();
+        }
+        return browserWindow.loadURL(url);
+      },
+      allowRendererUrl: (url) => {
+        if (this.isCurrentWindow(browserWindow, generation)) {
+          this.allowRendererUrl(url);
+        }
+      },
       registerAppProtocol,
       log: gatewayLog,
-    });
-  }
-
-  /** The configured web-app origin, or null when it cannot be resolved. */
-  private readWebAppOrigin(): string | null {
-    try {
-      return this.resolveWebAppOrigin();
-    } catch {
-      return null;
-    }
-  }
-
-  private installNavigationGuards(): void {
-    if (!this.browserWindow) {
-      return;
-    }
-
-    this.browserWindow.webContents.setWindowOpenHandler(({ url }) => {
-      // ISS-4898: the fixed production host set PLUS the exact origin this
-      // desktop is configured against, resolved per open so a profile switch
-      // needs no relaunch. A throwing resolver must never wedge a link, and
-      // must never widen the allowlist — it degrades to the fixed set.
-      if (isAllowedRendererExternalUrl(url, this.readWebAppOrigin())) {
-        void shell.openExternal(url);
-      }
-      return { action: "deny" };
-    });
-
-    this.browserWindow.webContents.on("will-navigate", (event, url) => {
-      if (!this.isAllowedNavigation(url)) {
-        event.preventDefault();
-      }
-    });
-
-    // `will-navigate` only fires for the main frame; sub-frame (iframe)
-    // navigations fire `will-frame-navigate`. Guard those with the same
-    // exact-URL allowlist so sub-frames stay deny-by-default and don't rely
-    // solely on the CSP `default-src` fallback (there is no explicit
-    // `frame-src`) if the renderer is ever compromised.
-    this.browserWindow.webContents.on("will-frame-navigate", (details) => {
-      if (!this.isAllowedNavigation(details.url)) {
-        details.preventDefault();
-      }
     });
   }
 
@@ -510,80 +516,80 @@ export class DesktopWindow {
    * the allowed-URL navigation invariant still holds, with a reload-loop
    * breaker for a renderer that fails on every load.
    */
-  private installRenderProcessRecovery(): void {
-    if (!this.browserWindow) {
-      return;
-    }
-
-    this.browserWindow.webContents.on(
-      "render-process-gone",
-      (_event, details) => {
-        if (this.recovering) {
-          gatewayLog.warn(
-            "renderer-recovery",
-            `Renderer process gone (reason=${details.reason}); skipping — recovery already in flight`
-          );
-          return;
-        }
-        const decision = evaluateRenderProcessGone({
-          reason: details.reason,
-          disposing: this.disposing,
-          quitting: this.quitting,
-          now: Date.now(),
-          reloadTimestamps: this.crashReloadTimestamps,
-        });
-        this.crashReloadTimestamps = decision.reloadTimestamps;
-        if (!decision.reload) {
-          gatewayLog.warn(
-            "renderer-recovery",
-            `Renderer process gone (reason=${details.reason}); not reloading`
-          );
-          return;
-        }
+  private installRenderProcessRecovery(
+    browserWindow: BrowserWindow,
+    generation: number
+  ): void {
+    browserWindow.webContents.on("render-process-gone", (_event, details) => {
+      if (!this.isCurrentWindow(browserWindow, generation)) {
+        return;
+      }
+      if (this.recovering) {
         gatewayLog.warn(
           "renderer-recovery",
-          `Renderer process gone (reason=${details.reason}); reloading (attempt ${this.crashReloadTimestamps.length})`
+          `Renderer process gone (reason=${details.reason}); skipping — recovery already in flight`
         );
-        this.recovering = true;
-        void this.loadContent()
-          .catch((error) => {
-            gatewayLog.error(
-              "renderer-recovery",
-              `Reload after render-process-gone failed: ${error instanceof Error ? error.message : String(error)}`
-            );
-          })
-          .finally(() => {
-            this.recovering = false;
-          });
+        return;
       }
-    );
+      const decision = evaluateRenderProcessGone({
+        reason: details.reason,
+        disposing: this.disposing,
+        quitting: this.quitting,
+        now: Date.now(),
+        reloadTimestamps: this.crashReloadTimestamps,
+      });
+      this.crashReloadTimestamps = decision.reloadTimestamps;
+      if (!decision.reload) {
+        gatewayLog.warn(
+          "renderer-recovery",
+          `Renderer process gone (reason=${details.reason}); not reloading`
+        );
+        // ISS-6331: a local warn is where this used to stop, leaving a live
+        // window painting a blank frame while heartbeats reported healthy.
+        if (decision.budgetExhausted) {
+          this.rendererHealth.reportReloadBudgetExhausted(
+            decision.reloadTimestamps.length
+          );
+        }
+        return;
+      }
+      gatewayLog.warn(
+        "renderer-recovery",
+        `Renderer process gone (reason=${details.reason}); reloading (attempt ${this.crashReloadTimestamps.length})`
+      );
+      this.recovering = true;
+      this.rendererEvents.startGeneration();
+      void this.loadContent(
+        browserWindow,
+        generation,
+        rendererHashFromUrl(browserWindow.webContents.getURL())
+      )
+        .catch((error) => {
+          gatewayLog.error(
+            "renderer-recovery",
+            `Reload after render-process-gone failed: ${error instanceof Error ? error.message : String(error)}`
+          );
+        })
+        .finally(() => {
+          if (this.isCurrentWindow(browserWindow, generation)) {
+            this.recovering = false;
+          }
+        });
+    });
   }
 
-  private installFrameDisposalRecovery(): void {
-    if (!this.browserWindow) {
-      return;
-    }
-
+  private installFrameDisposalRecovery(
+    browserWindow: BrowserWindow,
+    generation: number
+  ): void {
     const triggerFrameCheck = (): void => {
-      void this.checkFrameHealthAndRecover();
+      void this.checkFrameHealthAndRecover(browserWindow, generation);
     };
 
-    this.browserWindow.on("focus", triggerFrameCheck);
-    this.browserWindow.on("show", triggerFrameCheck);
+    browserWindow.on("focus", triggerFrameCheck);
+    browserWindow.on("show", triggerFrameCheck);
 
-    if (!this.resumeHandler) {
-      this.resumeHandler = triggerFrameCheck;
-      powerMonitor?.on("resume", this.resumeHandler);
-    }
-
-    if (!this.childProcessGoneHandler) {
-      this.childProcessGoneHandler = (_event, details) => {
-        if (details.type === "GPU") {
-          triggerFrameCheck();
-        }
-      };
-      app.on("child-process-gone", this.childProcessGoneHandler);
-    }
+    this.recoveryListeners.install(triggerFrameCheck);
   }
 
   /**
@@ -600,23 +606,36 @@ export class DesktopWindow {
    * the marker authoritative for the life of a golden window; non-golden windows
    * are untouched and still take their title from the page.
    */
-  private installGoldenTitle(): void {
-    if (!(this.golden && this.browserWindow)) {
+  private installGoldenTitle(
+    browserWindow: BrowserWindow,
+    generation: number
+  ): void {
+    if (!this.golden) {
       return;
     }
 
-    this.browserWindow.webContents.on("did-finish-load", () => {
-      this.browserWindow?.setTitle(GOLDEN_WINDOW_TITLE);
+    browserWindow.webContents.on("did-finish-load", () => {
+      if (this.isCurrentWindow(browserWindow, generation)) {
+        browserWindow.setTitle(GOLDEN_WINDOW_TITLE);
+      }
     });
-    this.browserWindow.on("page-title-updated", (event) => {
+    browserWindow.on("page-title-updated", (event) => {
       event.preventDefault();
-      this.browserWindow?.setTitle(GOLDEN_WINDOW_TITLE);
+      if (this.isCurrentWindow(browserWindow, generation)) {
+        browserWindow.setTitle(GOLDEN_WINDOW_TITLE);
+      }
     });
   }
 
-  private async checkFrameHealthAndRecover(): Promise<void> {
+  private async checkFrameHealthAndRecover(
+    browserWindow: BrowserWindow,
+    generation: number
+  ): Promise<void> {
+    if (!this.isCurrentWindow(browserWindow, generation)) {
+      return;
+    }
     const result = evaluateFrameRecovery({
-      window: this.browserWindow,
+      window: browserWindow,
       disposing: this.disposing,
       quitting: this.quitting,
       recovering: this.recovering,
@@ -626,14 +645,17 @@ export class DesktopWindow {
     this.crashReloadTimestamps = result.reloadTimestamps;
 
     if (!result.shouldReload) {
-      if (
-        this.browserWindow &&
-        !this.browserWindow.isDestroyed() &&
-        isFrameDisposed(this.browserWindow)
-      ) {
+      if (!browserWindow.isDestroyed() && isFrameDisposed(browserWindow)) {
         gatewayLog.warn(
           "renderer-recovery",
           "Render frame disposed; not reloading (breaker tripped or recovery in flight)"
+        );
+      }
+      // The same shared breaker, so the same ISS-6331 blind spot: a tripped
+      // budget here also leaves a blank window nothing will retry.
+      if (result.budgetExhausted) {
+        this.rendererHealth.reportReloadBudgetExhausted(
+          result.reloadTimestamps.length
         );
       }
       return;
@@ -644,15 +666,22 @@ export class DesktopWindow {
       `Render frame disposed; reloading (attempt ${this.crashReloadTimestamps.length})`
     );
     this.recovering = true;
+    this.rendererEvents.startGeneration();
     try {
-      await this.loadContent();
+      await this.loadContent(
+        browserWindow,
+        generation,
+        rendererHashFromUrl(browserWindow.webContents.getURL())
+      );
     } catch (error) {
       gatewayLog.error(
         "renderer-recovery",
         `Reload after frame disposal failed: ${error instanceof Error ? error.message : String(error)}`
       );
     } finally {
-      this.recovering = false;
+      if (this.isCurrentWindow(browserWindow, generation)) {
+        this.recovering = false;
+      }
     }
   }
 
@@ -671,13 +700,6 @@ export class DesktopWindow {
     this.allowedRendererUrl = new URL(url).href;
   }
 
-  private resolvePreloadPath(): string {
-    // electron-vite emits the preload as a CommonJS `.cjs` (synchronous load →
-    // `window.desktopApi` is exposed before the renderer's first render, no
-    // async-ESM-preload race). See electron.vite.config.ts / PLN-999.
-    return path.join(__dirname, "preload-design-system.cjs");
-  }
-
   getWindow(): BrowserWindow | null {
     return this.browserWindow;
   }
@@ -689,30 +711,55 @@ export class DesktopWindow {
    * `getWindow()?.webContents.send(...)` does not survive.
    */
   sendToRenderer(channel: string, ...args: unknown[]): boolean {
-    return sendToRendererWindow(this.browserWindow, channel, ...args);
+    const delivery = this.rendererEvents.record(channel, args);
+    if (!delivery) {
+      return false;
+    }
+    return this.deliverRendererEvent(delivery);
   }
 
-  /**
-   * Show and focus the window.
-   *
-   * ISS-5346: the INITIAL reveal belongs to the gate, and this is the path that
-   * used to steal it — Electron emits `activate` on the first macOS launch,
-   * which `startup.ts` routes through `handleActivate()` to here. The `intent`
-   * is what separates that cold-launch event from a real user-initiated open;
-   * see {@link WindowShowIntent}. It defaults to `UserRequested` because every
-   * caller but `handleActivate` is an unambiguous user action, and because a
-   * method named `show()` defaulting to "don't show" would be a trap.
-   */
+  /** Drop a retained snapshot after its owner confirms the value is stale. */
+  clearRendererSnapshot(channel: string): void {
+    this.rendererEvents.clearSnapshot(channel);
+  }
+
+  /** Show and focus through the per-generation initial reveal gate. */
   show(intent: WindowShowIntent = WindowShowIntent.UserRequested): void {
-    // A destroyed-but-not-null BrowserWindow makes .show()/.focus() throw
-    // "Object has been destroyed". Async callers (e.g. a notification click
-    // that fires long after teardown) can hit exactly that state, so guard
-    // here rather than relying on every call site to wrap the call.
-    if (!this.browserWindow || this.browserWindow.isDestroyed()) {
+    if (!this.ensureWindow()) {
       return;
     }
     this.revealGate.requestShow(intent, () => {
       this.presentWindow({ focus: true });
+    });
+  }
+
+  /** Recreate, present, and deliver one last-wins renderer route intent. */
+  showRoute(
+    route: string,
+    intent: WindowShowIntent = WindowShowIntent.UserRequested
+  ): void {
+    const { initialHash, queuedRoute } = prepareRendererRouteOpen(
+      this.rendererEvents,
+      Boolean(this.browserWindow && !this.browserWindow.isDestroyed()),
+      route
+    );
+    this.nextRendererHash = initialHash ?? this.nextRendererHash;
+    if (queuedRoute) {
+      this.sendToRenderer(DesktopRendererEventChannel.NavigateTab, queuedRoute);
+    }
+    this.show(intent);
+  }
+
+  /** Return from browser authorization without requiring a deep-link click. */
+  returnFromBrowserSignIn(): void {
+    this.show();
+    if (this.revealSuppressed) {
+      return;
+    }
+    activateAfterSignIn({
+      window: this.browserWindow,
+      // Activate the application explicitly as well as showing its window.
+      activateApp: () => app.focus({ steal: true }),
     });
   }
 
@@ -730,9 +777,16 @@ export class DesktopWindow {
     if (this.revealSuppressed) {
       return;
     }
-    this.browserWindow?.show();
+    const browserWindow = this.browserWindow;
+    if (!browserWindow || browserWindow.isDestroyed()) {
+      return;
+    }
+    const nativePresentation = this.pendingNativePresentation;
+    this.pendingNativePresentation = null;
+    applyWindowPresentation(browserWindow, nativePresentation);
+    browserWindow.show();
     if (focus) {
-      this.browserWindow?.focus();
+      browserWindow.focus();
     }
   }
 
@@ -758,6 +812,15 @@ export class DesktopWindow {
     if (phase === RendererReadyPhase.Mounted) {
       this.onRendererMounted?.();
     }
+    if (phase === RendererReadyPhase.NavigationReady) {
+      completeRendererNavigationReady(
+        this.rendererEvents,
+        (delivery) => {
+          this.deliverRendererEvent(delivery);
+        },
+        () => this.onRendererNavigationReady?.()
+      );
+    }
     this.revealGate.requestReveal();
   }
 
@@ -769,6 +832,18 @@ export class DesktopWindow {
    */
   isTrustedSender(sender: WebContents): boolean {
     return isTrustedRendererSender(this.browserWindow, sender);
+  }
+
+  /**
+   * ISS-8776 — is there no live renderer window to verify a sender against?
+   *
+   * Reported alongside a refusal, never instead of one: an IPC handler consults
+   * this only after {@link isTrustedSender} has already said no, to say whether
+   * the refusal was a teardown or a foreign sender. See
+   * `ipc-trusted-sender.ts`.
+   */
+  isRendererWindowGone(): boolean {
+    return isRendererWindowGone(this.browserWindow);
   }
 
   /** Resolves once the initial renderer window has been shown at least once. */
@@ -787,21 +862,17 @@ export class DesktopWindow {
   }
 
   dispose(): void {
-    if (!this.browserWindow) {
-      return;
-    }
-
     this.disposing = true;
-    if (this.resumeHandler) {
-      powerMonitor?.off("resume", this.resumeHandler);
-      this.resumeHandler = null;
-    }
-    if (this.childProcessGoneHandler) {
-      app.off("child-process-gone", this.childProcessGoneHandler);
-      this.childProcessGoneHandler = null;
-    }
+    this.recoveryListeners.dispose();
     this.recovering = false;
-    this.browserWindow.close();
+    // ISS-6331: the crash breaker's rolling window is per-window state. Left
+    // behind, a rebuilt window inherits a full budget and reports itself
+    // exhausted on its first crash; the suppression map would likewise swallow a
+    // new window's first signal.
+    this.crashReloadTimestamps = [];
+    this.rendererHealth.dispose();
+    this.rendererEvents.dispose();
+    this.browserWindow?.destroy();
     this.browserWindow = null;
     this.allowedRendererUrl = null;
     this.initiallyShown = false;
@@ -809,6 +880,56 @@ export class DesktopWindow {
     // again, matching the `initiallyShown` reset above.
     this.revealGate.reset();
     this.disposing = false;
+  }
+
+  private suspendRenderer(
+    browserWindow: BrowserWindow,
+    generation: number
+  ): void {
+    if (!this.isCurrentWindow(browserWindow, generation)) {
+      return;
+    }
+    const allowedRendererUrl = this.allowedRendererUrl;
+    this.suspending = true;
+    try {
+      const capture = tryCaptureRendererWindowSessionState(browserWindow);
+      if (capture.state) {
+        this.rendererWindowState = capture.state;
+      } else {
+        gatewayLog.warn(
+          "renderer-suspension",
+          `Unable to capture renderer window state: ${capture.error instanceof Error ? capture.error.message : String(capture.error)}`
+        );
+      }
+      this.browserWindow = null;
+      this.allowedRendererUrl = null;
+      const destroyError = tryDestroyRendererWindow(browserWindow);
+      if (destroyError) {
+        gatewayLog.error(
+          "renderer-suspension",
+          `Unable to destroy renderer window: ${destroyError instanceof Error ? destroyError.message : String(destroyError)}`
+        );
+        this.browserWindow = browserWindow;
+        this.allowedRendererUrl = allowedRendererUrl;
+        return;
+      }
+      this.initiallyShown = false;
+      this.recovering = false;
+      this.crashReloadTimestamps = [];
+      this.rendererEvents.startGeneration();
+      this.revealGate.reset();
+      this.recoveryListeners.dispose();
+      this.rendererHealth.dispose();
+      this.onRendererReleased?.();
+    } finally {
+      this.suspending = false;
+    }
+  }
+
+  private deliverRendererEvent(delivery: RendererDelivery): boolean {
+    return attemptRendererDelivery(this.rendererEvents, delivery, (pending) =>
+      sendToRendererWindow(this.browserWindow, pending.channel, ...pending.args)
+    );
   }
 
   private showInitialWindow(reason: WindowRevealReason): void {

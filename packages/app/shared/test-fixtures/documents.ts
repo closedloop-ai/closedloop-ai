@@ -1,12 +1,10 @@
 import { type Artifact, ArtifactType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
-import type {
-  DocumentWithProject,
-  GenerationStatus,
-} from "@repo/api/src/types/document";
+import type { DocumentWithProject } from "@repo/api/src/types/document";
 import {
   DocumentStatus,
   DocumentType,
+  IssueStatus,
   SnapshotSource,
 } from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
@@ -42,21 +40,6 @@ export const createMockDocument = (
   sortOrder: null,
   createdAt: new Date("2024-01-15T10:00:00Z"),
   updatedAt: new Date("2024-01-16T10:00:00Z"),
-  ...overrides,
-});
-
-/**
- * Factory for creating mock GenerationStatus objects.
- */
-export const createMockGenerationStatus = (
-  overrides?: Partial<GenerationStatus>
-): GenerationStatus => ({
-  status: "SUCCESS",
-  command: "execute",
-  htmlUrl: "https://github.com/org/repo/actions/runs/123",
-  startedAt: new Date("2024-01-15T10:00:00Z"),
-  completedAt: new Date("2024-01-15T10:05:00Z"),
-  correlationId: "corr-123",
   ...overrides,
 });
 
@@ -150,3 +133,30 @@ export function makeRawArtifact(
     ...overrides,
   };
 }
+
+/**
+ * The words a status icon must show a reader — the hand-written oracle for the
+ * artifact-table status suites, declared literally rather than read back out of
+ * `ARTIFACT_STATUS_LABELS`, so a wrong entry in that map is a test failure and
+ * not a shared tautology. Exhaustive `Record`s: a new status member fails
+ * typecheck here until it is given the caption every surface must show.
+ */
+export const DOCUMENT_STATUS_CAPTION: Record<DocumentStatus, string> = {
+  [DocumentStatus.Draft]: "Draft",
+  [DocumentStatus.InReview]: "In Review",
+  [DocumentStatus.ChangesRequested]: "Changes Requested",
+  [DocumentStatus.Approved]: "Approved",
+  [DocumentStatus.Executed]: "Executed",
+  [DocumentStatus.Obsolete]: "Obsolete",
+};
+
+export const ISSUE_STATUS_CAPTION: Record<IssueStatus, string> = {
+  [IssueStatus.Triage]: "Triage",
+  [IssueStatus.Backlog]: "Backlog",
+  [IssueStatus.Todo]: "Todo",
+  [IssueStatus.InProgress]: "In Progress",
+  [IssueStatus.InReview]: "In Review",
+  [IssueStatus.Blocked]: "Blocked",
+  [IssueStatus.Done]: "Done",
+  [IssueStatus.Canceled]: "Canceled",
+};

@@ -155,9 +155,8 @@
   );
 }
 
-/* ISS-5548 — the column-height hit target, behind the
-   `session-timeline-column-hit-target` flag (`.reach` is only ever applied with
-   that flag on).
+/* ISS-5548 — the column-height hit target. `.reach` is applied only to bars a
+   click has somewhere to go.
 
    The bar IS the button, so today the bar's height is also the entire click
    target: `getBarStyle` floors an active bar at 9% of a ~62px column, and the
@@ -167,10 +166,14 @@
    tracking the value while the bar itself is left exactly as it was — still the
    honest visual encoding of magnitude, still painting through the box.
 
-   `.reach` is applied only to bars that HAVE a transcript anchor
-   (`getBucketReachClass`), so this can never enlarge an inert target — the
-   distinction ISS-5479 (PR #4615) drew between an unreachable bar and a
-   reachable-but-inert one survives either flag, in either order. */
+   Which bars qualify is `getBucketReachClass`'s call, and it is the ONE thing
+   here a flag still moves: today an anchored bar (`tl0 != null`), and with
+   `session-timeline-resolvable-reach` on, only a bar whose jump actually
+   RESOLVES — ISS-8727, since an anchor the rendered trace does not cover is an
+   inert target wearing a live one's size. Either way this can never enlarge a
+   target the caller has not vouched for, so the distinction ISS-5479 (PR #4615)
+   drew between an unreachable bar and a reachable-but-inert one survives every
+   flag, in either order. */
 .sd3-bar2.reach {
   /* The hit box is a child, and this button's own `overflow: hidden` would clip
      it straight back to the bar. Lifting the clip is safe here because the hit
@@ -257,7 +260,7 @@
    user gets the UA ring on the 6px box PLUS the column outline, which is the
    two-nested-controls defect this rule exists to prevent (code review). The
    `:not(:disabled)` scope keeps a disabled bar on exactly today's hover
-   treatment — this flag changes the hit target, not what a dead control looks
+   treatment — reach changes the hit target, not what a dead control looks
    like. */
 .sd3-bar2.reach:not(:disabled):hover,
 .sd3-bar2.reach:not(:disabled):focus-visible,
@@ -301,6 +304,20 @@
   border-radius: 0;
   background: color-mix(in oklab, var(--muted-foreground) 10%, transparent);
   cursor: default;
+}
+
+/* ISS-5850: a column the collector's activity extent never reached. The wash is
+   .unread's, because both mean "not looked at" and neither should wear the
+   .idle / .cb-gap hatch that on this strip means "observed, and nothing
+   happened" (see the ISS-5075 note above, which settled that). The HEIGHT is
+   .idle's 7px rather than .unread's stretch, deliberately: a trailing run of
+   unmeasured columns at full height would be indistinguishable from the unread
+   tail, and "the collector never binned here" is not "we stopped reading". */
+.sd3-bar2.unmeasured {
+  height: 7px !important;
+  align-self: flex-end;
+  border-radius: 0;
+  background: color-mix(in oklab, var(--muted-foreground) 10%, transparent);
 }
 
 .sd3-bar2:not(.unread) + .sd3-bar2.unread {
@@ -427,16 +444,87 @@
   transform: none;
 }
 
+/* ISS-10676 / ISS-12117: the dot rail's OWN palette. The marks used to borrow
+   `--primary`, `--success` and `--destructive`, which put "Human steering" on the
+   exact hue of the dark-mode `--chart-1` ("Input") bar, "Commits & PRs" within
+   ~10° of the `--chart-3` ("Cache") bar, and the success/failure pair on the red
+   and green that deuteranopia and protanopia fold together. The shared tokens are
+   used across the product, so the strip gets its own three instead.
+
+   Every bar the strip can paint (`--chart-1` to `--chart-5`, both themes) sits
+   between hue 38° and 266°, so all three marks live in the 296°–8° arc that no
+   bar uses, each at least 30° from every bar: steering is magenta (338°), commits
+   and PRs violet (300°), failures and limits crimson (8°). Lightness orders them
+   the same way in both themes, failure darkest and delivery lightest, and each
+   mark also has its own SHAPE (below), which is what separates them when hue
+   is lost. Each clears 3:1 against `--background` and `--popover` in both
+   themes (WCAG 1.4.11; pinned by `session-timeline-marker-tokens.test.ts`). Measurements are in the ISS-12117 PR. */
+:root {
+  --sd3-marker-steering: oklch(0.57 0.22 338);
+  --sd3-marker-delivery: oklch(0.66 0.16 300);
+  --sd3-marker-failure: oklch(0.47 0.18 8);
+}
+
+.dark {
+  --sd3-marker-steering: oklch(0.74 0.16 338);
+  --sd3-marker-delivery: oklch(0.84 0.09 300);
+  --sd3-marker-failure: oklch(0.63 0.21 8);
+}
+
+/* Colour per lane. The mark itself is painted by the shape rules below from
+   `currentColor`, so the button stays a transparent 8px round box. */
 .sd3-dot.d-b {
-  background: var(--primary);
+  color: var(--sd3-marker-steering);
 }
 
 .sd3-dot.d-g {
-  background: var(--success);
+  color: var(--sd3-marker-delivery);
 }
 
 .sd3-dot.d-r {
-  background: var(--destructive);
+  color: var(--sd3-marker-failure);
+}
+
+/* ISS-12117: every mark has its own SHAPE, because the three hues share the
+   one ~72° arc the bars leave free and cannot separate the marks alone (under
+   deuteranopia steering and delivery sit ~0.1 ΔE apart). Steering is a
+   rounded square, commits and PRs a circle, failures and limits a diamond.
+
+   One rule set draws all three wherever a timeline mark appears: the rail's
+   dots, the legend and hover-card swatches, and the transcript's event
+   bullets. Each host carries `sd3-shape-<shape>` from `getDotShape` and its
+   colour as `color`; the shape is a `::before`, so the host keeps its own box
+   (the dot button's 8px round hit target and focus ring are unchanged), and
+   the dot's hover scale still applies because the pseudo-element scales with
+   it. The square and diamond are scaled to about the circle's area. */
+.sd3-shape-circle,
+.sd3-shape-square,
+.sd3-shape-diamond {
+  background: none;
+}
+
+.sd3-shape-circle::before,
+.sd3-shape-square::before,
+.sd3-shape-diamond::before {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: currentColor;
+  content: "";
+}
+
+.sd3-shape-circle::before {
+  border-radius: 50%;
+}
+
+.sd3-shape-square::before {
+  border-radius: 1.5px;
+  transform: scale(0.875);
+}
+
+.sd3-shape-diamond::before {
+  border-radius: 1px;
+  transform: rotate(45deg) scale(0.9);
 }
 
 /* ISS-4955 / ISS-5366: equal `1fr` cheeks around an `auto` middle centre the

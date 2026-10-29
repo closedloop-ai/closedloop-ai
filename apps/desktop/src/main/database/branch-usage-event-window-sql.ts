@@ -1,3 +1,5 @@
+import { CANONICAL_UTC_TIMESTAMP_GLOB_SQL } from "./session-timestamp-form.js";
+
 /**
  * Inclusive `created_at` bounds for the branch usage event scan (ISS-4941).
  * Both ends are expected to be canonical `toISOString()` strings, so SQLite's
@@ -19,18 +21,23 @@ export type BranchUsageEventWindowBounds = {
  * expanded year (`+010000-01-01T00:00:00.000Z`, which sorts lexically BEFORE
  * every four-digit year because `+` < `0`) and hour `24` (which it rolls into
  * the next day while a byte-wise compare does not) both order differently.
+ *
+ * ISS-7579: the SQL half of this shape is {@link CANONICAL_UTC_TIMESTAMP_GLOB_SQL}
+ * (session-timestamp-form.ts), which this file now imports rather than
+ * re-declaring. The two are NOT interchangeable, and the difference runs the
+ * direction that matters: this regex is STRICTLY WIDER than what the stored-value
+ * guard admits. It pins shape only, so `2026-02-30T10:00:00.000Z` passes here
+ * while the SQL side's `strftime` round-trip rejects it. That is correct — this
+ * guards the caller-supplied BOUND, which is compared byte-wise and only needs a
+ * fixed-width shape, whereas the stored side must also be a real instant.
+ *
+ * The containment DOES have to hold: every value the stored guard admits must
+ * match this regex, or a bound could be pushed down against rows the JS filter
+ * would have kept. `canonical-instant-guard-partition.test.ts` pins that
+ * direction over the shared shape corpus. Exported for that test only.
  */
-const CANONICAL_INSTANT_RE =
+export const CANONICAL_INSTANT_RE =
   /^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):\d{2}:\d{2}\.\d{3}Z$/;
-
-/**
- * The same fixed-width shape as a SQLite `GLOB` pattern. `GLOB` has no
- * alternation, so the hour's `00`-`23` half is carried by a separate `substr`
- * comparison at the call site (both operands are two digits there, so the
- * string compare IS the numeric one).
- */
-const CANONICAL_INSTANT_GLOB =
-  "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z";
 
 /**
  * ISS-4941: push the request date window onto `token_events.created_at` so a
@@ -115,7 +122,7 @@ export function branchUsageEventWindowSql(
   }
   return `AND (
            te.created_at IS NULL
-           OR te.created_at NOT GLOB '${CANONICAL_INSTANT_GLOB}'
+           OR te.created_at NOT GLOB ${CANONICAL_UTC_TIMESTAMP_GLOB_SQL}
            OR substr(te.created_at, 12, 2) > '23'
            OR strftime('%Y-%m-%dT%H:%M:%fZ', te.created_at) IS NOT te.created_at
            OR (${inWindow.join(" AND ")})

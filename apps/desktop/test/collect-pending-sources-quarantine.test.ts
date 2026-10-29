@@ -14,7 +14,10 @@
  * honest while a source counted as finished cannot come back in a later scan.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { appendFileSync, statSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { test } from "vitest";
+import { createCatchupCache } from "../src/main/collectors/engine/catchup-cache.js";
 import {
   collectPendingSources,
   recordSourceTimeout,
@@ -28,6 +31,7 @@ import {
 } from "../src/main/collectors/engine/parse-quarantine.js";
 import type { HarnessCollector } from "../src/main/collectors/types.js";
 import { SourceTimeoutStage } from "../src/shared/ingest-quarantine-contract.js";
+import { createTempDirManager } from "./helpers/temp-dir.js";
 
 function makeBatchCollector(sources: string[]): HarnessCollector {
   return {
@@ -227,9 +231,16 @@ test("ISS-5028: willSourceBeRescanned answers the orphan readmission, including 
     false
   );
   // Marked seen but nothing in the database — the FEA-2027 unsafe-token-count
-  // skip and the zero-session parse both land here. The next scan readmits it,
-  // so it is NOT a finished source.
+  // skip lands here. The next scan readmits it, so it is NOT a finished source.
   assert.equal(willSourceBeRescanned(collector, source, none, none), true);
+  // ISS-12036: ...unless this pass parsed the source to ZERO sessions. No row
+  // will ever exist under its derived id, so the mark it just wrote keeps the
+  // next scan's orphan check off it and the source IS finished. Before this, the
+  // zero-session parse shared the readmission above and looped forever.
+  assert.equal(
+    willSourceBeRescanned(collector, source, none, none, true),
+    false
+  );
   // ...unless THIS pass wrote the row, which the pre-pass id snapshot cannot
   // know about.
   assert.equal(
@@ -397,5 +408,174 @@ test("ISS-6115: the stage is sticky to parse, so an import stall cannot put a pa
     store.isQuarantined(source, stat),
     true,
     "the parse claim survives the import cooldown"
+  );
+});
+
+/**
+ * ISS-7306 — the ORPHAN readmission answer must agree between the scan and the
+ * predicate for a FOLDED BURST CHILD, and the predicate must claim nothing
+ * beyond that.
+ *
+ * A Codex subagent rollout whose parent is present in the same scan parses to
+ * zero sessions by design: `codex-collector.parse` returns `[]` and
+ * `foldCodexDescendants` writes the content onto the root parent instead. No
+ * row therefore ever carries the child's own path-derived id, so the orphan
+ * rule alone calls it readmittable forever — while the scan skips it as burst
+ * ahead of that same orphan check. Measured on the ISS-7286 populated store,
+ * that disagreement was the WHOLE of the reported gap: 992 of 3,352 codex
+ * sources, set-equal to the folded-child set, holding `processed` at 2,360/3,352
+ * and leaving a 992-source `unfinished` that keeps `drained` false for the pass.
+ *
+ * The scan's burst gate is a CONJUNCTION (`status.unchanged && isBurst…`), and
+ * the third case below pins the half the predicate deliberately does not model:
+ * a burst child whose cache entry is stale IS returned as pending, by the same
+ * ordinary `cache.isUnchanged` path that readmits any changed source. Without
+ * that case the first two would certify an unconditional agreement that does
+ * not hold.
+ *
+ * MUTATION: drop the `isBurstArtifactSource` short-circuit in
+ * `willSourceBeRescanned` and the second assertion fails — the child is reported
+ * readmittable while the scan has already skipped it.
+ */
+test("ISS-7306: a folded burst child is not orphan-readmitted, and only that", async () => {
+  const dir = makeTempDir();
+  const parent = path.join(dir, "rollout-parent.jsonl");
+  const child = path.join(dir, "rollout-child.jsonl");
+  const orphan = path.join(dir, "rollout-orphan.jsonl");
+  for (const file of [parent, child, orphan]) {
+    writeFileSync(file, "{}\n", "utf8");
+  }
+  const collector = makeBurstCollector(new Set([child]));
+  const cache = createCatchupCache();
+  const none = new Set<string>();
+
+  // The pass finished all three and marked them seen — the state a later scan
+  // starts from. None of them wrote a row under its own derived id.
+  for (const file of [parent, child, orphan]) {
+    cache.markSeen(file);
+  }
+
+  const pending = await collectPendingSources(
+    collector,
+    cache,
+    [parent, child, orphan],
+    none
+  );
+  assert.deepEqual(
+    pending.map((entry) => entry.source).sort(),
+    [orphan, parent].sort(),
+    "the scan readmits the orphans and skips the folded child as burst"
+  );
+
+  // ...and the predicate must give the scan's answer, not the orphan rule's.
+  assert.equal(
+    willSourceBeRescanned(collector, child, none, none),
+    false,
+    "a folded burst child is durably finished: the scan will not list it again"
+  );
+  // The orphan rule still holds for everything the burst gate does not cover,
+  // so the short-circuit cannot have been widened into "never readmitted".
+  assert.equal(
+    willSourceBeRescanned(collector, orphan, none, none),
+    true,
+    "a non-burst source with no row is still readmitted by the orphan self-heal"
+  );
+
+  // The boundary the predicate does NOT model: the scan's burst branch also
+  // requires `status.unchanged`. Append to the child so its cache entry goes
+  // stale, and the scan hands it back — a `cache.isUnchanged` readmission, the
+  // category this predicate has never answered for any source.
+  appendFileSync(child, "{}\n", "utf8");
+  const afterChange = await collectPendingSources(
+    collector,
+    cache,
+    [parent, child, orphan],
+    none
+  );
+  assert.ok(
+    afterChange.some((entry) => entry.source === child),
+    "a burst child whose bytes changed is pending again, burst or not"
+  );
+});
+
+/**
+ * A file collector shaped like Codex: path-derivable session ids, and a set of
+ * sources it reports as folded children of a parent in the same scan.
+ */
+function makeBurstCollector(
+  burstSources: ReadonlySet<string>
+): HarnessCollector {
+  return {
+    key: "codex",
+    cacheName: "codex",
+    allowUnscopedSourceAdmission: true,
+    watchRoots: () => [],
+    watchMatch: () => true,
+    listSources: () => [...burstSources],
+    parse: async () => [],
+    sessionIdForSource: (source: string) => `session:${source}`,
+    isBurstArtifactSource: (source: string) => burstSources.has(source),
+  } as unknown as HarnessCollector;
+}
+
+const { makeTempDir } = createTempDirManager("iss7306-");
+
+/**
+ * ISS-12036: the readmission half of the same rule, driven through the real
+ * scan and a real catchup cache.
+ *
+ * A Codex root rollout the burst classifier drops — or one with no usable
+ * timestamp — parses to an empty session list BY DESIGN, so no row ever lands
+ * under the id `sessionIdForSource` derives from its path. `isOrphanedFromDb`
+ * was therefore permanently true for it and the scan re-listed, re-parsed and
+ * re-dropped it on every pass, holding `sources_remaining` flat at 66 for 48h
+ * on the install ISS-12036 measured. ISS-7306 closed the same loop for a folded
+ * CHILD rollout, which the scan recognises as a burst ARTIFACT ahead of the
+ * orphan check; a root has no parent, so nothing recognised it.
+ *
+ * Both halves are asserted against a real `createCatchupCache`, so the test
+ * fails if the mark is written but not read, or read but not persisted onto the
+ * entry — and the final case pins the exit, since a permanent skip would be the
+ * "silently drops" half of the same ticket.
+ *
+ * MUTATION: drop the `yieldedNoSession` short-circuit from `isOrphanedFromDb`
+ * and the second assertion re-lists the source.
+ */
+test("ISS-12036: a source marked as parsing to no session is not readmitted by the orphan self-heal", async () => {
+  const dir = makeTempDir("iss12036-no-session-");
+  const source = path.join(dir, "transcript.jsonl");
+  writeFileSync(source, "{}\n");
+  const collector = makeFileCollector();
+  const cache = createCatchupCache();
+  // No row under the derived id — the zero-session parse's permanent state.
+  const noRows = new Set<string>();
+
+  cache.markSeenWith(source, statSync(source));
+  assert.deepEqual(
+    (await collectPendingSources(collector, cache, [source], noRows)).map(
+      (pending) => pending.source
+    ),
+    [source],
+    "an orphaned, marked-seen source is readmitted — the self-heal this rule narrows"
+  );
+
+  cache.markSeenWith(source, statSync(source), null, {
+    yieldedNoSession: true,
+  });
+  assert.deepEqual(
+    await collectPendingSources(collector, cache, [source], noRows),
+    [],
+    "once the pass records that it parsed to no session, the scan leaves it alone"
+  );
+
+  // The exit: the mark describes THESE bytes. A transcript that grows past the
+  // burst window, or gains a timestamp, is re-parsed from scratch.
+  appendFileSync(source, '{"later":true}\n');
+  assert.deepEqual(
+    (await collectPendingSources(collector, cache, [source], noRows)).map(
+      (pending) => pending.source
+    ),
+    [source],
+    "a changed transcript is offered again"
   );
 });

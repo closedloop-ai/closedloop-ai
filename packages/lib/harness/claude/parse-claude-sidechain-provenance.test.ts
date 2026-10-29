@@ -13,7 +13,7 @@
  * roster. These pin the join itself rather than either half of it.
  */
 import { describe, expect, it } from "vitest";
-import { parseClaudeTranscript } from "./parse-claude-core";
+import { parseClaudeTranscript } from "./parse-claude";
 import { UNATTRIBUTED_SUBAGENT_ID } from "./parse-claude-subagents";
 
 const USER_LINE = JSON.stringify({
@@ -92,6 +92,10 @@ describe("a usage-bearing sidechain turn always has a roster row", () => {
       { sessionId: "sidechain-thinking-only" }
     );
 
+    // ISS-6576: `unresolvedProvenance` returns [] both when every stamp
+    // resolves and when NOTHING is stamped, so the guard is what makes the
+    // assertion below mean anything.
+    expect(session?.tokenSeries.some((record) => record.subagentId)).toBe(true);
     expect(unresolvedProvenance(session as never)).toEqual([]);
   });
 
@@ -125,6 +129,10 @@ describe("a usage-bearing sidechain turn always has a roster row", () => {
       { sessionId: "sidechain-tool" }
     );
 
+    // ISS-6576: `unresolvedProvenance` returns [] both when every stamp
+    // resolves and when NOTHING is stamped, so the guard is what makes the
+    // assertion below mean anything.
+    expect(session?.tokenSeries.some((record) => record.subagentId)).toBe(true);
     expect(unresolvedProvenance(session as never)).toEqual([]);
   });
 

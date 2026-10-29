@@ -46,7 +46,7 @@ export type LostSessionCandidate = {
   endsWithError: boolean | null;
   throttleSource: string | null;
   producedArtifact: boolean;
-  state: string | null;
+  status: string | null;
 };
 
 /**
@@ -147,6 +147,9 @@ export async function fetchLossTrendGrid(
  * raise 42803 on `s.session_started_at` (ISS-5263). It is projected once and
  * grouped by its output alias instead, exactly as `fetchLossTrendGrid` groups
  * by `"day"`.
+ *
+ * The person is the session's creator (`a.created_by_id`, ISS-12251 D-4), the
+ * engineer who ran it.
  */
 export function fetchLossPersonGrid(
   scopeSql: Prisma.Sql,
@@ -157,16 +160,16 @@ export function fetchLossPersonGrid(
   return withDb((db) =>
     db.$queryRaw<LossPersonGridRow[]>(Prisma.sql`
       SELECT
-        s.user_id AS "userId",
+        a.created_by_id AS "userId",
         ${ENGINEER_NAME} AS "engineer",
         (s.session_started_at < ${splitAt}) AS "isEarly",
         ${SIGNAL_GRID_SELECT}
       ${SESSION_ANALYTICS_FROM}
-      LEFT JOIN users u ON u.id = s.user_id
+      LEFT JOIN users u ON u.id = a.created_by_id
       WHERE ${sessionWindow(start, end)}
         AND (${scopeSql})
       GROUP BY
-        s.user_id,
+        a.created_by_id,
         ${ENGINEER_NAME},
         "isEarly",
         ${SIGNAL_GRID_GROUP_BY}
@@ -197,9 +200,9 @@ export function fetchLostSessionCandidates(
         s.ends_with_error AS "endsWithError",
         ${FAILURE_THROTTLE_SOURCE} AS "throttleSource",
         ${PRODUCED_ARTIFACT} AS "producedArtifact",
-        s.state AS "state"
+        a.status AS "status"
       ${SESSION_ANALYTICS_FROM}
-      LEFT JOIN users u ON u.id = s.user_id
+      LEFT JOIN users u ON u.id = a.created_by_id
       WHERE ${sessionWindow(start, end)}
         AND (${scopeSql})
         AND ${LOST_SESSION_PREFILTER}

@@ -6,6 +6,10 @@
  */
 import { DocumentType } from "@repo/api/src/types/document";
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
+import type {
+  JudgeScoreRow,
+  JudgeScoresResponse,
+} from "@repo/api/src/types/judges-analytics";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   GET as ratingsGET,
@@ -15,9 +19,11 @@ import {
   getUserJudgeRatings,
   submitJudgeRating,
 } from "@/app/documents/[id]/judge-ratings/service";
+import { GET as judgeDetailGET } from "@/app/judges-analytics/[metricName]/route";
 import { GET as scoresGET } from "@/app/judges-analytics/[metricName]/scores/route";
 import { judgesAnalyticsService } from "@/app/judges-analytics/service";
 import type { AuthContext } from "@/lib/auth/with-auth";
+import { resolveDocumentId } from "@/lib/identifier-utils";
 import {
   createMockRequest,
   createMockRouteContext,
@@ -31,12 +37,16 @@ import {
 let mockAuthContext: AuthContext;
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context.params),
+  withAnyAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context.params),
 }));
 
 vi.mock("@/lib/identifier-utils", () => ({
-  resolveDocumentId: vi.fn(async (id: string) => id),
+  resolveDocumentId: vi.fn(async (id: string, organizationId: string) =>
+    organizationId === mockAuthContext.user.organizationId ? id : null
+  ),
 }));
 vi.mock("@/app/judges-analytics/service");
 vi.mock("@/app/documents/[id]/judge-ratings/service");
@@ -45,12 +55,15 @@ vi.mock("@/app/documents/[id]/judge-ratings/service");
 // Shared fixtures
 // ---------------------------------------------------------------------------
 
-function makeJudgeScoreRow(overrides = {}) {
+function makeJudgeScoreRow(
+  overrides: Partial<JudgeScoreRow> = {}
+): JudgeScoreRow {
   return {
     judgeScoreId: "js-artifact-1",
+    metricName: "clarity",
     documentId: "artifact-1",
-    artifactType: DocumentType.ImplementationPlan,
-    artifactTitle: "My Plan",
+    documentType: DocumentType.ImplementationPlan,
+    documentTitle: "My Plan",
     documentSlug: "my-plan",
     judgeScore: 0.8,
     avgUserRating: 0.8,
@@ -61,11 +74,13 @@ function makeJudgeScoreRow(overrides = {}) {
   };
 }
 
-function makeJudgeScoresResponse(overrides = {}) {
+function makeJudgeScoresResponse(
+  overrides: Partial<JudgeScoresResponse> = {}
+): JudgeScoresResponse {
   return {
     rows: [makeJudgeScoreRow()],
-    totalArtifacts: 1,
-    ratedArtifacts: 0,
+    totalDocuments: 1,
+    ratedDocuments: 0,
     coveragePct: 0,
     pagination: { page: 1, pageSize: 20, totalRows: 1, totalPages: 1 },
     ...overrides,
@@ -85,7 +100,7 @@ describe("GET /api/judges-analytics/[metricName]/scores", () => {
   it("returns 200 with paginated JudgeScoreRow list for valid params", async () => {
     const mockData = makeJudgeScoresResponse();
     vi.mocked(judgesAnalyticsService.getJudgeScores).mockResolvedValue(
-      mockData as any
+      mockData
     );
 
     const request = createMockRequest({
@@ -151,6 +166,26 @@ describe("GET /api/judges-analytics/[metricName]/scores", () => {
     expect(judgesAnalyticsService.getJudgeScores).not.toHaveBeenCalled();
   });
 
+  /**
+   * ISS-6908. Next's route matcher already decodes every captured segment, so
+   * `parsePromptNameParam` was decoding a second time — and
+   * `decodeURIComponent("100%-done")` throws `URIError: URI malformed`. The
+   * throw was caught by the route's outer try/catch and reported as a generic
+   * 500, hiding a name the validator was perfectly able to reject as a 400.
+   */
+  it("returns 400, not 500, when metricName carries an undecodable percent", async () => {
+    const request = createMockRequest({
+      url: "http://localhost:3002/api/judges-analytics/100%25-done/scores?reportType=PLAN",
+    });
+    const response = await scoresGET(
+      request,
+      createMockRouteContext({ metricName: "100%-done" })
+    );
+
+    expect(response.status).toBe(400);
+    expect(judgesAnalyticsService.getJudgeScores).not.toHaveBeenCalled();
+  });
+
   it("returns 404 when judge is not found (service returns null)", async () => {
     vi.mocked(judgesAnalyticsService.getJudgeScores).mockResolvedValue(null);
 
@@ -170,7 +205,7 @@ describe("GET /api/judges-analytics/[metricName]/scores", () => {
       pagination: { page: 2, pageSize: 10, totalRows: 25, totalPages: 3 },
     });
     vi.mocked(judgesAnalyticsService.getJudgeScores).mockResolvedValue(
-      mockData as any
+      mockData
     );
 
     const request = createMockRequest({
@@ -207,6 +242,35 @@ describe("GET /api/judges-analytics/[metricName]/scores", () => {
     );
 
     expect(response.status).toBe(500);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /judges-analytics/[metricName]
+//
+// ISS-6908: the second consumer of `parsePromptNameParam`. The helper's fixed
+// behaviour is shared, but the wiring is not — this route had no coverage at
+// all, so nothing pinned that a rejectable metricName reaches its
+// `badRequestResponse` rather than its catch-all 500.
+// ---------------------------------------------------------------------------
+
+describe("GET /api/judges-analytics/[metricName]", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAuthContext = createTestAuthContext();
+  });
+
+  it("returns 400, not 500, when metricName carries an undecodable percent", async () => {
+    const request = createMockRequest({
+      url: "http://localhost:3002/api/judges-analytics/100%25-done?reportType=PLAN",
+    });
+    const response = await judgeDetailGET(
+      request,
+      createMockRouteContext({ metricName: "100%-done" })
+    );
+
+    expect(response.status).toBe(400);
+    expect(judgesAnalyticsService.getJudgeDetail).not.toHaveBeenCalled();
   });
 });
 
@@ -255,7 +319,12 @@ describe("POST /api/artifacts/[artifactId]/judge-ratings", () => {
       mockAuthContext.user.id,
       ARTIFACT_ID,
       JUDGE_SCORE_ID,
-      0.75
+      0.75,
+      undefined
+    );
+    expect(resolveDocumentId).toHaveBeenCalledWith(
+      ARTIFACT_ID,
+      mockAuthContext.user.organizationId
     );
   });
 

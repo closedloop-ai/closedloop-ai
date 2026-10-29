@@ -43,4 +43,40 @@ describe("share-dashboard codec", () => {
     const badShape = btoa(JSON.stringify({ t: "not-an-array", l: {} }));
     expect(decodeSharedDashboard(badShape)).toBeNull();
   });
+
+  it("drops only the corrupt tile position from a shared layout", () => {
+    // ISS-8738: a hand-built token with one h:0 entry used to fail the whole
+    // decode and silently fall back to the recipient's own dashboard.
+    const token = encodeSharedDashboard({
+      ...SNAPSHOT,
+      layout: {
+        ...SNAPSHOT.layout,
+        "kpi:merged": { x: 0, y: 0, w: 12, h: 0 },
+      },
+    });
+
+    expect(decodeSharedDashboard(token)).toEqual({
+      ...SNAPSHOT,
+      layout: { "chart:prTrend": SNAPSHOT.layout["chart:prTrend"] },
+    });
+  });
+
+  it("decodes an all-invalid layout as empty", () => {
+    const token = btoa(
+      JSON.stringify({
+        t: SNAPSHOT.tiles,
+        l: { "kpi:merged": { x: 0, y: 0, w: 0, h: 2 }, "chart:prTrend": 4 },
+      })
+    );
+    expect(decodeSharedDashboard(token)).toEqual({
+      tiles: SNAPSHOT.tiles,
+      layout: {},
+      settings: {},
+    });
+  });
+
+  it("returns null when the layout is not a plain object", () => {
+    const token = btoa(JSON.stringify({ t: SNAPSHOT.tiles, l: "nope" }));
+    expect(decodeSharedDashboard(token)).toBeNull();
+  });
 });

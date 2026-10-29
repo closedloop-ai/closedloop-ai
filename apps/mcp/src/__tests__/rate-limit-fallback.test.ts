@@ -163,7 +163,9 @@ describe("in-memory rate limiter", () => {
 // so each env variant needs vi.resetModules() + a fresh dynamic import.
 // ---------------------------------------------------------------------------
 
-describe.sequential("getClientAddress via consumeInMemoryRateLimit", () => {
+describe("getClientAddress via consumeInMemoryRateLimit", {
+  concurrent: false,
+}, () => {
   const ORIG_TRUST_PROXY = process.env.MCP_TRUST_PROXY;
 
   afterEach(() => {

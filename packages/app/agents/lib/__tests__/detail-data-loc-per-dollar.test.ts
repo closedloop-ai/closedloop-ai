@@ -32,11 +32,12 @@ const hasKlocCard = (detail: AgentComponentDetail): boolean =>
   componentMetrics(detail).some((metric) => metric.key === "loc-per-dollar");
 
 describe("componentMetrics LOC/$ gating (FEA-4052)", () => {
-  it.each([
-    AgentComponentKind.Subagent,
-  ])("shows the LOC/$ card for verifiable kind %s", (kind) => {
-    expect(hasKlocCard(makeDetail({ kind, locPerDollar: 2.5 }))).toBe(true);
-  });
+  it.each([AgentComponentKind.Subagent])(
+    "shows the LOC/$ card for verifiable kind %s",
+    (kind) => {
+      expect(hasKlocCard(makeDetail({ kind, locPerDollar: 2.5 }))).toBe(true);
+    }
+  );
 
   it.each([
     // skill/command excluded until session partitioning (whitlockk, PR #3720).

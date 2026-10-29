@@ -1,9 +1,10 @@
-import type { BranchPageDetail } from "@repo/api/src/types/branch";
 import {
   BranchTraceCompletenessState,
   BranchTraceSessionHydrationState,
   type BranchTraceState,
 } from "@repo/api/src/types/branch-trace";
+import type { SessionTimelineDetail } from "@repo/api/src/types/document-sessions";
+import type { TimelineScale } from "@repo/app/agents/lib/session-timeline-scale";
 import {
   formatCompact,
   formatCostPrecise,
@@ -11,15 +12,21 @@ import {
 import type { ReactNode } from "react";
 import type { BranchActorColorDomain } from "../lib/branch-actor-domain";
 import {
+  type BranchTimelineGrouping,
   MAX_TIMELINE_DAYS,
   type TimelineColumn,
   type TimelineSegment,
   type TimelineSessionIdentity,
 } from "../lib/branch-session-buckets";
+import {
+  resolveBranchSessionCostSubtotal,
+  resolveKnownBranchSessionCostSubtotal,
+} from "../lib/branch-session-cost";
 import { formatClock } from "../lib/branch-timeline-range";
 import type { PreferredBranchLoc } from "../lib/preferred-branch-loc";
 
 const MIN_BAR_PERCENT = 8;
+const TIMELINE_UNAVAILABLE_VALUE = "Unavailable";
 
 /** Token split rows rendered in each timeline hover card. */
 export const TIMELINE_TOKEN_PARTS = [
@@ -29,29 +36,46 @@ export const TIMELINE_TOKEN_PARTS = [
 ] as const;
 
 export type TimelineLegendEntry = {
+  color: string;
   key: string;
-  owner: string | null;
+  label: string;
   total: number;
 };
 
 export type BranchPrActivityTimelineProps = {
-  detail: BranchPageDetail;
+  detail: SessionTimelineDetail;
+  showBranchContext?: boolean;
   traceState?: BranchTraceState | null;
   isLoading?: boolean;
   actorDomain?: BranchActorColorDomain;
   activeHourStart?: string | null;
   activeFraction?: number | null;
+  grouping?: BranchTimelineGrouping;
+  scale?: TimelineScale;
+  windowStart?: number;
   onScrubHour?: (hourStart: string) => void;
+  onGroupingChange?: (grouping: BranchTimelineGrouping) => void;
+  onPositionChange?: (column: number) => void;
+  onScaleChange?: (scale: TimelineScale) => void;
+  onWindowStartChange?: (windowStart: number) => void;
+  positionColumn?: number | null;
   loc?: PreferredBranchLoc;
   children?: ReactNode;
   className?: string;
 };
 
+export type DetailForLoadedTimelineSessionsOptions = {
+  requireKnownLoadedCost?: boolean;
+};
+
 /** Restricts timeline derivations to Sessions whose trace evidence loaded. */
-export function detailForLoadedTimelineSessions(
-  detail: BranchPageDetail,
-  traceState?: BranchTraceState | null
-): BranchPageDetail {
+export function detailForLoadedTimelineSessions<
+  T extends SessionTimelineDetail,
+>(
+  detail: T,
+  traceState?: BranchTraceState | null,
+  options: DetailForLoadedTimelineSessionsOptions = {}
+): T {
   if (!traceState) {
     return detail;
   }
@@ -62,31 +86,34 @@ export function detailForLoadedTimelineSessions(
         : []
     )
   );
+  const sourceSessionIds = new Set(
+    detail.sessions.map((session) => session.sessionId)
+  );
   const sessions = detail.sessions.filter((session) =>
     loaded.has(session.sessionId)
   );
-  const distinct = new Map(
-    sessions.map((session) => [session.sessionId, session])
+  const loadedCost = options.requireKnownLoadedCost
+    ? resolveKnownBranchSessionCostSubtotal(detail, sessions, detail.sessions)
+    : resolveBranchSessionCostSubtotal(detail, sessions, detail.sessions);
+  const hasAuthoritativeBranchCost = detail.attributedCostUsd !== undefined;
+  const allSourceSessionsLoaded = [...sourceSessionIds].every((sessionId) =>
+    loaded.has(sessionId)
   );
-  const loadedCost = [...distinct.values()].reduce(
-    (sum, session) =>
-      sum +
-      (session.evenSplitCostUsd ??
-        (session.estimatedCostUsd == null
-          ? 0
-          : session.estimatedCostUsd / Math.max(1, session.branchCount ?? 1))),
-    0
-  );
+  // Aggregate completeness also covers trace-event truncation; preserving an
+  // authoritative Branch cost only requires every source Session to load.
+  const shouldPreserveBranchCost =
+    hasAuthoritativeBranchCost && allSourceSessionsLoaded;
   return {
     ...detail,
-    estimatedCostUsd: loadedCost,
+    estimatedCostUsd: shouldPreserveBranchCost
+      ? detail.estimatedCostUsd
+      : loadedCost,
     ...(detail.attributedCostUsd === undefined
       ? {}
       : {
-          attributedCostUsd: resolveLoadedAttributedCost(
-            detail.attributedCostUsd,
-            loadedCost
-          ),
+          attributedCostUsd: shouldPreserveBranchCost
+            ? detail.attributedCostUsd
+            : resolveLoadedAttributedCost(detail.attributedCostUsd, loadedCost),
         }),
     sessions,
   };
@@ -100,7 +127,7 @@ export function formatTimelineEvidenceValue(
 ): string {
   const claim = TRACE_EVIDENCE_CLAIM[traceEvidence];
   if (claim.unavailable || localEvidence?.unavailable) {
-    return "Unavailable";
+    return TIMELINE_UNAVAILABLE_VALUE;
   }
   return (claim.incomplete || localEvidence?.incomplete) && value !== "—"
     ? `${value}*`
@@ -158,11 +185,13 @@ export function resolveTimelineNoBarsMessage({
   sourceSessionCount,
   sessionCount,
   traceCompleteness,
+  showBranchContext = true,
 }: {
   columnCount: number;
   sourceSessionCount?: number;
   sessionCount: number;
   traceCompleteness?: BranchTraceCompletenessState;
+  showBranchContext?: boolean;
 }): string | null {
   if (
     sessionCount === 0 &&
@@ -172,6 +201,9 @@ export function resolveTimelineNoBarsMessage({
     return "Session timing is unavailable, so spend can't be charted by hour.";
   }
   const sessionLabel = `${sessionCount} session${sessionCount === 1 ? "" : "s"}`;
+  if (columnCount === 0 && !showBranchContext) {
+    return "Session timing is unavailable, so spend can't be charted by hour.";
+  }
   if (columnCount === 0) {
     return `${sessionLabel} ran on this branch, but their timing has no measurable duration, so spend can't be charted by hour.`;
   }
@@ -197,7 +229,7 @@ export function timelineBarHeightPercent(
 
 function resolveLoadedAttributedCost(
   attributedCostUsd: number | null,
-  loadedCostUsd: number
+  loadedCostUsd: number | null
 ): number | null {
   if (attributedCostUsd === null) {
     return null;
@@ -218,17 +250,14 @@ export function formatTimelineTokens(value: number): string {
 }
 
 /** Accessible description for a cost bar and its actor breakdown. */
-export function formatTimelineBarLabel(
-  column: TimelineColumn,
-  domain: BranchActorColorDomain
-): string {
+export function formatTimelineBarLabel(column: TimelineColumn): string {
   const when = formatClock(Date.parse(column.hourStart));
   if (column.isGap) {
     return `${when} · idle`;
   }
   const breakdown = column.segments
     .map((segment) => {
-      return `${domain.labelFor(segment.owner)} ${formatTimelineSegmentCost(segment)}`;
+      return `${segment.label} ${formatTimelineSegmentCost(segment)}`;
     })
     .join(" · ");
   return `${when} · ${formatCostPrecise(column.total)} · ${breakdown}`;
@@ -243,31 +272,32 @@ export function formatTimelineSegmentCost(
   }
   return segment.value > 0
     ? `${formatCostPrecise(segment.value)}*`
-    : "Unavailable";
+    : TIMELINE_UNAVAILABLE_VALUE;
 }
 
 /** Stable cost-descending legend built from rendered timeline columns. */
 export function buildTimelineLegend(
   columns: readonly TimelineColumn[]
 ): TimelineLegendEntry[] {
-  const legendByOwner = new Map<string, TimelineLegendEntry>();
+  const legendBySegment = new Map<string, TimelineLegendEntry>();
   for (const column of columns) {
     for (const segment of column.segments) {
-      const entry = legendByOwner.get(segment.key) ?? {
+      const entry = legendBySegment.get(segment.key) ?? {
+        color: segment.color,
         key: segment.key,
-        owner: segment.owner,
+        label: segment.label,
         total: 0,
       };
       entry.total += segment.value;
-      legendByOwner.set(segment.key, entry);
+      legendBySegment.set(segment.key, entry);
     }
   }
-  return [...legendByOwner.values()].sort((left, right) => {
+  return [...legendBySegment.values()].sort((left, right) => {
     const byCost = right.total - left.total;
     if (byCost !== 0) {
       return byCost;
     }
-    return (left.owner ?? "").localeCompare(right.owner ?? "");
+    return left.label.localeCompare(right.label);
   });
 }
 
@@ -306,12 +336,10 @@ export type TimelineFallbackReasons = {
  * `timingIncomplete || authoritativeCostUsd == null ? chartableCostUsd : authoritativeCostUsd`.
  *
  * That is why `sourceCostUnpriced` is gated inside `unpriced` rather than
- * OR-ed in unconditionally. It is a NEW reason to prefer the chartable subtotal,
- * and a new reason changes which NUMBER renders, not just whether a `*` appears:
- * a legacy Branch whose loaded trace rewrites its absent total to a real figure
- * while nothing charted is priced read `$0.00` before this change and would read
- * "Unavailable" after it. Leaking that onto the closed gate is precisely the
- * end-user-perceivable change the closed-by-default policy exists to hold back.
+ * OR-ed in unconditionally. It is a newer reason to prefer the chartable
+ * subtotal when a chartable subtotal exists; loaded Session evidence missing
+ * cost on any row is normalized to `null` before this predicate, so it follows
+ * the established unavailable-state path instead of fabricating `$0.00`.
  *
  * whitlockk review — the three states where the two still disagreed:
  *
@@ -476,4 +504,23 @@ function timelineSessionLabel(session: TimelineSessionIdentity): string {
     }
   }
   return session.sessionId;
+}
+
+/**
+ * Whether the strip's LOC/$ figure is a ratio the "LOC/$" unit can follow,
+ * decided from the inputs rather than the rendered string so a new placeholder
+ * cannot bring the unit back. The agreed design (ISS-8358 prototype,
+ * `isLocPerDollarValue`) drops the unit after an absent value (ISS-12207).
+ */
+export function hasLocPerDollarRatio(
+  value: number | null,
+  traceEvidence: TimelineTraceEvidence,
+  evidenceMissing: boolean
+): boolean {
+  return (
+    value != null &&
+    Number.isFinite(value) &&
+    !evidenceMissing &&
+    !TRACE_EVIDENCE_CLAIM[traceEvidence].unavailable
+  );
 }

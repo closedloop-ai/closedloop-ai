@@ -1,4 +1,5 @@
 import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
+import { ActorTurnSide } from "@repo/app/shared/lib/actor-color-domain";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
 import { render, screen } from "@testing-library/react";
@@ -9,10 +10,7 @@ import {
   makeBranchDetail,
   makeBranchSession,
 } from "../../__tests__/branch-fixtures";
-import {
-  BranchActorTurnSide,
-  buildActorColorDomain,
-} from "../../lib/branch-actor-domain";
+import { buildActorColorDomain } from "../../lib/branch-actor-domain";
 import { BranchPrSessionSwimlane } from "../branch-pr-session-swimlane";
 
 function withNav(node: ReactNode): ReactNode {
@@ -120,7 +118,7 @@ describe("BranchPrSessionSwimlane (E4)", () => {
     const [aliceLane] = lanes(container);
     const seg = aliceLane?.querySelector<HTMLElement>(".bq-lane-seg");
     expect(seg?.getAttribute("style")).toContain(
-      `background: ${domain.colorForTurn("alice", BranchActorTurnSide.Agent)}`
+      `background: ${domain.colorForTurn("alice", ActorTurnSide.Agent)}`
     );
   });
 

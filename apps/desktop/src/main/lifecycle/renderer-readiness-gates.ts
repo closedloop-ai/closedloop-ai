@@ -215,9 +215,12 @@ export class RendererReadinessGates {
    * ISS-4717 removed the `whenInitialCollectorImportComplete()` promise that
    * used to accompany this. It was the one UNBOUNDED wait in this class, and it
    * is unwaitable-on by construction: the only thing that fires it is post-boot
-   * maintenance settling for the still-active generation, so a boot import the
-   * FEA-4156 watchdog gave up on, a runtime closed first, or collectors that
-   * never start leave it pending for the life of the process. Its last caller
+   * maintenance settling for the still-active generation AND claiming the import
+   * complete, so a boot import the FEA-4156 watchdog gave up on, a runtime closed
+   * first, or collectors that never start leave it pending for the life of the
+   * process. ISS-8601 re-arms that maintenance pass after a timeout but passes
+   * `claimImportComplete: false`, precisely so this sentence stays true: the
+   * rebuild runs, the readiness bit does not move. Its last caller
    * gated the cloud sync lanes on it. **Read the boolean below; do not
    * reintroduce a promise.** Anything that must eventually run needs a bounded
    * wait like this class's `raceWithFailOpen` siblings.
@@ -279,6 +282,12 @@ export class RendererReadinessGates {
     for (const resolve of this.initialRendererMountedResolvers) {
       resolve();
     }
+    this.initialRendererMountedResolvers.clear();
+  }
+
+  /** Re-arm only the renderer mount gate when its BrowserWindow is replaced. */
+  resetRendererMounted(): void {
+    this.initialRendererMounted = false;
     this.initialRendererMountedResolvers.clear();
   }
 

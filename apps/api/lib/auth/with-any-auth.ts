@@ -1,8 +1,12 @@
 import "server-only";
 
-import type { ApiKeyScope } from "@repo/api/src/types/api-key";
+import { ApiKeyScope } from "@repo/api/src/types/api-key";
 import { isDesktopSessionToken } from "@repo/auth/desktop-session-jwt";
 import type { NextRequest } from "next/server";
+import {
+  assertRequiredApiKeyScopes,
+  type RequiredApiKeyScopes,
+} from "./api-key-scopes";
 import { withApiKeyAuth } from "./with-api-key-auth";
 import type {
   AuthenticatedHandler,
@@ -24,6 +28,12 @@ import { withDesktopSessionAuth } from "./with-desktop-session-auth";
  * This allows routes to accept programmatic (API key), desktop-session, and
  * browser (Clerk session) clients through one central path.
  *
+ * API-key scopes: `options.requiredScopes` when given, otherwise the method
+ * default (read for GET and HEAD, delete for DELETE, write otherwise). The
+ * fallback is per field (ISS-11792), so an options object without scopes still
+ * gets the default. An empty list is refused: it does not compile, and an
+ * untyped one throws when the wrapper is built.
+ *
  * @example
  * export const POST = withAnyAuth<ResponseType, '/path'>(async ({ user }, request) => {
  *   return NextResponse.json(success(data));
@@ -31,11 +41,15 @@ import { withDesktopSessionAuth } from "./with-desktop-session-auth";
  */
 export function withAnyAuth<TResponse, TRoute extends string = string>(
   handler: AuthenticatedHandler<TResponse, TRoute>,
-  options?: { requiredScopes?: ApiKeyScope[] }
+  options?: { requiredScopes?: RequiredApiKeyScopes }
 ): (
   request: NextRequest,
   context: { params: Promise<Record<string, string>> }
 ) => Promise<AuthenticatedJsonResponse<TResponse>> {
+  const routeScopes = options?.requiredScopes
+    ? assertRequiredApiKeyScopes(options.requiredScopes, "withAnyAuth")
+    : undefined;
+
   return (
     request: NextRequest,
     context: { params: Promise<Record<string, string>> }
@@ -46,20 +60,10 @@ export function withAnyAuth<TResponse, TRoute extends string = string>(
       : null;
 
     if (token?.startsWith("sk_live_")) {
-      let fallbackOptions: { requiredScopes: ApiKeyScope[] };
-
-      if (request.method === "GET" || request.method === "HEAD") {
-        fallbackOptions = { requiredScopes: ["read"] };
-      } else if (request.method === "DELETE") {
-        fallbackOptions = { requiredScopes: ["delete"] };
-      } else {
-        fallbackOptions = { requiredScopes: ["write"] };
-      }
-      const effectiveOptions = options ?? fallbackOptions;
-      return withApiKeyAuth<TResponse, TRoute>(handler, effectiveOptions)(
-        request,
-        context
-      );
+      return withApiKeyAuth<TResponse, TRoute>(handler, {
+        requiredScopes:
+          routeScopes ?? defaultApiKeyScopesForMethod(request.method),
+      })(request, context);
     }
 
     if (token && isDesktopSessionToken(token)) {
@@ -71,4 +75,15 @@ export function withAnyAuth<TResponse, TRoute extends string = string>(
 
     return withAuth<TResponse, TRoute>(handler)(request, context);
   };
+}
+
+/** The scope an API key needs on a route that declares none. */
+function defaultApiKeyScopesForMethod(method: string): RequiredApiKeyScopes {
+  if (method === "GET" || method === "HEAD") {
+    return [ApiKeyScope.Read];
+  }
+  if (method === "DELETE") {
+    return [ApiKeyScope.Delete];
+  }
+  return [ApiKeyScope.Write];
 }

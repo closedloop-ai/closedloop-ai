@@ -2,35 +2,72 @@ import {
   GitHubAccessDenialReason,
   GitHubCredentialKind,
 } from "@repo/api/src/types/github";
+import { log } from "@repo/observability/log";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@repo/database", () => ({
+const projectionWriteMocks = vi.hoisted(() => ({
+  useActualWriter: false,
+  write: vi.fn(),
+  persistHeadAuthority: vi.fn(),
+}));
+vi.mock("@repo/database", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@repo/database")>()),
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
 }));
-
 vi.mock("@repo/github", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@repo/github")>()),
   queryBundledPullRequestsWithProviderResult: vi.fn(),
+  queryPullRequestsByNumberWithProviderResult: vi.fn(),
 }));
-
 vi.mock("@/lib/github/github-sync-client-pool", () => ({
   getGitHubSyncClient: vi.fn(),
 }));
-
-vi.mock("../reconcile-projection-write", () => ({
-  writeReconciledPullRequest: vi.fn(),
-  writeReconciledPullRequestFailures: vi.fn().mockResolvedValue(0),
+vi.mock("../reconcile-projection-write", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../reconcile-projection-write")>();
+  return {
+    ...actual,
+    writeReconciledPullRequest: vi.fn(
+      (...args: Parameters<typeof actual.writeReconciledPullRequest>) =>
+        projectionWriteMocks.useActualWriter
+          ? actual.writeReconciledPullRequest(...args)
+          : projectionWriteMocks.write(...args)
+    ),
+    writeReconciledPullRequestFailures: vi.fn().mockResolvedValue(0),
+  };
+});
+vi.mock(
+  "@/app/branches/pull-request-head-authority",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("@/app/branches/pull-request-head-authority")
+    >()),
+    persistPullRequestHeadRepositoryAuthority:
+      projectionWriteMocks.persistHeadAuthority,
+  })
+);
+vi.mock("../targeted-reconciler", () => ({
+  TargetedReconcileStatus: {
+    Success: "success",
+    FetchFailed: "fetch_failed",
+  },
+  reconcileTargetedSessionLinkedPullRequests: vi.fn(),
 }));
-
 vi.mock("@/lib/github/github-repo-sync-state", async (importOriginal) => ({
   ...(await importOriginal<
     typeof import("@/lib/github/github-repo-sync-state")
   >()),
   classifyRepoSyncTier: vi.fn(),
 }));
-
-vi.mock("@repo/api/src/types/branch", () => ({
+vi.mock("@repo/api/src/types/branch", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@repo/api/src/types/branch")>()),
   normalizeRepoFullName: (value: string) => value.trim().toLowerCase(),
+}));
+vi.mock("../delivery-coverage-metrics", () => ({
+  reportGitHubDeliveryCoverageTick: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@/lib/github/installation-repository-lookup", () => ({
+  findInstallationRepositoryId: vi.fn(),
 }));
 
 import { withDb } from "@repo/database";
@@ -39,23 +76,38 @@ import {
   queryBundledPullRequestsWithProviderResult,
 } from "@repo/github";
 import {
+  dbState,
+  INPUT as FIXTURE_INPUT,
+  NOW as FIXTURE_NOW,
+  makeClient,
+  makeDb,
+  readModelPr,
+  resetReconcileDbState,
+} from "@/__tests__/support/cron/reconcile-pull-requests/repo-reconciler.test-fixtures";
+import {
   classifyRepoSyncTier,
   GitHubRepoSyncDeferralReason,
   GitHubRepoSyncTier,
 } from "@/lib/github/github-repo-sync-state";
+import { computeNextRetryAt } from "@/lib/github/github-retry-backoff";
 import { getGitHubSyncClient } from "@/lib/github/github-sync-client-pool";
 import { GitHubSyncRepoAccessOutcome } from "@/lib/github/github-sync-pool-observations";
+import { findInstallationRepositoryId } from "@/lib/github/installation-repository-lookup";
+import { reportGitHubDeliveryCoverageTick } from "../delivery-coverage-metrics";
 import {
   writeReconciledPullRequest,
   writeReconciledPullRequestFailures,
 } from "../reconcile-projection-write";
+import { ReconcileRepoStatus } from "../repo-reconcile-status";
 import {
-  BACKOFF_BASE_MS,
-  BACKOFF_MAX_MS,
-  computeNextRetryAt,
-  ReconcileRepoStatus,
+  persistFailureSettlement,
+  RECONCILE_UNEXPECTED_FAILURE_REASON,
   reconcileRepo,
 } from "../repo-reconciler";
+import {
+  reconcileTargetedSessionLinkedPullRequests,
+  TargetedReconcileStatus,
+} from "../targeted-reconciler";
 
 const mockWithDb = withDb as unknown as ReturnType<typeof vi.fn> & {
   tx: ReturnType<typeof vi.fn>;
@@ -75,118 +127,80 @@ const mockWriteFailures =
 const mockClassify = classifyRepoSyncTier as unknown as ReturnType<
   typeof vi.fn
 >;
+const mockFindInstallationRepositoryId =
+  findInstallationRepositoryId as unknown as ReturnType<typeof vi.fn>;
+const mockReportDeliveryCoverageTick =
+  reportGitHubDeliveryCoverageTick as unknown as ReturnType<typeof vi.fn>;
 
-const NOW = new Date("2026-08-03T12:00:00.000Z");
-const WATERMARK = new Date("2026-08-01T00:00:00.000Z");
-
-type SyncStateUpdate = { where: unknown; data: Record<string, unknown> };
-const syncStateUpdates: SyncStateUpdate[] = [];
-let selfHealRows: Array<{ number: number }> = [];
-let selfHealWhere: Record<string, unknown> | null = null;
-let debounceCalls: Record<string, unknown>[] = [];
+const NOW = FIXTURE_NOW;
+const INPUT = FIXTURE_INPUT;
 let fetchOpts: Record<string, unknown> | null = null;
 let installationRepoId: string | null = null;
-
-function makeDb() {
-  return {
-    gitHubInstallationRepository: {
-      findFirst: vi.fn(() =>
-        Promise.resolve(installationRepoId ? { id: installationRepoId } : null)
-      ),
-    },
-    pullRequestDetail: {
-      findMany: vi.fn((args: { where: Record<string, unknown> }) => {
-        selfHealWhere = args.where;
-        return Promise.resolve(selfHealRows);
-      }),
-      updateMany: vi.fn((args: { where: Record<string, unknown> }) => {
-        debounceCalls.push(args.where);
-        return Promise.resolve({ count: selfHealRows.length });
-      }),
-    },
-    gitHubRepoSyncState: {
-      updateMany: vi.fn((args: SyncStateUpdate) => {
-        syncStateUpdates.push(args);
-        return Promise.resolve({ count: 1 });
-      }),
-    },
-  };
-}
-
-function makeClient(kind: GitHubCredentialKind) {
-  return {
-    octokit: {},
-    kind,
-    actingAs:
-      kind === GitHubCredentialKind.Installation
-        ? { installationId: "inst-1" }
-        : { githubUserId: "gh-1", login: "octocat" },
-    credentialOwnerId:
-      kind === GitHubCredentialKind.Installation ? null : "user-uuid-1",
-    rateLimitTier: null,
-    recordRateLimit: vi.fn(() => Promise.resolve()),
-    recordRepoAccess: vi.fn(() => Promise.resolve()),
-  };
-}
-
-function readModelPr(overrides: {
-  number: number;
-  updatedAt: string;
-  state?: string;
-}) {
-  return {
-    githubId: `pr-${overrides.number}`,
-    number: overrides.number,
-    title: `PR ${overrides.number}`,
-    htmlUrl: `https://github.com/acme/widgets/pull/${overrides.number}`,
-    headBranch: `feature-${overrides.number}`,
-    baseBranch: "main",
-    headSha: `sha-${overrides.number}`,
-    state: overrides.state ?? "OPEN",
-    isDraft: false,
-    additions: 10,
-    deletions: 2,
-    changedFiles: 1,
-    reviewDecision: null,
-    checksStatus: null,
-    statusCheckRollup: null,
-    openedAt: "2026-07-01T00:00:00Z",
-    closedAt: null,
-    mergedAt: null,
-    mergeCommitSha: null,
-    updatedAt: overrides.updatedAt,
-    author: "octocat",
-    source: "provider",
-  };
-}
-
-const INPUT = {
-  organizationId: "org-1",
-  repositoryFullName: "acme/widgets",
-  watermark: WATERMARK,
-  cursor: null,
-  consecutiveFailureCount: 0,
-};
+const mockTargeted =
+  reconcileTargetedSessionLinkedPullRequests as unknown as ReturnType<
+    typeof vi.fn
+  >;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  syncStateUpdates.length = 0;
-  selfHealRows = [];
-  selfHealWhere = null;
-  debounceCalls = [];
+
+  resetReconcileDbState();
+  projectionWriteMocks.useActualWriter = false;
+  projectionWriteMocks.write.mockResolvedValue(true);
+  projectionWriteMocks.persistHeadAuthority.mockResolvedValue(false);
   fetchOpts = null;
   installationRepoId = null;
+  mockFindInstallationRepositoryId.mockImplementation(() =>
+    Promise.resolve(installationRepoId)
+  );
   const db = makeDb();
   mockWithDb.mockImplementation((fn: (client: unknown) => unknown) => fn(db));
   mockWithDb.tx.mockImplementation((fn: (client: unknown) => unknown) =>
     fn(db)
   );
-  mockWrite.mockResolvedValue(true);
+  mockTargeted.mockResolvedValue({
+    status: TargetedReconcileStatus.Success,
+    observations: [],
+    providerRead: true,
+    writtenCount: 0,
+    newestUpdatedAt: null,
+    targetNumbers: [],
+    missingNumbers: [],
+  });
 });
 
 function lastSyncData(): Record<string, unknown> {
-  return syncStateUpdates.at(-1)?.data ?? {};
+  return dbState.syncStateUpdates.at(-1)?.data ?? {};
 }
+
+describe("reconcileRepo — identity", () => {
+  it.each(["acme/widgets/extra", "acme", "/widgets", "acme/"])(
+    "reclassifies %s to unsyncable instead of sweeping the repo its segments happen to name (ISS-7548)",
+    async (repositoryFullName) => {
+      const result = await reconcileRepo(
+        { ...INPUT, repositoryFullName },
+        { now: NOW }
+      );
+
+      expect(result.status).toBe(ReconcileRepoStatus.Reclassified);
+      expect(result.tier).toBe(GitHubRepoSyncTier.Unsyncable);
+      expect(lastSyncData().tier).toBe(GitHubRepoSyncTier.Unsyncable);
+      expect(mockGetClient).not.toHaveBeenCalled();
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(mockReportDeliveryCoverageTick).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repositoryFullName,
+          repositoryId: null,
+          status: ReconcileRepoStatus.Reclassified,
+          tier: GitHubRepoSyncTier.Unsyncable,
+          writtenCount: 0,
+          fetchFailureCount: 0,
+          budgetDeferralCount: 0,
+        })
+      );
+    }
+  );
+});
 
 describe("reconcileRepo — denials", () => {
   it("marks deferred: budget without touching tier/watermark/failures", async () => {
@@ -206,12 +220,57 @@ describe("reconcileRepo — denials", () => {
     expect(data.consecutiveFailureCount).toBeUndefined();
     expect(data.nextRetryAt).toBeUndefined();
     expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockReportDeliveryCoverageTick).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ReconcileRepoStatus.Deferred,
+        tier: GitHubRepoSyncTier.UserToken,
+        deferredReason: GitHubRepoSyncDeferralReason.Budget,
+        resultReason: GitHubAccessDenialReason.BudgetDeferred,
+        budgetDeferralCount: 1,
+      })
+    );
+  });
+
+  it("defers on pool contention instead of reclassifying the repo (ISS-8270)", async () => {
+    installationRepoId = "repo-row-1";
+    mockGetClient.mockResolvedValue({
+      ok: false,
+      error: { reason: GitHubAccessDenialReason.Contention },
+    });
+
+    const result = await reconcileRepo(INPUT, { now: NOW });
+
+    expect(result.status).toBe(ReconcileRepoStatus.Deferred);
+    expect(result.deferredReason).toBe(GitHubRepoSyncDeferralReason.Contention);
+    // A peer sweep holds the credential: nothing about this repo's tier, its
+    // backlog, or its failure history changed, so none of them may be written.
+    expect(mockClassify).not.toHaveBeenCalled();
+    const data = lastSyncData();
+    expect(data.deferredReason).toBe(GitHubRepoSyncDeferralReason.Contention);
+    expect(data.tier).toBeUndefined();
+    expect(data.watermark).toBeUndefined();
+    expect(data.cursor).toBeUndefined();
+    expect(data.consecutiveFailureCount).toBeUndefined();
+    expect(data.nextRetryAt).toBeUndefined();
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockReportDeliveryCoverageTick).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ReconcileRepoStatus.Deferred,
+        tier: GitHubRepoSyncTier.UserToken,
+        deferredReason: GitHubRepoSyncDeferralReason.Contention,
+        resultReason: GitHubAccessDenialReason.Contention,
+        // Contention is not a budget floor — it must not inflate the deferral
+        // counter the budget monitor reads.
+        budgetDeferralCount: 0,
+      })
+    );
   });
 
   it("reclassifies the tier when no credential can reach the repo", async () => {
+    installationRepoId = "repo-row-1";
     mockGetClient.mockResolvedValue({
       ok: false,
-      error: { reason: GitHubAccessDenialReason.NoInstallation },
+      error: { reason: GitHubAccessDenialReason.Revoked },
     });
     mockClassify.mockResolvedValue(GitHubRepoSyncTier.Unsyncable);
 
@@ -227,6 +286,17 @@ describe("reconcileRepo — denials", () => {
     expect(lastSyncData().tier).toBe(GitHubRepoSyncTier.Unsyncable);
     expect(lastSyncData().consecutiveFailureCount).toBe(0);
     expect(lastSyncData().nextRetryAt).toBeNull();
+    expect(mockReportDeliveryCoverageTick).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repositoryId: "repo-row-1",
+        repositoryFullName: "acme/widgets",
+        status: ReconcileRepoStatus.Reclassified,
+        resultReason: GitHubAccessDenialReason.Revoked,
+        writtenCount: 0,
+        fetchFailureCount: 0,
+        budgetDeferralCount: 0,
+      })
+    );
   });
 
   it("backs off (increments failures) on a transient provider outage", async () => {
@@ -254,7 +324,7 @@ describe("reconcileRepo — denials", () => {
 
     await reconcileRepo({ ...INPUT, consecutiveFailureCount: 2 }, { now: NOW });
 
-    const failureUpdate = syncStateUpdates.find(
+    const failureUpdate = dbState.syncStateUpdates.find(
       (u) => (u.data as Record<string, unknown>).consecutiveFailureCount === 3
     );
     expect(failureUpdate).toBeDefined();
@@ -268,7 +338,11 @@ describe("reconcileRepo — sweep", () => {
   function wireSuccess(
     prs: ReturnType<typeof readModelPr>[],
     kind: GitHubCredentialKind = GitHubCredentialKind.Installation,
-    page: { truncated?: boolean; nextCursor?: string | null } = {}
+    page: {
+      truncated?: boolean;
+      nextCursor?: string | null;
+      rateLimit?: { cost?: number | null; remaining?: number | null };
+    } = {}
   ) {
     const client = makeClient(kind);
     mockGetClient.mockResolvedValue({ ok: true, value: client });
@@ -286,8 +360,11 @@ describe("reconcileRepo — sweep", () => {
           page: 0,
           itemCount: prs.length,
           rateLimit: {
-            cost: 4,
-            remaining: 4991,
+            cost: page.rateLimit?.cost === undefined ? 4 : page.rateLimit.cost,
+            remaining:
+              page.rateLimit?.remaining === undefined
+                ? 4991
+                : page.rateLimit.remaining,
             resetAt: "2026-08-03T13:00:00Z",
             state: "available",
           },
@@ -322,7 +399,79 @@ describe("reconcileRepo — sweep", () => {
     );
   });
 
+  it.each([
+    { field: "cost", cost: null, remaining: 4991 },
+    { field: "remaining", cost: 4, remaining: null },
+  ])(
+    "ignores a rate-limit observation with null $field and still completes the sweep",
+    async ({ cost, remaining }) => {
+      const client = wireSuccess(
+        [readModelPr({ number: 5, updatedAt: "2026-08-02T00:00:00Z" })],
+        GitHubCredentialKind.Installation,
+        { rateLimit: { cost, remaining } }
+      );
+
+      const result = await reconcileRepo(INPUT, { now: NOW });
+
+      expect(result.status).toBe(ReconcileRepoStatus.Swept);
+      expect(client.recordRateLimit).not.toHaveBeenCalled();
+    }
+  );
+
+  it("contains a real first-row authority failure so the tail, debounce, and state commit still run", async () => {
+    projectionWriteMocks.useActualWriter = true;
+    installationRepoId = "repo-row-1";
+    dbState.selfHealRows = [{ number: 5 }];
+    projectionWriteMocks.persistHeadAuthority
+      .mockRejectedValueOnce(new Error("authority write timed out"))
+      .mockResolvedValueOnce(false);
+    const projectionIds: string[] = [];
+    const db = makeDb();
+    // ISS-8919: asserts the retired per-PR identity read stays retired.
+    const findUnique = vi.fn();
+    Object.assign(db.pullRequestDetail, {
+      findUnique,
+      updateManyAndReturn: vi.fn((args: { where: { id: string } }) => {
+        projectionIds.push(args.where.id);
+        return Promise.resolve([{ branchArtifactId: null }]);
+      }),
+      updateMany: vi.fn((args: { where: Record<string, unknown> }) => {
+        dbState.debounceCalls.push(args.where);
+        return Promise.resolve({ count: 1 });
+      }),
+    });
+    mockWithDb.mockImplementation((fn: (client: unknown) => unknown) => fn(db));
+    mockWithDb.tx.mockImplementation((fn: (client: unknown) => unknown) =>
+      fn(db)
+    );
+    wireSuccess([
+      readModelPr({ number: 5, updatedAt: "2026-08-03T00:00:00Z" }),
+      readModelPr({ number: 6, updatedAt: "2026-08-02T00:00:00Z" }),
+    ]);
+
+    const result = await reconcileRepo(INPUT, { now: NOW });
+
+    expect(result).toMatchObject({
+      status: ReconcileRepoStatus.Swept,
+      writtenCount: 2,
+    });
+    expect(projectionIds).toEqual(["detail-5", "detail-6"]);
+    expect(findUnique).not.toHaveBeenCalled();
+    expect(projectionWriteMocks.persistHeadAuthority).toHaveBeenCalledTimes(2);
+    expect(dbState.debounceCalls).toContainEqual(
+      expect.objectContaining({ number: { in: [5] } })
+    );
+    expect(dbState.syncStateUpdates).toHaveLength(1);
+    expect(lastSyncData()).toMatchObject({
+      watermark: new Date("2026-08-03T00:00:00Z"),
+      cursor: null,
+      consecutiveFailureCount: 0,
+      nextRetryAt: null,
+    });
+  });
+
   it("writes only PRs changed since the watermark and advances it to the newest", async () => {
+    installationRepoId = "repo-row-1";
     wireSuccess([
       readModelPr({ number: 9, updatedAt: "2026-08-02T10:00:00Z" }), // fresh
       readModelPr({ number: 3, updatedAt: "2026-07-20T00:00:00Z" }), // stale
@@ -338,19 +487,42 @@ describe("reconcileRepo — sweep", () => {
     expect(lastSyncData().deferredReason).toBeNull();
     expect(lastSyncData().consecutiveFailureCount).toBe(0);
     expect(lastSyncData().tier).toBe(GitHubRepoSyncTier.Installed);
+    expect(mockReportDeliveryCoverageTick).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ReconcileRepoStatus.Swept,
+        repositoryId: "repo-row-1",
+        repositoryFullName: "acme/widgets",
+        tier: GitHubRepoSyncTier.Installed,
+        writtenCount: 1,
+        fetchFailureCount: 0,
+        budgetDeferralCount: 0,
+      })
+    );
   });
 
-  it("self-heals a terminal watermark-old PR that is missing LOC", async () => {
-    selfHealRows = [{ number: 3 }]; // terminal-missing-LOC target
-    wireSuccess([
-      readModelPr({ number: 3, updatedAt: "2026-07-20T00:00:00Z" }), // stale but targeted
-    ]);
+  it("scopes self-heal selection by the resolved installation repository id", async () => {
+    installationRepoId = "repo-row-1";
+    wireSuccess([]);
 
     await reconcileRepo(INPUT, { now: NOW });
 
-    // Written despite being below the watermark because it is a self-heal target.
-    expect(mockWrite).toHaveBeenCalledTimes(1);
-    expect(mockWrite.mock.calls[0][0]).toMatchObject({ number: 3 });
+    expect(findInstallationRepositoryId).toHaveBeenCalledWith(
+      "org-1",
+      "acme/widgets"
+    );
+    expect(dbState.selfHealWhere).toMatchObject({ repositoryId: "repo-row-1" });
+    expect(dbState.selfHealWhere).not.toHaveProperty("repositoryFullName");
+  });
+
+  it("falls back to the normalized repository name when no installation row resolves", async () => {
+    wireSuccess([]);
+
+    await reconcileRepo(INPUT, { now: NOW });
+
+    expect(dbState.selfHealWhere).toMatchObject({
+      repositoryId: null,
+      repositoryFullName: "acme/widgets",
+    });
   });
 
   it("debounces self-heal selection by lastRefreshAttemptAt so a never-fillable PR cannot re-occupy the batch", async () => {
@@ -358,9 +530,7 @@ describe("reconcileRepo — sweep", () => {
 
     await reconcileRepo(INPUT, { now: NOW });
 
-    // The selection must exclude rows attempted within the debounce window —
-    // not just filter on missing-LOC (the whole point of stamping the field).
-    const andClauses = (selfHealWhere?.AND ?? []) as {
+    const andClauses = (dbState.selfHealWhere?.AND ?? []) as {
       OR?: Record<string, unknown>[];
     }[];
     const debounce = andClauses.find((clause) =>
@@ -369,17 +539,23 @@ describe("reconcileRepo — sweep", () => {
     expect(debounce?.OR).toContainEqual({ lastRefreshAttemptAt: null });
   });
 
-  it("records the drawing user's id as the fetch credential owner on a tier-2 write", async () => {
-    wireSuccess(
+  it("routes tier-2 user-token sync through targeted session-linked reconciliation", async () => {
+    const client = wireSuccess(
       [readModelPr({ number: 7, updatedAt: "2026-08-02T00:00:00Z" })],
       GitHubCredentialKind.OauthUser
     );
 
     await reconcileRepo(INPUT, { now: NOW });
 
-    expect(mockWrite).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ credentialOwnerId: "user-uuid-1" })
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockWrite).not.toHaveBeenCalled();
+    expect(mockTargeted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client,
+        provenance: expect.objectContaining({
+          credentialOwnerId: "user-uuid-1",
+        }),
+      })
     );
   });
 
@@ -401,14 +577,69 @@ describe("reconcileRepo — sweep", () => {
       [readModelPr({ number: 7, updatedAt: "2026-08-02T00:00:00Z" })],
       GitHubCredentialKind.OauthUser
     );
+    mockTargeted.mockResolvedValueOnce({
+      status: TargetedReconcileStatus.Success,
+      observations: [],
+      providerRead: true,
+      writtenCount: 2,
+      newestUpdatedAt: new Date("2026-08-02T00:00:00Z"),
+      targetNumbers: [7],
+      missingNumbers: [],
+    });
 
     const result = await reconcileRepo(INPUT, { now: NOW });
 
     expect(result.tier).toBe(GitHubRepoSyncTier.UserToken);
+    expect(result.writtenCount).toBe(2);
     expect(lastSyncData().tier).toBe(GitHubRepoSyncTier.UserToken);
+    expect(lastSyncData().watermark).toBeUndefined();
+    expect(lastSyncData().cursor).toBeNull();
+  });
+
+  it("backs off and records no-access when the targeted tier-2 fetch fails", async () => {
+    const client = makeClient(GitHubCredentialKind.OauthUser);
+    mockGetClient.mockResolvedValue({ ok: true, value: client });
+    mockTargeted.mockResolvedValueOnce({
+      status: TargetedReconcileStatus.FetchFailed,
+      observations: [
+        {
+          page: 0,
+          itemCount: 0,
+          rateLimit: {
+            cost: 1,
+            remaining: 4999,
+            resetAt: "2026-08-03T13:00:00Z",
+            state: "available",
+          },
+        },
+      ],
+      targetNumbers: [7],
+      result: { status: GitHubProviderResultStatus.ProviderRepoNotFound },
+    });
+
+    const result = await reconcileRepo(INPUT, { now: NOW });
+
+    expect(result.status).toBe(ReconcileRepoStatus.Failed);
+    expect(client.recordRateLimit).toHaveBeenCalledWith({
+      cost: 1,
+      remaining: 4999,
+      resetAt: "2026-08-03T13:00:00Z",
+    });
+    expect(client.recordRepoAccess).toHaveBeenCalledWith(
+      GitHubSyncRepoAccessOutcome.NoAccess
+    );
+    expect(mockWriteFailures).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pullRequestNumbers: [7],
+        result: { status: GitHubProviderResultStatus.ProviderRepoNotFound },
+      })
+    );
+    expect(lastSyncData().consecutiveFailureCount).toBe(1);
   });
 
   it("backs off when the fetch itself fails after a successful draw", async () => {
+    dbState.selfHealRows = [{ number: 3 }, { number: 4 }];
+    mockWriteFailures.mockResolvedValueOnce(2);
     mockGetClient.mockResolvedValue({
       ok: true,
       value: makeClient(GitHubCredentialKind.Installation),
@@ -436,6 +667,15 @@ describe("reconcileRepo — sweep", () => {
         }),
       })
     );
+    expect(mockReportDeliveryCoverageTick).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ReconcileRepoStatus.Failed,
+        tier: GitHubRepoSyncTier.Installed,
+        resultReason: GitHubProviderResultStatus.ProviderUnavailable,
+        fetchFailureCount: 1,
+        targetFetchFailureWriteCount: 2,
+      })
+    );
   });
 
   it("persists a continuation cursor when a bounded read truncates a backlog", async () => {
@@ -447,15 +687,10 @@ describe("reconcileRepo — sweep", () => {
 
     await reconcileRepo(INPUT, { now: NOW });
 
-    // Older PRs remain below the fetched window — resume from here next tick,
-    // rather than advancing the watermark past them.
     expect(lastSyncData().cursor).toBe("cursor-page-2");
   });
 
   it("does NOT re-drain in steady state: a truncated top page that reaches watermark-old PRs clears the cursor", async () => {
-    // cursor: null (steady state) + a page that truncates but contains a PR at or
-    // below the watermark. The repo simply has >1 page of PRs; there is no fresh
-    // backlog, so the cursor must NOT be set (else the repo re-drains every tick).
     wireSuccess(
       [
         readModelPr({ number: 9, updatedAt: "2026-08-02T10:00:00Z" }), // fresh
@@ -485,35 +720,7 @@ describe("reconcileRepo — sweep", () => {
     expect(lastSyncData().cursor).toBe("cursor-page-2");
   });
 
-  it("debounces only self-heal targets it actually fetched, never ones outside the window", async () => {
-    // Target #3 is selected but NOT returned by the bounded read (targetNumbers is
-    // a stop condition, not a fetch-by-number). It must not be stamped as attempted.
-    selfHealRows = [{ number: 3 }];
-    wireSuccess([
-      readModelPr({ number: 9, updatedAt: "2026-08-02T10:00:00Z" }),
-    ]);
-
-    await reconcileRepo(INPUT, { now: NOW });
-
-    // No debounce write at all — the only selected target was never fetched.
-    expect(debounceCalls).toHaveLength(0);
-  });
-
-  it("does debounce a self-heal target that was fetched (a real attempt)", async () => {
-    selfHealRows = [{ number: 3 }];
-    wireSuccess([
-      readModelPr({ number: 3, updatedAt: "2026-07-20T00:00:00Z" }), // fetched target
-    ]);
-
-    await reconcileRepo(INPUT, { now: NOW });
-
-    expect(debounceCalls).toContainEqual(
-      expect.objectContaining({ number: { in: [3] } })
-    );
-  });
-
   it("resumes from the stored cursor and refreshes every fetched row while draining", async () => {
-    // A watermark-old, non-target PR: it is written ONLY because we are draining.
     wireSuccess(
       [readModelPr({ number: 3, updatedAt: "2026-07-10T00:00:00Z" })],
       GitHubCredentialKind.Installation,
@@ -522,25 +729,17 @@ describe("reconcileRepo — sweep", () => {
 
     await reconcileRepo({ ...INPUT, cursor: "cursor-page-2" }, { now: NOW });
 
-    // The fetch resumes from the stored cursor…
     expect(fetchOpts?.after).toBe("cursor-page-2");
-    // …and the older row is refreshed even though it is below the watermark and
-    // not a self-heal target (the whole point of a backlog drain)…
     expect(mockWrite).toHaveBeenCalledTimes(1);
     expect(mockWrite.mock.calls[0][0]).toMatchObject({ number: 3 });
-    // …and the drain completes (not truncated), so the cursor clears.
     expect(lastSyncData().cursor).toBeNull();
   });
 });
 
 describe("reconcileRepo — repo denial verdicts (ISS-5093)", () => {
-  /**
-   * Wire a successful client draw that returns a non-Success fetch result.
-   * Returns the mock client so callers can assert on recordRepoAccess.
-   */
   function wireFailureResult(
     status: GitHubProviderResultStatus,
-    kind: GitHubCredentialKind = GitHubCredentialKind.OauthUser
+    kind: GitHubCredentialKind = GitHubCredentialKind.Installation
   ) {
     const client = makeClient(kind);
     mockGetClient.mockResolvedValue({ ok: true, value: client });
@@ -576,11 +775,6 @@ describe("reconcileRepo — repo denial verdicts (ISS-5093)", () => {
     expect(lastSyncData().consecutiveFailureCount).toBe(1);
   });
 
-  // The generic HTTP-403 status must NOT be read as a repo-level denial: the
-  // bundled read also produces it for an org-level 403 (SAML, IP allowlist,
-  // OAuth App restriction) and for a 403 on a later page whose first page
-  // already reached the repo. Recording those would mint a 6h no-access verdict
-  // against a healthy credential and demote the repo to unsyncable.
   it("ProviderPermissionFiltered does NOT record a repo access verdict", async () => {
     const client = wireFailureResult(
       GitHubProviderResultStatus.ProviderPermissionFiltered
@@ -632,7 +826,6 @@ describe("reconcileRepo — repo denial verdicts (ISS-5093)", () => {
 
     const result = await reconcileRepo(INPUT, { now: NOW });
 
-    // The failure must be persisted so the backoff counter advances.
     expect(result.status).toBe(ReconcileRepoStatus.Failed);
     expect(lastSyncData().consecutiveFailureCount).toBe(1);
     // recordNoAccessIfRepoDenied has no client-kind guard — it calls
@@ -661,11 +854,6 @@ describe("reconcileRepo — repo denial verdicts (ISS-5093)", () => {
   });
 
   it("recordRepoAccess rejection is swallowed and failure is still persisted (best-effort guard)", async () => {
-    // The capability store rethrows any non-P2002 error, so an unguarded await
-    // of recordRepoAccess would skip persistFailure and lose the backoff counter
-    // entirely. This test proves the try/catch in recordNoAccessIfRepoDenied is
-    // load-bearing: losing a verdict costs one extra draw next tick, while
-    // losing the failure persist would lose the backoff counter entirely.
     const client = wireFailureResult(
       GitHubProviderResultStatus.ProviderRepoNotFound
     );
@@ -677,43 +865,6 @@ describe("reconcileRepo — repo denial verdicts (ISS-5093)", () => {
 
     expect(result.status).toBe(ReconcileRepoStatus.Failed);
     expect(lastSyncData().consecutiveFailureCount).toBe(1);
-  });
-});
-
-describe("computeNextRetryAt", () => {
-  it("returns now + 30min for the first failure", () => {
-    const result = computeNextRetryAt(1, NOW);
-    expect(result.getTime()).toBe(NOW.getTime() + BACKOFF_BASE_MS);
-  });
-
-  it("doubles the delay for each subsequent failure", () => {
-    expect(computeNextRetryAt(2, NOW).getTime()).toBe(
-      NOW.getTime() + BACKOFF_BASE_MS * 2
-    );
-    expect(computeNextRetryAt(3, NOW).getTime()).toBe(
-      NOW.getTime() + BACKOFF_BASE_MS * 4
-    );
-  });
-
-  it("caps the delay at 24 hours at the boundary (count=7)", () => {
-    const uncapped = BACKOFF_BASE_MS * 2 ** 6;
-    expect(uncapped).toBeGreaterThan(BACKOFF_MAX_MS);
-    const result = computeNextRetryAt(7, NOW);
-    expect(result.getTime()).toBe(NOW.getTime() + BACKOFF_MAX_MS);
-  });
-
-  it("stays capped for counts far above the boundary", () => {
-    const result = computeNextRetryAt(20, NOW);
-    expect(result.getTime()).toBe(NOW.getTime() + BACKOFF_MAX_MS);
-  });
-
-  it("treats non-positive counts as the first failure", () => {
-    expect(computeNextRetryAt(0, NOW).getTime()).toBe(
-      NOW.getTime() + BACKOFF_BASE_MS
-    );
-    expect(computeNextRetryAt(-1, NOW).getTime()).toBe(
-      NOW.getTime() + BACKOFF_BASE_MS
-    );
   });
 });
 
@@ -760,5 +911,89 @@ describe("reconcileRepo — nextRetryAt lifecycle", () => {
 
     expect(lastSyncData().consecutiveFailureCount).toBe(5);
     expect(lastSyncData().nextRetryAt).toEqual(computeNextRetryAt(5, NOW));
+  });
+
+  it("ISS-7875: a failed read names the provider status that caused it", async () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {
+      // silence
+    });
+    mockGetClient.mockResolvedValue({
+      ok: true,
+      value: makeClient(GitHubCredentialKind.Installation),
+    });
+    mockQuery.mockResolvedValue({
+      status: GitHubProviderResultStatus.ProviderRepoForbidden,
+      value: null,
+    });
+
+    await reconcileRepo({ ...INPUT, consecutiveFailureCount: 4 }, { now: NOW });
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("repo sweep failed"),
+      expect.objectContaining({
+        repositoryFullName: "acme/widgets",
+        reason: GitHubProviderResultStatus.ProviderRepoForbidden,
+        consecutiveFailureCount: 5,
+      })
+    );
+    warn.mockRestore();
+  });
+
+  it("ISS-7875: a rate-limited denial names the denial reason, not the read status", async () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {
+      // silence
+    });
+    mockGetClient.mockResolvedValue({
+      ok: false,
+      error: { reason: GitHubAccessDenialReason.RateLimited },
+    });
+
+    await reconcileRepo({ ...INPUT, consecutiveFailureCount: 0 }, { now: NOW });
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("repo sweep failed"),
+      expect.objectContaining({
+        reason: GitHubAccessDenialReason.RateLimited,
+        consecutiveFailureCount: 1,
+      })
+    );
+    warn.mockRestore();
+  });
+});
+
+describe("persistFailureSettlement", () => {
+  const TARGET = {
+    organizationId: "org-1",
+    repositoryFullName: "acme/widgets",
+    consecutiveFailureCount: 2,
+  };
+
+  it("bumps the failure count and backoff under a compare-and-set on the read count", async () => {
+    await persistFailureSettlement(TARGET, NOW, {
+      stampSwept: true,
+      reason: GitHubProviderResultStatus.ProviderUnavailable,
+    });
+
+    const update = dbState.syncStateUpdates.at(-1);
+    expect(update?.where).toEqual({
+      organizationId: "org-1",
+      repositoryFullName: "acme/widgets",
+      consecutiveFailureCount: 2,
+    });
+    expect(update?.data.consecutiveFailureCount).toBe(3);
+    expect(update?.data.nextRetryAt).toEqual(computeNextRetryAt(3, NOW));
+    expect(update?.data.lastSweptAt).toEqual(NOW);
+  });
+
+  it("leaves lastSweptAt untouched when stampSwept is false (ISS-6589 throw path)", async () => {
+    await persistFailureSettlement(TARGET, NOW, {
+      stampSwept: false,
+      reason: RECONCILE_UNEXPECTED_FAILURE_REASON,
+    });
+
+    const update = dbState.syncStateUpdates.at(-1);
+    expect(update?.data.lastSweptAt).toBeUndefined();
+    expect(update?.data.consecutiveFailureCount).toBe(3);
+    expect(update?.data.nextRetryAt).toEqual(computeNextRetryAt(3, NOW));
   });
 });

@@ -1,5 +1,6 @@
 "use client";
 
+import type { ArtifactStatusEditSurface } from "@repo/api/src/types/artifact-status-contract";
 import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
 // biome-ignore lint/style/useImportType: runtime value used by callers and child components
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
@@ -11,17 +12,23 @@ import { CustomFieldValueEditor } from "./custom-field-value-editor";
 type CustomFieldsSectionProps = {
   entityType: CustomFieldEntityType;
   entityId: string;
+  active?: boolean;
   /** Resolved custom field values from the entity detail query. */
   values?: CustomFieldValueDetail[];
+  surface?: ArtifactStatusEditSurface;
 };
 
 export function CustomFieldsSection({
   entityType,
   entityId,
+  active = true,
   values,
+  surface,
 }: Readonly<CustomFieldsSectionProps>) {
   const [open, setOpen] = useState(false);
-  const { data: fields } = useCustomFieldsForEntityType(entityType);
+  const { data: fields } = useCustomFieldsForEntityType(entityType, {
+    enabled: active,
+  });
 
   if (fields.length === 0) {
     return null;
@@ -39,7 +46,7 @@ export function CustomFieldsSection({
         <CustomFieldValueEditor
           entityId={entityId}
           entityType={entityType}
-          key={field.id}
+          key={`${entityId}:${field.id}`}
           setting={{
             id: field.id,
             customFieldId: field.id,
@@ -51,6 +58,7 @@ export function CustomFieldsSection({
             createdAt: field.createdAt,
             customField: field,
           }}
+          surface={surface}
           value={valueMap.get(field.id)}
         />
       ))}

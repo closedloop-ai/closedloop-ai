@@ -9,9 +9,9 @@ import type { Meta, StoryObj } from "@storybook/react";
  * displayed as a progress bar.
  */
 const meta = {
-  title: "Design System/Primitives/Progress",
+  title: "Primitives v1.0/Feedback & Status/Progress",
   component: Progress,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
   args: {
     value: 30,
@@ -88,6 +88,19 @@ export const WarningTonePaused: Story = {
     value: null,
     paused: true,
     tone: ProgressTone.Warning,
+  },
+};
+
+/**
+ * The top of the severity scale — a measurement past the danger threshold
+ * (e.g. a usage meter at or above 90% of its ceiling), not a failure state on
+ * its own. The resting band is `NeutralTone`; this is where the caller most
+ * needs the viewer's attention.
+ */
+export const DestructiveTone: Story = {
+  args: {
+    value: 95,
+    tone: ProgressTone.Destructive,
   },
 };
 

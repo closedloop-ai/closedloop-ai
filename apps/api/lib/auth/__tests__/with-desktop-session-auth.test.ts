@@ -14,7 +14,7 @@ import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 vi.mock("@repo/observability/log", () => ({
   log: {
     error: vi.fn(),
-    flush: vi.fn().mockResolvedValue(undefined),
+    flush: vi.fn(async () => undefined),
     info: vi.fn(),
     warn: vi.fn(),
   },

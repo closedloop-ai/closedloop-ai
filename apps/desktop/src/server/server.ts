@@ -2,28 +2,21 @@ import fs from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import type { DesktopPopSigner } from "../main/auth/desktop-pop.js";
-import type { DesktopPopUnavailableReporter } from "../main/auth/desktop-pop-sign-utils.js";
 import type { LocalSessionStore } from "../main/auth/local-session-store.js";
-import type { JobStore } from "../main/jobs/job-store.js";
 import { gatewayLog } from "../main/logging/gateway-logger.js";
-import type { LoopCompletedHook } from "../main/loop/loop-finalizer.js";
-import { LoopSchedulerContext } from "../main/loop/loop-scheduler-context.js";
-import type { LoopTokenStore } from "../main/loop/loop-token-store.js";
-import type { ApiKeyProvenance } from "../main/settings/api-key-store.js";
-import {
-  getOtlpReceiverState,
-  toClaudeCodeOtelReceiverStatus,
-} from "../main/telemetry/otlp-receiver-state.js";
-import type { RetrySpawnDeps } from "../main/util/spawn-retry.js";
 import {
   type ComputeTargetCapabilities,
   DEFAULT_GATEWAY_PORT,
   FALLBACK_GATEWAY_PORTS,
   type HealthResponse,
 } from "../shared/contracts.js";
+import type { BinaryPathKey, BinaryPaths } from "./operations/binary-paths.js";
+import {
+  buildGitPullRequestApiOptions,
+  type DesktopGatewayGitPullRequestSessionAccess,
+  type GitPullRequestApiOptions,
+} from "./operations/git-pr-api-client.js";
 import type { MemberPackInstaller } from "./operations/member-pack-install.js";
-import type { WorktreeProvider } from "./operations/symphony-loop.js";
 import {
   type DesktopSecurityUpgradePayload,
   type DesktopSecurityUpgradeResult,
@@ -53,64 +46,18 @@ export type DesktopGatewayServerOptions = {
   getOnboardingCompleted?: () => boolean;
   discoveryFilePath?: string;
   sessionStore?: LocalSessionStore;
-  getApiKey?: () => string | null;
-  getApiKeyProvenance?: () => ApiKeyProvenance | null;
-  signDesktopRequest?: DesktopPopSigner;
-  onDesktopPopUnavailable?: DesktopPopUnavailableReporter;
-  getApiOrigin?: () => string;
+  gitPullRequestApiOptions?: GitPullRequestApiOptions;
   prodOriginsOnly?: boolean;
-  jobStore?: JobStore;
-  worktreeProvider?: WorktreeProvider;
-  retrySpawnDeps?: RetrySpawnDeps;
-  getClaudeCodeOtelReceiverStatus?: () => unknown;
   onUnexpectedClose?: () => void;
-  loopTokenStore?: LoopTokenStore;
-  /**
-   * Per-process container for loop heartbeat/refresh/sleep timers. If not
-   * provided, the server constructs and owns one, disposing it in `stop()`.
-   * Production passes the app-level singleton so its lifetime matches app boot.
-   */
-  schedulers?: LoopSchedulerContext;
-  /** Fired on the live-exit edge when a loop reaches terminal success. */
-  onLoopCompleted?: LoopCompletedHook;
   getGatewayId?: () => string;
   getComputeTargetId?: () => string | null;
   handleSecurityUpgrade?: (
     payload: DesktopSecurityUpgradePayload
   ) => Promise<DesktopSecurityUpgradeResult> | DesktopSecurityUpgradeResult;
-  getBinaryPaths?: () => {
-    claude?: string;
-    gh?: string;
-    codex?: string;
-    cursor?: string;
-    opencode?: string;
-    python3?: string;
-    git?: string;
-  };
+  getBinaryPaths?: () => BinaryPaths;
   applyBinaryPathPatch?: (
-    patch: Partial<
-      Record<
-        "claude" | "gh" | "codex" | "cursor" | "opencode" | "python3" | "git",
-        string | null
-      >
-    >
-  ) => {
-    claude?: string;
-    gh?: string;
-    codex?: string;
-    cursor?: string;
-    opencode?: string;
-    python3?: string;
-    git?: string;
-  };
-  checkForUpdate?: () => Promise<{
-    updateAvailable: boolean;
-    version?: string;
-  }>;
-  applyUpdate?: () => Promise<void>;
-  isUpdateAndRestartEnabled?: () => boolean;
-  /** `app.isPackaged`, forwarded to the Gateway Version check (ISS-5369). */
-  isPackagedBuild?: () => boolean;
+    patch: Partial<Record<BinaryPathKey, string | null>>
+  ) => BinaryPaths;
   /** Starts a vetted catalog-pack install for member self-service (FEA-4082). */
   installPack?: MemberPackInstaller;
 };
@@ -118,9 +65,6 @@ export type DesktopGatewayServerOptions = {
 export class DesktopGatewayServer {
   private readonly options: DesktopGatewayServerOptions;
   private readonly router: GatewayRouter;
-  private readonly schedulers: LoopSchedulerContext;
-  /** True when this server constructed its own LoopSchedulerContext and must dispose it on stop(). */
-  private readonly ownsSchedulers: boolean;
   private server: Server | null = null;
   private alive = false;
   private activePort: number;
@@ -133,11 +77,6 @@ export class DesktopGatewayServer {
         options.discoveryFilePath ??
         path.join(os.homedir(), ".closedloop-ai", "electron-port"),
     };
-    // When no scheduler context is injected (tests, ad-hoc usage), the server
-    // owns a fresh one and tears it down in stop() — so a test that only
-    // constructs DesktopGatewayServer cannot leak heartbeat/refresh timers.
-    this.schedulers = options.schedulers ?? new LoopSchedulerContext();
-    this.ownsSchedulers = options.schedulers === undefined;
     this.activePort = this.options.preferredPort;
     this.router = new GatewayRouter({
       webAppOrigin: this.options.webAppOrigin,
@@ -154,29 +93,13 @@ export class DesktopGatewayServer {
       onActivityEvent: this.options.onActivityEvent,
       evaluateApproval: this.options.evaluateApproval,
       sessionStore: this.options.sessionStore,
-      getApiKey: this.options.getApiKey,
-      getApiKeyProvenance: this.options.getApiKeyProvenance,
-      signDesktopRequest: this.options.signDesktopRequest,
-      onDesktopPopUnavailable: this.options.onDesktopPopUnavailable,
-      getApiOrigin: this.options.getApiOrigin,
+      gitPullRequestApiOptions: this.options.gitPullRequestApiOptions,
       prodOriginsOnly: this.options.prodOriginsOnly,
-      jobStore: this.options.jobStore,
-      worktreeProvider: this.options.worktreeProvider,
-      loopTokenStore: this.options.loopTokenStore,
-      schedulers: this.schedulers,
-      onLoopCompleted: this.options.onLoopCompleted,
-      retrySpawnDeps: this.options.retrySpawnDeps,
-      getClaudeCodeOtelReceiverStatus:
-        this.options.getClaudeCodeOtelReceiverStatus,
       getGatewayId: this.options.getGatewayId ?? (() => ""),
       getComputeTargetId: this.options.getComputeTargetId,
       handleSecurityUpgrade: this.options.handleSecurityUpgrade,
       getBinaryPaths: this.options.getBinaryPaths,
       applyBinaryPathPatch: this.options.applyBinaryPathPatch,
-      checkForUpdate: this.options.checkForUpdate,
-      applyUpdate: this.options.applyUpdate,
-      isUpdateAndRestartEnabled: this.options.isUpdateAndRestartEnabled,
-      isPackagedBuild: this.options.isPackagedBuild,
       installPack: this.options.installPack,
     });
   }
@@ -194,58 +117,22 @@ export class DesktopGatewayServer {
     ) => GatewayApprovalResult | Promise<GatewayApprovalResult>,
     getSymphonyDir?: () => string,
     sessionStore?: LocalSessionStore,
-    getApiKey?: () => string | null,
     getApiOrigin?: () => string,
     getWebAppOrigin?: () => string,
     prodOriginsOnly?: boolean,
-    jobStore?: JobStore,
     onUnexpectedClose?: () => void,
-    loopTokenStore?: LoopTokenStore,
-    retrySpawnDeps?: RetrySpawnDeps,
     getGatewayId: () => string = () => "",
-    getBinaryPaths?: () => {
-      claude?: string;
-      gh?: string;
-      codex?: string;
-      cursor?: string;
-      opencode?: string;
-      python3?: string;
-      git?: string;
-    },
+    getBinaryPaths?: () => BinaryPaths,
     applyBinaryPathPatch?: (
-      patch: Partial<
-        Record<
-          "claude" | "gh" | "codex" | "cursor" | "opencode" | "python3" | "git",
-          string | null
-        >
-      >
-    ) => {
-      claude?: string;
-      gh?: string;
-      codex?: string;
-      cursor?: string;
-      opencode?: string;
-      python3?: string;
-      git?: string;
-    },
-    checkForUpdate?: () => Promise<{
-      updateAvailable: boolean;
-      version?: string;
-    }>,
-    applyUpdate?: () => Promise<void>,
-    isUpdateAndRestartEnabled?: () => boolean,
-    getApiKeyProvenance?: () => ApiKeyProvenance | null,
-    signDesktopRequest?: DesktopPopSigner,
-    onDesktopPopUnavailable?: DesktopPopUnavailableReporter,
+      patch: Partial<Record<BinaryPathKey, string | null>>
+    ) => BinaryPaths,
     getComputeTargetId?: () => string | null,
     handleSecurityUpgrade?: (
       payload: DesktopSecurityUpgradePayload
     ) => Promise<DesktopSecurityUpgradeResult> | DesktopSecurityUpgradeResult,
     getOnboardingCompleted?: () => boolean,
-    schedulers?: LoopSchedulerContext,
-    onLoopCompleted?: LoopCompletedHook,
     installPack?: MemberPackInstaller,
-    isPackagedBuild?: () => boolean
+    gitPullRequestSessionAccess?: DesktopGatewayGitPullRequestSessionAccess
   ): DesktopGatewayServer {
     return new DesktopGatewayServer({
       host: "127.0.0.1",
@@ -256,41 +143,28 @@ export class DesktopGatewayServer {
       getGatewayAuthToken,
       getAllowedDirectories,
       getSymphonyDir,
-      fallbackGatewayOrigin: process.env.SYMPHONY_GATEWAY_FALLBACK_ORIGIN,
+      fallbackGatewayOrigin: resolveFallbackGatewayOrigin(),
       onActivityEvent,
       evaluateApproval,
       machineName,
       version,
       capabilities,
       sessionStore,
-      getApiKey,
-      getApiKeyProvenance,
-      signDesktopRequest,
-      onDesktopPopUnavailable,
-      getApiOrigin,
+      gitPullRequestApiOptions: buildGitPullRequestApiOptions(
+        gitPullRequestSessionAccess,
+        getApiOrigin
+      ),
       prodOriginsOnly,
-      jobStore,
       onUnexpectedClose,
-      loopTokenStore,
-      retrySpawnDeps,
-      getClaudeCodeOtelReceiverStatus: () =>
-        toClaudeCodeOtelReceiverStatus(getOtlpReceiverState()),
       getGatewayId,
       getComputeTargetId,
       handleSecurityUpgrade,
       getOnboardingCompleted,
       getBinaryPaths,
       applyBinaryPathPatch,
-      checkForUpdate,
-      applyUpdate,
-      isUpdateAndRestartEnabled,
-      schedulers,
-      onLoopCompleted,
       installPack,
-      isPackagedBuild,
     });
   }
-
   getAddress(): DesktopGatewayServerOptions {
     return this.options;
   }
@@ -367,9 +241,6 @@ export class DesktopGatewayServer {
   async stop(): Promise<void> {
     this.alive = false;
     if (!this.server) {
-      if (this.ownsSchedulers) {
-        this.schedulers[Symbol.dispose]();
-      }
       return;
     }
 
@@ -389,9 +260,6 @@ export class DesktopGatewayServer {
       // Force-drop active NDJSON/SSE streams so close() can actually complete.
       runningServer.closeAllConnections();
     });
-    if (this.ownsSchedulers) {
-      this.schedulers[Symbol.dispose]();
-    }
   }
 
   isAlive(): boolean {
@@ -423,4 +291,46 @@ export class DesktopGatewayServer {
       "utf-8"
     );
   }
+}
+
+/**
+ * `SYMPHONY_GATEWAY_FALLBACK_ORIGIN`, checked once at construction (ISS-8234).
+ *
+ * The value is used as the BASE of `new URL(requestPath, base)` in the fallback
+ * proxy. Read straight off `process.env` it got no parse and no format check,
+ * so a scheme-less `localhost:3000` was accepted here and only threw later,
+ * per-request, deep inside the router.
+ *
+ * Two checks, because the base has to SURVIVE that join, not merely parse:
+ *
+ * 1. The TWO-argument `URL.canParse`, which is the join itself. The
+ *    one-argument spelling is the obvious-looking one and does NOT reject the
+ *    typo this exists to catch: `URL.canParse("localhost:3000")` is `true`,
+ *    because `localhost:` parses as a custom scheme — yet that value is still
+ *    not a usable base, so `new URL(path, it)` throws and every fallback
+ *    request degrades to the generic 502 instead of naming the misconfiguration.
+ * 2. No path, query or fragment (ISS-8234 review, whitlockk). `requestPath` is
+ *    always absolute, so the join resolves it at the HOST ROOT and discards all
+ *    three: a `http://localhost:3000/prefix` base proxies to
+ *    `http://localhost:3000/api/gateway/…` with the prefix silently gone.
+ *    Rejecting it is the honest answer — a prefix that looks configured and
+ *    never applies is the misconfiguration this function exists to name.
+ */
+function resolveFallbackGatewayOrigin(): string | undefined {
+  const configured = process.env.SYMPHONY_GATEWAY_FALLBACK_ORIGIN;
+  if (!configured) {
+    return undefined;
+  }
+  if (!URL.canParse("/", configured)) {
+    throw new Error(
+      `SYMPHONY_GATEWAY_FALLBACK_ORIGIN must be an absolute URL (e.g. http://localhost:3000); got ${JSON.stringify(configured)}`
+    );
+  }
+  const parsed = new URL(configured);
+  if (parsed.pathname !== "/" || parsed.search !== "" || parsed.hash !== "") {
+    throw new Error(
+      `SYMPHONY_GATEWAY_FALLBACK_ORIGIN must be a bare origin with no path, query or fragment (e.g. http://localhost:3000) — the proxy joins it with an absolute request path, which discards all three; got ${JSON.stringify(configured)}`
+    );
+  }
+  return configured;
 }

@@ -5,11 +5,11 @@
  * sibling suite) and `branch-pr-attribution` (covered where its branch/PR
  * fixture already lives, in `maintenance-branch-pr-propagation.test.ts`).
  *
- * Seven sites: `opencode-withheld-store` x2, `repository-default-authority-store`
- * x2, `sync-cursor-state` x1, `sync-outbox-store` x2, plus `activity-metrics`.
+ * Five sites: `opencode-withheld-store` x2, `sync-cursor-state` x1,
+ * `sync-outbox-store` x2, plus `activity-metrics`.
  *
  * Every one keeps its verb and takes a `select` on the table's REAL primary
- * key. That key is compound on four of them, and named something other than
+ * key. That key is compound on two of them, and named something other than
  * `id` on all of them:
  *
  * | table | primary key |
@@ -17,41 +17,13 @@
  * | `session_activity_metrics` | `sessionId` |
  * | `opencode_withheld_subagent_root` | `[sourcePath, rootRawId]` |
  * | `opencode_withheld_scan` | `sourcePath` |
- * | `repository_default_authorities` | `[identityKey, provider, providerRepositoryId]` |
  * | `sync_state` | `sourceKey` |
  * | `agent_session_sync_outbox` | `[sourceKey, externalSessionId]` |
- *
- * The two `repository-default-authority-store` sites keep `create`/`update`
- * because `reconcileObservation` reads the current row with `findUnique` and
- * then writes INSIDE THE SAME interactive transaction, branching on that read —
- * the shape batch 4 refused.
- *
- * Be precise about how strong that is: no production path deletes from
- * `repository_default_authorities`, and the `findUnique` and the `update` share
- * one interactive transaction on the single writer connection, so the `update`'s
- * P2025 is NOT reachable today. It is defence-in-depth against a future delete
- * path, not a currently-live throw — which is why there is deliberately no
- * missing-row test here, unlike the transcript-sync and scheduler suites where
- * the throw IS reachable and IS pinned. What this suite pins instead is the verb:
- * a silent conversion to `updateMany` fails `refuses to batch the authority
- * write` below.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
-import {
-  GitHubFetchCredentialType,
-  GitHubFetchMechanism,
-  GitHubFetchTrigger,
-} from "@repo/api/src/types/github-read-model";
-import {
-  RepositoryDefaultAvailability,
-  RepositoryDefaultCompleteness,
-  RepositoryDefaultSource,
-} from "@repo/api/src/types/repository-default-identity";
-import { VcsProviderKind } from "@repo/api/src/types/vcs-provider-kind";
+import { test } from "vitest";
 import { upsertActivityMetricsRollup } from "../src/main/database/activity-metrics.js";
 import { recordOpencodeWithheldSubagents } from "../src/main/database/opencode-withheld-store.js";
-import { writeRepositoryDefaultAuthorities } from "../src/main/database/repository-default-authority-store.js";
 import { sqliteAdvanceSyncState } from "../src/main/database/sync-cursor-state.js";
 import {
   sqliteMarkOutboxDeadLettered,
@@ -68,8 +40,6 @@ const LATER = "2026-08-12T01:00:00.000Z";
 const SOURCE_PATH = "/tmp/iss6321/opencode.db";
 const SOURCE_KEY = "iss6321-source";
 const SESSION_ID = "iss6321-session";
-const IDENTITY_KEY = "iss6321-identity";
-const REPO_ID = "iss6321-repo";
 
 async function open() {
   const opened = await openTestPrisma();
@@ -163,132 +133,6 @@ test("NARROWING: both opencode writes RETURNING only their primary key", async (
   }
 });
 
-// ────────── repository-default-authority-store (245 create, 264 update) ──────────
-
-const authorityObservation = (defaultBranch: string, observedAt: string) => ({
-  repository: {
-    provider: VcsProviderKind.GitHub,
-    providerRepositoryId: REPO_ID,
-    fullName: "acme/demo",
-  },
-  evidence: {
-    availability: RepositoryDefaultAvailability.Available,
-    completeness: RepositoryDefaultCompleteness.Complete,
-    defaultBranch,
-  },
-  provenance: {
-    source: RepositoryDefaultSource.RepositoryRest,
-    mechanism: GitHubFetchMechanism.Rest,
-    trigger: GitHubFetchTrigger.SurfaceOpen,
-    credentialType: GitHubFetchCredentialType.GitHubApp,
-    observationKey: `observation-${observedAt}`,
-    observedAt,
-  },
-});
-
-test("PARITY: a first authority observation CREATEs, a newer one UPDATEs in place", async () => {
-  const { db, recorded, close } = await open();
-  try {
-    const first = await writeRepositoryDefaultAuthorities(
-      recorded.prisma,
-      IDENTITY_KEY,
-      [authorityObservation("main", OBSERVED_AT)]
-    );
-    assert.equal(
-      first.accepted,
-      1,
-      "the observation must parse and be accepted"
-    );
-    assert.equal(
-      recorded.callsFor("repositoryDefaultAuthority", "create").length,
-      1
-    );
-
-    recorded.reset();
-    const second = await writeRepositoryDefaultAuthorities(
-      recorded.prisma,
-      IDENTITY_KEY,
-      [authorityObservation("trunk", LATER)]
-    );
-    assert.equal(second.accepted, 1);
-    assert.equal(
-      recorded.callsFor("repositoryDefaultAuthority", "create").length,
-      0,
-      "the second observation must take the UPDATE branch, not create"
-    );
-
-    const rows = await rowsOf<{ default_branch: string }>(
-      db,
-      "SELECT default_branch FROM repository_default_authorities"
-    );
-    assert.equal(rows.length, 1, "both writes target one compound-keyed row");
-    assert.equal(rows[0].default_branch, "trunk");
-  } finally {
-    await close();
-  }
-});
-
-test("NARROWING: both authority writes RETURNING only the compound identity", async () => {
-  const { recorded, close } = await open();
-  try {
-    const key = {
-      identityKey: true,
-      provider: true,
-      providerRepositoryId: true,
-    } as const;
-
-    await writeRepositoryDefaultAuthorities(recorded.prisma, IDENTITY_KEY, [
-      authorityObservation("main", OBSERVED_AT),
-    ]);
-    assertNarrowedTo(
-      recorded.only("repositoryDefaultAuthority", "create"),
-      key,
-      "authority create"
-    );
-
-    recorded.reset();
-    await writeRepositoryDefaultAuthorities(recorded.prisma, IDENTITY_KEY, [
-      authorityObservation("trunk", LATER),
-    ]);
-    assertNarrowedTo(
-      recorded.only("repositoryDefaultAuthority", "update"),
-      key,
-      "authority update"
-    );
-  } finally {
-    await close();
-  }
-});
-
-/**
- * The regression guard for the refusal itself. `updateMany` would resolve
- * `{count: 0}` for a row that vanished between the `findUnique` and the write,
- * committing the reconcile as if it had applied. Assert the throwing verbs are
- * still the ones used, and that no batch verb crept in.
- */
-test("PARITY: the authority reconcile refuses to batch the authority write", async () => {
-  const { recorded, close } = await open();
-  try {
-    await writeRepositoryDefaultAuthorities(recorded.prisma, IDENTITY_KEY, [
-      authorityObservation("main", OBSERVED_AT),
-    ]);
-    await writeRepositoryDefaultAuthorities(recorded.prisma, IDENTITY_KEY, [
-      authorityObservation("trunk", LATER),
-    ]);
-
-    const verbs = recorded.calls
-      .filter((c) => c.model === "repositoryDefaultAuthority")
-      .map((c) => c.method);
-    assert.deepEqual(
-      verbs,
-      ["create", "update"],
-      "both writes must keep a verb that throws when the row is absent"
-    );
-  } finally {
-    await close();
-  }
-});
-
 // ───────────────────── sync-cursor-state (161) ─────────────────────
 
 test("PARITY: sqliteAdvanceSyncState upserts the durable cursor", async () => {
@@ -354,7 +198,8 @@ test("PARITY: recordOutboxRetry creates a pending row when none exists, then upd
       SESSION_ID,
       1,
       LATER,
-      "transient"
+      "transient",
+      null
     );
     await sqliteRecordOutboxRetry(
       recorded.prisma,
@@ -362,7 +207,8 @@ test("PARITY: recordOutboxRetry creates a pending row when none exists, then upd
       SESSION_ID,
       2,
       LATER,
-      "transient again"
+      "transient again",
+      null
     );
 
     const rows = await rowsOf<{ status: string; attempt_count: number }>(
@@ -407,7 +253,8 @@ test("NARROWING: both outbox writes RETURNING only the compound identity", async
       SESSION_ID,
       1,
       LATER,
-      "transient"
+      "transient",
+      null
     );
     assertNarrowedTo(
       recorded.only("agentSessionSyncOutbox", "upsert"),

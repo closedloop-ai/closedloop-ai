@@ -17,8 +17,11 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
-import { createHarnessWatcher } from "../src/main/collectors/engine/watcher.js";
+import { test } from "vitest";
+import {
+  createHarnessWatcher,
+  HarnessImportOutcome,
+} from "../src/main/collectors/engine/watcher.js";
 import {
   type RecordingDirectoryWatcher,
   recordingFsWatcher,
@@ -36,7 +39,8 @@ test("ISS-5154: stop() closes every attached watch handle", async () => {
     const watcher = createHarnessWatcher({
       roots: () => [rootA, rootB],
       match: () => true,
-      runImport: () => Promise.resolve({ completed: true }),
+      runImport: () =>
+        Promise.resolve({ outcome: HarnessImportOutcome.Completed }),
       runInitialImport: false,
       catchupPollMs: null,
       watchDirectory: () => {
@@ -77,7 +81,8 @@ test("ISS-5154: a root that appears after stop() is not left attached", async ()
     const watcher = createHarnessWatcher({
       roots: () => [root],
       match: () => true,
-      runImport: () => Promise.resolve({ completed: true }),
+      runImport: () =>
+        Promise.resolve({ outcome: HarnessImportOutcome.Completed }),
       runInitialImport: false,
       catchupPollMs: null,
       watchDirectory: () => {

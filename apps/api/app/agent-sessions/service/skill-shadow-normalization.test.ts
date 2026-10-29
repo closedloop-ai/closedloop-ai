@@ -175,7 +175,9 @@ describe("ISS-4923 — skill-shadowed phantom command invocations", () => {
       ok: true,
       value: { state: AgentComponentInvocationSyncAckState.Activated },
     });
-    expect(resolutionUpdatesFrom(db.$executeRaw)).toEqual([
+    expect(
+      resolutionUpdatesFrom(db.agentComponentInvocation.createMany)
+    ).toEqual([
       expect.objectContaining({
         agentComponentId: SKILL_COMPONENT_ID,
         componentKey: "review",
@@ -199,10 +201,12 @@ describe("ISS-4923 — skill-shadowed phantom command invocations", () => {
     const result = await ingest(buildPart({ allItems: [genuine] }));
 
     expect(result.ok).toBe(true);
-    const [update] = resolutionUpdatesFrom(db.$executeRaw);
-    expect(update.componentKind).toBeUndefined();
-    expect(update.componentKey).toBeUndefined();
-    expect(update.normalizedName).toBeUndefined();
+    const [update] = resolutionUpdatesFrom(
+      db.agentComponentInvocation.createMany
+    );
+    expect(update.componentKind).toBe(genuine.kind);
+    expect(update.componentKey).toBe(genuine.componentKey);
+    expect(update.normalizedName).toBe(genuine.normalizedName);
     expect(update.agentComponentId).toBe(COMMAND_COMPONENT_ID);
   });
 
@@ -223,10 +227,12 @@ describe("ISS-4923 — skill-shadowed phantom command invocations", () => {
     const result = await ingest(buildPart({ allItems: [genuine] }));
 
     expect(result.ok).toBe(true);
-    const [update] = resolutionUpdatesFrom(db.$executeRaw);
-    expect(update.componentKind).toBeUndefined();
-    expect(update.componentKey).toBeUndefined();
-    expect(update.normalizedName).toBeUndefined();
+    const [update] = resolutionUpdatesFrom(
+      db.agentComponentInvocation.createMany
+    );
+    expect(update.componentKind).toBe(genuine.kind);
+    expect(update.componentKey).toBe(genuine.componentKey);
+    expect(update.normalizedName).toBe(genuine.normalizedName);
   });
 
   it("still normalizes when the unresolved command row carries NO definition text", async () => {
@@ -244,7 +250,9 @@ describe("ISS-4923 — skill-shadowed phantom command invocations", () => {
     const result = await ingest(buildPart({ allItems: [phantom] }));
 
     expect(result.ok).toBe(true);
-    const [update] = resolutionUpdatesFrom(db.$executeRaw);
+    const [update] = resolutionUpdatesFrom(
+      db.agentComponentInvocation.createMany
+    );
     expect(update.componentKind).toBe(AgentComponentKind.Skill);
     expect(update.componentKey).toBe("deploy");
   });
@@ -271,10 +279,12 @@ describe("ISS-4923 — skill-shadowed phantom command invocations", () => {
     // kind — the generation is rejected with `GenerationConflict` permanently,
     // because `partLedgerMatches` short-circuits every retry into the same call.
     expect(result.ok).toBe(true);
-    const [update] = resolutionUpdatesFrom(db.$executeRaw);
-    expect(update.componentKind).toBeUndefined();
-    expect(update.componentKey).toBeUndefined();
-    expect(update.normalizedName).toBeUndefined();
+    const [update] = resolutionUpdatesFrom(
+      db.agentComponentInvocation.createMany
+    );
+    expect(update.componentKind).toBe(genuine.kind);
+    expect(update.componentKey).toBe(genuine.componentKey);
+    expect(update.normalizedName).toBe(genuine.normalizedName);
   });
 
   // The same ordering via the other row-level signal: a stored-row replay that
@@ -290,9 +300,11 @@ describe("ISS-4923 — skill-shadowed phantom command invocations", () => {
     const result = await ingest(buildPart({ allItems: [genuine] }));
 
     expect(result.ok).toBe(true);
-    const [update] = resolutionUpdatesFrom(db.$executeRaw);
-    expect(update.componentKind).toBeUndefined();
-    expect(update.componentKey).toBeUndefined();
+    const [update] = resolutionUpdatesFrom(
+      db.agentComponentInvocation.createMany
+    );
+    expect(update.componentKind).toBe(genuine.kind);
+    expect(update.componentKey).toBe(genuine.componentKey);
   });
 
   it("leaves a slash command untouched when no skill shadows it", async () => {
@@ -305,9 +317,11 @@ describe("ISS-4923 — skill-shadowed phantom command invocations", () => {
     const result = await ingest(buildPart({ allItems: [genuine] }));
 
     expect(result.ok).toBe(true);
-    const [update] = resolutionUpdatesFrom(db.$executeRaw);
-    expect(update.componentKind).toBeUndefined();
-    expect(update.componentKey).toBeUndefined();
+    const [update] = resolutionUpdatesFrom(
+      db.agentComponentInvocation.createMany
+    );
+    expect(update.componentKind).toBe(genuine.kind);
+    expect(update.componentKey).toBe(genuine.componentKey);
     expect(update.agentComponentId).toBeNull();
   });
 
@@ -320,10 +334,12 @@ describe("ISS-4923 — skill-shadowed phantom command invocations", () => {
     const result = await ingest(buildPart({ allItems: [phantom] }));
 
     expect(result.ok).toBe(true);
-    const [update] = resolutionUpdatesFrom(db.$executeRaw);
+    const [update] = resolutionUpdatesFrom(
+      db.agentComponentInvocation.createMany
+    );
     expect(update.componentKind).toBe(AgentComponentKind.Skill);
     expect(update.componentKey).toBe("review");
-    expect(update.normalizedName).toBeUndefined();
+    expect(update.normalizedName).toBe(phantom.normalizedName);
   });
 
   it("does not touch a non-shadowed sibling in the same generation", async () => {
@@ -343,21 +359,26 @@ describe("ISS-4923 — skill-shadowed phantom command invocations", () => {
     const result = await ingest(buildPart({ allItems: [phantom, realSkill] }));
 
     expect(result.ok).toBe(true);
-    const updates = resolutionUpdatesFrom(db.$executeRaw);
-    expect(updates).toHaveLength(2);
-    // Only the phantom carries identity columns; the real skill omits them so
-    // the UPDATE's COALESCE leaves its stored identity untouched.
-    const carrying = updates.filter(
-      (update: { componentKind?: string }) => update.componentKind !== undefined
+    const updates = resolutionUpdatesFrom(
+      db.agentComponentInvocation.createMany
     );
-    expect(carrying).toHaveLength(1);
-    expect(carrying[0]).toEqual(
+    expect(updates).toHaveLength(2);
+    // Only the phantom is re-pointed; the real skill keeps the identity it was
+    // sent with.
+    expect(updates).toEqual([
       expect.objectContaining({
+        externalInvocationId: phantom.externalInvocationId,
         agentComponentId: SKILL_COMPONENT_ID,
         componentKey: "review",
         componentKind: AgentComponentKind.Skill,
-      })
-    );
+      }),
+      expect.objectContaining({
+        externalInvocationId: realSkill.externalInvocationId,
+        componentKey: realSkill.componentKey,
+        componentKind: realSkill.kind,
+        normalizedName: realSkill.normalizedName,
+      }),
+    ]);
   });
 
   it("normalizes a multipart generation only once every part has landed", async () => {
@@ -385,7 +406,9 @@ describe("ISS-4923 — skill-shadowed phantom command invocations", () => {
     // Nothing is rewritten while the generation is still staged — the hash has
     // not been checked yet, exactly like the migration's `completed_at IS NOT
     // NULL` exclusion.
-    expect(resolutionUpdatesFrom(db.$executeRaw)).toEqual([]);
+    expect(
+      resolutionUpdatesFrom(db.agentComponentInvocation.createMany)
+    ).toEqual([]);
 
     const activated = await ingest(
       buildPart({ allItems, items: [second], partIndex: 1, partCount: 2 })
@@ -395,8 +418,11 @@ describe("ISS-4923 — skill-shadowed phantom command invocations", () => {
       ok: true,
       value: { state: AgentComponentInvocationSyncAckState.Activated },
     });
-    const rewritten = resolutionUpdatesFrom(db.$executeRaw).filter(
-      (update: { componentKind?: string }) => update.componentKind !== undefined
+    const rewritten = resolutionUpdatesFrom(
+      db.agentComponentInvocation.createMany
+    ).filter(
+      (update: { externalInvocationId?: string }) =>
+        update.externalInvocationId === phantom.externalInvocationId
     );
     expect(rewritten).toEqual([
       expect.objectContaining({
@@ -424,7 +450,9 @@ describe("ISS-4923 — skill-shadowed phantom command invocations", () => {
     const result = await ingest(buildPart({ allItems: [phantom] }));
 
     expect(result.ok).toBe(true);
-    expect(resolutionUpdatesFrom(db.$executeRaw)).toEqual([
+    expect(
+      resolutionUpdatesFrom(db.agentComponentInvocation.createMany)
+    ).toEqual([
       expect.objectContaining({
         agentComponentId: null,
         // The resolver's own honest ambiguity state — nothing is fabricated.

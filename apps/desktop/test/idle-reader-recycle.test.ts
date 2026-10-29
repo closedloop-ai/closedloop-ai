@@ -10,7 +10,7 @@
  * is structural: `inFlight[slot]` is incremented synchronously before any await).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { createWriteQueue } from "../src/main/database/write-queue.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
 

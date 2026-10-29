@@ -24,7 +24,15 @@ import {
   buildComputeTarget,
   buildInventoryRow,
   buildServiceDb,
-} from "@/app/agent-components/__tests__/service-db-double";
+} from "@/__tests__/support/agent-components/service-db-double";
+import {
+  orphanFixtureFindMany,
+  type WhereClause,
+} from "@/__tests__/support/agent-components/usage-lane-doubles";
+import {
+  DetailUsageAggregateFailedEvent,
+  detailUsageAggregateFailureThrottle,
+} from "@/app/agent-components/detail-usage-failure-telemetry";
 import { MAX_ORG_ORPHAN_USAGE_ROWS } from "@/app/agent-components/plugin-child-usage";
 import { DETAIL_USAGE_SNAPSHOT_TX_TIMEOUT_MS } from "@/app/agent-components/service/detail-usage-identity";
 
@@ -75,6 +83,18 @@ const FIRST_INVOKED_AT = new Date("2026-01-04T09:30:00.000Z");
 const LAST_INVOKED_AT = new Date("2026-03-21T18:45:00.000Z");
 /** Older still — only reachable via the uncapped aggregate, never the fold. */
 const TRUNCATED_FIRST_INVOKED_AT = new Date("2025-09-02T07:15:00.000Z");
+/**
+ * ISS-6519: four ascending instants for the UNTRUNCATED fold, which the rows below
+ * arrange so that NEITHER extreme sits on the first row NOR on the last. At n=1
+ * `!firstSeenAt` short-circuits the only iteration and the comparison operand is
+ * never evaluated at all; with the extremes on an interior row, a fold that stops
+ * early, keeps the last value it saw, or compares in the wrong direction each
+ * answers with an interior instant instead.
+ */
+const FOLD_WINDOW_START = new Date("2025-11-02T08:00:00.000Z");
+const FOLD_INTERIOR_EARLY = new Date("2026-01-09T10:00:00.000Z");
+const FOLD_INTERIOR_LATE = new Date("2026-02-14T12:00:00.000Z");
+const FOLD_WINDOW_END = new Date("2026-05-30T21:00:00.000Z");
 const AGGREGATE_FAILURE_MESSAGE = "statement timeout";
 /** The options every `withDb.tx` in a case was opened with, in call order. */
 const capturedTxOptions: TxOptions[] = [];
@@ -84,9 +104,9 @@ type SeenBounds = {
   lastInvokedAt: Date | null;
 };
 
-function orphanUsageRow(bounds: SeenBounds) {
+function orphanUsageRow(bounds: SeenBounds, agentSessionId = SESSION_ID) {
   return {
-    agentSessionId: SESSION_ID,
+    agentSessionId,
     invocationCount: 3,
     errorCount: 0,
     gitBranch: "",
@@ -104,7 +124,7 @@ function orphanUsageRow(bounds: SeenBounds) {
 }
 
 /**
- * Install an orphan-only `db` whose single usage lane returns `rows` and whose
+ * Install an orphan-only `db` whose usage lanes return `rows` and whose
  * uncapped aggregate — the truncated-lane fallback — would report
  * `aggregateBounds`. The two are deliberately DIFFERENT in every case so an
  * assertion on the returned window says which path produced it. The aggregate
@@ -120,7 +140,7 @@ function installOrphanOnlyDb(
 }
 
 /**
- * One orphan-only client double. Built separately from installation so a case can
+ * One used-only client double. Built separately from installation so a case can
  * hand the POOLED and the SNAPSHOT client materially different worlds — which is
  * how the relink hazard below is made observable.
  */
@@ -129,10 +149,24 @@ function buildOrphanOnlyClient(
   aggregateBounds: SeenBounds = { firstInvokedAt: null, lastInvokedAt: null },
   aggregateRejects = false
 ) {
-  const aggregate = vi.fn(async (_args: AggregateArgs) => {
+  // ISS-9852: the truncated branch issues a SECOND `aggregate` on this delegate
+  // (the Invocations/Sessions `_sum`) plus a `groupBy`; both are answered from
+  // the same rows so this suite stays about the seen window. `seenBoundsCalls`
+  // is what a case counts, not the delegate's total call count.
+  const aggregate = vi.fn(async (args: AggregateArgs) => {
     await Promise.resolve();
     if (aggregateRejects) {
       throw new Error(AGGREGATE_FAILURE_MESSAGE);
+    }
+    if (args._sum) {
+      return {
+        _sum: {
+          invocationCount: rows.reduce(
+            (sum, row) => sum + row.invocationCount,
+            0
+          ),
+        },
+      };
     }
     return {
       _min: { firstInvokedAt: aggregateBounds.firstInvokedAt },
@@ -144,8 +178,19 @@ function buildOrphanOnlyClient(
   const db = {
     agentComponent: { findMany: resolved([]) },
     agentComponentSessionUsage: {
-      findMany: resolved(rows),
+      // ISS-10469: the used-only path folds TWO complementary lanes, and a name
+      // route now issues both. `rows` model no FK, so the live-owner arm selects
+      // none of them — without this the double answers both arms from one list
+      // and every total here doubles.
+      findMany: vi.fn((args: { where?: WhereClause }) =>
+        Promise.resolve(orphanFixtureFindMany(rows, args?.where))
+      ),
       aggregate,
+      groupBy: resolved(
+        [...new Set(rows.map((row) => row.agentSessionId))].map(
+          (agentSessionId) => ({ agentSessionId })
+        )
+      ),
     },
     artifactLink: { findMany: resolved([]) },
     sessionDetail: { findMany: resolved([]) },
@@ -180,6 +225,7 @@ describe("getDetailForOrg — orphan-only seen window (ISS-5577)", () => {
     vi.clearAllMocks();
     capturedTxOptions.length = 0;
     mocks.listByArtifactIds.mockResolvedValue([]);
+    detailUsageAggregateFailureThrottle.clear();
     vi.useFakeTimers();
     vi.setSystemTime(REQUEST_NOW);
   });
@@ -229,6 +275,89 @@ describe("getDetailForOrg — orphan-only seen window (ISS-5577)", () => {
   });
 
   /**
+   * ISS-6519: the UNTRUNCATED fold is the DEFAULT path — the aggregate runs only
+   * when a lane hits its `take` — yet every case above reaches it with exactly ONE
+   * row, which is degenerate: the comparison operand is never evaluated, so the
+   * fold's direction was unasserted and a `<` flipped to `>` produced exactly the
+   * systematically-too-recent `firstSeenAt` ISS-5577 exists to eliminate.
+   *
+   * Both extremes ride the SECOND session, so the answer is available neither from
+   * the first row alone nor from the last one.
+   */
+  it("folds the earliest and latest instants across every untruncated row, not one row's", async () => {
+    const aggregate = installOrphanOnlyDb([
+      orphanUsageRow(
+        {
+          firstInvokedAt: FOLD_INTERIOR_EARLY,
+          lastInvokedAt: FOLD_INTERIOR_LATE,
+        },
+        "session-interior"
+      ),
+      orphanUsageRow(
+        { firstInvokedAt: FOLD_WINDOW_START, lastInvokedAt: FOLD_WINDOW_END },
+        "session-widest"
+      ),
+      orphanUsageRow(
+        {
+          firstInvokedAt: FOLD_INTERIOR_LATE,
+          lastInvokedAt: FOLD_INTERIOR_LATE,
+        },
+        "session-narrow"
+      ),
+    ]);
+
+    const result = await agentComponentsService.getDetailForOrg(
+      ORGANIZATION_ID,
+      ORPHAN_SLUG
+    );
+
+    // No lane hit its cap, so this window came from the fold and nothing else.
+    expect(aggregate).not.toHaveBeenCalled();
+    expect({
+      firstSeenAt: result?.firstSeenAt,
+      lastSeenAt: result?.lastSeenAt,
+    }).toEqual({
+      firstSeenAt: FOLD_WINDOW_START.toISOString(),
+      lastSeenAt: FOLD_WINDOW_END.toISOString(),
+    });
+  });
+
+  /**
+   * ISS-6519: `AgentComponentSessionUsage.firstInvokedAt` is nullable, so a row
+   * that never recorded one is reachable — and ordered AFTER a real value it is
+   * the input that separates "skip nulls the way `min()` does" from JS operand
+   * coercion, where `null < <Date>` compares 0 against epoch milliseconds and is
+   * true. Dropping the null guard therefore does not widen the window; it ERASES
+   * a window the rows do prove, and the response reports unknown.
+   */
+  it("keeps the window a real row proved when a later row recorded no timestamps", async () => {
+    const aggregate = installOrphanOnlyDb([
+      orphanUsageRow(
+        { firstInvokedAt: FOLD_WINDOW_START, lastInvokedAt: FOLD_WINDOW_END },
+        "session-stamped"
+      ),
+      orphanUsageRow(
+        { firstInvokedAt: null, lastInvokedAt: null },
+        "session-unstamped"
+      ),
+    ]);
+
+    const result = await agentComponentsService.getDetailForOrg(
+      ORGANIZATION_ID,
+      ORPHAN_SLUG
+    );
+
+    expect(aggregate).not.toHaveBeenCalled();
+    expect({
+      firstSeenAt: result?.firstSeenAt,
+      lastSeenAt: result?.lastSeenAt,
+    }).toEqual({
+      firstSeenAt: FOLD_WINDOW_START.toISOString(),
+      lastSeenAt: FOLD_WINDOW_END.toISOString(),
+    });
+  });
+
+  /**
    * The truncation case is the whole reason the aggregate exists: the lane read
    * is ordered `lastInvokedAt desc` and capped, so a capped slice has dropped
    * precisely the OLDEST rows. Folding it would report a `firstSeenAt` that is
@@ -251,7 +380,7 @@ describe("getDetailForOrg — orphan-only seen window (ISS-5577)", () => {
       ORPHAN_SLUG
     );
 
-    expect(aggregate).toHaveBeenCalledOnce();
+    expect(seenBoundsCalls(aggregate)).toBe(1);
     // The older instant the dropped rows carried — NOT the fold over the slice.
     expect(result?.firstSeenAt).toBe(TRUNCATED_FIRST_INVOKED_AT.toISOString());
     expect(result?.firstSeenAt).not.toBe(FIRST_INVOKED_AT.toISOString());
@@ -320,7 +449,7 @@ describe("getDetailForOrg — orphan-only seen window (ISS-5577)", () => {
       ORPHAN_SLUG
     );
 
-    expect(snapshot.aggregate).toHaveBeenCalledOnce();
+    expect(seenBoundsCalls(snapshot.aggregate)).toBe(1);
     expect(pool.aggregate).not.toHaveBeenCalled();
     expect(result?.firstSeenAt).toBe(TRUNCATED_FIRST_INVOKED_AT.toISOString());
   });
@@ -351,14 +480,14 @@ describe("getDetailForOrg — orphan-only seen window (ISS-5577)", () => {
       ORPHAN_SLUG
     );
 
-    expect(failing.aggregate).toHaveBeenCalledOnce();
+    expect(seenBoundsCalls(failing.aggregate)).toBe(1);
     expect(result?.id).toBe(ORPHAN_SLUG);
     expect(result?.firstSeenAt).toBe("");
     expect(result?.lastSeenAt).toBe("");
     expect(result?.firstSeenAt).not.toBe(FIRST_INVOKED_AT.toISOString());
     // Routed to the monitored server path rather than swallowed.
     expect(mocks.logError).toHaveBeenCalledWith(
-      "agent_components_detail_seen_bounds_aggregate_failed",
+      DetailUsageAggregateFailedEvent.SeenBounds,
       expect.objectContaining({
         error: AGGREGATE_FAILURE_MESSAGE,
         kind: AgentComponentKind.Skill,
@@ -483,10 +612,21 @@ function installInventoryOnlyDb() {
   installClients(db);
 }
 
-/** The shape `fetchDetailUsageSeenBounds` issues its aggregate with. */
+/**
+ * The shape `fetchDetailUsageSeenBounds` issues its aggregate with; the ISS-9852
+ * totals read shares the delegate and is told apart by its `_sum`.
+ */
 type AggregateArgs = {
   where: { OR: unknown[] };
+  _sum?: { invocationCount: true };
+  _min?: { firstInvokedAt: true };
 };
+
+/** How many times the delegate served the SEEN-BOUNDS aggregate specifically. */
+function seenBoundsCalls(aggregate: { mock: { calls: AggregateArgs[][] } }) {
+  return aggregate.mock.calls.filter(([args]) => args._min !== undefined)
+    .length;
+}
 
 /** The options `withDb.tx` is opened with, captured per transaction. */
 type TxOptions = { isolationLevel?: string; timeout?: number };

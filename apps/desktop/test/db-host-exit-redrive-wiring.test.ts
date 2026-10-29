@@ -19,7 +19,7 @@
  * the end-to-end proof of the classification, not just of the wrapper.
  */
 import assert from "node:assert/strict";
-import { after, afterEach, before, describe, it } from "node:test";
+import { afterAll, afterEach, beforeAll, describe, it } from "vitest";
 import type {
   Harness,
   HarnessCollector,
@@ -75,10 +75,9 @@ let registerLocalDashboardReadIpcHandlers: (deps: { withDb: WithDb }) => void;
 let registerSharedSessionAndBranchIpcHandlers: (deps: {
   withDb: WithDb;
   options: AgentDashboardDesignSystemRuntimeOptions;
-  cloudHydration: undefined;
 }) => void;
 
-before(async () => {
+beforeAll(async () => {
   mock = registerElectronModuleMock();
   // Dynamic, because the redirect must be installed before each registrar
   // evaluates its module-scope `import { ipcMain } from "electron"`.
@@ -94,7 +93,7 @@ before(async () => {
     shared.registerSharedSessionAndBranchIpcHandlers as typeof registerSharedSessionAndBranchIpcHandlers;
 });
 
-after(() => {
+afterAll(() => {
   mock.deregister();
 });
 
@@ -196,11 +195,32 @@ describe("the db-host-exit re-drive is installed on the read IPC channels (ISS-5
     registerSharedSessionAndBranchIpcHandlers({
       withDb: makeRealWithDb(agentDatabase),
       options: STUB_OPTIONS,
-      cloudHydration: undefined,
     });
 
     await settledError(
       registeredInvokeHandler(SHARED_AGENT_SESSIONS_IPC_CHANNELS.pageData)(
+        TRUSTED_EVENT,
+        {}
+      )
+    );
+
+    assert.equal(touches(), 2);
+  });
+
+  it("re-drives the Sessions usage channel", async () => {
+    // ISS-8773. This is the channel whose raw rejection printed
+    // `Error occurred in handler for 'desktop:shared-agent-sessions:usage'`
+    // three times when the db-host died under it. It is a pure read, so it
+    // belongs in the opted-in set; before this it was in the un-opted-in one
+    // the case above pins.
+    const { agentDatabase, touches } = makeProbeDatabase("syncSource");
+    registerSharedSessionAndBranchIpcHandlers({
+      withDb: makeRealWithDb(agentDatabase),
+      options: STUB_OPTIONS,
+    });
+
+    await settledError(
+      registeredInvokeHandler(SHARED_AGENT_SESSIONS_IPC_CHANNELS.usage)(
         TRUSTED_EVENT,
         {}
       )
@@ -214,7 +234,6 @@ describe("the db-host-exit re-drive is installed on the read IPC channels (ISS-5
     registerSharedSessionAndBranchIpcHandlers({
       withDb: makeRealWithDb(agentDatabase),
       options: STUB_OPTIONS,
-      cloudHydration: undefined,
     });
 
     await settledError(
@@ -244,13 +263,19 @@ type MaintenanceDepsOverrides = {
   ) => Promise<{
     rebuilt: boolean;
     activeRace: boolean;
-    contentChanged?: boolean;
+    needsResync?: boolean;
   }>;
   enqueueOutboxEntries?: (
     sourceKey: string,
     entries: readonly { externalSessionId: string }[]
   ) => Promise<void>;
-  onInvalidate?: () => void;
+  /**
+   * ISS-8776 — returns `unknown`, not `void`. Through the db-host proxy this
+   * method is an IPC invoke that returns a rejectable promise even though its
+   * `SqliteAgentDatabase` contract type declares `(): void`, and a case has to
+   * be able to reproduce that.
+   */
+  onInvalidate?: () => unknown;
   onStoreOp?: (name: string) => void;
   computeTargetId?: string;
   /**
@@ -420,7 +445,7 @@ describe("committed rebuild results survive a db-host-exit re-drive (ISS-5808)",
           return Promise.resolve({
             rebuilt: true,
             activeRace: false,
-            contentChanged: true,
+            needsResync: true,
           });
         },
       }
@@ -573,6 +598,74 @@ describe("committed rebuild results survive a db-host-exit re-drive (ISS-5808)",
       1,
       `only the pre-rebuild inventory repair may have run; saw: ${storeOps.join(", ")}`
     );
+  });
+
+  it("does not let a REJECTED invalidation escape to the process handler (ISS-8776)", async () => {
+    // `sessions.invalidateHistoricalDetails()` is declared `(): void` on the
+    // `SqliteAgentDatabase` contract, but through the db-host proxy it is an IPC
+    // invoke that returns a rejectable promise — the only method on that
+    // contract where the type hides one. Discarded bare, its rejection when the
+    // child died under it reached `handleUnhandledRejection`, which shows the
+    // crash dialog and calls `app.exit(1)`. The case above covers a THROW; this
+    // one covers the rejection, which the surrounding try/catch cannot see.
+    const logs: string[] = [];
+    const escaped: unknown[] = [];
+    const capture = (reason: unknown): void => {
+      escaped.push(reason);
+    };
+    const priorHandlers = process.listeners("unhandledRejection");
+    process.removeAllListeners("unhandledRejection");
+    process.on("unhandledRejection", capture);
+    try {
+      let staleCalls = 0;
+      const deps = makeMaintenanceDeps(
+        () => {
+          staleCalls++;
+          return Promise.resolve(staleCalls === 1 ? [staleRow("only")] : []);
+        },
+        logs,
+        {
+          collectors: [sessionCollector(["only"])],
+          computeTargetId: COMPUTE_TARGET_ID,
+          onInvalidate: () =>
+            Promise.reject(
+              new DbHostExitError(0, true, "db-host exited (code: 0)")
+            ),
+          rebuildSessionFromParse: () =>
+            Promise.resolve({
+              rebuilt: true,
+              activeRace: false,
+              needsResync: true,
+            }),
+        }
+      );
+
+      await createPostBootMaintenance(deps).runPostBootMaintenance(1);
+      for (let turn = 0; turn < 50; turn++) {
+        await Promise.resolve();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      assert.deepEqual(
+        escaped,
+        [],
+        "a store bounce under the post-rebuild invalidation must not end the app"
+      );
+      assert.ok(
+        logs.some((line) =>
+          line.includes("dropped by a db-host lifecycle event")
+        ),
+        `the fire-and-forget guard reported the drop; saw: ${logs.join(" | ")}`
+      );
+    } finally {
+      process.removeListener("unhandledRejection", capture);
+      for (const handler of priorHandlers) {
+        process.on(
+          "unhandledRejection",
+          handler as (reason: unknown, promise: Promise<unknown>) => void
+        );
+      }
+    }
   });
 });
 

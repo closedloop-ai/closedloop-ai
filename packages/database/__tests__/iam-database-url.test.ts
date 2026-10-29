@@ -8,12 +8,17 @@ import { readIamAuthConfig } from "../scripts/iam-database-url";
  * between "configured" and "not configured" is the contract worth pinning.
  */
 
-const COMPLETE_ENV = {
-  AWS_ROLE_ARN: "arn:aws:iam::1:role/vercel",
+const REQUIRED_ENV = {
   AWS_REGION: "us-east-1",
   PGHOST: "stage.rds.amazonaws.com",
   PGUSER: "vercel_iam",
   PGDATABASE: "closedloop",
+} satisfies NodeJS.ProcessEnv;
+
+/** The Vercel shape: the role is assumed through OIDC. */
+const COMPLETE_ENV = {
+  ...REQUIRED_ENV,
+  AWS_ROLE_ARN: "arn:aws:iam::1:role/vercel",
 } satisfies NodeJS.ProcessEnv;
 
 describe("readIamAuthConfig", () => {
@@ -34,7 +39,7 @@ describe("readIamAuthConfig", () => {
     );
   });
 
-  for (const missing of Object.keys(COMPLETE_ENV)) {
+  for (const missing of Object.keys(REQUIRED_ENV)) {
     it(`returns null when ${missing} is missing`, () => {
       const env: NodeJS.ProcessEnv = { ...COMPLETE_ENV };
       Reflect.deleteProperty(env, missing);
@@ -43,7 +48,47 @@ describe("readIamAuthConfig", () => {
     });
   }
 
+  // ISS-9122: AWS_ROLE_ARN is no longer required. An ECS task role has no role
+  // to assume, and the runtime pool already connects in that shape through the
+  // AWS credential chain; reporting it unconfigured made the two disagree.
+  it("is configured without AWS_ROLE_ARN, leaving the role unset", () => {
+    expect(readIamAuthConfig({ ...REQUIRED_ENV })).toEqual({
+      roleArn: undefined,
+      region: "us-east-1",
+      host: "stage.rds.amazonaws.com",
+      port: "5432",
+      user: "vercel_iam",
+      database: "closedloop",
+    });
+  });
+
   it("treats an empty value as missing rather than connecting to nothing", () => {
     expect(readIamAuthConfig({ ...COMPLETE_ENV, PGHOST: "" })).toBeNull();
+  });
+
+  // ISS-5978: every caller is a DDL path, so the migrator identity wins over the
+  // runtime PGUSER that the runtime pool also reads.
+  it("connects as MIGRATE_PGUSER when it is set", () => {
+    expect(
+      readIamAuthConfig({ ...COMPLETE_ENV, MIGRATE_PGUSER: "vercel_migrator" })
+        ?.user
+    ).toBe("vercel_migrator");
+  });
+
+  it("falls back to PGUSER when MIGRATE_PGUSER is unset or empty", () => {
+    expect(readIamAuthConfig({ ...COMPLETE_ENV })?.user).toBe("vercel_iam");
+    expect(
+      readIamAuthConfig({ ...COMPLETE_ENV, MIGRATE_PGUSER: "" })?.user
+    ).toBe("vercel_iam");
+  });
+
+  it("is configured by MIGRATE_PGUSER alone when PGUSER is missing", () => {
+    const env: NodeJS.ProcessEnv = {
+      ...COMPLETE_ENV,
+      MIGRATE_PGUSER: "vercel_migrator",
+    };
+    Reflect.deleteProperty(env, "PGUSER");
+
+    expect(readIamAuthConfig(env)?.user).toBe("vercel_migrator");
   });
 });

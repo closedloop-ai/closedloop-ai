@@ -1,7 +1,7 @@
 import {
+  CommentSurface,
+  CommentTargetType,
   type TraceComment,
-  TraceCommentSurface,
-  TraceCommentTargetType,
 } from "@repo/api/src/types/comment";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -10,8 +10,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 let mockAuthContext: import("@/lib/auth/with-auth").AuthContext;
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context?.params),
+  withAnyAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context?: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context?.params),
 }));
 
 vi.mock("./service", () => ({
@@ -42,7 +44,7 @@ import {
 import { traceCommentsService } from "./service";
 
 const BRANCH_ID = "branch-1";
-const COMMENT_ID = "comment-1";
+const COMMENT_ID = "0199d0f8-1d4a-7c3e-9b2a-5f6e7d8c9b0c";
 
 const sampleComment = { id: COMMENT_ID } as TraceComment;
 const traceAnchor = {
@@ -61,12 +63,8 @@ beforeEach(() => {
 });
 
 describe("Branch collection surface", () => {
-  const getHandler = createTraceCommentsGetHandler(
-    TraceCommentTargetType.Branch
-  );
-  const postHandler = createTraceCommentsPostHandler(
-    TraceCommentTargetType.Branch
-  );
+  const getHandler = createTraceCommentsGetHandler(CommentTargetType.Branch);
+  const postHandler = createTraceCommentsPostHandler(CommentTargetType.Branch);
 
   it("defaults an omitted Branch surface to Branch detail", async () => {
     vi.mocked(traceCommentsService.list).mockResolvedValue([]);
@@ -86,7 +84,7 @@ describe("Branch collection surface", () => {
   it("passes Branch timeline to exact reads and creates", async () => {
     vi.mocked(traceCommentsService.list).mockResolvedValue([]);
     vi.mocked(traceCommentsService.create).mockResolvedValue(sampleComment);
-    const query = `surface=${TraceCommentSurface.BranchTimeline}`;
+    const query = `surface=${CommentSurface.BranchTimeline}`;
     const getResponse = await getHandler(
       createMockRequest({
         url: `http://localhost:3002/api/branches/branch-1/trace-comments?${query}`,
@@ -105,17 +103,18 @@ describe("Branch collection surface", () => {
     expect(getResponse.status).toBe(200);
     expect(postResponse.status).toBe(200);
     expect(traceCommentsService.list).toHaveBeenCalledWith(
-      expect.objectContaining({ surface: TraceCommentSurface.BranchTimeline })
+      expect.objectContaining({ surface: CommentSurface.BranchTimeline })
     );
     expect(traceCommentsService.create).toHaveBeenCalledWith(
-      expect.objectContaining({ surface: TraceCommentSurface.BranchTimeline })
+      expect.objectContaining({ surface: CommentSurface.BranchTimeline }),
+      undefined
     );
   });
 
   it("rejects a Session surface on the Branch collection", async () => {
     const response = await getHandler(
       createMockRequest({
-        url: `http://localhost:3002/api/branches/branch-1/trace-comments?surface=${TraceCommentSurface.SessionDetail}`,
+        url: `http://localhost:3002/api/branches/branch-1/trace-comments?surface=${CommentSurface.SessionDetail}`,
       }),
       createMockRouteContext({ id: BRANCH_ID })
     );
@@ -127,13 +126,13 @@ describe("Branch collection surface", () => {
 
 describe("Branch mutation surface", () => {
   const patchHandler = createTraceCommentsPatchHandler(
-    TraceCommentTargetType.Branch
+    CommentTargetType.Branch
   );
   const replyHandler = createTraceCommentsReplyPostHandler(
-    TraceCommentTargetType.Branch
+    CommentTargetType.Branch
   );
   const deleteHandler = createTraceCommentsDeleteHandler(
-    TraceCommentTargetType.Branch
+    CommentTargetType.Branch
   );
 
   it("passes Branch timeline to update, reply, and delete", async () => {
@@ -149,7 +148,7 @@ describe("Branch mutation surface", () => {
       ok: true,
       value: { deleted: true },
     });
-    const query = `surface=${TraceCommentSurface.BranchTimeline}`;
+    const query = `surface=${CommentSurface.BranchTimeline}`;
     const context = createMockRouteContext({
       id: BRANCH_ID,
       commentId: COMMENT_ID,
@@ -180,15 +179,24 @@ describe("Branch mutation surface", () => {
     );
 
     const expected = expect.objectContaining({
-      surface: TraceCommentSurface.BranchTimeline,
+      surface: CommentSurface.BranchTimeline,
     });
-    expect(traceCommentsService.update).toHaveBeenCalledWith(expected);
-    expect(traceCommentsService.reply).toHaveBeenCalledWith(expected);
-    expect(traceCommentsService.delete).toHaveBeenCalledWith(expected);
+    expect(traceCommentsService.update).toHaveBeenCalledWith(
+      expected,
+      undefined
+    );
+    expect(traceCommentsService.reply).toHaveBeenCalledWith(
+      expected,
+      undefined
+    );
+    expect(traceCommentsService.delete).toHaveBeenCalledWith(
+      expected,
+      undefined
+    );
   });
 
   it("rejects invalid Branch mutation surfaces before service calls", async () => {
-    const query = `surface=${TraceCommentSurface.SessionDetail}`;
+    const query = `surface=${CommentSurface.SessionDetail}`;
     const context = createMockRouteContext({
       id: BRANCH_ID,
       commentId: COMMENT_ID,
@@ -213,6 +221,42 @@ describe("Branch mutation surface", () => {
       deleteHandler(
         createMockRequest({
           url: `http://localhost/branches/${BRANCH_ID}/trace-comments/${COMMENT_ID}?${query}`,
+          method: "DELETE",
+        }),
+        context
+      ),
+    ]);
+
+    expect(responses.map(({ status }) => status)).toEqual([400, 400, 400]);
+    expect(traceCommentsService.update).not.toHaveBeenCalled();
+    expect(traceCommentsService.reply).not.toHaveBeenCalled();
+    expect(traceCommentsService.delete).not.toHaveBeenCalled();
+  });
+
+  // ISS-11190: the non-UUID commentId 404 must not outrank the surface 400.
+  it("rejects an invalid surface before a malformed commentId", async () => {
+    const query = `surface=${CommentSurface.SessionDetail}`;
+    const context = createMockRouteContext({ id: BRANCH_ID, commentId: "x" });
+    const responses = await Promise.all([
+      patchHandler(
+        createMockRequest({
+          url: `http://localhost/branches/${BRANCH_ID}/trace-comments/x?${query}`,
+          method: "PATCH",
+          body: { body: "edited" },
+        }),
+        context
+      ),
+      replyHandler(
+        createMockRequest({
+          url: `http://localhost/branches/${BRANCH_ID}/trace-comments/x/replies?${query}`,
+          method: "POST",
+          body: { body: "reply" },
+        }),
+        context
+      ),
+      deleteHandler(
+        createMockRequest({
+          url: `http://localhost/branches/${BRANCH_ID}/trace-comments/x?${query}`,
           method: "DELETE",
         }),
         context
@@ -258,14 +302,12 @@ describe("getComputeTargetId", () => {
 
 describe("PATCH handler error-status mapping", () => {
   // Branch target keeps access open so the test isolates result-status mapping.
-  const handler = createTraceCommentsPatchHandler(
-    TraceCommentTargetType.Branch
-  );
+  const handler = createTraceCommentsPatchHandler(CommentTargetType.Branch);
 
   function invokePatch() {
     return handler(
       createMockRequest({
-        url: "http://localhost:3002/api/branches/branch-1/trace-comments/comment-1",
+        url: `http://localhost:3002/api/branches/branch-1/trace-comments/${COMMENT_ID}`,
         method: "PATCH",
         body: { body: "edited" },
       }),
@@ -299,14 +341,12 @@ describe("PATCH handler error-status mapping", () => {
 });
 
 describe("reply POST handler error-status mapping", () => {
-  const handler = createTraceCommentsReplyPostHandler(
-    TraceCommentTargetType.Branch
-  );
+  const handler = createTraceCommentsReplyPostHandler(CommentTargetType.Branch);
 
   function invokeReply() {
     return handler(
       createMockRequest({
-        url: "http://localhost:3002/api/branches/branch-1/trace-comments/comment-1/replies",
+        url: `http://localhost:3002/api/branches/branch-1/trace-comments/${COMMENT_ID}/replies`,
         method: "POST",
         body: { body: "a reply" },
       }),
@@ -340,14 +380,12 @@ describe("reply POST handler error-status mapping", () => {
 });
 
 describe("DELETE handler error-status mapping", () => {
-  const handler = createTraceCommentsDeleteHandler(
-    TraceCommentTargetType.Branch
-  );
+  const handler = createTraceCommentsDeleteHandler(CommentTargetType.Branch);
 
   function invokeDelete() {
     return handler(
       createMockRequest({
-        url: "http://localhost:3002/api/branches/branch-1/trace-comments/comment-1",
+        url: `http://localhost:3002/api/branches/branch-1/trace-comments/${COMMENT_ID}`,
         method: "DELETE",
       }),
       createMockRouteContext({ id: BRANCH_ID, commentId: COMMENT_ID })
@@ -376,5 +414,103 @@ describe("DELETE handler error-status mapping", () => {
       value: { deleted: true },
     });
     expect((await invokeDelete()).status).toBe(200);
+  });
+});
+
+// ISS-11190: `comment.id` is `@db.Uuid`, and Postgres raises on a non-UUID
+// there, so a malformed path segment reached the service and answered 500.
+describe("a non-UUID commentId answers 404 before the service runs", () => {
+  const malformedContext = () =>
+    createMockRouteContext({ id: BRANCH_ID, commentId: "x" });
+
+  it("PATCH", async () => {
+    const response = await createTraceCommentsPatchHandler(
+      CommentTargetType.Branch
+    )(
+      createMockRequest({
+        url: "http://localhost:3002/api/branches/branch-1/trace-comments/x",
+        method: "PATCH",
+        body: { body: "edited" },
+      }),
+      malformedContext()
+    );
+
+    expect(response.status).toBe(404);
+    expect(traceCommentsService.update).not.toHaveBeenCalled();
+  });
+
+  it("reply POST", async () => {
+    const response = await createTraceCommentsReplyPostHandler(
+      CommentTargetType.Branch
+    )(
+      createMockRequest({
+        url: "http://localhost:3002/api/branches/branch-1/trace-comments/x/replies",
+        method: "POST",
+        body: { body: "a reply" },
+      }),
+      malformedContext()
+    );
+
+    expect(response.status).toBe(404);
+    expect(traceCommentsService.reply).not.toHaveBeenCalled();
+  });
+
+  it("DELETE", async () => {
+    const response = await createTraceCommentsDeleteHandler(
+      CommentTargetType.Branch
+    )(
+      createMockRequest({
+        url: "http://localhost:3002/api/branches/branch-1/trace-comments/x",
+        method: "DELETE",
+      }),
+      malformedContext()
+    );
+
+    expect(response.status).toBe(404);
+    expect(traceCommentsService.delete).not.toHaveBeenCalled();
+  });
+});
+
+// ISS-11449 retired the org session-sync policy, which used to gate every
+// Session-targeted mutation on this route (create / update / reply) ahead of
+// everything else. These two cases are what survived
+// `route-handlers.sync-policy.test.ts`: a Session mutation now reaches the
+// service with nothing in front of it, and the ISS-11190 malformed-commentId 404
+// that the gate used to outrank is now the first answer a Session PATCH gives.
+describe("a Session-targeted mutation has no gate in front of it", () => {
+  const SESSION_ID = "session-1";
+
+  it("POST reaches the service and answers 200", async () => {
+    vi.mocked(traceCommentsService.create).mockResolvedValue(sampleComment);
+
+    const response = await createTraceCommentsPostHandler(
+      CommentTargetType.Session
+    )(
+      createMockRequest({
+        url: "http://localhost:3002/api/agent-sessions/session-1/trace-comments",
+        method: "POST",
+        body: { anchor: traceAnchor, body: "hello" },
+      }),
+      createMockRouteContext({ id: SESSION_ID })
+    );
+
+    expect(response.status).toBe(200);
+    expect(traceCommentsService.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("PATCH answers 404 for a malformed commentId, never a 403", async () => {
+    const response = await createTraceCommentsPatchHandler(
+      CommentTargetType.Session
+    )(
+      createMockRequest({
+        url: "http://localhost:3002/api/agent-sessions/session-1/trace-comments/x",
+        method: "PATCH",
+        body: { body: "edited" },
+      }),
+      createMockRouteContext({ id: SESSION_ID, commentId: "x" })
+    );
+
+    expect(response.status).toBe(404);
+    expect(traceCommentsService.update).not.toHaveBeenCalled();
   });
 });

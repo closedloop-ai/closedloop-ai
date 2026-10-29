@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { beforeEach, describe, test } from "node:test";
-import { type Mock, vi } from "vitest";
+import { beforeEach, describe, type Mock, test, vi } from "vitest";
 import type { DesktopUpdateDiagnostics } from "../src/main/telemetry/telemetry-protocol.js";
 import {
   createInitialPackagedUpdateState,

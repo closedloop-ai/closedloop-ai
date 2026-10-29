@@ -8,9 +8,10 @@
  * Uses a minimal fake store/executor scoped to the force-archive entrypoint.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type { TranscriptFailureInput } from "../src/main/database/transcript-sync-settle.js";
 import type { TranscriptSyncStore } from "../src/main/database/transcript-sync-store.js";
+import { TranscriptSyncClientError } from "../src/main/transcript/desktop-transcripts-client.js";
 import {
   type TranscriptSyncExecutor,
   type TranscriptSyncFileOptions,
@@ -30,6 +31,8 @@ import { fakeExecutor } from "./helpers/transcript-sync-fixtures.js";
 const NOW = "2026-07-09T00:00:00.000Z";
 const SESSION = "sess";
 const FILE_KEY = "main";
+/** Mirrors the production bound this suite must keep finite. */
+const FORCE_SYNC_MAX_WINDOWS = 8;
 
 function fingerprint(
   overrides: Partial<TranscriptFingerprint> = {}
@@ -52,6 +55,7 @@ function fingerprint(
     missingSourceCount: 0,
     nextAttemptAt: null,
     lastError: null,
+    laneStalledSince: null,
     ...overrides,
   };
 }
@@ -96,15 +100,19 @@ function forceFakeStore(): ForceFakeStore {
     listReady: () => Promise.resolve([]),
     observe: (input: unknown) =>
       Promise.resolve(fingerprint(input as Partial<TranscriptFingerprint>)),
-    markUploading: () => Promise.resolve(),
+    markUploading: () => Promise.resolve(true),
     markIdle: () => Promise.resolve(),
     markDead: () => Promise.resolve(),
     recordUploaded: () => Promise.resolve(),
-    requeueStale: () => Promise.resolve(0),
+    requeueExpiredUploadLeases: () => Promise.resolve(0),
     requeueRevoked: (externalSessionId: string, fileKey: string) => {
       store.revokedRequeues.push(`${externalSessionId}:${fileKey}`);
       return Promise.resolve(1);
     },
+    // ISS-9884: the lane-recovery slice every drain consults — a healthy lane.
+    loadLaneGiveUp: () => Promise.resolve(null),
+    recordLaneGiveUp: () => Promise.resolve(),
+    reviveEnvironmentUnavailableDeadLetters: () => Promise.resolve(0),
   };
   return store as unknown as ForceFakeStore;
 }
@@ -212,6 +220,64 @@ test("FEA-3489: forceSyncOversized continues bypass windows until caught up (par
   // Both windows ran under the cap bypass — the partial first window was NOT left
   // for the non-bypass drain to dead-letter.
   assert.deepEqual(bypassSeen, [true, true]);
+});
+
+test("ISS-8138: forceSyncOversized hands off after exactly eight incomplete windows", async () => {
+  const store = forceFakeStore();
+  store.reviveCount = 1;
+  store.fingerprints.set(
+    `${SESSION}:${FILE_KEY}`,
+    fingerprint({ status: "queued" })
+  );
+  let calls = 0;
+  const executor = forceFakeExecutor(() => {
+    calls += 1;
+    return Promise.resolve({ kind: "uploaded" as const, caughtUp: false });
+  });
+  const { service } = makeForceService({ store, executor });
+
+  const result = await service.forceSyncOversized(SESSION, FILE_KEY);
+
+  assert.deepEqual(result, { kind: "uploaded", caughtUp: false });
+  assert.equal(calls, FORCE_SYNC_MAX_WINDOWS);
+});
+
+test("ISS-8138: forceSyncOversized reports notFound when the revived row vanishes before re-read", async () => {
+  const store = forceFakeStore();
+  store.reviveCount = 1;
+  let calls = 0;
+  const executor = forceFakeExecutor(() => {
+    calls += 1;
+    return Promise.resolve({ kind: "noop" as const });
+  });
+  const { service } = makeForceService({ store, executor });
+
+  const result = await service.forceSyncOversized(SESSION, FILE_KEY);
+
+  assert.deepEqual(result, { kind: "notFound" });
+  assert.equal(calls, 0, "a vanished row must never reach the executor");
+});
+
+test("ISS-8138: forceSyncOversized hands off when the row vanishes after one window", async () => {
+  const store = forceFakeStore();
+  store.reviveCount = 1;
+  const row = fingerprint({ status: "queued" });
+  let reads = 0;
+  store.get = () => {
+    reads += 1;
+    return Promise.resolve(reads === 1 ? row : null);
+  };
+  let calls = 0;
+  const executor = forceFakeExecutor(() => {
+    calls += 1;
+    return Promise.resolve({ kind: "uploaded" as const, caughtUp: false });
+  });
+  const { service } = makeForceService({ store, executor });
+
+  const result = await service.forceSyncOversized(SESSION, FILE_KEY);
+
+  assert.deepEqual(result, { kind: "uploaded", caughtUp: false });
+  assert.equal(calls, 1, "the vanished row must not loop on a stale snapshot");
 });
 
 test("FEA-3489: forceSyncOversized reports notFound when there is no dead row", async () => {
@@ -402,4 +468,48 @@ test("FEA-3489: a forced upload failure is retryable and records a backoff (not 
   // Retryable: distinct from the size-cap permanent state — not dead-lettered.
   assert.equal(store.failures[0].dead, false);
   assert.ok(store.failures[0].nextAttemptAt !== null);
+});
+
+// ISS-8608: `recordFailure` has TWO entry points — the automatic drain
+// (`label: "failed"`, covered in `transcript-lane-wide-failure.test.ts`) and
+// this user-initiated force-archive (`label: "force-sync"`). The label itself
+// only reaches the log line, so a classification bug would not hide here; what
+// this pins is that the ENTRY POINT does not change the verdict. It earns a case
+// because the difference is user-perceivable: the case above shows a forced
+// failure climbing the row ladder, and an expired presign must instead leave the
+// budget alone and pace on the lane-stall schedule — so a user who clicks retry
+// on a transcript whose presign expired does not spend one of its five lives.
+test("ISS-8608: a forced sync classifies an expired presign like the drain does — no budget spent", async () => {
+  const store = forceFakeStore();
+  store.reviveCount = 1;
+  store.fingerprints.set(
+    `${SESSION}:${FILE_KEY}`,
+    fingerprint({ status: "queued", retryCount: 1 })
+  );
+  const executor = forceFakeExecutor(() => {
+    throw new TranscriptSyncClientError(
+      "transcript fullPut returned HTTP 403",
+      403,
+      undefined,
+      undefined,
+      { errorCode: "ExpiredToken" }
+    );
+  });
+  const { service } = makeForceService({ store, executor });
+
+  const result = await service.forceSyncOversized(SESSION, FILE_KEY);
+
+  assert.equal(result.kind, "failed");
+  assert.equal(store.failures.length, 1);
+  assert.equal(
+    store.failures[0].retryCount,
+    1,
+    "the counter is FROZEN at its prior value — the sibling case above climbs to 2 on a row-attributable failure, which is what makes this an assertion about the class and not about forcing"
+  );
+  assert.equal(
+    store.failures[0].laneStalledSince,
+    NOW,
+    "and the wall clock opens, so the terminal path stays reachable"
+  );
+  assert.equal(store.failures[0].dead, false);
 });

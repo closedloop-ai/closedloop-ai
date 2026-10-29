@@ -54,10 +54,12 @@ vi.mock("@repo/database", () => ({
 
 // --- Imports (after mocks) ---
 
+import { DesktopCommandStatus } from "@repo/api/src/types/compute-target";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { emitCommandLifecycleEvent } from "@repo/observability/telemetry/emitter";
 import { emitQueueMetric } from "@repo/observability/telemetry/metrics";
-import { TelemetryCategory } from "@repo/observability/telemetry/schema";
+import { TelemetryCategory } from "@repo/observability/telemetry/telemetry-category";
+import { TERMINAL_DESKTOP_COMMAND_STATUSES } from "@/lib/desktop-command-mappers";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 
 // ---------------------------------------------------------------------------
@@ -70,6 +72,14 @@ const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
 const COMMAND_ID = "cmd-ack-test-1";
 const COMPUTE_TARGET_ID = "target-ack-1";
 const OPERATION_ID = "op-ack-1";
+/**
+ * The queue entry these rows carry.
+ *
+ * ISS-9630 stamps the ack with the entry it answers rather than with wall-clock
+ * now, so a fixture without this would exercise only the null-`queuedAt`
+ * fallback and the assertions below could not name the instant they expect.
+ */
+const QUEUED_AT = new Date("2026-09-11T11:00:00.000Z");
 
 function makeCommandRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -84,6 +94,8 @@ function makeCommandRow(overrides: Partial<Record<string, unknown>> = {}) {
     },
     error: null,
     createdAt: new Date(Date.now() - 100),
+    queuedAt: QUEUED_AT,
+    ackedAt: null,
     startedAt: null,
     finishedAt: null,
     lastSequenceAcked: 0,
@@ -269,7 +281,63 @@ describe("acknowledgeCommand — lifecycle emitter throws", () => {
       makeContext()
     );
 
-    expect(mockUpdateMany).toHaveBeenCalled();
+    expect(mockUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: COMMAND_ID,
+        computeTargetId: COMPUTE_TARGET_ID,
+        status: DesktopCommandStatus.Queued,
+        // The freshness guard: this ack may only move a record no newer
+        // delivery's ack has already written. Its behaviour is pinned in
+        // `desktop-command-acked-at.test.ts`; it appears here because this case
+        // asserts the WHOLE call, so an omission would read as a silent drop.
+        OR: [{ ackedAt: null }, { ackedAt: { lt: QUEUED_AT } }],
+      },
+      // ISS-9630 added the ack timestamp to this write — the queue entry being
+      // answered, not the wall clock, which is why it is `QUEUED_AT` and not a
+      // frozen-now. The race that makes the difference load-bearing is covered
+      // in `desktop-command-acked-at.test.ts`; what this case owes is that the
+      // write still happens when the emitter throws.
+      data: {
+        status: DesktopCommandStatus.Accepted,
+        ackedAt: QUEUED_AT,
+      },
+    });
+  });
+
+  it("uses notIn guard for a non-Queued non-terminal row", async () => {
+    // command.status is already "accepted" (not "queued"), so the acceptance
+    // branch's `data = { status: Accepted }` shortcut does not apply — the
+    // production code falls through to the status-less branch and guards with
+    // `notIn`. Since ISS-9630 that branch is no longer empty: it records the
+    // ack timestamp, which is the whole point of the column.
+    mockFindFirst = vi
+      .fn()
+      .mockResolvedValue(
+        makeCommandRow({ status: DesktopCommandStatus.Accepted })
+      );
+    mockUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+
+    await desktopCommandStore.acknowledgeCommand(
+      COMMAND_ID,
+      true,
+      undefined,
+      COMPUTE_TARGET_ID,
+      makeContext()
+    );
+
+    expect(mockUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: COMMAND_ID,
+        computeTargetId: COMPUTE_TARGET_ID,
+        status: { notIn: TERMINAL_DESKTOP_COMMAND_STATUSES },
+        OR: [{ ackedAt: null }, { ackedAt: { lt: QUEUED_AT } }],
+      },
+      // ISS-9630: this write used to be empty. It now carries the ack
+      // timestamp and nothing else — an ack for an already-running command
+      // must still not move `status`, which is what the absence of a `status`
+      // key here pins.
+      data: { ackedAt: QUEUED_AT },
+    });
   });
 });
 

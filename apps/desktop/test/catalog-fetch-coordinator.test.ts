@@ -1,7 +1,7 @@
 /**
  * @file catalog-fetch-coordinator.test.ts
  * @description ISS-5274 — the main-process orchestration of the catalog fetch,
- * whose ~20 gh/HTTPS calls used to run inside the db-host (13.4s measured
+ * whose ~20 HTTPS calls used to run inside the db-host (13.4s measured
  * against a 100ms op budget).
  *
  * The load-bearing property is the FALLBACK BOUNDARY: a failure before apply
@@ -12,16 +12,14 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { createCatalogFetchCoordinator } from "../src/main/packs/catalog-fetch-coordinator.js";
+import { GitHubJsonFetchStatus } from "../src/main/packs/catalog-github-client.js";
+import { deferred } from "./deferred.js";
 
 type Call = { name: string; args: unknown[] };
 
-function harness(options: {
-  rows?: unknown;
-  failOn?: string;
-  ghAvailable?: boolean;
-}) {
+function harness(options: { rows?: unknown; failOn?: string }) {
   const calls: Call[] = [];
   const coordinator = createCatalogFetchCoordinator({
     rawStoreOp: (name, args = []) => {
@@ -34,7 +32,6 @@ function harness(options: {
       }
       return Promise.resolve(undefined);
     },
-    resolveGhAvailable: () => Promise.resolve(options.ghAvailable ?? false),
     log: () => {},
   });
   return { calls, coordinator };
@@ -71,14 +68,18 @@ test("an apply failure does NOT fall back", async () => {
   await coordinator.run();
 
   // The network half already succeeded. Re-running it inside the db-host to
-  // retry a write would repeat ~20 gh/HTTPS calls there and risk double-applying
+  // retry a write would repeat ~20 HTTPS calls there and risk double-applying
   // over the rows the failed apply may already have written.
   assert.ok(!calls.some((c) => c.name === "catalog.fetch.run"));
 });
 
 test("concurrent triggers coalesce to one fetch plus one trailing rerun", async () => {
   const calls: Call[] = [];
-  let releaseFirst: (() => void) | null = null;
+  // This test owns the mock, so the read entering the coordinator IS the
+  // completion signal: hand the release function out through a deferred rather
+  // than waiting for `releaseFirst` to become observable (desktop AGENTS.md
+  // FEA-2399 — a bounded poll is only for a subject that emits no signal).
+  const firstFetchInFlight = deferred<() => void>();
   let readCount = 0;
   const coordinator = createCatalogFetchCoordinator({
     rawStoreOp: (name, args = []) => {
@@ -87,13 +88,12 @@ test("concurrent triggers coalesce to one fetch plus one trailing rerun", async 
         readCount += 1;
         if (readCount === 1) {
           return new Promise((resolve) => {
-            releaseFirst = () => resolve([]);
+            firstFetchInFlight.resolve(() => resolve([]));
           });
         }
       }
       return Promise.resolve([]);
     },
-    resolveGhAvailable: () => Promise.resolve(false),
     log: () => {},
   });
 
@@ -102,9 +102,8 @@ test("concurrent triggers coalesce to one fetch plus one trailing rerun", async 
   const first = coordinator.run();
   const second = coordinator.run();
   const third = coordinator.run();
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.ok(releaseFirst, "the first fetch should be in flight");
-  (releaseFirst as unknown as () => void)();
+  const releaseFirst = await firstFetchInFlight.promise;
+  releaseFirst();
   await Promise.all([first, second, third]);
 
   assert.equal(
@@ -126,7 +125,7 @@ test("stop() refuses further runs", async () => {
 test("stop() mid-collect halts the remaining network work instead of marching through every row", async () => {
   const fetched: string[] = [];
   const calls: Call[] = [];
-  let releaseFirst: (() => void) | null = null;
+  const firstRowFetchInFlight = deferred<() => void>();
   const rows = Array.from({ length: 5 }, (_v, i) => ({
     packId: `p${i}`,
     githubUrl: `https://github.com/o/r${i}`,
@@ -137,7 +136,6 @@ test("stop() mid-collect halts the remaining network work instead of marching th
       calls.push({ name, args });
       return Promise.resolve(name === "catalog.fetch.rows" ? rows : undefined);
     },
-    resolveGhAvailable: () => Promise.resolve(false),
     log: () => {},
     transport: {
       fetchPluginManifest: () => Promise.resolve(null),
@@ -145,24 +143,27 @@ test("stop() mid-collect halts the remaining network work instead of marching th
         fetched.push(repo);
         if (fetched.length === 1) {
           return new Promise((resolve) => {
-            releaseFirst = () =>
-              resolve({ repo: { stargazers_count: 1 }, release: null });
+            firstRowFetchInFlight.resolve(() =>
+              resolve({
+                status: GitHubJsonFetchStatus.Success,
+                value: { repo: { stargazers_count: 1 }, release: null },
+              })
+            );
           });
         }
         return Promise.resolve({
-          repo: { stargazers_count: 1 },
-          release: null,
+          status: GitHubJsonFetchStatus.Success,
+          value: { repo: { stargazers_count: 1 }, release: null },
         });
       },
     },
   });
 
   const run = coordinator.run();
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.ok(releaseFirst, "the first row's fetch should be in flight");
+  const releaseFirst = await firstRowFetchInFlight.promise;
   // The user quit while row 0 was in flight.
   coordinator.stop();
-  (releaseFirst as unknown as () => void)();
+  releaseFirst();
   await run;
 
   // Before this guard, teardown kept launching the remaining rows — up to two
@@ -172,16 +173,4 @@ test("stop() mid-collect halts the remaining network work instead of marching th
     !calls.some((c) => c.name === "catalog.fetch.apply"),
     "a stopped run must not write into a closing db-host"
   );
-});
-
-test("the collected plan carries the injected gh availability", async () => {
-  const { calls, coordinator } = harness({ rows: [], ghAvailable: true });
-
-  await coordinator.run();
-
-  const apply = calls.find((c) => c.name === "catalog.fetch.apply");
-  const plan = apply?.args[0] as { usedGhCli: boolean };
-  // Proves the injected resolver is what decides transport — not a second,
-  // synchronous resolution happening inside the fetcher on the main thread.
-  assert.equal(plan.usedGhCli, true);
 });

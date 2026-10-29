@@ -43,27 +43,35 @@ export const SESSION_TRACE_SOURCE_LIMITS = {
   throttleSources: 100,
   correctionSources: 100,
   markers: 500,
-  // Per-marker `label` cap. Mirrors the cloud's `sessionMarkerSchema.label`
-  // `.max()` — an over-long label fails zod (`session_invalid`) and rejects the
-  // whole sync batch, so the desktop must clamp at build time (FEA-2986).
+  // Per-marker `label` cap, applied by the PRODUCER at build time (FEA-2986)
+  // and, since ISS-8051 review, mirrored cloud-side as a TRUNCATION rather than
+  // the `.max()` reject ISS-8051 removed. So the desktop is no longer dodging a
+  // rejection, but the cloud does still bound the stored label — drop this
+  // clamp and the desktop simply holds text the cloud stores shorter.
+  // `aggregatePayloadBytes` below does NOT cover markers (it is computed over
+  // `tracePhaseSources` / `throttleSources` / `correctionSources` only), and the
+  // cloud's `markers` array cap bounds the COUNT, not each label.
   markerLabel: 300,
   sourceText: 300,
   aggregatePayloadBytes: 64_000,
 } as const;
 
 /**
- * Clamp a session-marker `label` to the cloud's `sessionMarkerSchema.label`
- * cap. Marker labels are sourced from free text (tool names, summaries, commit
- * and PR titles) that can exceed the cap; an unclamped label fails cloud zod
- * validation and — because the batch is parsed as one unit — drops up to 200
- * sessions (FEA-2986). Mirrors `sourceTextFromMetadata`'s slice on trace
- * sources; both are bounded by `SESSION_TRACE_SOURCE_LIMITS`.
+ * Clamp a session-marker `label` to {@link SESSION_TRACE_SOURCE_LIMITS}. Marker
+ * labels are sourced from free text (tool names, summaries, commit and PR
+ * titles) with no upstream bound (FEA-2986). Mirrors `sourceTextFromMetadata`'s
+ * slice on trace sources; both are bounded by the same limits object.
  *
- * `.trim()` first because the cloud schema is `z.string().trim().min(1).max()`
- * — zod trims before measuring length, so slicing raw text could ship 300
- * leading-whitespace chars that the cloud trims down (or to empty), disagreeing
- * with this clamp. Trimming here keeps the desktop's length accounting
- * identical to the cloud's.
+ * ISS-8051 removed the cloud's mirroring `.max()`, so an unclamped label no
+ * longer fails cloud zod and no longer drops up to 200 sessions. Review of that
+ * change then restored a cloud-side bound in the shape that does not reject:
+ * `truncatedMarkerLabelSchema` TRUNCATES to this same limit. So the two sides
+ * agree again, and this clamp is what keeps them agreeing — send an unclamped
+ * label and the desktop would hold text the cloud silently stores shorter.
+ *
+ * `.trim()` first because the cloud schema still trims before it measures, so
+ * slicing raw text could ship 300 leading-whitespace chars the cloud then trims
+ * down (or to empty), disagreeing with this clamp.
  */
 export function clampMarkerLabel(label: string): string {
   return label.trim().slice(0, SESSION_TRACE_SOURCE_LIMITS.markerLabel);
@@ -160,6 +168,11 @@ type TracePresentationInput = {
   correctionSources?: readonly SessionTraceCorrectionSource[] | null;
   // FEA-2870: forwarded to the autonomy deriver so a headless session scores 100.
   headless?: boolean;
+  /** Pre-folded result for callers consuming the same canonical formula as a stream. */
+  autonomyResult?: {
+    autonomy: number | null;
+    steeringEpisodes: number | null;
+  };
 };
 
 /**
@@ -175,14 +188,16 @@ export function deriveSessionTracePresentation(input: TracePresentationInput): {
   throttles: SessionThrottle[];
   correctionMarkers: SessionMarker[];
 } {
-  const autonomy = deriveAutonomyAndSteering({
-    promptTimestamps: input.promptTimestamps,
-    agentActivityTimestamps: input.agentActivityTimestamps,
-    headless: input.headless,
-    // FEA-3781: an un-ended session is still in flight, so an unmeasurable score
-    // stays unknown rather than reading as a hard 0 mid-turn.
-    sessionEnded: input.endedAt != null,
-  });
+  const autonomy =
+    input.autonomyResult ??
+    deriveAutonomyAndSteering({
+      promptTimestamps: input.promptTimestamps,
+      agentActivityTimestamps: input.agentActivityTimestamps,
+      headless: input.headless,
+      // FEA-3781: an un-ended session is still in flight, so an unmeasurable score
+      // stays unknown rather than reading as a hard 0 mid-turn.
+      sessionEnded: input.endedAt != null,
+    });
   const phases = derivePhases(input.phaseSources ?? []);
   return {
     ...autonomy,

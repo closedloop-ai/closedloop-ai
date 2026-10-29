@@ -1,8 +1,8 @@
 import {
+  CommentSurface,
+  CommentTargetType,
   ThreadStatus,
   TraceCommentKind,
-  TraceCommentSurface,
-  TraceCommentTargetType,
 } from "@repo/api/src/types/comment";
 import { ApproverRole, type User } from "@repo/api/src/types/user";
 import type { Decorator, Meta, StoryObj } from "@storybook/react";
@@ -80,9 +80,9 @@ const NO_USERS_PARAMETERS = {
 };
 
 const meta = {
-  title: "App Core/Agents/Trace Comments Rail",
+  title: "Composites v1.0/Agents/Detail/Trace Comments Rail",
   component: TraceCommentsRail,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   decorators: [detailShellDecorator],
   args: {
@@ -445,8 +445,8 @@ function makeComment({
     resolvedById: null,
     resolvedByName: null,
     status: ThreadStatus.Open,
-    surface: TraceCommentSurface.SessionDetail,
-    target: { id: "session-detail-1", type: TraceCommentTargetType.Session },
+    surface: CommentSurface.SessionDetail,
+    target: { id: "session-detail-1", type: CommentTargetType.Session },
     threadId: `thread-${id}`,
     updatedAt: createdAt,
   };

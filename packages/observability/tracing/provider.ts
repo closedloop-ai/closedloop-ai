@@ -39,6 +39,7 @@ import {
 import { resetSpanFlushHook, setSpanFlushHook } from "./hooks";
 import { RemoteParentEntropySampler } from "./remote-parent-sampler";
 import { RouteResourceSpanProcessor } from "./route-resource-processor";
+import { SessionMeshSpanProcessor } from "./session-mesh-span-processor";
 
 /** Datadog's OTLP intake authenticates with this header, not a bearer token. */
 const DATADOG_API_KEY_HEADER = "dd-api-key";
@@ -89,7 +90,44 @@ export function initTracing(): TracingConfig {
       // issues queries through, so patching the module here is what produces
       // per-query child spans WITHOUT `packages/database` gaining an
       // observability dependency it deliberately does not carry.
-      instrumentations: [new PgInstrumentation()],
+      instrumentations: [
+        new PgInstrumentation({
+          // ISS-8278: `pg-pool.connect` fires on every pool checkout, warm hits
+          // included, and was 28.0% of all prod spans over 2026-09-01..02 while
+          // being indexed essentially never. Acquisition wait already has a
+          // purpose-built channel in `@repo/database`'s pool telemetry
+          // (FEA-3300) that times every acquisition and deliberately stays
+          // silent on exactly the warm hits these spans report.
+          //
+          // The flag is not pool-only, and the difference is worth stating: it
+          // also drops `pg.connect`, the real TCP/TLS/IAM handshake (22,348
+          // spans in that window against 6.3M pool ones, so ~0.1% of the
+          // saving and the half with diagnostic value —
+          // `apps/api/lib/agent-session-attribution-read.ts` cites 4 of them
+          // for 2,631 ms as the evidence behind its read shape). Re-derivable
+          // rather than lost: every `db_pool_acquire_wait` sample carries
+          // `saturated`, `permitQueued` and `idle`, so one with
+          // `@saturated:false @permitQueued:false @idle:0` is a handshake,
+          // not contention (ISS-10293). It is not like-for-like — that
+          // channel floors at 10 ms, so a handshake faster than that reports
+          // nothing, which is fine for the multi-hundred-ms cases the
+          // heuristic was built on.
+          //
+          // Query SPANS are unaffected by this flag, which is load-bearing: the
+          // per-request query count ISS-8919 tracks has to stay reconstructable
+          // from them. The METRIC is a different matter and has been misread
+          // three times — `trace.postgresql.query.hits` aggregates every span
+          // this integration emits, connect ones included, so roughly a third
+          // of it disappeared when this flag reached prod (2026-09-03 21:08
+          // UTC) with no query behaviour changing. Decompose by `resource_name`
+          // and compare query spans only.
+          //
+          // Figures, the cutover's exact effect, and the baseline/denominator
+          // traps that go with it live in ONE place, so a re-measurement has
+          // one copy to update: `docs/runbooks/prod-db-load-measurement.md`.
+          ignoreConnectSpans: true,
+        }),
+      ],
       tracerProvider: provider,
     });
     provider.register();
@@ -152,7 +190,7 @@ function createTracerProvider(
 ): NodeTracerProvider {
   const exporter = new OTLPTraceExporter({
     url: config.endpoint,
-    headers: { [DATADOG_API_KEY_HEADER]: config.apiKey },
+    headers: config.apiKey ? { [DATADOG_API_KEY_HEADER]: config.apiKey } : {},
   });
 
   return new NodeTracerProvider({
@@ -183,6 +221,7 @@ function createTracerProvider(
     // sitting ahead of the exporter here is convention, not a requirement.
     spanProcessors: [
       new RouteResourceSpanProcessor(),
+      new SessionMeshSpanProcessor(),
       new BatchSpanProcessor(exporter),
     ],
   });

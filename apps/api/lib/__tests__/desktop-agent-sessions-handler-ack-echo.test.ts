@@ -59,8 +59,6 @@ describe("handleDesktopAgentSessionsEvent acceptedSessionIds echo", () => {
         { ...validPayload, wantsAcceptedSessionIds: true },
         baseContext,
         {
-          isFeatureEnabled: async () => true,
-          isOrgPolicyEnabled: async () => true,
           upsertBatch,
         }
       )
@@ -72,8 +70,6 @@ describe("handleDesktopAgentSessionsEvent acceptedSessionIds echo", () => {
         { ...validPayload, wantsAcceptedSessionIds: false },
         baseContext,
         {
-          isFeatureEnabled: async () => true,
-          isOrgPolicyEnabled: async () => true,
           upsertBatch,
         }
       )
@@ -94,8 +90,6 @@ describe("handleDesktopAgentSessionsEvent acceptedSessionIds echo", () => {
         { ...TWO_SESSION_PAYLOAD, wantsAcceptedSessionIds: true },
         baseContext,
         {
-          isFeatureEnabled: async () => true,
-          isOrgPolicyEnabled: async () => true,
           upsertBatch,
         }
       )

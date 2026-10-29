@@ -21,20 +21,15 @@
  * retries instead of disposing.
  */
 import type { SyncedAgentSession } from "../agent-sync/agent-session-sync-contract.js";
-import {
-  estimateSessionPayloadBytes,
-  sanitizeSessionForSync,
-} from "../agent-sync/agent-session-sync-payload.js";
+import { prepareAgentSessionPayload } from "../agent-sync/agent-session-sync-payload.js";
 import type { SyncedSessionLoadOptions } from "../agent-sync/agent-session-sync-source.js";
 import { resolveBillingModeForRow } from "../agent-sync/agent-session-token-cost-resolution.js";
 import { parseJsonObjectText } from "../agent-sync/agent-sync-json-text.js";
 import { EVENT_INSERT_PARAM_CAP } from "./db-constants.js";
 import { localTimeZone } from "./db-helpers.js";
 import type { SqliteSessionRow } from "./db-row-types.js";
-import type {
-  DesktopPrisma,
-  DesktopPrismaReadClient,
-} from "./prisma-client.js";
+import { priorityColumnSql } from "./priority-upload-marker.js";
+import type { DesktopPrisma, DesktopPrismaReader } from "./prisma-client.js";
 import { selectRowsByIds } from "./session-detail-mappers.js";
 import { sessionMetadataSelectExpression } from "./session-metadata-projection.js";
 
@@ -47,19 +42,23 @@ import { sessionMetadataSelectExpression } from "./session-metadata-projection.j
  * and which callers are allowed to set it.
  */
 export function selectSessionRows(
-  reader: DesktopPrismaReadClient,
+  reader: DesktopPrismaReader,
   ids: string[],
-  options?: Pick<SyncedSessionLoadOptions, "omitPreviewStrippedMetadata">
+  options?: SessionRowSelectOptions
 ): Promise<SqliteSessionRow[]> {
-  const metadataColumn = sessionMetadataSelectExpression(
-    options?.omitPreviewStrippedMetadata === true
-  );
+  const metadataColumn = options?.omitMetadata
+    ? "NULL"
+    : sessionMetadataSelectExpression(
+        options?.omitPreviewStrippedMetadata === true
+      );
   return selectRowsByIds<SqliteSessionRow>(
     reader,
     `
       SELECT
         id,
         name,
+        name_override,
+        ${priorityColumnSql(null, options?.priorityProjection)} AS priority,
         status,
         cwd,
         repo_full_name,
@@ -76,9 +75,14 @@ export function selectSessionRows(
         user_id,
         organization_id,
         cost_usd_estimated,
+        -- ISS-7229: Claude's own reported total, rolled up from the OTel capture
+        -- table. Projected here so the sync payload can carry it; NULL for a
+        -- session with no captured cost events.
+        authoritative_cost_usd,
         cost_currency,
         cost_source,
-        data_revision
+        data_revision,
+        created_at
       FROM sessions
       WHERE id IN (__IDS__)
     `,
@@ -128,14 +132,14 @@ export async function findSqliteExistingSessionIds(
  * path would also dead-letter after loading far more data. Borderline sessions
  * are omitted so they still take the exact full hydrate path.
  *
- * The measurement must mirror what the real sync path ships, so the row is
- * sanitized before it is sized: `prepareAgentSessionPayload` compacts metadata
- * (trimming `messages`, dropping `tokenSeries`) and the chunker's own
- * can't-fit test is likewise `estimateSessionPayloadBytes(sanitized base)`.
- * Sizing the *raw* row instead over-states the payload by everything compaction
- * would have removed, which dead-letters sessions that sync fine — for a
- * metadata-heavy session, raw metadata is the dominant term and compacted
- * metadata is a small fraction of it.
+ * The verdict must mirror what the real sync path ships, so it is
+ * `prepareAgentSessionPayload`'s own — it compacts metadata (trimming
+ * `messages`, dropping `tokenSeries`), degrades an oversized blob (ISS-7997),
+ * and only then reports `dead-letter`. Sizing the *raw* row instead over-states
+ * the payload by everything compaction and degradation would have removed,
+ * which dead-letters sessions that sync fine — for a metadata-heavy session,
+ * raw metadata is the dominant term and what actually ships is a small
+ * fraction of it.
  */
 export async function findSqliteLocallyOversizedSessions(
   prisma: DesktopPrisma,
@@ -146,11 +150,11 @@ export async function findSqliteLocallyOversizedSessions(
     return [];
   }
 
-  // ISS-6119: the probe's ONLY consumer is the `sanitizeSessionForSync` +
-  // `estimateSessionPayloadBytes` pair below, and the sanitize step drops every
-  // `OMITTED_METADATA_KEYS` member before the size is taken — so reading them is
-  // pure waste on the exact argument that justifies the sync drain's opt-in, and
-  // the byte estimate is unchanged either way.
+  // ISS-6119: the probe's ONLY consumer is the `prepareAgentSessionPayload`
+  // call below, whose sanitize step drops every `OMITTED_METADATA_KEYS` member
+  // before any size is taken — so reading them is pure waste on the exact
+  // argument that justifies the sync drain's opt-in, and the verdict is
+  // unchanged either way.
   const sessionRows = await prisma.read((reader) =>
     selectSessionRows(reader, ids, { omitPreviewStrippedMetadata: true })
   );
@@ -160,10 +164,30 @@ export async function findSqliteLocallyOversizedSessions(
     if (!row) {
       return [];
     }
-    const payloadBytes = estimateSessionPayloadBytes(
-      sanitizeSessionForSync(buildMinimalSyncSession(row))
+    // ISS-7997: the PRODUCER'S OWN predicate, not a byte comparison re-derived
+    // here. `prepareAgentSessionPayload` degrades an oversized `metadata` blob
+    // and ships the session, so "these bytes exceed the cap" is no longer proof
+    // of anything, and a probe still asserting it would dead-letter — before
+    // hydration, before any send — exactly the sessions the degrade rescues.
+    //
+    // ISS-7775: the preparer defaults to the narrowest policy it can emit
+    // (`MetadataContentPolicy.Omit`), a strict subset of `Retain`, so this stays
+    // a true lower bound at every data-sync level without threading the level
+    // through the db-host op boundary.
+    //
+    // ISS-9864: one term runs the other way. The minimal session carries no
+    // `tokenEvents`, so the producer derives `metadata.agentTurnTimestamps`
+    // here even for a round-trip session the real drain omits it on — up to
+    // ~40 KB the shipped payload will not carry. Verdict-neutral: the ISS-7997
+    // degrade sheds appended keys first, so an extra one can only be shed, and
+    // the probe measures the same blob the human key already inflates.
+    const prepared = prepareAgentSessionPayload(
+      buildMinimalSyncSession(row),
+      maxBytes
     );
-    return payloadBytes > maxBytes ? [{ id, payloadBytes }] : [];
+    return prepared.kind === "dead-letter"
+      ? [{ id, payloadBytes: prepared.payloadBytes }]
+      : [];
   });
 }
 
@@ -179,13 +203,53 @@ export function sqliteFlagToNullableBoolean(
   return value == null ? null : value === 1;
 }
 
+/**
+ * The scalar head of a synced session — the `sessions`-row fields that carry no
+ * relation and no coercion. Shared by the no-relations probe below and by
+ * `sync-source.ts`'s full hydration, which must project the row identically or
+ * the size estimate stops describing the payload it gates.
+ *
+ * ISS-8717: `nameOverride` is the OWNER's rename, distinct from the collector's
+ * `name`, and is emitted only when the local row holds one. The cloud reads an
+ * absent field as "this payload makes no claim about the name" and preserves a
+ * rename made on the web, so the omission is the compatibility contract rather
+ * than a size optimization.
+ *
+ * ISS-10332: `priority` is a member or `null`, as the local list serves it.
+ * The `null` never reaches the wire: `sanitizeSessionForSync` drops it, so the
+ * cloud reads "no claim", the same contract as `nameOverride`. An upload load
+ * reads a value the cloud already has as `null` (`selectSessionRows`).
+ *
+ * ISS-12251: `createdAt` is emitted only when the row holds one, never as
+ * `null`. Every load reads it, so the local reads, the sync drain and the
+ * oversize probe all carry it.
+ */
+export function toSyncedSessionHead(
+  row: SqliteSessionRow
+): Pick<
+  SyncedAgentSession,
+  | "createdAt"
+  | "externalSessionId"
+  | "name"
+  | "nameOverride"
+  | "priority"
+  | "status"
+> {
+  return {
+    externalSessionId: row.id,
+    name: row.name,
+    ...(row.name_override ? { nameOverride: row.name_override } : {}),
+    priority: row.priority,
+    status: row.status,
+    ...(row.created_at ? { createdAt: row.created_at } : {}),
+  };
+}
+
 /** The no-relations projection the payload-size probe measures. */
 function buildMinimalSyncSession(row: SqliteSessionRow): SyncedAgentSession {
   const metadata = parseJsonObjectText(row.metadata);
   return {
-    externalSessionId: row.id,
-    name: row.name,
-    status: row.status,
+    ...toSyncedSessionHead(row),
     harness: row.harness,
     billingMode: resolveBillingModeForRow(row),
     cwd: row.cwd,
@@ -205,3 +269,14 @@ function buildMinimalSyncSession(row: SqliteSessionRow): SyncedAgentSession {
     tokenUsageByModel: [],
   };
 }
+
+type SessionRowSelectOptions = Pick<
+  SyncedSessionLoadOptions,
+  "omitPreviewStrippedMetadata" | "priorityProjection"
+> & {
+  /**
+   * Return a null metadata placeholder when the caller has another exact source
+   * for every metadata-derived value it exposes.
+   */
+  omitMetadata?: boolean;
+};

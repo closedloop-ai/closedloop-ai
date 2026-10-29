@@ -43,7 +43,12 @@ import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
-import { ENTITY_TYPE_LABELS, FIELD_TYPE_LABELS } from "./constants";
+import { useFeatureFlagEnabledOptional } from "../../shared/feature-flags/use-feature-flag-enabled";
+import {
+  CREATABLE_FIELD_TYPES,
+  ENTITY_TYPE_LABELS,
+  FIELD_TYPE_LABELS,
+} from "./constants";
 import { EnumOptionBuilder } from "./enum-option-builder";
 import { NumberFormatConfig } from "./number-format-config";
 
@@ -245,7 +250,7 @@ export function CreateCustomFieldDialog({
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {Object.values(CustomFieldType).map((type) => (
+                      {CREATABLE_FIELD_TYPES.map((type) => (
                         <SelectItem key={type} value={type}>
                           {FIELD_TYPE_LABELS[type]}
                         </SelectItem>
@@ -302,15 +307,21 @@ export function CreateCustomFieldDialog({
   );
 }
 
-// ---------------------------------------------------------------------------
 // Entity type selector sub-component
-// ---------------------------------------------------------------------------
 
 function EntityTypeSelector({
   control,
 }: {
   control: ReturnType<typeof useForm<FormValues>>["control"];
 }) {
+  const sessionBranchEnabled = useFeatureFlagEnabledOptional(
+    CUSTOM_FIELD_SESSION_BRANCH_ENTITY_TYPES_FEATURE_FLAG_KEY
+  );
+  const offeredEntityTypes = Object.values(CustomFieldEntityType).filter(
+    (entityType) =>
+      sessionBranchEnabled || !GATED_ENTITY_TYPES.includes(entityType)
+  );
+
   return (
     <FormField
       control={control}
@@ -319,7 +330,7 @@ function EntityTypeSelector({
         <FormItem>
           <FormLabel>Applies to</FormLabel>
           <div className="flex flex-col gap-3">
-            {Object.values(CustomFieldEntityType).map((entityType) => {
+            {offeredEntityTypes.map((entityType) => {
               const checked = (formField.value ?? []).includes(entityType);
               const checkboxId = `entity-type-${entityType}`;
               return (
@@ -352,9 +363,7 @@ function EntityTypeSelector({
   );
 }
 
-// ---------------------------------------------------------------------------
 // Display configuration sub-component
-// ---------------------------------------------------------------------------
 
 const DISPLAY_TOGGLES = [
   {
@@ -397,9 +406,7 @@ function DisplayConfigSection({
   );
 }
 
-// ---------------------------------------------------------------------------
 // Payload builders
-// ---------------------------------------------------------------------------
 
 function buildCreatePayload(
   values: FormValues,
@@ -453,3 +460,22 @@ function buildUpdatePayload(
     isSortable: values.isSortable,
   };
 }
+
+/**
+ * ISS-7209 / ISS-4779 closed-by-default UI policy: the "Applies to" checkboxes
+ * are derived from `CustomFieldEntityType`, so adding SESSION and BRANCH to the
+ * enum would surface them here the moment the backend change lands. They stay
+ * hidden until the Sessions and Branches v2 grids that consume the columns are
+ * ready; the API accepts both regardless.
+ *
+ * Web-only gate: this dialog mounts on the `apps/app` org settings page and has
+ * no desktop analogue, so there is no Labs toggle to hold in parity.
+ */
+export const CUSTOM_FIELD_SESSION_BRANCH_ENTITY_TYPES_FEATURE_FLAG_KEY =
+  "custom-field-session-branch-entity-types" as const;
+
+/** Entity types the selector offers only when the flag above is on. */
+const GATED_ENTITY_TYPES: readonly CustomFieldEntityType[] = [
+  CustomFieldEntityType.Session,
+  CustomFieldEntityType.Branch,
+];

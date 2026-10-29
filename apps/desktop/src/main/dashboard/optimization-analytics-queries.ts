@@ -10,16 +10,19 @@
  * `ipcMain` — the real production path, not a re-implemented copy.
  *
  * ISS-4403: every usage read is CONTENT-SCOPED by an optional `fingerprint`.
- * The renderer resolves it from `AgentComponentDetail.versionId` (the FULL
- * content hash — NOT the short `fingerprint` display badge). Desktop has no
- * `DefinitionVersion` linkage, so `agent_component_session_usage.component_version_hash`
- * recorded at invocation IS that same fingerprint (both derive through
- * `resolveVersionFingerprint`, the cross-surface SSOT). When present, the reads
- * narrow to exactly that content version, so two same-name/different-content
- * components no longer share one component's optimization analytics on their
- * distinct content-hash detail pages (FEA-4335). When ABSENT (a legacy
- * name-level route, or a version-skewed renderer that omits it), the reads are
- * byte-identical to the pre-ISS-4403 name-level behavior.
+ * The renderer passes `AgentComponentDetail.analyticsFingerprint` — the
+ * canonical `computeDefinitionHash({ frontmatter: "", body: content, kind })`
+ * digest that `agent_component_session_usage.component_version_hash` is stamped
+ * with at invocation, which the detail reader recomputes from the matched row's
+ * captured content. It is deliberately NOT `versionId` and NOT the raw
+ * `agent_components.content_hash` the routable slug carries: those are digests
+ * of a different value and never agree with `component_version_hash` for the
+ * same file, so scoping by one matches no row. When present, the reads narrow to
+ * exactly that content version, so two same-name/different-content components no
+ * longer share one component's optimization analytics on their distinct
+ * content-hash detail pages (FEA-4335). When ABSENT (a legacy name-level route,
+ * or a version-skewed renderer that omits it), the reads are byte-identical to
+ * the pre-ISS-4403 name-level behavior.
  *
  * All three read local SQLite only (`agent_component_session_usage` +
  * `token_events`/`token_usage` + `claude_code_api_request`) via the clone-safe
@@ -35,6 +38,10 @@ import type {
 } from "@repo/api/src/types/agent-component";
 import { normalizeComponentKey } from "@repo/api/src/types/agent-component-analytics";
 import { localCutoffDay, localDay } from "../database/db-helpers.js";
+import {
+  allOrNothingCanonicalSortSql,
+  canonicalRankingKeySql,
+} from "../database/session-timestamp-form.js";
 import {
   rawKeyInClause,
   versionHashScopeClause,
@@ -363,14 +370,39 @@ export async function queryIsSkillLoaded(
       {
         total_invocations: bigint;
         last_used_at: string | null;
+        last_used_sort: string | null;
       }[]
     >(
+      // ISS-6815: rank on `last_used_sort`, not the raw `last_invoked_at` bytes.
+      // That column is written from `MAX(agent_component_invocations.invoked_at)`
+      // (component-invocations.ts), itself raw parser text outside the FEA-3743
+      // heal, so it carries mixed forms and byte order is only time order at a
+      // FIXED width. `last_used_at` stays the BARE column beside the single
+      // `MAX`, so the fix changes WHICH row wins, not the text form returned.
+      // The window is unpartitioned because this aggregate has no GROUP BY — its
+      // single group IS the filtered set. `canonicalRankingKeySql` rather than
+      // the bare canonicalization: the canonical GLOB is a SHAPE test, so an
+      // impossible instant would otherwise count as canonical and win the fold
+      // on its bytes.
       `SELECT
         COALESCE(SUM(invocations), 0) AS total_invocations,
-        MAX(last_invoked_at) AS last_used_at
-      FROM agent_component_session_usage
-      WHERE component_kind = 'skill'
-        AND ${usageKeyIn.clause}${versionScope.clause}`,
+        last_invoked_at AS last_used_at,
+        MAX(last_used_sort) AS last_used_sort
+      FROM (
+        SELECT
+          invocations,
+          last_invoked_at,
+          ${allOrNothingCanonicalSortSql("canonical_last_invoked_at", "last_invoked_at", "")} AS last_used_sort
+        FROM (
+          SELECT
+            invocations,
+            last_invoked_at,
+            ${canonicalRankingKeySql("last_invoked_at")} AS canonical_last_invoked_at
+          FROM agent_component_session_usage
+          WHERE component_kind = 'skill'
+            AND ${usageKeyIn.clause}${versionScope.clause}
+        )
+      )`,
       ...usageKeyIn.params,
       ...versionScope.params
     ),

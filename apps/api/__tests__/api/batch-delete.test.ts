@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AuditActorType } from "@repo/api/src/types/audit";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { documentService } from "@/app/documents/document-service";
 import type { AuthContext } from "@/lib/auth/with-auth";
@@ -11,8 +12,10 @@ import {
 let mockAuthContext: AuthContext;
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context?.params),
+  withAnyAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context?: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context?.params),
 }));
 vi.mock("@/app/documents/document-service");
 
@@ -100,7 +103,7 @@ describe("POST /documents/batch-delete", () => {
       expect(json.data.failedIds).toEqual([missingId]);
     });
 
-    it("passes organizationId from auth context to service", async () => {
+    it("passes organizationId and the authenticated actor from auth context to service", async () => {
       const ids = [randomUUID()];
       vi.mocked(documentService.batchDelete).mockResolvedValue({
         deletedIds: ids,
@@ -115,9 +118,21 @@ describe("POST /documents/batch-delete", () => {
 
       await POST(request, createMockRouteContext({}));
 
+      // The actor is what every entry the batch enqueues is attributed to, so
+      // the route dropping it would leave a whole batch of deletes unattributed
+      // (ISS-10029).
       expect(documentService.batchDelete).toHaveBeenCalledWith(
         ids,
-        mockAuthContext.user.organizationId
+        mockAuthContext.user.organizationId,
+        { actorType: AuditActorType.User, actorId: mockAuthContext.user.id },
+        // ISS-9465: the id that groups the batch's ledger entries. Minted per
+        // request, so the value is not predictable here — only that one reached
+        // the service, since a delete that reached it WITHOUT one would leave
+        // its entries ungroupable in an append-only table.
+        expect.any(String),
+        // ISS-12552: a session request records nothing, so the service gets
+        // no recorder and deletes exactly as it did before receipts.
+        undefined
       );
     });
   });

@@ -1,5 +1,6 @@
 import type { PullRequest } from "@octokit/webhooks-types";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import { GitHubActorType } from "@repo/api/src/types/github-actor";
 import {
   GitHubFetchCredentialType,
   GitHubFetchMechanism,
@@ -43,7 +44,8 @@ function payload(overrides: Partial<PullRequest> = {}): PullRequest {
         default_branch: "trunk",
       },
     },
-    user: { login: "octocat" },
+    base: { ref: "main" },
+    user: { login: "octocat", id: 123, type: GitHubActorType.User },
     ...overrides,
   } as unknown as PullRequest;
 }
@@ -65,6 +67,12 @@ describe("pullRequestToDetailUpdate (PLN-1535 M0/M1)", () => {
       mergeCommitSha: "def456",
       // M3: the PR author, for the Postgres-served PR list.
       authorLogin: "octocat",
+      authorProviderUserId: "123",
+      authorActorType: GitHubActorType.User,
+      // ISS-8155: this PR's OWN base ref. Before it was persisted the read
+      // borrowed the owning Branch's current base, so a branch retargeted for a
+      // later PR relabelled every earlier PR on it.
+      baseRefName: "main",
     });
     expect(result).not.toHaveProperty("headRefName");
     expect(result).not.toHaveProperty("headRefOid");

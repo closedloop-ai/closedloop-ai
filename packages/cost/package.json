@@ -9,7 +9,7 @@
     }
   },
   "dependencies": {
-    "@pydantic/genai-prices": "0.0.66"
+    "@pydantic/genai-prices": "0.1.9"
   },
   "scripts": {
     "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
@@ -20,11 +20,12 @@
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
+    "@repo/vitest-config": "workspace:*",
     "@stryker-mutator/core": "^9.6.1",
     "@stryker-mutator/vitest-runner": "^9.6.1",
     "@types/node": "^25.9.1",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.9"
+    "vitest": "^5.0.2"
   },
   "private": true
 }

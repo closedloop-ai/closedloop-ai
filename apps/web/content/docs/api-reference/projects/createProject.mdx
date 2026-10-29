@@ -9,9 +9,14 @@ _openapi:
     headings: []
     contents:
       - content: >-
-          Creates a new project in the authenticated organization. Only `name`
-          is required; `priority`, `status`, `assigneeId`, `slug`, `targetDate`,
-          and `teamIds` are optional. The response includes full project details
+          Creates a new project in the authenticated organization. `name` and
+          `teamIds` are required — a project must belong to at least one team,
+          because a teamless project has no URL in the web app and is invisible
+          to humans there. `priority`, `status`, `assigneeId`, `slug`, and
+          `targetDate` are optional. Omitting `teamIds` or sending an empty
+          array returns a 400 with `code` `project_team_required` and
+          `details.teams` listing this organization's teams, so a client can
+          retry with one of them. The response includes full project details
           (completion percentage, teams, custom fields). Requires the `write`
           scope.
 ---

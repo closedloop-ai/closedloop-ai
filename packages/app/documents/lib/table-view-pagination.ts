@@ -1,4 +1,10 @@
 import { ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  type OrderedSection,
+  packSectionsIntoPages,
+  type SectionPagePlan,
+  type SectionPlanPage,
+} from "@repo/api/src/types/artifact-section-paging";
 import type {
   ProjectTreeResponse,
   TreeNode,
@@ -14,13 +20,16 @@ import type { SortKey } from "@repo/app/documents/components/table/sort-keys";
 import type { DocumentRowData } from "@repo/app/documents/lib/artifact-row-adapter";
 import {
   GroupByMode,
+  type GroupByModeOptions,
   type GroupByNonNone,
   groupByMode,
 } from "@repo/app/documents/lib/group-by";
 import {
   buildFlatItems,
   buildSortedGroups,
+  DEFAULT_TABLE_VIEW_ORDERING,
   filterByCategory,
+  type TableViewOrdering,
 } from "@repo/app/documents/lib/table-view-pipeline";
 
 /**
@@ -81,11 +90,25 @@ type CountInput = {
    * composition is wrong. When `None`, the sort order alone drives membership.
    */
   groupBy: GroupByMode;
+  /**
+   * ISS-9437: the resolved sort/section order for this surface. It MUST be the
+   * same value `DocumentsView` renders with — the paginator decides page
+   * membership by running this pipeline, and the view then re-sorts each page
+   * with its own. Two orderings over one corpus drop rows and repeat others,
+   * which `table-view-pagination.test.ts`'s partition proof detects. Omitted
+   * takes today's order.
+   */
+  ordering?: TableViewOrdering;
 };
 
 type PageInput = CountInput & {
   page: number;
   pageSize: number;
+  /**
+   * Explicit membership for this page, from {@link buildTableViewPagePlan}.
+   * Absent means the page is the fixed `pageSize` slice of the ordered list.
+   */
+  pageIds?: readonly string[];
 };
 
 /**
@@ -121,9 +144,7 @@ export function pageTableView(input: PageInput): TableViewPage {
   return pageAllTab(input);
 }
 
-// ---- "All" (grouped tree) tab ----
-
-function buildAllRootIds(input: CountInput): string[] {
+function buildAllRootGroups(input: CountInput): DisplayGroup[] {
   const { groups } = buildSortedGroups({
     treeData: input.treeData ?? null,
     documents: input.documents,
@@ -131,20 +152,29 @@ function buildAllRootIds(input: CountInput): string[] {
     filterText: input.filterText,
     sortBy: input.sortBy,
     sortDir: input.sortDir,
+    ordering: orderingOf(input),
   });
+  return groups;
+}
+
+function buildAllRootIds(input: CountInput): string[] {
   // When a grouping mode is active, `DocumentsView` reorders these root groups
   // by section (via `groupByMode`), so page membership must follow the same
   // grouped order — not the flat sorted order — or a section would repeat
   // across pages (davetho, ISS-4466).
-  return orderGroupsForPaging(groups, input.groupBy).map(
-    (group) => group.groupKey
-  );
+  return orderGroupsForPaging(
+    buildAllRootGroups(input),
+    input.groupBy,
+    orderingOf(input).groupOptions
+  ).map((group) => group.groupKey);
 }
 
 function pageAllTab(input: PageInput): TableViewPage {
   const rootIds = buildAllRootIds(input);
   const total = rootIds.length;
-  const pageIds = new Set(sliceForPage(rootIds, input.page, input.pageSize));
+  const pageIds = new Set(
+    input.pageIds ?? sliceForPage(rootIds, input.page, input.pageSize)
+  );
 
   // Rebuild the paged inputs from the page's root ids. `DocumentsView` re-runs
   // `buildSortedGroups` over this subset, so it must contain exactly the tree
@@ -166,8 +196,6 @@ function pageAllTab(input: PageInput): TableViewPage {
   };
 }
 
-// ---- Flat category tabs (documents / features / plans) ----
-
 function buildCategoryFlatItems(input: CountInput): DocumentRowItem[] {
   const filtered = filterByCategory(
     input.documents,
@@ -178,16 +206,22 @@ function buildCategoryFlatItems(input: CountInput): DocumentRowItem[] {
     filtered.map(toRowItem),
     input.applyProjectFilters,
     input.sortBy,
-    input.sortDir
+    input.sortDir,
+    orderingOf(input)
   );
-  return orderFlatItemsForPaging(items, input.groupBy);
+  return orderFlatItemsForPaging(
+    items,
+    input.groupBy,
+    orderingOf(input).groupOptions
+  );
 }
 
 function pageCategoryTab(input: PageInput): TableViewPage {
   const items = buildCategoryFlatItems(input);
   const total = items.length;
   const pageIds = new Set(
-    sliceForPage(items, input.page, input.pageSize).map((i) => i.data.id)
+    input.pageIds ??
+      sliceForPage(items, input.page, input.pageSize).map((i) => i.data.id)
   );
   return {
     pagedDocuments: input.documents.filter((doc) => pageIds.has(doc.id)),
@@ -198,8 +232,8 @@ function pageCategoryTab(input: PageInput): TableViewPage {
   };
 }
 
-// ---- Branches tab (rows come from the tree, not the documents list) ----
-
+// Branch rows come from the tree, not `input.documents` — the one builder here
+// that does not read the documents list.
 function buildBranchFlatItems(input: CountInput): DocumentRowItem[] {
   const items = collectBranchRowItems(input.treeData);
   const text = input.filterText.trim().toLowerCase();
@@ -210,16 +244,22 @@ function buildBranchFlatItems(input: CountInput): DocumentRowItem[] {
     searched,
     input.applyProjectFilters,
     input.sortBy,
-    input.sortDir
+    input.sortDir,
+    orderingOf(input)
   );
-  return orderFlatItemsForPaging(flat, input.groupBy);
+  return orderFlatItemsForPaging(
+    flat,
+    input.groupBy,
+    orderingOf(input).groupOptions
+  );
 }
 
 function pageBranchesTab(input: PageInput): TableViewPage {
   const items = buildBranchFlatItems(input);
   const total = items.length;
   const pageIds = new Set(
-    sliceForPage(items, input.page, input.pageSize).map((i) => i.data.id)
+    input.pageIds ??
+      sliceForPage(items, input.page, input.pageSize).map((i) => i.data.id)
   );
   return {
     pagedDocuments: [],
@@ -227,8 +267,6 @@ function pageBranchesTab(input: PageInput): TableViewPage {
     total,
   };
 }
-
-// ---- Tree helpers ----
 
 function collectNestedDocumentIds(
   treeData: ProjectTreeResponse | null | undefined
@@ -284,10 +322,8 @@ function sliceTreeDataByRoots(
     return treeData;
   }
   const nodes = treeData.nodes.filter((node) => rootIds.has(node.root.id));
-  return withKeptExternalParents(treeData, nodes);
+  return withKeptParentLinks(treeData, nodes);
 }
-
-// ---- Generic slice / dedupe ----
 
 function sliceForPage<T>(items: T[], page: number, pageSize: number): T[] {
   const start = page * pageSize;
@@ -307,17 +343,32 @@ function dedupeById(docs: DocumentRowData[]): DocumentRowData[] {
   return out;
 }
 
-/** Keep only the external-parent entries whose child survived the slice. */
-function withKeptExternalParents(
+/**
+ * Keep only the parent-link entries whose child survived the slice — BOTH
+ * channels. `flatParents` is what a category read's promoted rows rebuild their
+ * Parent column from, and this slice is the tree the table actually renders, so
+ * dropping it here would empty that column on every paged read and undo the fix
+ * server-side (whitlockk, PR #6745). Omitted rather than emitted empty, matching the
+ * response contract.
+ */
+function withKeptParentLinks(
   treeData: ProjectTreeResponse,
   nodes: TreeNode[]
 ): ProjectTreeResponse {
   const keptRootIds = new Set(nodes.map((node) => node.root.id));
+  const flatParents = (treeData.flatParents ?? []).filter((entry) =>
+    keptRootIds.has(entry.childId)
+  );
   return {
     nodes,
     externalParents: treeData.externalParents.filter((entry) =>
       keptRootIds.has(entry.childId)
     ),
+    ...(flatParents.length > 0 && { flatParents }),
+    ...(treeData.hierarchy && {
+      hierarchy: { ...treeData.hierarchy, diagnosticsComplete: false },
+    }),
+    ...(treeData.truncation && { truncation: treeData.truncation }),
   };
 }
 
@@ -389,13 +440,12 @@ function sliceTreeDataToPagedBranches(
       }
     }
   }
-  return withKeptExternalParents(treeData, nodes);
+  return withKeptParentLinks(treeData, nodes);
 }
 
 /**
  * Reorder root display groups into the exact section order `DocumentsView`
- * renders when a grouping mode is active (`groupDisplayGroupsByMode` →
- * `flattenGroupedSections`): sections in descriptor order, each section's
+ * renders when a grouping mode is active (`groupByMode` → canonical grid bands): sections in descriptor order, each section's
  * members preserving their input (already-sorted) order. When `groupBy` is
  * `None`, the sorted order is the render order, so the input passes through
  * unchanged. Paging over this order is what makes each page a contiguous,
@@ -403,7 +453,8 @@ function sliceTreeDataToPagedBranches(
  */
 function orderGroupsForPaging(
   groups: DisplayGroup[],
-  groupBy: GroupByMode
+  groupBy: GroupByMode,
+  groupOptions: GroupByModeOptions
 ): DisplayGroup[] {
   if (groupBy === GroupByMode.None) {
     return groups;
@@ -411,7 +462,8 @@ function orderGroupsForPaging(
   const sections = groupByMode(
     groups,
     (group) => group.root,
-    groupBy as GroupByNonNone
+    groupBy as GroupByNonNone,
+    groupOptions
   );
   return sections.flatMap((section) => section.values);
 }
@@ -419,13 +471,14 @@ function orderGroupsForPaging(
 /**
  * Reorder flat row items into the section order `DocumentsView` renders for the
  * flat category/branch tabs when a grouping mode is active
- * (`groupFlatItemsByMode` → `flattenGroupedSections`). Mirrors
+ * (`groupByMode` → canonical grid bands). Mirrors
  * {@link orderGroupsForPaging} for the flat-row unit; passes through unchanged
  * when `groupBy` is `None`.
  */
 function orderFlatItemsForPaging(
   items: DocumentRowItem[],
-  groupBy: GroupByMode
+  groupBy: GroupByMode,
+  groupOptions: GroupByModeOptions
 ): DocumentRowItem[] {
   if (groupBy === GroupByMode.None) {
     return items;
@@ -433,7 +486,69 @@ function orderFlatItemsForPaging(
   const sections = groupByMode(
     items,
     (item) => item,
-    groupBy as GroupByNonNone
+    groupBy as GroupByNonNone,
+    groupOptions
   );
   return sections.flatMap((section) => section.values);
+}
+
+// ISS-10472: the packer moved to `@repo/api` so `apps/api` packs grouped pages
+// with the same arithmetic. These names stay exported because `DocumentsView`
+// and its paginator are typed against them.
+export type TableViewPlanPage = SectionPlanPage;
+export type TableViewPagePlan = SectionPagePlan;
+
+/**
+ * Build the section-aware page plan for the active tab, or `null` when the
+ * surface is UNGROUPED — an ungrouped board renders no section headers, so it
+ * has no section boundaries to respect and no population to report, and it
+ * keeps the fixed-`pageSize` slicing it has always had.
+ */
+export function buildTableViewPagePlan(
+  input: CountInput,
+  pageSize: number
+): TableViewPagePlan | null {
+  if (input.groupBy === GroupByMode.None) {
+    return null;
+  }
+  return packSectionsIntoPages(buildOrderedSections(input), pageSize);
+}
+
+/** The active tab's sections, in the order `DocumentsView` renders them. */
+function buildOrderedSections(input: CountInput): OrderedSection[] {
+  const mode = input.groupBy as GroupByNonNone;
+  const groupOptions = orderingOf(input).groupOptions;
+  if (input.filterCategory === "branches") {
+    return flatItemSections(buildBranchFlatItems(input), mode, groupOptions);
+  }
+  if (input.filterCategory !== "all") {
+    return flatItemSections(buildCategoryFlatItems(input), mode, groupOptions);
+  }
+  return groupByMode(
+    buildAllRootGroups(input),
+    (group) => group.root,
+    mode,
+    groupOptions
+  ).map((section) => ({
+    key: section.descriptor.key,
+    ids: section.values.map((group) => group.groupKey),
+  }));
+}
+
+function flatItemSections(
+  items: DocumentRowItem[],
+  mode: GroupByNonNone,
+  groupOptions: GroupByModeOptions
+): OrderedSection[] {
+  return groupByMode(items, (item) => item, mode, groupOptions).map(
+    (section) => ({
+      key: section.descriptor.key,
+      ids: section.values.map((item) => item.data.id),
+    })
+  );
+}
+
+/** This surface's resolved order, defaulting to today's. */
+function orderingOf(input: CountInput): TableViewOrdering {
+  return input.ordering ?? DEFAULT_TABLE_VIEW_ORDERING;
 }

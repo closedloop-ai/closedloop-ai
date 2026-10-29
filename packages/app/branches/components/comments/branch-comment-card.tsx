@@ -8,11 +8,7 @@ import type {
   BranchTraceCommentCollectionQuery,
   TraceCommentTarget,
 } from "@repo/api/src/types/comment";
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@repo/design-system/components/ui/avatar";
+import { SyncAbandonedNotice } from "@repo/app/shared/trace-comments/sync-abandoned-notice";
 import { Button } from "@repo/design-system/components/ui/button";
 import { CommentComposer } from "@repo/design-system/components/ui/comment-composer";
 import {
@@ -23,6 +19,7 @@ import {
   CommentThreadReplies,
   CommentThreadReplyRow,
 } from "@repo/design-system/components/ui/comment-thread";
+import { PersonAvatar } from "@repo/design-system/components/ui/person-avatar";
 import {
   CornerUpLeftIcon,
   ExternalLinkIcon,
@@ -66,6 +63,7 @@ export function BranchCommentCard({
   onDeleteThread,
   onJump,
   onOpenComposer,
+  onRetrySync,
   onSubmitComposer,
   onUpdateDraft,
   renderBody,
@@ -89,6 +87,11 @@ export function BranchCommentCard({
   ) => Promise<void> | void;
   onJump?: (anchor: BranchCommentAnchor, target: TraceCommentTarget) => void;
   onOpenComposer: (mode: BranchCommentComposerMode) => void;
+  onRetrySync?: (
+    threadId: string,
+    target: TraceCommentTarget,
+    collectionQuery?: BranchTraceCommentCollectionQuery
+  ) => Promise<void> | void;
   onSubmitComposer: (kind: BranchCommentComposerKind, body: string) => void;
   onUpdateDraft: (kind: BranchCommentComposerKind, value: string) => void;
   renderBody?: (body: string, thread: BranchCommentThread) => ReactNode;
@@ -121,9 +124,46 @@ export function BranchCommentCard({
                 </span>
               }
               metadata={
-                <span className="text-muted-foreground text-xs">
-                  {thread.createdAtLabel}
-                </span>
+                <>
+                  <span className="text-muted-foreground text-xs">
+                    {thread.createdAtLabel}
+                  </span>
+                  {/*
+                   * ISS-10383: mounted only for a comment that is actually
+                   * dead-lettered, and given the handler only when this row's
+                   * source can re-pend IT — `canRetrySync` is resolved in the
+                   * controller, where the source lives. A badge with no button is
+                   * the honest render for a row nothing can move; a button that
+                   * throws on click is not.
+                   */}
+                  {thread.syncAbandoned === true ? (
+                    <SyncAbandonedNotice
+                      commentId={thread.id}
+                      // ISS-10827: authorship, NOT `canRetrySync` — that one
+                      // also carries the source's capability, so an author on a
+                      // source that cannot re-pend would be handed the reader's
+                      // wording about their own comment. The door below conjoins
+                      // the SAME boolean, so this card cannot render "not yours
+                      // to fix" beside a control offering to fix it: the model
+                      // allows that pair even though the controller never
+                      // produces it.
+                      isAuthor={thread.canEditRoot}
+                      onRetrySync={
+                        onRetrySync &&
+                        thread.canEditRoot &&
+                        thread.canRetrySync === true
+                          ? (commentId: string) => {
+                              onRetrySync(
+                                commentId,
+                                thread.target,
+                                thread.collectionQuery
+                              );
+                            }
+                          : undefined
+                      }
+                    />
+                  ) : null}
+                </>
               }
             />
             <ProviderDetails provenance={thread.provider} />
@@ -244,13 +284,13 @@ function ProviderDetails({
       {status.length > 0 ? <p>{status.join(" · ")}</p> : null}
       {provenance.providerUrl ? (
         <a
-          aria-label={`View ${kindLabel.toLocaleLowerCase()} by @${provenance.login} on GitHub`}
+          aria-label={`View ${kindLabel.toLocaleLowerCase()} by @${provenance.login} on ${BRANCH_COMMENT_PROVIDER_NAME}`}
           className="inline-flex items-center gap-1 hover:text-foreground hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           href={provenance.providerUrl}
           rel="noreferrer"
           target="_blank"
         >
-          View on GitHub
+          View on {BRANCH_COMMENT_PROVIDER_NAME}
           <ExternalLinkIcon aria-hidden className="size-3" />
         </a>
       ) : null}
@@ -440,12 +480,13 @@ function CommentAvatar({
   compact = false,
 }: Readonly<{ author: BranchCommentAuthor; compact?: boolean }>) {
   return (
-    <Avatar className={compact ? "size-6 shrink-0" : "size-7 shrink-0"}>
-      {author.avatarUrl ? <AvatarImage alt="" src={author.avatarUrl} /> : null}
-      <AvatarFallback className="bg-primary/10 text-primary text-xs">
-        {initials(author.name)}
-      </AvatarFallback>
-    </Avatar>
+    <PersonAvatar
+      avatarUrl={author.avatarUrl}
+      className={compact ? "size-6 shrink-0" : "size-7 shrink-0"}
+      fallbackClassName="text-xs"
+      initials={initials(author.name)}
+      name={author.name}
+    />
   );
 }
 
@@ -486,3 +527,6 @@ const providerKindLabels = {
   [BranchPrCommentKind.Review]: "Review comment",
   [BranchPrCommentKind.ReviewReply]: "Review reply",
 } satisfies Record<BranchPrCommentKindType, string>;
+
+/** The provider a synchronized comment's source link opens. */
+export const BRANCH_COMMENT_PROVIDER_NAME = "GitHub";

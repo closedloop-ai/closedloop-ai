@@ -20,19 +20,58 @@ import type {
   SkillInvocation,
   SkillWithInvocations,
 } from "../../shared/agent-db-contract.js";
+import { MS_PER_DAY } from "../database/db-helpers.js";
 import type { DbHostPrisma, DesktopPrisma } from "../database/prisma-client.js";
+import { DEFAULT_SESSION_RETENTION_DAYS } from "../database/session-maintenance.js";
+import {
+  allOrNothingCanonicalSortSql,
+  allOrNothingLatestByInstant,
+  canonicalRankingKeySql,
+  ISO_DATE_PREFIX_GLOB_SQL,
+} from "../database/session-timestamp-form.js";
 
-// Every pack-store function — reads AND writes — runs on the single
-// DesktopPrisma client. Writes (upserts) use the typed delegates
+// Writes (upserts) use the typed delegates
 // (`agentPack`/`skill`/`projectPackAssociation` `.upsert`) through
 // `prisma.write` (the shared write queue, so they can't interleave with any
 // other write on the single-connection SQLite handle). Reads use typed
 // delegates wherever the query maps cleanly (`getPack`/`listSkillsForPack`/
-// `collectPackPaths` via `findMany`). The `prisma.client.$queryRawUnsafe`
-// escape hatch is reserved for the genuinely un-typeable aggregation reads
+// `collectPackPaths` via `findMany`). The `$queryRawUnsafe` escape hatch is
+// reserved for the genuinely un-typeable aggregation reads
 // (`listPacks`/`listSkills`/`listSkillInvocations`/`listPackUsage`/
 // `listPackSessions`): string_agg, COUNT(DISTINCT …), the version CASE, jsonb
 // prompt extraction, GROUP BY, and dynamic path-LIKE attribution.
+//
+// ISS-6753: the four page-facing reads — `listPacks`/`listSkills`/
+// `listSkillInvocations`/`listPackSessions` — run on the READER POOL
+// ({@link PackReaderPrisma}), not the writer-bound `prisma.client`. Everything
+// else here stays on the single writer connection.
+
+/**
+ * ISS-6753 — the reader-pool facade the page-facing reads take.
+ *
+ * Three of them (`listSkills`/`listSkillInvocations`/`listPackSessions`) join
+ * the whole `events` table, and the Packs/Skills pages are reachable DURING a
+ * first-boot DATA_REVISION rebuild. On `prisma.client` (the PRIMARY writer
+ * connection) they would queue on the same per-statement mutex as the rebuild's
+ * bulk `$transaction`s and stall both. `prisma.read` dispatches to a
+ * `query_only` reader connection that reads a committed WAL snapshot
+ * CONCURRENTLY with the writer — the same trade ISS-4710/ISS-4716 already made
+ * for the transcript-sync lane (see `transcript-sync-store.ts`), and exactly
+ * right here: these are read-only page projections with no read-your-writes
+ * requirement.
+ *
+ * `listPacks` is the inventory aggregate the same surface issues alongside them.
+ * It never touches `events`, so it is the cheap one — but it contends for that
+ * same writer mutex, and routing it with its siblings puts every one of these
+ * aggregation reads on one connection story. `getPack` deliberately stays on
+ * `prisma.client`: it is a pair of indexed `findMany`s on the small inventory
+ * tables, not an aggregation, and is out of this issue's scope.
+ *
+ * `DbHostPrisma` deliberately cannot expose `read` (a callback can't cross the
+ * db-host proxy), so these are reached from main as {@link PackStoreReadOp}
+ * `store:` ops — see `database/db-host/db-host-store-op-registry.ts`.
+ */
+type PackReaderPrisma = Pick<DesktopPrisma, "read">;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -190,7 +229,6 @@ interface PackListRow extends Record<string, unknown> {
   version: string | null;
   harnesses: string | null;
   install_count: number;
-  first_detected_at: string;
   last_seen_at: string;
   skill_count: number;
 }
@@ -223,12 +261,13 @@ function toInstalledPackDetail(
   skills: InstalledPackDetail["skills"],
   associations: InstalledPackDetail["associations"]
 ): InstalledPackDetail {
-  const sortedLastSeenTimes = installs
-    .map((install) => install.lastSeenAt)
-    .filter((value): value is string => typeof value === "string")
-    .sort();
-  const lastSeenAt =
-    sortedLastSeenTimes.length > 0 ? sortedLastSeenTimes.at(-1)! : null;
+  // ISS-11317 (review): ranked by INSTANT, not by bytes. This is the detail half of
+  // the roll-up `listPacks` does in SQL, over the same TEXT column, so it goes through
+  // the JS mirror of that statement's fold — otherwise one pack reports a different
+  // "last seen" in the detail IPC than in the list.
+  const lastSeenAt = allOrNothingLatestByInstant(
+    installs.map((install) => install.lastSeenAt)
+  );
 
   return {
     packId,
@@ -278,12 +317,21 @@ function toSkillInvocation(row: SkillInvocationRow): SkillInvocation {
  * version is NULL when the pack has multiple distinct install versions
  * (e.g. a marketplace pack with several plugins at different versions) --
  * avoids picking one arbitrary value and presenting it as authoritative.
+ *
+ * ISS-11317: `MAX(last_seen_at)` now ranks the canonical key, because
+ * `agent_packs.last_seen_at` is TEXT outside the FEA-3743 heal's `HEALED_COLUMNS`
+ * and byte order is time order only at a fixed width — a whole-second `...:00Z`
+ * beat a `...:00.500Z` sibling while being the earlier instant, so the pack's
+ * "last seen" could name the wrong install. The statement also carried a
+ * `MIN(detected_at) AS first_detected_at` that `toInstalledPack` never read (and
+ * `InstalledPack` has no field for), so that one was deleted rather than ranked.
  */
 export async function listPacks(
-  prisma: DbHostPrisma
+  prisma: PackReaderPrisma
 ): Promise<InstalledPack[]> {
-  const rows = await prisma.client.$queryRawUnsafe<PackListRow[]>(
-    `SELECT
+  const rows = await prisma.read((reader) =>
+    reader.$queryRawUnsafe<PackListRow[]>(
+      `SELECT
        p.pack_id,
        CASE
          WHEN COUNT(DISTINCT COALESCE(p.version, '')) > 1 THEN NULL
@@ -291,16 +339,24 @@ export async function listPacks(
        END                                                AS version,
        group_concat(DISTINCT p.harness)                   AS harnesses,
        COUNT(DISTINCT p.harness || '|' || p.install_path) AS install_count,
-       MIN(p.detected_at)                                 AS first_detected_at,
-       MAX(p.last_seen_at)                                AS last_seen_at,
+       MAX(p.last_seen_sort)                              AS last_seen_at,
        (SELECT COUNT(*)
         FROM skills s
         WHERE s.pack_id = p.pack_id
           AND s.uninstalled_at IS NULL)                   AS skill_count
-     FROM agent_packs p
-     WHERE p.uninstalled_at IS NULL
+     FROM (
+       SELECT pack_id, harness, install_path, version,
+         ${allOrNothingCanonicalSortSql("canonical_last_seen_at", "last_seen_at", "PARTITION BY pack_id")} AS last_seen_sort
+       FROM (
+         SELECT pack_id, harness, install_path, version, last_seen_at,
+           ${canonicalRankingKeySql("last_seen_at")} AS canonical_last_seen_at
+         FROM agent_packs
+         WHERE uninstalled_at IS NULL
+       )
+     ) p
      GROUP BY p.pack_id
      ORDER BY p.pack_id ASC`
+    )
   );
   return rows.map(toInstalledPack);
 }
@@ -429,10 +485,11 @@ interface SkillWithInvocationsRow extends SkillRow {
  * Codex patch (default 'claude' for legacy rows).
  */
 export async function listSkills(
-  prisma: DbHostPrisma
+  prisma: PackReaderPrisma
 ): Promise<SkillWithInvocations[]> {
-  const rows = await prisma.client.$queryRawUnsafe<SkillWithInvocationsRow[]>(
-    `SELECT
+  const rows = await prisma.read((reader) =>
+    reader.$queryRawUnsafe<SkillWithInvocationsRow[]>(
+      `SELECT
        s.skill_id,
        s.pack_id,
        s.harness,
@@ -447,11 +504,18 @@ export async function listSkills(
        inv.last_invoked_at                     AS last_invoked_at
      FROM skills s
      LEFT JOIN (
+       SELECT skill_name, harness,
+         COUNT(*)                                  AS invocation_count,
+         MAX(invoked_sort)                         AS last_invoked_at
+       FROM (
+       SELECT skill_name, harness,
+         ${allOrNothingCanonicalSortSql("canonical_created_at", "created_at", "PARTITION BY skill_name, harness")} AS invoked_sort
+       FROM (
        SELECT
          ${skillNameFromPromptSql("e")} AS skill_name,
          COALESCE(NULLIF(sess.harness, ''), 'claude')  AS harness,
-         COUNT(*)                                  AS invocation_count,
-         MAX(e.created_at)                              AS last_invoked_at
+         e.created_at                                  AS created_at,
+         ${canonicalRankingKeySql("e.created_at")}      AS canonical_created_at
        FROM events e
        JOIN sessions sess ON sess.id = e.session_id
        WHERE e.event_type = 'UserPromptSubmit'
@@ -462,10 +526,31 @@ export async function listSkills(
          -- intent is explicit and escape-safe.
          AND json_extract(e.data, '$.prompt') LIKE '/%'
          AND length(json_extract(e.data, '$.prompt')) > 1
+         -- ISS-6752: narrow to the INSTALLED skill-name set BEFORE grouping.
+         -- Without this the aggregate built one group per distinct slash
+         -- prompt ever typed and the outer LEFT JOIN then discarded every
+         -- group matching no install, so the GROUP BY's temp b-tree scaled
+         -- with total prompt history instead of with the (small) skills
+         -- inventory. Note the planner materializes this IN list ONCE (a
+         -- single SCAN of skills plus a bloom filter) rather than probing
+         -- idx_skills_name per event row -- the win is the rows kept out of
+         -- the grouping, not the lookup. The predicate is a strict subset of
+         -- what the outer LEFT JOIN already kept -- including the
+         -- uninstalled_at IS NULL tombstone filter the outer WHERE applies --
+         -- so the reported counts are unchanged.
+         AND ${skillNameFromPromptSql("e")} IN (
+           SELECT sk.name
+           FROM skills sk
+           WHERE sk.name IS NOT NULL
+             AND sk.uninstalled_at IS NULL
+         )
+       )
+       )
        GROUP BY skill_name, harness
      ) inv ON inv.skill_name = s.name AND inv.harness = s.harness
      WHERE s.uninstalled_at IS NULL
      ORDER BY (s.pack_id IS NULL) ASC, s.pack_id ASC, s.name ASC, s.harness ASC`
+    )
   );
   return rows.map(toSkillWithInvocations);
 }
@@ -491,7 +576,7 @@ interface SkillInvocationRow extends Record<string, unknown> {
  * the calls that match the install row the user clicked on.
  */
 export async function listSkillInvocations(
-  prisma: DbHostPrisma,
+  prisma: PackReaderPrisma,
   name: string,
   { limit = 50, offset = 0, harness = null as string | null } = {}
 ): Promise<SkillInvocation[]> {
@@ -511,17 +596,34 @@ export async function listSkillInvocations(
   const prompt = `json_extract(e.data, '$.prompt')`;
   const tail = `substr(${prompt}, 2)`;
 
-  const rows = await prisma.client.$queryRawUnsafe<SkillInvocationRow[]>(
-    `SELECT
+  const rows = await prisma.read((reader) =>
+    reader.$queryRawUnsafe<SkillInvocationRow[]>(
+      `SELECT
+       event_id,
+       session_id,
+       created_at,
+       summary,
+       data,
+       session_name,
+       session_cwd,
+       session_harness,
+       session_model
+     FROM (
+     SELECT event_id, session_id, created_at, summary, data, session_name,
+       session_cwd, session_harness, session_model,
+       ${allOrNothingCanonicalSortSql("canonical_created_at", "created_at", "")} AS invoked_sort
+     FROM (
+     SELECT
        e.id                AS event_id,
-       e.session_id,
-       e.created_at,
-       e.summary,
-       e.data,
+       e.session_id        AS session_id,
+       e.created_at        AS created_at,
+       e.summary           AS summary,
+       e.data              AS data,
        sess.name           AS session_name,
        sess.cwd            AS session_cwd,
        COALESCE(NULLIF(sess.harness, ''), 'claude') AS session_harness,
-       sess.model          AS session_model
+       sess.model          AS session_model,
+       ${canonicalRankingKeySql("e.created_at")}    AS canonical_created_at
      FROM events e
      JOIN sessions sess ON sess.id = e.session_id
      WHERE e.event_type = 'UserPromptSubmit'
@@ -537,9 +639,12 @@ export async function listSkillInvocations(
          END
        ) = $1
        ${harnessClause}
-     ORDER BY e.created_at DESC
+     )
+     )
+     ORDER BY invoked_sort DESC
      LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
-    ...params
+      ...params
+    )
   );
   return rows.map(toSkillInvocation);
 }
@@ -672,12 +777,21 @@ export async function listPackUsage(
       }[]
     >(
       `SELECT
-         COUNT(*)                   AS tool_calls,
-         COUNT(DISTINCT e.session_id) AS sessions,
-         MIN(e.created_at)               AS first_used_at,
-         MAX(e.created_at)               AS last_used_at
-       FROM events e
-       WHERE ${likeClauses}`,
+         COUNT(*)                     AS tool_calls,
+         COUNT(DISTINCT session_id)   AS sessions,
+         MIN(used_sort)               AS first_used_at,
+         MAX(used_sort)               AS last_used_at
+       FROM (
+         SELECT session_id,
+           ${allOrNothingCanonicalSortSql("canonical_created_at", "created_at", "")} AS used_sort
+         FROM (
+           SELECT e.session_id AS session_id,
+             e.created_at AS created_at,
+             ${canonicalRankingKeySql("e.created_at")} AS canonical_created_at
+           FROM events e
+           WHERE ${likeClauses}
+         )
+       )`,
       ...likeParams
     );
     const row = rows[0] ?? null;
@@ -700,7 +814,9 @@ export async function listPackUsage(
   return out;
 }
 
-interface PackSessionRow extends Record<string, unknown> {
+/** One row of {@link listPackSessions}; exported so the main-process IPC handler
+ * can type the `store:` op's clone-safe result (ISS-6753). */
+export interface PackSessionRow extends Record<string, unknown> {
   session_id: string;
   session_name: string | null;
   session_cwd: string | null;
@@ -713,51 +829,212 @@ interface PackSessionRow extends Record<string, unknown> {
 }
 
 /**
+ * ISS-6751: the inclusive `events.created_at` floor for a `lookbackDays` window.
+ *
+ * Total over every input, because an Invalid Date's `toISOString()` THROWS and
+ * this runs on a live IPC read: a sub-day window clamps up to a day, and one
+ * wide enough to push the cutoff past the epoch clamps down to the epoch — a
+ * window wider than all of recorded time is still just an unfiltered window.
+ *
+ * Only `NaN` falls back to the default, deliberately. Rejecting every
+ * non-finite value instead would make `Infinity` — the widest way to spell the
+ * window — return the 90-day slice, i.e. STRICTLY LESS than the finite and
+ * strictly smaller `Number.MAX_SAFE_INTEGER`. The epoch clamp already makes an
+ * over-wide window total, so `Infinity` needs no special case; `NaN` is the
+ * only input with no width to honour at all.
+ */
+function eventLookbackCutoff(lookbackDays: number): string {
+  const days = Number.isNaN(lookbackDays)
+    ? DEFAULT_SESSION_RETENTION_DAYS
+    : Math.max(1, Math.round(lookbackDays));
+  return new Date(Math.max(0, Date.now() - days * MS_PER_DAY)).toISOString();
+}
+
+/**
  * Per-session usage rollup for one pack. Powers the "Used in N sessions"
  * table on the Pack detail page. Each row is one session whose events touched
  * one or more of the pack's detection paths (see `collectPackPaths()`).
  *
  * Sorted by last activity in that session, descending.
+ *
+ * ISS-6751: bounded to a rolling `lookbackDays` window on `created_at`. The
+ * path attribution is a leading-wildcard `data LIKE '%…%'`, which no index can
+ * serve, so without a narrowing predicate SQLite read every row's multi-KB
+ * `data` blob on every call — inside the heap-capped db-host worker — and the
+ * `LIMIT` did not help because it applies AFTER the `GROUP BY`, bounding rows
+ * RETURNED, not rows SCANNED. Cost therefore grew with total event volume
+ * rather than with the pack's usage. The siblings in this file
+ * (`listSkills`/`listSkillInvocations`) are already narrowed by
+ * `event_type = 'UserPromptSubmit'`; this read had no narrowing predicate at
+ * all.
+ *
+ * What the window actually buys is that `created_at` is compared BEFORE the
+ * blob is touched, so an out-of-window row costs a record header instead of a
+ * multi-KB read. Cost then tracks in-window rows rather than the corpus.
+ * Measured on a 20k-event fixture with 3KB `data` blobs (median of 9,
+ * interleaved, warm): a store that is 95% out-of-window goes 105ms → 6ms, one
+ * that is half out-of-window 103ms → 52ms, and one whose events are ALL inside
+ * the window 101ms → 104ms. That last case — no rows to skip, so nothing to
+ * win and one extra comparison to pay — is the honest worst case, and it is
+ * where an install younger than the retention horizon sits.
+ *
+ * The window defaults to {@link DEFAULT_SESSION_RETENTION_DAYS} because that is
+ * the local store's DEFAULT purge horizon, so in the ordinary case scanning
+ * further back mostly pays for rows `sweepExpiredSessions` is already entitled
+ * to delete.
+ *
+ * That is a rationale, NOT an equivalence, and the gap it leaves is the real
+ * trade this read makes. It is wider than "rows the purge would have taken
+ * anyway", in five ways. The purge is anchored on `sessions.last_activity_at`
+ * and this window on `events.created_at`, so a long-lived session that is
+ * wholly retained still has its OLD events cut. It only ever purges TERMINAL
+ * sessions, so a `waiting` or never-finished session is retained indefinitely
+ * and simply drops out of this read. `sweepExpiredSessions` takes a
+ * caller-supplied `retentionDays` (`SqliteStoreOptions.retentionDays`), which
+ * nothing overrides today but which would silently widen the store past this
+ * constant. ISS-6031 defers purging a past-window session that still owes the
+ * cloud a delivery. And an event whose `created_at` is NULL or not date-shaped
+ * fails the guard and the range at EVERY window width, since there is no
+ * defensible way to order it.
+ *
+ * So the row shape is a WINDOWED rollup and not an all-time one — for any
+ * session older than the window, `tool_calls` counts only its in-window calls
+ * and `first_used_at` is its first IN-WINDOW use, not its true first use. Given
+ * the anchor mismatch above that is the ordinary case for a long-lived session,
+ * not a boundary curiosity. Nothing renders these yet (the IPC channel has no
+ * renderer caller), so no surface currently labels them as totals — but one
+ * that does must say which. Removing the trade rather than disclosing it is
+ * the per-(pack, session) ingest rollup ISS-6751 names as the alternative,
+ * mirroring `agent_component_session_usage`; it needs DDL and is deliberately
+ * not in this change. Anchoring the window on `sessions.last_activity_at`
+ * instead would preserve whole-session counts, but measured on the 20k-event
+ * fixture it is worth nothing (100ms vs 100ms baseline at every mix): the
+ * filter sits on the JOINED table, so every event blob is read regardless.
+ *
+ * `lookbackDays` is the escape hatch for a caller that genuinely needs deeper
+ * history, so widening stays explicit rather than being the default.
+ *
+ * Deliberately NOT pinned with `INDEXED BY idx_events_created_at`. The pin does
+ * force a range seek, but measured against the statement this actually emits it
+ * is worth nothing (6ms vs 6ms, 92ms vs 93ms) — the saving is the skipped blob
+ * read, which the predicate already gets — while making the read raise outright
+ * if that index is ever dropped.
  */
 export async function listPackSessions(
-  prisma: DbHostPrisma,
+  prisma: PackReaderPrisma,
   packId: string,
-  { limit = 25, offset = 0 } = {}
+  { limit = 25, offset = 0, lookbackDays = DEFAULT_SESSION_RETENTION_DAYS } = {}
 ): Promise<PackSessionRow[]> {
-  const byPack = await collectPackPaths(prisma);
-  const packPaths = byPack.get(packId);
-  if (!packPaths || packPaths.length === 0) {
-    return [];
-  }
+  const rows = await prisma.read(async (reader) => {
+    // ISS-6753: the path collection runs on the SAME pooled reader as the scan
+    // below rather than on `prisma.client`, so no part of this read touches the
+    // writer connection. Deliberately NOT a read `$transaction`: the two halves
+    // need no shared snapshot (a pack installed between them is simply
+    // unattributed until the next load, exactly as the pre-ISS-6753 pair of
+    // writer statements already allowed), and pinning one of the two reader
+    // connections inside BEGIN..COMMIT for the whole unindexed `events` scan
+    // would cost real capacity — plus put this scan under the client's
+    // interactive-transaction deadline — to buy nothing.
+    const byPack = await collectPackPaths({ client: reader });
+    const packPaths = byPack.get(packId);
+    if (!packPaths || packPaths.length === 0) {
+      return [];
+    }
 
-  const likeClauses = packPaths
-    .map((_, i) => `e.data LIKE $${i + 1}`)
-    .join(" OR ");
-  const likeParams: unknown[] = packPaths.map((p) => `%${p}%`);
+    const likeClauses = packPaths
+      .map((_, i) => `e.data LIKE $${i + 1}`)
+      .join(" OR ");
+    const likeParams: unknown[] = packPaths.map((p) => `%${p}%`);
 
-  const limitIdx = likeParams.length + 1;
-  const offsetIdx = likeParams.length + 2;
-  likeParams.push(limit, offset);
+    const cutoffIdx = likeParams.length + 1;
+    likeParams.push(eventLookbackCutoff(lookbackDays));
+    const limitIdx = likeParams.length + 1;
+    const offsetIdx = likeParams.length + 2;
+    likeParams.push(limit, offset);
 
-  const rows = await prisma.client.$queryRawUnsafe<PackSessionRow[]>(
-    `SELECT
-       e.session_id,
+    return await reader.$queryRawUnsafe<PackSessionRow[]>(
+      `SELECT
+       session_id,
+       session_name,
+       session_cwd,
+       session_harness,
+       session_model,
+       session_started_at,
+       COUNT(*)                                     AS tool_calls,
+       MIN(used_sort)                               AS first_used_at,
+       MAX(used_sort)                               AS last_used_at
+     FROM (
+     SELECT session_id, session_name, session_cwd, session_harness,
+       session_model, session_started_at,
+       ${allOrNothingCanonicalSortSql("canonical_created_at", "created_at", "")} AS used_sort
+     FROM (
+     SELECT
+       e.session_id                                 AS session_id,
        sess.name                                    AS session_name,
        sess.cwd                                     AS session_cwd,
        COALESCE(NULLIF(sess.harness, ''), 'claude') AS session_harness,
        sess.model                                   AS session_model,
        sess.started_at                              AS session_started_at,
-       COUNT(*)                                AS tool_calls,
-       MIN(e.created_at)                            AS first_used_at,
-       MAX(e.created_at)                            AS last_used_at
+       e.created_at                                 AS created_at,
+       ${canonicalRankingKeySql("e.created_at")}     AS canonical_created_at
      FROM events e
      JOIN sessions sess ON sess.id = e.session_id
-     WHERE ${likeClauses}
-     GROUP BY e.session_id, sess.name, sess.cwd, sess.harness, sess.model, sess.started_at
-     ORDER BY last_used_at DESC
+     -- The guard is not decoration: created_at is TEXT compared byte-wise and is
+     -- NOT one of the columns the timestamp-format heal normalizes, and a value
+     -- that is not date-shaped outranges every ISO string — so the bare range
+     -- below would ADMIT precisely the rows it cannot order.
+     -- The OR-chain MUST stay parenthesized: AND binds tighter than OR, so
+     -- without the parens the window would attach to the FIRST LIKE only and
+     -- every other detection path would go straight back to a full scan.
+     WHERE e.created_at GLOB ${ISO_DATE_PREFIX_GLOB_SQL}
+       AND e.created_at >= $${cutoffIdx}
+       AND (${likeClauses})
+     )
+     )
+     GROUP BY session_id, session_name, session_cwd, session_harness, session_model, session_started_at
+     ORDER BY MAX(used_sort) DESC
      LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
-    ...likeParams
-  );
+      ...likeParams
+    );
+  });
   //  tool_calls can surface as bigint via the adapter — coerce for IPC.
   return rows.map((row) => ({ ...row, tool_calls: Number(row.tool_calls) }));
 }
+
+/**
+ * ISS-6753 — the `store:` op names the four {@link PackReaderPrisma} reads are
+ * reached by from the main process.
+ *
+ * Declared here, next to the functions they name, so the string is written once
+ * rather than at both ends of the IPC: the db-host registry keys its handlers
+ * off these values and the `desktop:db:*` handlers invoke them by the same
+ * reference, so a rename is a compile error instead of a runtime
+ * `db-host store op not found`.
+ */
+export const PackStoreReadOp = {
+  ListPacks: "packStore.listPacks",
+  ListSkills: "packStore.listSkills",
+  ListSkillInvocations: "packStore.listSkillInvocations",
+  ListPackSessions: "packStore.listPackSessions",
+} as const;
+export type PackStoreReadOp =
+  (typeof PackStoreReadOp)[keyof typeof PackStoreReadOp];
+
+/**
+ * What each {@link PackStoreReadOp} resolves to once it has crossed the db-host
+ * boundary.
+ *
+ * The op name alone only guarantees that SOME handler answers; it says nothing
+ * about the shape that comes back, and `InvokeStoreOp` is typed
+ * `Promise<unknown>`. This map is the missing half, and it is enforced at BOTH
+ * ends: the db-host registry declares its handler table `satisfies` a mapped
+ * type built from this, so an op wired to the wrong store function fails to
+ * compile, and the main-process handlers annotate their return type from it, so
+ * a channel wired to the wrong op fails to compile too.
+ */
+export type PackStoreReadResult = {
+  [PackStoreReadOp.ListPacks]: InstalledPack[];
+  [PackStoreReadOp.ListSkills]: SkillWithInvocations[];
+  [PackStoreReadOp.ListSkillInvocations]: SkillInvocation[];
+  [PackStoreReadOp.ListPackSessions]: PackSessionRow[];
+};

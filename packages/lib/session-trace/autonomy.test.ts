@@ -180,6 +180,18 @@ describe("Session autonomy scoring", () => {
     expect(result).toEqual({ autonomy: 0, steeringEpisodes: 0 });
   });
 
+  it("attributes an agent row before a prompt at their shared timestamp", () => {
+    const result = deriveAutonomyAndSteering({
+      promptTimestamps: [
+        "2026-06-16T10:00:00.000Z",
+        "2026-06-16T10:01:40.000Z",
+      ],
+      agentActivityTimestamps: ["2026-06-16T10:01:40.000Z"],
+    });
+
+    expect(result).toEqual({ autonomy: 100, steeringEpisodes: 1 });
+  });
+
   it("FEA-3781: an empty shell — no prompts, no agent activity — stays unknown", () => {
     const result = deriveAutonomyAndSteering({
       promptTimestamps: [],

@@ -1,0 +1,35 @@
+-- ISS-12596: drop the `session_tool_analytics` rollup.
+--
+-- FEA-2038 built it as a per-(session, tool) invocation rollup so the `byTool`
+-- and `toolsOverTime` insights would never scan the events corpus. ISS-5493
+-- recorded that the promise was never kept: the table had NO production reader,
+-- while `byTool` (sync-source.ts) and `toolRunsOverTime` (local-insights-agents.ts)
+-- both still scan `events`. Its own model docstring named the two outcomes —
+-- make the rollup fresh, or drop the table — and this is the second.
+--
+-- Adoption was the unattractive half: the rollup refreshed only at import,
+-- boot-backfill and the targeted heals, and `backfillSessionAnalytics`
+-- anti-joins sessions MISSING a row rather than refreshing stale ones, so a
+-- hook-ingested session stayed invisible until the next boot and a
+-- rollup-sourced read would have reported 0 for it. The row carried no version
+-- or watermark column, so unlike `session_activity_metrics` (ISS-6759's two
+-- stamps + ISS-6758's cohort read) that staleness was not even detectable.
+--
+-- The writer (`session-analytics-rollup.ts`'s DELETE + INSERT pair inside
+-- `upsertSessionAnalyticsRollupBatch`) and both purges (`session-maintenance.ts`,
+-- `sqlite-maintenance-facade.ts`) are deleted in the same change, so nothing in
+-- this build reads or writes this table. Nothing is stranded: the table held no
+-- session data of its own — every row was a GROUP BY over `events`, which is
+-- untouched — and it was never in a wire or cloud contract, so there is no
+-- mirror to reconcile and no version-skew window.
+--
+-- `0001_init` created it, so a baselined pre-runner install asserts the legacy
+-- DDL and then this migration drops it; the forward-only runner refuses to boot
+-- a downgraded app against a migrated store, so no build carrying the model in
+-- its generated client can ever open a store where this has run.
+--
+-- Dropping the table drops `idx_session_tool_analytics_tool` and
+-- `idx_session_tool_analytics_day` with it. `IF EXISTS` follows the precedent
+-- table drops (0050_iss5135_drop_wall_clock_heal_seen,
+-- 20261007164914_iss11213_drop_trace_comments).
+DROP TABLE IF EXISTS "session_tool_analytics";

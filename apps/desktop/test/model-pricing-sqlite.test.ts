@@ -3,8 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
 import { OpencodeDefaultModel } from "@repo/lib/harness/synthetic-model-keys";
+import { test } from "vitest";
 import { loadSessionsFromDb } from "../src/main/collectors/opencode/opencode-parser.js";
 import {
   Harness,
@@ -236,6 +236,9 @@ test("FEA-4183: OpenCode session with only message-level tokens (zero session co
 
     // opencode-default is unpriceable by genai-prices, so the FEA-3546
     // Opus-standard fallback supplies a real, non-zero cost at import time.
+    // ISS-7762: the COST is unchanged (FEA-3546 intact) but the provenance is
+    // now `fallback_tier_v1` — the library never supplied this rate, and the
+    // row must not claim it did.
     const usageCost = expectedFallbackCost({
       inputTokens: 200,
       outputTokens: 40,
@@ -247,7 +250,7 @@ test("FEA-4183: OpenCode session with only message-level tokens (zero session co
         model: OpencodeDefaultModel,
         cost_usd_estimated: usageCost.costUsd,
         cost_currency: ModelPricingCurrency.Usd,
-        cost_source: ModelPricingSource.GenaiPricesV1,
+        cost_source: ModelPricingSource.FallbackTierV1,
       },
     ]);
     // The end-to-end assertion the reviewer asked for: the authoritative
@@ -256,7 +259,7 @@ test("FEA-4183: OpenCode session with only message-level tokens (zero session co
     assert.deepEqual(sessionCost, {
       cost_usd_estimated: usageCost.costUsd,
       cost_currency: ModelPricingCurrency.Usd,
-      cost_source: ModelPricingSource.GenaiPricesV1,
+      cost_source: ModelPricingSource.FallbackTierV1,
     });
     assert.ok(
       (sessionCost.cost_usd_estimated ?? 0) > 0,
@@ -282,8 +285,12 @@ test("FEA-3546: an unknown model is priced at the Opus-standard fallback (never 
 
     // genai-prices cannot price `opencode-default` (no_match), so the FEA-3546
     // Opus-standard fallback supplies the cost at import time — the row is
-    // written GenaiPricesV1/USD (the same source the priced-model path uses), not
-    // left null. Replay is idempotent (one aggregate row, not doubled).
+    // written with a real cost and USD, not left null. Replay is idempotent
+    // (one aggregate row, not doubled).
+    // ISS-7762: this row used to be stamped `genai_prices_v1` — the SAME source
+    // the library-priced path writes — which is what made a parity floor
+    // indistinguishable from a verified rate. It is now `fallback_tier_v1`; the
+    // dollar value is unchanged.
     const usageCost = expectedFallbackCost({
       inputTokens: 200,
       outputTokens: 40,
@@ -295,13 +302,13 @@ test("FEA-3546: an unknown model is priced at the Opus-standard fallback (never 
         model: OpencodeDefaultModel,
         cost_usd_estimated: usageCost.costUsd,
         cost_currency: ModelPricingCurrency.Usd,
-        cost_source: ModelPricingSource.GenaiPricesV1,
+        cost_source: ModelPricingSource.FallbackTierV1,
       },
     ]);
     assert.deepEqual(await selectSessionCost(db, session.sessionId), {
       cost_usd_estimated: usageCost.costUsd,
       cost_currency: ModelPricingCurrency.Usd,
-      cost_source: ModelPricingSource.GenaiPricesV1,
+      cost_source: ModelPricingSource.FallbackTierV1,
     });
 
     const eventRows = await selectTokenEventCosts(db, session.sessionId);

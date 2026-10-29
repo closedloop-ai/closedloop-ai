@@ -3,11 +3,11 @@
 import { BranchKpiState } from "@repo/api/src/types/branch";
 import {
   INSIGHTS_PERIOD_OPTIONS,
-  type InsightsGitHubProvenance,
   type InsightsPeriod,
   InsightsScope,
   InsightsSection,
 } from "@repo/api/src/types/insights";
+import { SESSION_MESH_V1_FEATURE_FLAG_KEY } from "@repo/api/src/types/session-mesh-flag";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Select,
@@ -27,6 +27,7 @@ import {
   useState,
 } from "react";
 import { ConnectGitHubIndicator } from "../../branches/components/connect-github-indicator";
+import { GatedMetricIndicatorVariant } from "../../shared/components/gated-metric-indicator";
 import { useFeatureFlagEnabled } from "../../shared/feature-flags/use-feature-flag-enabled";
 import type { InsightsTeamOption } from "../data/insights-data-source";
 import { useInsightsDataSource } from "../data/insights-data-source";
@@ -39,6 +40,8 @@ import {
   useDeliveryInsights,
   useUtilizationInsights,
 } from "../hooks/use-insights";
+import { useSessionMeshInsights } from "../hooks/use-session-mesh-insights";
+import { getSectionGitHubProvenance } from "../lib/github-provenance";
 import {
   decodeSharedDashboard,
   encodeSharedDashboard,
@@ -49,6 +52,7 @@ import type { TileDescriptor } from "../lib/tile-catalog";
 import { getTile } from "../lib/tile-catalog";
 import { DashboardGrid } from "./dashboard-grid";
 import { MetricPicker } from "./metric-picker";
+import { SessionMeshInsightsCard } from "./session-mesh-insights-card";
 import type { InsightsSectionData } from "./tile-content";
 
 const PERIOD_LABELS: Record<InsightsPeriod, string> = {
@@ -248,7 +252,6 @@ export function InsightsPage({
       }),
     [availableSections, getTileAvailability, pins.tiles]
   );
-
   const handleShare = useCallback(async () => {
     if (typeof globalThis.location === "undefined") {
       return;
@@ -460,31 +463,21 @@ export function InsightsPage({
         }}
         ref={scrollContainerRef}
       >
+        <SessionMeshInsightsGate period={period} scope={scope} />
         {showDeliveryConnectBanner ? (
-          <div className="mb-4 flex items-center justify-between gap-3 rounded-md border bg-card px-4 py-3">
-            <div className="min-w-0">
-              <div className="font-medium text-sm">
-                Delivery GitHub metrics need a connection
-              </div>
-              <div className="text-muted-foreground text-xs">
-                Connect GitHub to populate delivery metrics from cloud data.
-              </div>
-            </div>
-            <ConnectGitHubIndicator
-              compact
-              connectHref={source.githubConnectHref}
-              onConnect={source.onConnectGitHub}
-            />
-          </div>
+          <ConnectGitHubIndicator
+            className="mb-4"
+            connect={source.githubConnect}
+            variant={GatedMetricIndicatorVariant.Banner}
+          />
         ) : null}
         <DashboardGrid
           availableSections={availableSections}
           comparisonLabel={SCOPE_LABELS[comparisonScope]}
           comparisonSections={shouldLoadComparison ? comparisonSections : {}}
           getTileAvailability={getTileAvailability}
-          githubConnectHref={source.githubConnectHref}
+          githubConnect={source.githubConnect}
           onAddTiles={handleOpenAddMetric}
-          onConnectGitHub={source.onConnectGitHub}
           onEditTile={handleOpenEditMetric}
           pins={pins}
           sections={sections}
@@ -499,9 +492,8 @@ export function InsightsPage({
         editingTileId={editingTileId}
         getTileAvailability={getTileAvailability}
         getTileSettings={pins.getTileSettings}
-        githubConnectHref={source.githubConnectHref}
+        githubConnect={source.githubConnect}
         isPinned={pins.isPinned}
-        onConnectGitHub={source.onConnectGitHub}
         onOpenChange={handlePickerOpenChange}
         onPinTile={pins.pinTile}
         onReplaceTile={pins.replaceTile}
@@ -509,6 +501,45 @@ export function InsightsPage({
         open={pickerOpen}
         sections={sections}
       />
+    </div>
+  );
+}
+
+function SessionMeshInsightsSection({
+  period,
+  scope,
+}: {
+  period: InsightsPeriod;
+  scope: "me" | "org";
+}) {
+  const sessionMeshQuery = useSessionMeshInsights(true, scope, period);
+  return (
+    <SessionMeshInsightsCard
+      data={sessionMeshQuery.data}
+      isError={sessionMeshQuery.isError}
+      isLoading={sessionMeshQuery.isLoading}
+    />
+  );
+}
+
+function SessionMeshInsightsGate({
+  period,
+  scope,
+}: {
+  period: InsightsPeriod;
+  scope: InsightsScope;
+}) {
+  const enabled = useFeatureFlagEnabled(SESSION_MESH_V1_FEATURE_FLAG_KEY);
+  if (!enabled) {
+    return null;
+  }
+  if (scope === InsightsScope.Team) {
+    return null;
+  }
+  const meshScope = scope === InsightsScope.Org ? "org" : "me";
+  return (
+    <div className="mb-4">
+      <SessionMeshInsightsSection period={period} scope={meshScope} />
     </div>
   );
 }
@@ -522,13 +553,4 @@ function neededSections(pinnedTileIds: string[]): Set<InsightsSection> {
     }
   }
   return sections;
-}
-
-function getSectionGitHubProvenance(
-  section: InsightsSectionData[InsightsSection] | undefined
-): InsightsGitHubProvenance | undefined {
-  if (!(section && "githubProvenance" in section)) {
-    return undefined;
-  }
-  return section.githubProvenance;
 }

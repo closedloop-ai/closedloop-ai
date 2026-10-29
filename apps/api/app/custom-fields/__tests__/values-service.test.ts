@@ -49,10 +49,11 @@ import {
   upsertCreateArg,
 } from "@/__tests__/support/custom-fields/values-service.test-fixtures";
 import {
-  customFieldValuesService,
   EntityNotFoundError,
   FieldNotFoundError,
-} from "../values-service";
+} from "../custom-field-errors";
+import { InvalidFieldValueError } from "../utils";
+import { customFieldValuesService } from "../values-service";
 
 const mockWithDb = withDb as unknown as Mock;
 
@@ -190,6 +191,48 @@ describe("customFieldValuesService.setValueForEntity — column payloads", () =>
     );
 
     expect(upsertCreateArg(mocks.valueUpsert).numberValue).toBe(42.5);
+  });
+
+  it("refuses a NUMBER value that overflows to Infinity and writes nothing", async () => {
+    const mocks = install({
+      customFieldFindFirst: vi
+        .fn()
+        .mockResolvedValue(
+          buildFieldRow({ fieldType: CustomFieldType.Number })
+        ),
+    });
+
+    await expect(
+      customFieldValuesService.setValueForEntity(
+        TEST_FIELD_ID,
+        CustomFieldEntityType.Document,
+        TEST_ENTITY_ID,
+        TEST_ORG_ID,
+        "1e400"
+      )
+    ).rejects.toThrow(InvalidFieldValueError);
+
+    expect(mocks.valueUpsert).not.toHaveBeenCalled();
+  });
+
+  it("writes a negative NUMBER value unchanged", async () => {
+    const mocks = install({
+      customFieldFindFirst: vi
+        .fn()
+        .mockResolvedValue(
+          buildFieldRow({ fieldType: CustomFieldType.Number })
+        ),
+    });
+
+    await customFieldValuesService.setValueForEntity(
+      TEST_FIELD_ID,
+      CustomFieldEntityType.Document,
+      TEST_ENTITY_ID,
+      TEST_ORG_ID,
+      "-3"
+    );
+
+    expect(upsertCreateArg(mocks.valueUpsert).numberValue).toBe(-3);
   });
 
   it("writes a DATE value to dateValue as a Date instance", async () => {
@@ -441,6 +484,36 @@ describe("customFieldValuesService.setValueForEntity — PEOPLE validation", () 
     ]);
   });
 
+  it("derives the stored displayValue from the deduped ids, not the repeated request", async () => {
+    // ISS-7215 made `normalizeIdListValue`'s PEOPLE arm load-bearing: both the
+    // cached sort key and the rendered string now walk the stored id array
+    // through a keyed lookup, so a repeat left in place caches "Ada L., Ada L."
+    // beside ONE stored id. The sibling case above asserts peopleValueIds only,
+    // which stays green through exactly that mutation (marisolashgrove review, cid
+    // 3911851210) — this is the assertion that kills it.
+    const mocks = install({
+      customFieldFindFirst: vi
+        .fn()
+        .mockResolvedValue(
+          buildFieldRow({ fieldType: CustomFieldType.People })
+        ),
+      userFindMany: vi.fn().mockResolvedValue([KNOWN_USER]),
+    });
+
+    await customFieldValuesService.setValueForEntity(
+      TEST_FIELD_ID,
+      CustomFieldEntityType.Document,
+      TEST_ENTITY_ID,
+      TEST_ORG_ID,
+      ["user-known", "user-known"]
+    );
+
+    expect(upsertCreateArg(mocks.valueUpsert).displayValue).toBe("Ada L.");
+    expect(mocks.valueUpsert.mock.calls[0][0].update.displayValue).toBe(
+      "Ada L."
+    );
+  });
+
   it("scopes the people lookup to the organization", async () => {
     const mocks = install({
       customFieldFindFirst: vi
@@ -464,6 +537,63 @@ describe("customFieldValuesService.setValueForEntity — PEOPLE validation", () 
         where: { id: { in: ["user-known"] }, organizationId: TEST_ORG_ID },
       })
     );
+  });
+
+  /**
+   * A rename that commits BETWEEN validation and the upsert must not make the
+   * write's own response report a name already superseded when it returned.
+   *
+   * `prepareValueWrite` resolves these users to validate them, and reusing that
+   * map for the response is one query cheaper — but it is read before the
+   * upsert, so the PUT echoed the pre-rename label while the very next GET,
+   * live since ISS-7215, showed the new one, with no concurrent event between
+   * the two to explain the disagreement (whitlockk review cid 3911294127).
+   *
+   * The two assertions are deliberately opposed, because passing both is what
+   * distinguishes the fix from "the column got refreshed": the RESPONSE carries
+   * the post-write name, and the CACHED column still carries the pre-write one.
+   * Asserting only the first would also pass if the write had re-derived the
+   * column, which is not what this does — the column stays the sort key.
+   */
+  it("renders the response from a people map re-read after the write, while the cached column keeps the pre-write string", async () => {
+    const RENAMED_USER = { ...KNOWN_USER, lastName: "Byron" };
+    const mocks = install({
+      customFieldFindFirst: vi
+        .fn()
+        .mockResolvedValue(
+          buildFieldRow({ fieldType: CustomFieldType.People })
+        ),
+      // Validation sees "Lovelace"; the post-write resolve sees the rename.
+      userFindMany: vi
+        .fn()
+        .mockResolvedValueOnce([KNOWN_USER])
+        .mockResolvedValue([RENAMED_USER]),
+      valueUpsert: vi.fn().mockResolvedValue(
+        buildValueRow({
+          peopleValueIds: ["user-known"],
+          displayValue: "Ada L.",
+          customField: {
+            id: TEST_FIELD_ID,
+            name: "Owner",
+            fieldType: CustomFieldType.People,
+            showInTable: true,
+            enumOptions: [],
+          },
+        })
+      ),
+    });
+
+    const detail = await customFieldValuesService.setValueForEntity(
+      TEST_FIELD_ID,
+      CustomFieldEntityType.Document,
+      TEST_ENTITY_ID,
+      TEST_ORG_ID,
+      ["user-known"]
+    );
+
+    expect(detail.displayValue).toBe("Ada B.");
+    expect(detail.peopleValues).toEqual([RENAMED_USER]);
+    expect(upsertCreateArg(mocks.valueUpsert).displayValue).toBe("Ada L.");
   });
 });
 
@@ -551,6 +681,19 @@ describe("customFieldValuesService.getValuesForEntity", () => {
           entityType: CustomFieldEntityType.Document,
           entityId: TEST_ENTITY_ID,
           organizationId: TEST_ORG_ID,
+          // FEA-4222 (davetho review cid 3884188153): the predicate widened
+          // DELIBERATELY. The read now also requires the DEFINITION to declare
+          // this entity type, so a value stored against an inapplicable field
+          // before that guard existed stays quarantined instead of surfacing
+          // the moment an admin attaches the field. Empty `entityTypes` is the
+          // legacy "unscoped field" case and is still readable — the same
+          // carve-out `assertFieldAppliesToEntityType` makes on the write side.
+          customField: {
+            OR: [
+              { entityTypes: { has: CustomFieldEntityType.Document } },
+              { entityTypes: { isEmpty: true } },
+            ],
+          },
         },
       })
     );
@@ -566,6 +709,19 @@ describe("customFieldValuesService.getValuesForEntity", () => {
           entityType: CustomFieldEntityType.Document,
           entityId: { in: ["doc-1", "doc-2"] },
           organizationId: TEST_ORG_ID,
+          // FEA-4222 (davetho review cid 3884188153): the predicate widened
+          // DELIBERATELY. The read now also requires the DEFINITION to declare
+          // this entity type, so a value stored against an inapplicable field
+          // before that guard existed stays quarantined instead of surfacing
+          // the moment an admin attaches the field. Empty `entityTypes` is the
+          // legacy "unscoped field" case and is still readable — the same
+          // carve-out `assertFieldAppliesToEntityType` makes on the write side.
+          customField: {
+            OR: [
+              { entityTypes: { has: CustomFieldEntityType.Document } },
+              { entityTypes: { isEmpty: true } },
+            ],
+          },
         },
       })
     );

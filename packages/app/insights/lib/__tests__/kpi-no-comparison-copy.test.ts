@@ -1,9 +1,4 @@
-// Sibling-slice import (insights → branches): the branch-detail headline cards
-// render this very same chip, so their reason sentence has to keep the same noun
-// (ISS-4995 review). Pinning it here is what stops the two surfaces drifting.
-
 import { KpiDeltaBasis } from "@closedloop-ai/loops-api/insights";
-import { BRANCH_NO_BASELINE_REASON } from "@repo/app/branches/lib/branch-headline-copy";
 import { describe, expect, it } from "vitest";
 import {
   NO_COMPARISON_CHIP_LABEL,
@@ -84,14 +79,11 @@ describe("KPI_NOT_COMPUTED_REASON copy", () => {
   it("uses the chip's noun, so one control does not name one thing two ways", () => {
     // ISS-4995 review thread: the chip reads "No comparison" and a screen reader
     // announces the two back to back, so a sentence that said "trend" put two
-    // nouns on one concept. "comparison" is the single noun, and it is also what
-    // the branch-detail card's sentence uses on the other surface that renders
-    // this same chip (sibling slice `branches/lib/branch-headline-copy.ts`).
+    // nouns on one concept. "comparison" is the single noun this control uses.
     const copy = KPI_NOT_COMPUTED_REASON.toLowerCase();
     expect(NO_COMPARISON_CHIP_LABEL.toLowerCase()).toContain("comparison");
     expect(copy).toContain("comparison");
     expect(copy).not.toContain("trend");
-    expect(BRANCH_NO_BASELINE_REASON.toLowerCase()).toContain("comparison");
   });
 
   it("does not hedge the claim with our word for the response behind the tile", () => {

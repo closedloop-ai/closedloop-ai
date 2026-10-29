@@ -32,6 +32,27 @@ describe("isPublicGithubReposEnabled", () => {
     expect(PUBLIC_GITHUB_REPOS_FEATURE_FLAG_KEY).toBe("public-github-repos");
   });
 
+  // ISS-8196: the shipped gate, not just the resolver. `public-github-repos` is
+  // also read in the browser by `github-integration-card.tsx`, which identifies
+  // PostHog with the Clerk id alone — so a server-side `true` earned by the
+  // internal id admitted a mutation for a card the user could not see. Under the
+  // previous OR merge this resolved `true`.
+  it("refuses the mutation when the clerk id is out of the rollout and only the internal id is in", async () => {
+    vi.mocked(isFeatureFlagEnabledForDistinctId).mockImplementation(
+      (_flag: string, distinctId: string) =>
+        Promise.resolve(distinctId === "user-1")
+    );
+
+    await expect(
+      isPublicGithubReposEnabled({ clerkUserId: "clerk-1", userId: "user-1" })
+    ).resolves.toBe(false);
+
+    expect(isFeatureFlagEnabledForDistinctId).not.toHaveBeenCalledWith(
+      PUBLIC_GITHUB_REPOS_FEATURE_FLAG_KEY,
+      "user-1"
+    );
+  });
+
   it("prefers the clerk distinct id and dedupes identities", async () => {
     vi.mocked(isFeatureFlagEnabledForDistinctId).mockResolvedValue(false);
 
@@ -49,13 +70,16 @@ describe("isPublicGithubReposEnabled", () => {
   it.each([
     ["false", false],
     ["null", null],
-  ])("fails closed when the feature provider returns %s", async (_label, value) => {
-    vi.mocked(isFeatureFlagEnabledForDistinctId).mockResolvedValue(value);
+  ])(
+    "fails closed when the feature provider returns %s",
+    async (_label, value) => {
+      vi.mocked(isFeatureFlagEnabledForDistinctId).mockResolvedValue(value);
 
-    await expect(
-      isPublicGithubReposEnabled({ userId: "user-1" })
-    ).resolves.toBe(false);
-  });
+      await expect(
+        isPublicGithubReposEnabled({ userId: "user-1" })
+      ).resolves.toBe(false);
+    }
+  );
 
   it("fails closed when feature evaluation throws", async () => {
     vi.mocked(isFeatureFlagEnabledForDistinctId).mockRejectedValue(

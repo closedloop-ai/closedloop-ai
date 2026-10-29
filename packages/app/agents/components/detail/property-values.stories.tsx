@@ -1,15 +1,6 @@
-import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "@repo/api/src/types/session-status";
-import {
-  SESSION_STATUS_LABELS,
-  SESSION_UNKNOWN_TOOLTIP,
-} from "@repo/api/src/types/session-status-display";
 import type { Meta, StoryObj } from "@storybook/react";
 import {
   CircleDotIcon,
-  CircleHelpIcon,
   FolderIcon,
   GaugeIcon,
   GitBranchIcon,
@@ -36,9 +27,9 @@ const LONG_WORKING_DIRECTORY =
 // unstyled and the truncation story has no fixed-width track to clip against.
 
 const meta = {
-  title: "App Core/Agents/Property Value",
+  title: "Composites v1.0/Agents/Detail/Property Values",
   component: PropertyValue,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (
@@ -61,7 +52,7 @@ export const Plain: Story = {
   args: {
     icon: FolderIcon,
     label: "Repository",
-    children: "closedloop-ai/example-repo",
+    children: "closedloop-ai/closedloop-ai",
   },
 };
 
@@ -181,22 +172,8 @@ export const TruncatedLink: Story = {
   },
 };
 
-/**
- * `explanation` set (ISS-4654): the value's word is this build's HEDGE rather
- * than a fact about the session, so the row carries the reason with it — the
- * same disclosure the Sessions list's Unknown pill has had since ISS-4997.
- *
- * Hover or FOCUS it: the sentence is in the tooltip for a sighted user and in
- * the accessible name (visible word first, per WCAG 2.5.3 Label in Name) for
- * everyone else, because a hover-only tooltip reaches neither keyboard nor
- * touch. It is deliberately the only row that gets this treatment — a value that
- * states a fact says nothing extra.
- */
-export const Explained: Story = {
-  args: {
-    icon: CircleHelpIcon,
-    label: "Status",
-    children: SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.UNKNOWN],
-    explanation: SESSION_UNKNOWN_TOOLTIP,
-  },
-};
+// ISS-10364 (operator ruling, 2026-09-23/24) retired the Sessions list's
+// Unknown pill this `Explained` story demonstrated `explanation` through — the
+// status that pill named no longer exists. `explanation` itself is still a
+// live `PropertyValue` capability; this story is removed rather than kept
+// pointed at a state production can no longer reach.

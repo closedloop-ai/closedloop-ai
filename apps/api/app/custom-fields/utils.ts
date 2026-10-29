@@ -6,12 +6,25 @@ import {
   CustomFieldEntityType,
   CustomFieldType,
   LabelPosition,
+  MAX_CUSTOM_FIELDS_PER_ORG,
   NumberFormat,
 } from "@repo/api/src/types/custom-field";
+import {
+  CUSTOM_FIELD_DATE_MAX_YEAR,
+  CUSTOM_FIELD_DATE_MIN_YEAR,
+  isCustomFieldDateYearInRange,
+} from "@repo/api/src/types/custom-field-date";
+import {
+  formatCustomFieldDurationMs,
+  isValidCustomFieldDurationMs,
+  parseCustomFieldDurationMs,
+} from "@repo/api/src/types/custom-field-duration";
+import type { BasicUser } from "@repo/api/src/types/user";
 import { withDb } from "@repo/database";
-
-/** Maximum number of custom field definitions per organization (AC-017). */
-export const MAX_CUSTOM_FIELDS_PER_ORG = 500;
+import { parseFiniteNumberInput } from "@repo/lib/custom-fields/finite-number-input";
+import { formatPeopleSortKey } from "./display-value";
+import { resolvePeopleMap } from "./people-resolution";
+import { InvalidReferenceTargetError } from "./reference-targets";
 
 /** Maximum number of enum options per custom field (AC-017). */
 export const MAX_ENUM_OPTIONS_PER_FIELD = 100;
@@ -32,22 +45,28 @@ export const MULTI_ENUM_DISPLAY_SEPARATOR = ", ";
  *
  * - TEXT: returns rawValue as-is
  * - NUMBER: formats with Intl.NumberFormat using field precision; currency style
- *   for CURRENCY format; prefix/suffix concatenation for CUSTOM format
+ *   for CURRENCY format; prefix/suffix concatenation for CUSTOM format; an
+ *   elapsed span from the stored milliseconds for DURATION format
  * - ENUM: returns the matching option name
  * - MULTI_ENUM: returns option names joined with ", "
  * - DATE: formats as "Jan 1, 2024" in en-US locale
- * - PEOPLE: resolves user names from the database as "First L." joined with ", "
+ * - PEOPLE: user names as "First L." joined with ", ", in stored-id order
  *
  * @param field - The custom field definition (with options for ENUM/MULTI_ENUM).
  * @param rawValue - The raw stored value (string, number, or string[]).
  * @param options - Optional pre-loaded enum options (avoids DB round-trip).
- * @param people - Optional pre-loaded user records (avoids DB round-trip for PEOPLE).
+ * @param peopleById - Optional pre-resolved users, KEYED BY ID (avoids a DB
+ *   round-trip for PEOPLE). A map on purpose, not the ordered array this used to
+ *   take: the order a PEOPLE string renders in must come from the stored
+ *   `peopleValueIds` and nothing else, so a caller must not be able to supply
+ *   one. That parameter was the bypass that let this path and the read path
+ *   disagree about sequence (ISS-7215).
  */
 export async function computeDisplayValue(
   field: CustomFieldWithOptions,
   rawValue: string | number | string[] | null,
   options?: CustomFieldEnumOption[],
-  people?: { firstName: string | null; lastName: string | null }[]
+  peopleById?: Map<string, BasicUser>
 ): Promise<string> {
   if (rawValue === null || rawValue === undefined) {
     return "";
@@ -94,15 +113,30 @@ export async function computeDisplayValue(
       });
     }
 
+    // The string cached here is the SORT KEY, not what a read renders — PEOPLE
+    // is `ResolvedOnRead` (DISPLAY_VALUE_STRATEGY), so `resolveDisplayValue`
+    // derives the rendered string from the same users on every read. Both sides
+    // order through `orderRowsBy` against the stored ids and format through
+    // `formatPeopleDisplayValue` (`formatPeopleSortKey` is that pair, named),
+    // so the key and the label cannot disagree. A user rename re-derives the
+    // cached key through the same helper (`refreshPeopleDisplayValuesForUser`).
     case CustomFieldType.People: {
       const ids = Array.isArray(rawValue) ? rawValue : [String(rawValue)];
       if (ids.length === 0) {
         return "";
       }
-      const resolved =
-        people ?? (await resolvePeopleNames(ids, field.organizationId));
-      const names = resolved.map(formatPersonName).filter(Boolean);
-      return names.join(", ");
+      const byId =
+        peopleById ?? (await resolvePeopleMap(ids, field.organizationId));
+      return formatPeopleSortKey(ids, byId);
+    }
+
+    // Reference display strings are resolved from the target artifacts on read
+    // and never persisted (DISPLAY_VALUE_STRATEGY). Returning "" here keeps the
+    // stored column empty for these types, so a stale string can never be read
+    // back even if a future caller forgets the strategy check.
+    case CustomFieldType.Reference:
+    case CustomFieldType.ReferenceMulti: {
+      return "";
     }
 
     default: {
@@ -117,6 +151,22 @@ export async function computeDisplayValue(
 function formatNumber(field: CustomFieldWithOptions, num: number): string {
   const precision = field.precision ?? 0;
   const format = field.numberFormat ?? NumberFormat.None;
+
+  if (format === NumberFormat.Duration) {
+    // Milliseconds in, elapsed span out — the unit is the field's contract, not
+    // this formatter's choice. `precision` does not apply: a duration's
+    // granularity is its unit ladder.
+    //
+    // A negative or non-finite span is NOT a duration. The write path rejects
+    // both, so reaching here means a corrupt row — and rendering it as `""`
+    // would make it identical to a field nobody ever set. Fall through to the
+    // plain number instead: the bad value stays visible and stays distinct from
+    // an absence.
+    if (isValidCustomFieldDurationMs(num)) {
+      return formatCustomFieldDurationMs(num);
+    }
+    return formatPlainNumber(num, precision);
+  }
 
   if (format === NumberFormat.Currency) {
     const currencyCode = field.currencyCode ?? "USD";
@@ -149,6 +199,11 @@ function formatNumber(field: CustomFieldWithOptions, num: number): string {
   }
 
   // NumberFormat.None — plain number with precision
+  return formatPlainNumber(num, precision);
+}
+
+/** Plain localized number — the NONE format, and the corrupt-duration fallback. */
+function formatPlainNumber(num: number, precision: number): string {
   return new Intl.NumberFormat("en-US", {
     minimumFractionDigits: precision,
     maximumFractionDigits: precision,
@@ -156,34 +211,22 @@ function formatNumber(field: CustomFieldWithOptions, num: number): string {
 }
 
 /**
- * Resolves user display names for PEOPLE field values by querying the database.
- * Uses the same field selection shape as basicUserSelect from @/lib/db-utils.
+ * Resolves a DURATION field's raw input to canonical milliseconds, or `null`
+ * when it is not a duration at all.
+ *
+ * The wire accepts both spellings on purpose: a number is already milliseconds
+ * (what a machine-populated cycle-time column sends), and a string is the human
+ * span a person types. Normalizing here — rather than in the editor alone —
+ * is what makes the round trip hold for every client, including an API-key
+ * caller that never loads the editor.
  */
-function resolvePeopleNames(
-  ids: string[],
-  organizationId: string
-): Promise<{ firstName: string | null; lastName: string | null }[]> {
-  return withDb((db) =>
-    db.user.findMany({
-      where: { id: { in: ids }, organizationId },
-      select: { firstName: true, lastName: true },
-    })
-  );
-}
-
-/**
- * Formats a user's name as "First L." (first name + last name initial + period).
- */
-function formatPersonName(person: {
-  firstName: string | null;
-  lastName: string | null;
-}): string {
-  const first = person.firstName?.trim() ?? "";
-  const lastInitial = person.lastName?.[0] ?? "";
-  if (!first) {
-    return lastInitial ? `${lastInitial}.` : "";
+export function coerceCustomFieldDurationMs(
+  value: string | number
+): number | null {
+  if (typeof value === "number") {
+    return isValidCustomFieldDurationMs(value) ? value : null;
   }
-  return lastInitial ? `${first} ${lastInitial}.` : first;
+  return parseCustomFieldDurationMs(value);
 }
 
 /**
@@ -240,11 +283,14 @@ export function checkOptionLimit(customFieldId: string): Promise<void> {
  *
  * @param fieldType - The declared type of the custom field.
  * @param value - The raw value to validate.
+ * @param numberFormat - The field's number format. Only NUMBER fields consult
+ *   it, and only DURATION narrows what is accepted (see validateNumberValue).
  * @throws Error with a descriptive message on mismatch.
  */
 export function validateValueType(
   fieldType: CustomFieldType,
-  value: string | number | string[] | null
+  value: string | number | string[] | null,
+  numberFormat?: NumberFormat | null
 ): void {
   if (value === null) {
     return;
@@ -256,7 +302,7 @@ export function validateValueType(
       break;
     }
     case CustomFieldType.Number: {
-      validateNumberValue(value);
+      validateNumberValue(value, numberFormat);
       break;
     }
     case CustomFieldType.Enum: {
@@ -275,33 +321,57 @@ export function validateValueType(
       validateStringArrayValue("PEOPLE", value);
       break;
     }
+    case CustomFieldType.Reference: {
+      validateReferenceShape(CustomFieldType.Reference, value);
+      break;
+    }
+    case CustomFieldType.ReferenceMulti: {
+      validateReferenceShape(CustomFieldType.ReferenceMulti, value);
+      break;
+    }
     default: {
-      throw new Error(`Unknown field type: ${fieldType satisfies never}.`);
+      throw new InvalidFieldValueError(
+        `Unknown field type: ${fieldType satisfies never}.`
+      );
     }
   }
 }
 
 function validateTextValue(value: string | number | string[]): void {
   if (typeof value !== "string") {
-    throw new Error(
+    throw new InvalidFieldValueError(
       `Invalid value for TEXT field: expected a string, got ${typeof value}.`
     );
   }
   if (value.length > MAX_TEXT_VALUE_LENGTH) {
-    throw new Error(
+    throw new InvalidFieldValueError(
       `TEXT field value exceeds the maximum length of ${MAX_TEXT_VALUE_LENGTH} characters.`
     );
   }
 }
 
-function validateNumberValue(value: string | number | string[]): void {
+function validateNumberValue(
+  value: string | number | string[],
+  numberFormat?: NumberFormat | null
+): void {
   if (typeof value !== "number" && typeof value !== "string") {
-    throw new Error(
+    throw new InvalidFieldValueError(
       `Invalid value for NUMBER field: expected a number, got ${typeof value}.`
     );
   }
-  if (Number.isNaN(Number(value))) {
-    throw new Error(
+  // A duration is a narrower number that also accepts a human spelling, so it
+  // is validated against the parser rather than against `Number()` — "1h 12m"
+  // is a legal duration and an illegal plain number.
+  if (numberFormat === NumberFormat.Duration) {
+    if (coerceCustomFieldDurationMs(value) === null) {
+      throw new InvalidFieldValueError(
+        `Invalid value for DURATION field: "${String(value)}" is not a finite, non-negative duration (expected milliseconds, or a span like "1h 12m").`
+      );
+    }
+    return;
+  }
+  if (parseFiniteNumberInput(value) === null) {
+    throw new InvalidFieldValueError(
       `Invalid value for NUMBER field: "${String(value)}" is not a valid number.`
     );
   }
@@ -309,8 +379,37 @@ function validateNumberValue(value: string | number | string[]): void {
 
 function validateEnumValue(value: string | number | string[]): void {
   if (typeof value !== "string") {
-    throw new Error(
+    throw new InvalidFieldValueError(
       `Invalid value for ENUM field: expected a string option ID, got ${typeof value}.`
+    );
+  }
+}
+
+/**
+ * Shape-only check for reference values. Whether the named targets exist and
+ * are of a permitted source is decided against the database in
+ * `reference-targets.ts`; this stays synchronous like every other case here.
+ */
+function validateReferenceShape(
+  fieldType:
+    | typeof CustomFieldType.Reference
+    | typeof CustomFieldType.ReferenceMulti,
+  value: string | number | string[]
+): void {
+  // InvalidReferenceTargetError, not a bare Error: a malformed reference value
+  // is a caller mistake, and the routes map only this class to a 400. Throwing
+  // the generic shape here would report a client error as a 500.
+  if (fieldType === CustomFieldType.Reference) {
+    if (typeof value !== "string") {
+      throw new InvalidReferenceTargetError(
+        `Invalid value for REFERENCE field: expected a single artifact ID, got ${Array.isArray(value) ? "an array" : typeof value}. Use REFERENCE_MULTI for multiple targets.`
+      );
+    }
+    return;
+  }
+  if (!Array.isArray(value)) {
+    throw new InvalidReferenceTargetError(
+      `Invalid value for REFERENCE_MULTI field: expected an array, got ${typeof value}.`
     );
   }
 }
@@ -320,13 +419,13 @@ function validateStringArrayValue(
   value: string | number | string[]
 ): void {
   if (!Array.isArray(value)) {
-    throw new Error(
+    throw new InvalidFieldValueError(
       `Invalid value for ${fieldLabel} field: expected an array, got ${typeof value}.`
     );
   }
   const invalid = value.find((v) => typeof v !== "string");
   if (invalid !== undefined) {
-    throw new Error(
+    throw new InvalidFieldValueError(
       `Invalid value for ${fieldLabel} field: all items must be strings, got ${typeof invalid}.`
     );
   }
@@ -334,13 +433,19 @@ function validateStringArrayValue(
 
 function validateDateValue(value: string | number | string[]): void {
   if (typeof value !== "string") {
-    throw new Error(
+    throw new InvalidFieldValueError(
       `Invalid value for DATE field: expected an ISO 8601 date string, got ${typeof value}.`
     );
   }
-  if (Number.isNaN(new Date(value).getTime())) {
-    throw new Error(
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new InvalidFieldValueError(
       `Invalid value for DATE field: "${value}" is not a valid date string.`
+    );
+  }
+  if (!isCustomFieldDateYearInRange(parsed)) {
+    throw new InvalidFieldValueError(
+      `Invalid value for DATE field: "${value}" must fall in UTC years ${String(CUSTOM_FIELD_DATE_MIN_YEAR).padStart(4, "0")} to ${CUSTOM_FIELD_DATE_MAX_YEAR}.`
     );
   }
 }
@@ -381,13 +486,56 @@ const RESERVED_NAMES_BY_ENTITY_TYPE: Record<
     "version",
     "slug",
   ]),
+  [CustomFieldEntityType.Session]: new Set([
+    "status",
+    "harness",
+    "agent",
+    "started",
+    "ended",
+    "duration",
+    "cost",
+    "repository",
+    "branch",
+    "user",
+  ]),
+  [CustomFieldEntityType.Branch]: new Set([
+    "name",
+    "status",
+    "repository",
+    "owner",
+    "pull request",
+    "lines changed",
+    "cost",
+    "sessions",
+    "created",
+    "updated",
+  ]),
 };
 
 /** Friendly display labels for entity types shown in error messages. */
 const ENTITY_TYPE_DISPLAY_NAMES: Record<CustomFieldEntityType, string> = {
   [CustomFieldEntityType.Project]: "Project",
   [CustomFieldEntityType.Document]: "Document",
+  [CustomFieldEntityType.Session]: "Session",
+  [CustomFieldEntityType.Branch]: "Branch",
 };
+
+/**
+ * Thrown when a submitted VALUE is rejected: a type mismatch, a disabled or
+ * unknown enum option, a user outside the organization, a non-duration span.
+ *
+ * A distinct class, not a bare `Error`, because the route layer maps this to a
+ * 400. `PrismaClientKnownRequestError` and friends are also `Error`, so an
+ * `instanceof Error` arm would hand a connection failure or a timeout the same
+ * non-retryable 400 — with the raw driver message as the body, and skipping the
+ * `errorResponse` logging that makes a DB incident visible.
+ */
+export class InvalidFieldValueError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidFieldValueError";
+  }
+}
 
 /**
  * Thrown when a custom field name conflicts with a built-in property name

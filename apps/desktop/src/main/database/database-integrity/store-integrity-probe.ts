@@ -100,6 +100,18 @@ export type StoreIntegrityOptionalCheck = {
    * check as RUN only once BOTH have succeeded.
    */
   parse: (raw: unknown) => (issues: StoreIntegrityIssue[]) => void;
+  /**
+   * Whether this check may also run on a tick the boot-import skip would
+   * otherwise drop entirely. Opt-in and default false, because the skip exists
+   * to keep the probe off the first-launch backfill's hot path: only a check
+   * that reads NO tables earns it.
+   *
+   * A check that reads an in-memory counter costs nothing and contends with
+   * nothing, and skipping it is actively wrong when the condition it reports is
+   * one the import itself provokes — a disk that fills DURING the first-launch
+   * import (ISS-6337) is exactly that. See {@link StoreIntegrityProbe} `start`.
+   */
+  runsDuringBootImport?: boolean;
 };
 
 /**
@@ -114,6 +126,7 @@ export function defineStoreIntegrityOptionalCheck<T>(spec: {
   read: (() => Promise<unknown>) | undefined;
   schema: z.ZodType<T>;
   classify: (value: T, issues: StoreIntegrityIssue[]) => void;
+  runsDuringBootImport?: boolean;
 }): StoreIntegrityOptionalCheck {
   return {
     name: spec.name,
@@ -123,6 +136,7 @@ export function defineStoreIntegrityOptionalCheck<T>(spec: {
       const value = spec.schema.parse(raw);
       return (issues) => spec.classify(value, issues);
     },
+    ...(spec.runsDuringBootImport ? { runsDuringBootImport: true } : {}),
   };
 }
 
@@ -200,6 +214,19 @@ export type StoreIntegrityProbeOptions = {
   extraChecks?: readonly StoreIntegrityOptionalCheck[];
   log?: (message: string) => void;
   now?: () => number;
+  /**
+   * Test/observability hook fired when a poll tick has fully SETTLED, including
+   * the ticks that publish nothing (the boot-import pass that found nothing to
+   * report, and the concurrency-guard bail).
+   *
+   * A tick's work settles an indeterminate number of microtasks after `start()`,
+   * so a test asserting that NOTHING was emitted has no natural signal to wait
+   * on and would otherwise flush a FIXED tick count — a bounded poll that can
+   * land short and pass for the wrong reason. Mirrors `onWalMaintenanceSettled`
+   * in prisma-client.ts, which exists for exactly this. Not used in production
+   * wiring.
+   */
+  onTickSettled?: () => void;
 };
 
 export type StoreIntegrityProbe = {
@@ -597,16 +624,57 @@ export function createStoreIntegrityProbe(
     };
   }
 
-  async function tick(): Promise<void> {
-    if (running) {
+  /**
+   * The reduced tick for a boot import: run ONLY the checks that declared
+   * themselves import-safe, and emit only if they actually found something.
+   *
+   * Emitting a HEALTHY partial run is what this must never do. The cadence in
+   * `Observability.storeIntegrityResult` keys on `healthy`, so a healthy result
+   * assembled from a subset of the checks would report `store.integrity.recovered`
+   * for a `quick_check` failure this tick never even looked at. Staying silent
+   * on a clean partial run leaves the cadence exactly where the last FULL run
+   * left it.
+   */
+  async function runImportSafeChecks(): Promise<void> {
+    const startedAt = now();
+    const checksRun: StoreIntegrityCheckName[] = [];
+    const issues: StoreIntegrityIssue[] = [];
+    for (const check of options.extraChecks ?? []) {
+      if (check.runsDuringBootImport) {
+        await runOptionalCheck({ check, checksRun, issues, log });
+      }
+    }
+    if (issues.length === 0) {
       return;
     }
-    if (options.isBootImportInProgress?.()) {
-      log("store-integrity: skipped (boot import in progress)");
+    const truncated = issues.length > maxReportedIssues;
+    options.emit({
+      healthy: false,
+      durationMs: Math.max(0, Math.round(now() - startedAt)),
+      checksRun,
+      issueCount: issues.length,
+      issues: truncated ? issues.slice(0, maxReportedIssues) : issues,
+      truncated,
+    });
+  }
+
+  async function tick(): Promise<void> {
+    if (running) {
+      options.onTickSettled?.();
       return;
     }
     running = true;
     try {
+      if (options.isBootImportInProgress?.()) {
+        // The heavyweight engine checks stay off the backfill's hot path, but a
+        // check that reads an in-memory counter still runs: the condition it
+        // reports can be one the import itself provokes, and the tally it reads
+        // is memory-only, so skipping outright can lose the event for good if
+        // the user quits before the next full tick (ISS-6337).
+        log("store-integrity: skipped (boot import in progress)");
+        await runImportSafeChecks();
+        return;
+      }
       options.emit(await runOnce());
     } catch (error) {
       log(
@@ -616,6 +684,7 @@ export function createStoreIntegrityProbe(
       );
     } finally {
       running = false;
+      options.onTickSettled?.();
     }
   }
 

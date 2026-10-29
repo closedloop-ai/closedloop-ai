@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { deterministicEventId } from "../src/main/database/deterministic-event-id.js";
 
 const UUID_PATTERN =

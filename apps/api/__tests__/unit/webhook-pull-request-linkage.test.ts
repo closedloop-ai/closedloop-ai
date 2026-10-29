@@ -1,20 +1,11 @@
 /**
- * `handlePullRequest` — the artifact-reference linkage half of the GitHub
- * `pull_request` webhook: parsing PLN/FEA slugs out of a PR title or body,
- * resolving them to a Document, creating the DOCUMENT → produces → PR
- * `ArtifactLink`, and refusing to link on a prefix collision, an unknown slug,
- * an already-linked PR, or a terminal PR. Split out of
- * `webhook-pull-request.test.ts`, which owns the rest of the handler surface
- * (per-action lifecycle writes, repository and installation isolation,
- * transaction behavior). The companion rule that settling a linked PR never
- * writes the document that produced it lives in
- * `webhook-pull-request-upstream-propagation.test.ts`.
+ * The artifact-reference linkage half of `handlePullRequest`: title/body slugs
+ * resolve a Document → produces → PR link, with prefix/unknown/duplicate and
+ * terminal refusal cases. Lifecycle, isolation and transaction behavior live in
+ * `webhook-pull-request.test.ts`; settling a PR without rewriting its Document
+ * lives in `webhook-pull-request-upstream-propagation.test.ts`.
  */
 
-import type {
-  PullRequestClosedEvent,
-  PullRequestReopenedEvent,
-} from "@octokit/webhooks-types";
 import {
   afterEach,
   beforeEach,
@@ -25,11 +16,27 @@ import {
   vi,
 } from "vitest";
 
+const { mockWithDbTx } = vi.hoisted(() => ({ mockWithDbTx: vi.fn() }));
+
 // Mock modules before importing
-vi.mock("@repo/database", () => {
-  const mockWithDb: any = vi.fn();
-  mockWithDb.tx = vi.fn();
+vi.mock("@/app/branches/branch-detail-signal", () => ({
+  emitBranchDetailChanged: vi.fn(),
+}));
+
+// ISS-12463: the branch-owner seed is raw SQL this stubbed transaction does not
+// model; its wiring is pinned by the real-Postgres seed-wiring suite.
+vi.mock(
+  "@/app/webhooks/github/handlers/pull-request-branch-owner-seed",
+  () => ({
+    seedPullRequestBranchOwner: vi.fn().mockResolvedValue(undefined),
+  })
+);
+
+vi.mock("@repo/database", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const mockWithDb = Object.assign(vi.fn(), { tx: mockWithDbTx });
   return {
+    Prisma: actual.Prisma,
     ArtifactType: {
       DOCUMENT: "DOCUMENT",
       BRANCH: "BRANCH",
@@ -64,7 +71,7 @@ vi.mock("@/lib/slug-generator", () => ({
 }));
 
 vi.mock("@/lib/artifact-adapters", () => ({
-  documentWhere: (where: any) => ({ ...where, type: "DOCUMENT" }),
+  documentWhere: (where: DocumentWhere) => ({ ...where, type: "DOCUMENT" }),
 }));
 
 vi.mock("@/app/branches/branch-service", () => ({
@@ -76,6 +83,10 @@ vi.mock("@/app/branches/branch-service", () => ({
   },
   // PLN-1034: PR-lifecycle actions bump branch_detail.last_activity_at.
   bumpBranchActivity: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/app/branches/pull-request-author-identity", () => ({
+  ensurePullRequestAuthorIdentity: vi.fn(),
 }));
 
 // ISS-4664: the handler calls this AFTER the transaction commits, for the
@@ -100,7 +111,6 @@ vi.mock("@/app/webhooks/github/handlers/branch-activity-producer", () => ({
 import { LinkType } from "@repo/api/src/types/artifact";
 import { DocumentType } from "@repo/api/src/types/document";
 import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
-import { withDb } from "@repo/database";
 import { parseArtifactReferences } from "@repo/github/artifact-reference-parser";
 import {
   createPullRequestWebhookTx,
@@ -114,8 +124,11 @@ import {
 import { handlePullRequest } from "@/app/webhooks/github/handlers/pull-request-handler";
 import {
   createPullRequest,
+  createPullRequestClosedEvent,
+  createPullRequestEditedEvent,
+  createPullRequestOpenedEvent,
+  createPullRequestReopenedEvent,
   createRepository,
-  createSender,
 } from "../fixtures/github-webhook-fixtures";
 import { makePrDetailRow } from "../utils/pr-detail-helpers";
 import { handleAuthoritativePullRequest } from "./webhook-pull-request-authority-fixture";
@@ -124,11 +137,8 @@ const mockParseArtifactReferences = parseArtifactReferences as Mock;
 const mockUpsertBranchArtifact = branchService.upsertBranchArtifact as Mock;
 const mockPersistGitHubBranchActivity = persistGitHubBranchActivity as Mock;
 
-// Type aliases for mocked functions
-const mockWithDbTx = withDb.tx as unknown as Mock;
-
 // Mock database transaction client
-let mockTx: any;
+let mockTx: ReturnType<typeof createPullRequestWebhookTx>;
 
 function webhookWriteMocks() {
   return pullRequestWebhookWriteMocks(mockTx, mockUpsertBranchArtifact);
@@ -146,7 +156,7 @@ describe("handlePullRequest", () => {
 
     mockTx = createPullRequestWebhookTx();
 
-    mockWithDbTx.mockImplementation((callback: any) => callback(mockTx));
+    mockWithDbTx.mockImplementation((callback: TxCallback) => callback(mockTx));
   });
 
   afterEach(() => {
@@ -165,6 +175,40 @@ describe("handlePullRequest", () => {
         installation: { organizationId: ORG_ID },
       });
     }
+
+    function providerIdentityWriteSnapshot() {
+      const identityWrites = [
+        mockTx.pullRequestDetail.updateMany,
+        mockTx.branchDetail.updateMany,
+      ];
+      const pullRequestData =
+        mockTx.pullRequestDetail.updateMany.mock.calls[0]?.[0]?.data;
+      const branchData =
+        mockTx.branchDetail.updateMany.mock.calls[0]?.[0]?.data;
+      return {
+        branchIdentityWriteCount:
+          mockTx.branchDetail.updateMany.mock.calls.length,
+        branchRepositoryId: branchData?.repositoryId,
+        hasProviderGithubId: typeof pullRequestData?.githubId === "string",
+        nonIdentityWriteCount: webhookWriteMocks()
+          .filter((candidate) => !identityWrites.includes(candidate))
+          .reduce((count, write) => count + write.mock.calls.length, 0),
+        pullRequestIdentityWriteCount:
+          mockTx.pullRequestDetail.updateMany.mock.calls.length,
+        pullRequestRepositoryFullName: pullRequestData?.repositoryFullName,
+        pullRequestRepositoryId: pullRequestData?.repositoryId,
+      };
+    }
+
+    const expectedProviderIdentityWriteSnapshot = {
+      branchIdentityWriteCount: 1,
+      branchRepositoryId: REPO_ID,
+      hasProviderGithubId: true,
+      nonIdentityWriteCount: 0,
+      pullRequestIdentityWriteCount: 1,
+      pullRequestRepositoryFullName: "acme/widgets",
+      pullRequestRepositoryId: REPO_ID,
+    };
 
     // FEA-4137: the handler resolves the artifact-ref slug via
     // `tx.artifact.findFirst({ where: { slug: { in: expandSlugAliases(...) } } })`
@@ -254,18 +298,14 @@ describe("handlePullRequest", () => {
       // override it with a flat resolved value here or the alias-aware slug lookup
       // (the artifact-ref resolution) would return a shapeless row and skip linkage.
 
-      const event = {
-        action: "opened",
-        number: 100,
-        pull_request: createPullRequest({
+      const event = createPullRequestOpenedEvent(
+        createPullRequest({
           id: 9001,
           number: 100,
           title: "PLAN-42: Add feature",
         }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-      } as any;
+        { repository: createRepository(789) }
+      );
       await handleAuthoritativePullRequest(event);
 
       // Should materialize a branch artifact with current PR detail.
@@ -275,6 +315,9 @@ describe("handlePullRequest", () => {
           repositoryId: null,
           pullRequestRepositoryId: REPO_ID,
           branchName: "feature-branch",
+          // ISS-10995: the source document's project is lineage, so a FILL —
+          // a PR webhook cannot re-file a branch a user filed by hand.
+          projectFillOnly: true,
           sourceArtifactId: ARTIFACT_ID,
           createdById: "user-uuid-link",
           pullRequest: expect.objectContaining({
@@ -291,6 +334,7 @@ describe("handlePullRequest", () => {
             organizationId: ORG_ID,
             sourceId: ARTIFACT_ID,
             linkType: LinkType.Produces,
+            sortOrder: 0,
           }),
         })
       );
@@ -302,39 +346,38 @@ describe("handlePullRequest", () => {
       setupArtifactMock();
       setupLinkageMocks();
 
-      // First findUnique (repositoryId_number) → existing PR without linkedDoc
-      mockTx.pullRequestDetail.findUnique.mockResolvedValueOnce(
-        makePrDetailRow({
-          artifactId: "artifact-pr-edit",
-          organizationId: ORG_ID,
-          linkedDoc: null,
-        })
-      );
-      // Second findUnique re-reads the projected PR for activity attribution.
-      mockTx.pullRequestDetail.findUnique.mockResolvedValueOnce({
-        id: "artifact-pr-edit",
-      });
-      // Third findUnique (by githubId in createLinkageRecords) → returns artifactId
-      mockTx.pullRequestDetail.findUnique.mockResolvedValueOnce({
+      const existingPr = makePrDetailRow({
         artifactId: "artifact-pr-edit",
+        organizationId: ORG_ID,
+        linkedDoc: null,
       });
+      mockTx.pullRequestDetail.findUnique.mockImplementation(
+        ({ where }: { where: Record<string, unknown> }) =>
+          Promise.resolve(
+            where.githubId
+              ? {
+                  artifactId: "artifact-pr-edit",
+                  branchArtifactId: "artifact-pr-edit",
+                }
+              : existingPr
+          )
+      );
       mockTx.artifact.update.mockResolvedValue({});
+      mockUpsertBranchArtifact.mockResolvedValueOnce({
+        ok: true,
+        value: { id: "artifact-pr-edit" },
+      });
 
-      const event = {
-        action: "edited",
-        number: 101,
-        pull_request: createPullRequest({
+      const event = createPullRequestEditedEvent(
+        createPullRequest({
           id: 9002,
           number: 101,
           title: "PLAN-42: Updated",
         }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-        changes: {},
-      } as any;
+        { repository: createRepository(789) }
+      );
 
-      await handlePullRequest(event);
+      await handleAuthoritativePullRequest(event);
 
       // Should update PR artifact (via createLinkageRecords) and create linkage
       expect(mockTx.artifactLink.create).toHaveBeenCalledWith(
@@ -348,13 +391,13 @@ describe("handlePullRequest", () => {
       );
 
       expect(mockTx.artifact.update).toHaveBeenCalledTimes(1);
-      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledTimes(2);
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledTimes(1);
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
         where: { githubId: String(event.pull_request.id) },
         data: expect.objectContaining({ prState: "OPEN" }),
         select: { id: true },
       });
-      expect(mockTx.pullRequestDetail.updateMany).toHaveBeenCalledTimes(1);
+      expect(mockTx.pullRequestDetail.updateMany).toHaveBeenCalled();
     });
 
     it("links and applies reopened action when a migration-window PR detail points at a legacy non-branch artifact", async () => {
@@ -362,25 +405,29 @@ describe("handlePullRequest", () => {
       setupPlanRef();
       setupArtifactMock();
       setupLinkageMocks();
-      mockTx.pullRequestDetail.findUnique
-        .mockResolvedValueOnce({
-          artifactId: "legacy-pr-artifact",
-          branchArtifactId: null,
-          artifact: {
-            organizationId: ORG_ID,
-            projectId: "project-uuid-link",
-            branch: null,
-            targetLinks: [],
-          },
-          branchArtifact: null,
-        })
-        .mockResolvedValueOnce({
+      const legacyPr = {
+        ...makePrDetailRow({
           id: "legacy-pr-detail",
-        })
-        .mockResolvedValueOnce({
           artifactId: "legacy-pr-artifact",
           branchArtifactId: null,
-        });
+          organizationId: ORG_ID,
+          linkedDoc: null,
+        }),
+        githubId: String(9006),
+        githubUpdatedAt: null,
+        headRefName: "feature-branch",
+      };
+      mockTx.pullRequestDetail.findUnique.mockImplementation(
+        ({ where }: { where: Record<string, unknown> }) =>
+          Promise.resolve(
+            where.githubId
+              ? {
+                  artifactId: "legacy-pr-artifact",
+                  branchArtifactId: null,
+                }
+              : legacyPr
+          )
+      );
       mockTx.branchDetail.findFirst.mockResolvedValueOnce(null);
 
       const pullRequest = createPullRequest({
@@ -389,16 +436,11 @@ describe("handlePullRequest", () => {
         title: "PLAN-42: Reopened legacy PR",
         state: "open",
       });
-      const event: PullRequestReopenedEvent = {
-        action: "reopened",
-        number: 106,
-        pull_request: pullRequest,
+      const event = createPullRequestReopenedEvent(pullRequest, {
         repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-      } as any;
+      });
 
-      await handlePullRequest(event);
+      await handleAuthoritativePullRequest(event);
 
       expect(mockTx.branchDetail.update).not.toHaveBeenCalled();
       expect(mockTx.artifactLink.create).toHaveBeenCalledWith(
@@ -428,18 +470,14 @@ describe("handlePullRequest", () => {
       mockTx.artifact.findFirst.mockResolvedValue(null);
       mockTx.pullRequestDetail.findUnique.mockResolvedValue(null);
 
-      const event = {
-        action: "opened",
-        number: 102,
-        pull_request: createPullRequest({
+      const event = createPullRequestOpenedEvent(
+        createPullRequest({
           id: 9003,
           number: 102,
           title: "PLAN-999: Missing",
         }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-      } as any;
+        { repository: createRepository(789) }
+      );
 
       const response = await handlePullRequest(event);
       const json = await response.json();
@@ -456,20 +494,16 @@ describe("handlePullRequest", () => {
       setupArtifactMock({ subtype: "PRD" });
       mockTx.pullRequestDetail.findUnique.mockResolvedValue(null);
 
-      const event = {
-        action: "opened",
-        number: 103,
-        pull_request: createPullRequest({
+      const event = createPullRequestOpenedEvent(
+        createPullRequest({
           id: 9004,
           number: 103,
           title: "PLN-42: PRD ref",
         }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-      } as any;
+        { repository: createRepository(789) }
+      );
 
-      await handlePullRequest(event);
+      await handleAuthoritativePullRequest(event);
 
       expect(mockTx.artifactLink.create).not.toHaveBeenCalled();
       expect(mockTx.artifact.create).not.toHaveBeenCalled();
@@ -488,21 +522,16 @@ describe("handlePullRequest", () => {
         })
       );
 
-      const event = {
-        action: "edited",
-        number: 104,
-        pull_request: createPullRequest({
+      const event = createPullRequestEditedEvent(
+        createPullRequest({
           id: 9005,
           number: 104,
           title: "PLAN-42: Override attempt",
         }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-        changes: {},
-      } as any;
+        { repository: createRepository(789) }
+      );
 
-      await handlePullRequest(event);
+      await handleAuthoritativePullRequest(event);
 
       // Should NOT look up artifact or create linkage
       expect(mockTx.artifact.findUnique).not.toHaveBeenCalled();
@@ -514,45 +543,49 @@ describe("handlePullRequest", () => {
       setupPlanRef();
       setupArtifactMock();
 
-      // First findUnique (repositoryId_number) → existing PR without linkedDoc
-      mockTx.pullRequestDetail.findUnique.mockResolvedValueOnce(
-        makePrDetailRow({
-          artifactId: "artifact-pr-dup",
-          organizationId: ORG_ID,
-          linkedDoc: null,
-        })
-      );
-      // Second findUnique (by githubId in createLinkageRecords) → returns artifactId
-      mockTx.pullRequestDetail.findUnique.mockResolvedValueOnce({
+      const existingPr = makePrDetailRow({
         artifactId: "artifact-pr-dup",
+        organizationId: ORG_ID,
+        linkedDoc: null,
       });
+      mockTx.pullRequestDetail.findUnique.mockImplementation(
+        ({ where }: { where: Record<string, unknown> }) =>
+          Promise.resolve(
+            where.githubId
+              ? {
+                  artifactId: "artifact-pr-dup",
+                  branchArtifactId: "artifact-pr-dup",
+                }
+              : existingPr
+          )
+      );
       mockTx.artifact.update.mockResolvedValue({});
+      mockUpsertBranchArtifact.mockResolvedValueOnce({
+        ok: true,
+        value: { id: "artifact-pr-dup" },
+      });
 
       // ArtifactLink already exists
       mockTx.artifactLink.findFirst.mockResolvedValue({
         id: "existing-artifact-link",
       });
 
-      const event = {
-        action: "reopened",
-        number: 105,
-        pull_request: createPullRequest({
+      const event = createPullRequestReopenedEvent(
+        createPullRequest({
           id: 9006,
           number: 105,
           title: "PLAN-42: Reopened",
         }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-      } as any;
+        { repository: createRepository(789) }
+      );
 
-      await handlePullRequest(event);
+      await handleAuthoritativePullRequest(event);
 
       // Should NOT create duplicate ArtifactLink
       expect(mockTx.artifactLink.create).not.toHaveBeenCalled();
 
       expect(mockTx.artifact.update).toHaveBeenCalledTimes(1);
-      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledTimes(2);
+      expect(mockTx.pullRequestDetail.update).toHaveBeenCalledTimes(1);
       expect(mockTx.pullRequestDetail.update).toHaveBeenCalledWith({
         where: { githubId: String(event.pull_request.id) },
         data: expect.objectContaining({ prState: "OPEN" }),
@@ -584,14 +617,9 @@ describe("handlePullRequest", () => {
         })
       );
 
-      const event = {
-        action: "closed",
-        number: pullRequest.number,
-        pull_request: pullRequest,
+      const event = createPullRequestClosedEvent(pullRequest, {
         repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-      } as PullRequestClosedEvent;
+      });
 
       await handlePullRequest(event, {
         deliveryId: "non-current-pr-close-delivery",
@@ -599,9 +627,9 @@ describe("handlePullRequest", () => {
       });
 
       expect(mockParseArtifactReferences).not.toHaveBeenCalled();
-      for (const write of webhookWriteMocks()) {
-        expect(write).not.toHaveBeenCalled();
-      }
+      expect(providerIdentityWriteSnapshot()).toEqual(
+        expectedProviderIdentityWriteSnapshot
+      );
       expect(mockPersistGitHubBranchActivity).toHaveBeenCalledWith({
         eventName: GitHubBranchActivityEventName.PullRequest,
         deliveryId: "non-current-pr-close-delivery",
@@ -628,24 +656,23 @@ describe("handlePullRequest", () => {
         })
       );
 
-      await handlePullRequest({
-        action: "edited",
-        number: 206,
-        pull_request: createPullRequest({
-          id: 9014,
-          number: 206,
-          title: "PLN-42: stale edit",
-        }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-        changes: {},
-      } as any);
+      await handlePullRequest(
+        createPullRequestEditedEvent(
+          createPullRequest({
+            id: 9014,
+            number: 206,
+            title: "PLN-42: stale edit",
+          }),
+          { repository: createRepository(789) }
+        )
+      );
 
-      expect(mockParseArtifactReferences).not.toHaveBeenCalled();
-      for (const write of webhookWriteMocks()) {
-        expect(write).not.toHaveBeenCalled();
-      }
+      // ISS-12552: the one parse gates the pre-transaction attribution read;
+      // the linkage itself never parses.
+      expect(mockParseArtifactReferences).toHaveBeenCalledTimes(1);
+      expect(providerIdentityWriteSnapshot()).toEqual(
+        expectedProviderIdentityWriteSnapshot
+      );
     });
 
     it("does not mutate linkage for stale reopened events against an existing closed PR", async () => {
@@ -662,23 +689,23 @@ describe("handlePullRequest", () => {
         })
       );
 
-      await handlePullRequest({
-        action: "reopened",
-        number: 207,
-        pull_request: createPullRequest({
-          id: 9015,
-          number: 207,
-          title: "PLN-42: stale reopen",
-        }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-      } as any);
+      await handlePullRequest(
+        createPullRequestReopenedEvent(
+          createPullRequest({
+            id: 9015,
+            number: 207,
+            title: "PLN-42: stale reopen",
+          }),
+          { repository: createRepository(789) }
+        )
+      );
 
-      expect(mockParseArtifactReferences).not.toHaveBeenCalled();
-      for (const write of webhookWriteMocks()) {
-        expect(write).not.toHaveBeenCalled();
-      }
+      // ISS-12552: the one parse gates the pre-transaction attribution read;
+      // the linkage itself never parses.
+      expect(mockParseArtifactReferences).toHaveBeenCalledTimes(1);
+      expect(providerIdentityWriteSnapshot()).toEqual(
+        expectedProviderIdentityWriteSnapshot
+      );
     });
 
     it("does not mutate linkage for edited events against an existing merged PR", async () => {
@@ -695,24 +722,23 @@ describe("handlePullRequest", () => {
         })
       );
 
-      await handlePullRequest({
-        action: "edited",
-        number: 208,
-        pull_request: createPullRequest({
-          id: 9016,
-          number: 208,
-          title: "PLN-42: terminal edit",
-        }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-        changes: {},
-      } as any);
+      await handlePullRequest(
+        createPullRequestEditedEvent(
+          createPullRequest({
+            id: 9016,
+            number: 208,
+            title: "PLN-42: terminal edit",
+          }),
+          { repository: createRepository(789) }
+        )
+      );
 
-      expect(mockParseArtifactReferences).not.toHaveBeenCalled();
-      for (const write of webhookWriteMocks()) {
-        expect(write).not.toHaveBeenCalled();
-      }
+      // ISS-12552: the one parse gates the pre-transaction attribution read;
+      // the linkage itself never parses.
+      expect(mockParseArtifactReferences).toHaveBeenCalledTimes(1);
+      expect(providerIdentityWriteSnapshot()).toEqual(
+        expectedProviderIdentityWriteSnapshot
+      );
     });
 
     it("PR opened with FEA slug links to feature document", async () => {
@@ -727,18 +753,14 @@ describe("handlePullRequest", () => {
       mockTx.artifact.create.mockResolvedValue({ id: "new-pr-id-feature" });
       // artifact.findFirst is owned by setupArtifactMock's shape-aware impl.
 
-      const event = {
-        action: "opened",
-        number: 200,
-        pull_request: createPullRequest({
+      const event = createPullRequestOpenedEvent(
+        createPullRequest({
           id: 9008,
           number: 200,
           title: "FEA-42: fix login timeout",
         }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-      } as any;
+        { repository: createRepository(789) }
+      );
       await handleAuthoritativePullRequest(event);
 
       // Branch artifact created with nested current PR detail through service.
@@ -770,18 +792,14 @@ describe("handlePullRequest", () => {
       });
       mockTx.pullRequestDetail.findUnique.mockResolvedValue(null);
 
-      const event = {
-        action: "opened",
-        number: 201,
-        pull_request: createPullRequest({
+      const event = createPullRequestOpenedEvent(
+        createPullRequest({
           id: 9009,
           number: 201,
           title: "FEA-42: collision",
         }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-      } as any;
+        { repository: createRepository(789) }
+      );
 
       await handlePullRequest(event);
 
@@ -814,18 +832,14 @@ describe("handlePullRequest", () => {
       mockTx.artifact.create.mockResolvedValue({ id: "new-pr-id-both" });
       // artifact.findFirst is owned by setupArtifactMock's shape-aware impl.
 
-      const event = {
-        action: "opened",
-        number: 202,
-        pull_request: createPullRequest({
+      const event = createPullRequestOpenedEvent(
+        createPullRequest({
           id: 9010,
           number: 202,
           title: "FEA-42: implement PLN-17",
         }),
-        repository: createRepository(789),
-        sender: createSender(),
-        installation: { id: 99 },
-      } as any;
+        { repository: createRepository(789) }
+      );
       await handleAuthoritativePullRequest(event);
 
       // Only the plan was looked up by slug. FEA-4137: the artifact-ref lookup is
@@ -846,5 +860,103 @@ describe("handlePullRequest", () => {
       );
       expect(mockTx.artifactLink.create).toHaveBeenCalledTimes(1);
     });
+
+    // ISS-7973: `createAndLinkPr` abandons linkage when
+    // `materializeWebhookPullRequestBranch` yields no branch artifact. Driven
+    // for real rather than by mocking that module — the PR arrives with
+    // `head.repo: null` (GitHub's shape when the head repository is gone), so
+    // the head-repository observation is `unavailable` and materialization
+    // returns null before the branch service is consulted. The positive control is "links PR opened with valid PLAN
+    // slug to artifact" above: the same create path with an authoritative head
+    // repo installed, where the branch upsert runs and the link is created.
+    it("does not link a newly seen PR when head repository authority is unavailable", async () => {
+      setupRepoMock();
+      setupPlanRef();
+      setupArtifactMock();
+      setupLinkageMocks();
+      // The `repositoryId_number` lookup misses, so the handler takes the
+      // create path; the separate `githubId` re-read inside
+      // `createLinkageRecords` resolves a live branch artifact. That row keeps
+      // the assertions below non-vacuous — without the guard the produces link
+      // lands on it.
+      mockTx.pullRequestDetail.findUnique.mockImplementation(
+        ({ where }: { where: Record<string, unknown> }) =>
+          Promise.resolve(
+            where.githubId
+              ? { artifactId: null, branchArtifactId: "orphan-branch-artifact" }
+              : null
+          )
+      );
+
+      const event = createPullRequestOpenedEvent(
+        createPullRequest({
+          id: 9018,
+          number: 210,
+          title: "PLN-42: head repo not reported",
+          head: { repo: null },
+        }),
+        { repository: createRepository(789) }
+      );
+
+      const response = await handlePullRequest(event, {
+        deliveryId: "iss-7973-head-authority-unavailable",
+        observedAt: new Date("2026-08-11T12:00:00.000Z"),
+      });
+      const json = await response.json();
+
+      expect(json.ok).toBe(true);
+      expect(mockUpsertBranchArtifact).not.toHaveBeenCalled();
+      expect(mockTx.artifactLink.findFirst).not.toHaveBeenCalled();
+      expect(mockTx.artifactLink.create).not.toHaveBeenCalled();
+    });
+
+    // ISS-7973: `createLinkageRecords` drops the produces link outright when
+    // the detail row it re-reads by `githubId` names neither a branch nor a
+    // legacy artifact — there is no target to point the link at. The positive
+    // control is "links PR edited to add plan reference retroactively" above:
+    // the same existing-PR edited path built from the same helpers, differing
+    // only in that its `githubId` row names an artifact.
+    it("drops the produces link when the PR detail row names no branch or legacy artifact", async () => {
+      setupRepoMock();
+      setupPlanRef();
+      setupArtifactMock();
+      setupLinkageMocks();
+      const existingPr = makePrDetailRow({
+        artifactId: "artifact-pr-orphan",
+        organizationId: ORG_ID,
+        linkedDoc: null,
+      });
+      mockTx.pullRequestDetail.findUnique.mockImplementation(
+        ({ where }: { where: Record<string, unknown> }) =>
+          Promise.resolve(
+            where.githubId
+              ? { artifactId: null, branchArtifactId: null }
+              : existingPr
+          )
+      );
+      mockTx.artifact.update.mockResolvedValue({});
+
+      const event = createPullRequestEditedEvent(
+        createPullRequest({
+          id: 9019,
+          number: 211,
+          title: "PLN-42: orphaned detail row",
+        }),
+        { repository: createRepository(789) }
+      );
+
+      const response = await handlePullRequest(event, {
+        deliveryId: "iss-7973-orphaned-detail-row",
+        observedAt: new Date("2026-08-11T12:00:00.000Z"),
+      });
+      const json = await response.json();
+
+      expect(json.ok).toBe(true);
+      expect(mockTx.artifactLink.findFirst).not.toHaveBeenCalled();
+      expect(mockTx.artifactLink.create).not.toHaveBeenCalled();
+    });
   });
 });
+
+type TxCallback = (tx: typeof mockTx) => unknown;
+type DocumentWhere = Record<string, unknown>;

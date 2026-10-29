@@ -28,7 +28,7 @@
  * The network is never touched: a recording fake fetch returns canned bodies.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   type AdminFetchLike,
   assertAllowedAdminHost,

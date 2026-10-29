@@ -36,7 +36,7 @@
  * budget cannot claw back heap that has already been spent hydrating.
  */
 
-import { runAsBackgroundDbReads } from "../database/db-host/db-host-call-priority.js";
+import { runAsBackgroundDbReads } from "../../shared/db-host-call-priority.js";
 import type { SessionAttributionResolverCache } from "./agent-session-attribution.js";
 import { rawJsonByteLength } from "./agent-session-sync-compression.js";
 import type { SyncedAgentSession } from "./agent-session-sync-contract.js";
@@ -45,6 +45,7 @@ import {
   SESSION_HYDRATION_SLICE_SIZE,
 } from "./agent-session-sync-limits.js";
 import type { AgentSessionSyncSource } from "./agent-session-sync-source.js";
+import { PriorityUploadProjection } from "./priority-upload-projection.js";
 
 export type HydrationBudgetResult = {
   /** Sessions that hydrated successfully, in admission order. */
@@ -148,6 +149,7 @@ export function hydrateSyncCandidates(
           // which drops `OMITTED_METADATA_KEYS` outright. Hydrating them only to
           // discard them was the largest metadata term on this path.
           omitPreviewStrippedMetadata: true,
+          priorityProjection: PriorityUploadProjection.PendingUpload,
         }),
       {
         byteBudget: SESSION_HYDRATION_BYTE_BUDGET,

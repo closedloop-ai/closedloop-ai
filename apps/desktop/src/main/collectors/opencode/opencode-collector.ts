@@ -6,6 +6,11 @@
  * collector self-fingerprints the DB + WAL/SHM siblings (name:mtimeMs:size) and
  * skips the load when the fingerprint is unchanged.
  *
+ * ISS-8561: a live install has exactly one such store, but golden mode hands the
+ * collector one per staged opencode dossier. Everything below is therefore
+ * PER STORE — the fingerprint, the seal gate, the continuation — and the source
+ * a hook is given is what selects the state it reads.
+ *
  * Fingerprint logic ported from `scripts/agent-monitor-opencode/opencode-import.js`
  * (FEA-1316 / FEA-1334), logic preserved: the in-memory high-water-mark is
  * seeded from a persisted file so a fresh process also skips the cold-start load
@@ -14,7 +19,13 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import type { BatchHarnessCollector, NormalizedSession } from "../types.js";
+import type { HistoricalParseWorkerResumePoint } from "../engine/historical-parse-worker-protocol.js";
+import {
+  type BatchHarnessCollector,
+  CollectorParseScope,
+  type CollectorParseSideReport,
+  type NormalizedSession,
+} from "../types.js";
 import {
   getOpenCodeDbPath,
   getOpenCodeDbWatchFiles,
@@ -42,6 +53,21 @@ export function createOpencodeCollector(opts?: {
    * live `getOpenCodeHome()` layout, unchanged.
    */
   dataDir?: string;
+  /**
+   * ISS-8561: override for SEVERAL OpenCode data directories, read by ONE
+   * collector. Golden mode needs it: the corpus now holds more than one
+   * opencode dossier, each staged into its own directory with its own
+   * `opencode.db`, and `CollectorManager` keys its per-harness bookkeeping by
+   * `collector.key` — so stacking a second `opencode` collector would collide
+   * rather than add a store.
+   *
+   * Every store keeps its OWN ingest state (fingerprint, seal gate,
+   * continuation), because those answer "has THIS store been imported" and a
+   * shared answer would re-list a sealed store forever. Mutually exclusive with
+   * {@link dataDir}, and rejected alongside {@link fingerprintPath}: one
+   * fingerprint file cannot hold N high-water marks.
+   */
+  dataDirs?: readonly string[];
   /**
    * ISS-4649 (whitlockk review): the MONITORED diagnostic sink — the same
    * `CollectorManager` logger that emits `collector <key> import failed: …`.
@@ -105,12 +131,35 @@ export function createOpencodeCollector(opts?: {
   const hasRecordedWithheldScan =
     opts?.hasRecordedWithheldScan ?? ((): boolean => true);
   const readParentLinks = opts?.readParentLinks ?? readSessionParentLinks;
-  const resolveHome = (): string => opts?.dataDir ?? getOpenCodeHome();
-  const resolveDbPath = (): string =>
-    opts?.dataDir
-      ? path.join(opts.dataDir, "opencode.db")
-      : getOpenCodeDbPath();
-  let ingest = createOpencodeIngestState();
+  const overrideDataDirs = resolveOverrideDataDirs(opts);
+  if (overrideDataDirs && overrideDataDirs.length > 1 && fingerprintPath) {
+    throw new Error(
+      "opencode collector: fingerprintPath holds ONE high-water mark and cannot describe multiple data dirs"
+    );
+  }
+  const resolveHomes = (): readonly string[] =>
+    overrideDataDirs ?? [getOpenCodeHome()];
+  const resolveDbPaths = (): string[] =>
+    overrideDataDirs
+      ? overrideDataDirs.map((dir) => path.join(dir, "opencode.db"))
+      : [getOpenCodeDbPath()];
+  // ISS-8561: ingest state PER STORE, keyed by db path. Every field in it
+  // answers a question about one store ("has this store been sealed", "did this
+  // store's last load come back short"), so a single shared object cannot hold
+  // the answer for two: sealing store A would leave `lastFingerprint` describing
+  // A, and store B — whose bytes differ — would be re-listed forever, with A
+  // re-listed again the moment B sealed.
+  const ingestByStore = new Map<string, OpencodeIngestState>();
+
+  function ingestFor(dbPath: string): OpencodeIngestState {
+    const existing = ingestByStore.get(dbPath);
+    if (existing) {
+      return existing;
+    }
+    const created = createOpencodeIngestState();
+    ingestByStore.set(dbPath, created);
+    return created;
+  }
 
   function loadPersistedFingerprint(): string | null {
     if (!fingerprintPath) {
@@ -135,7 +184,8 @@ export function createOpencodeCollector(opts?: {
     }
   }
 
-  function ensureSeeded(): void {
+  function ensureSeeded(dbPath: string): void {
+    const ingest = ingestFor(dbPath);
     if (ingest.seeded) {
       return;
     }
@@ -146,7 +196,6 @@ export function createOpencodeCollector(opts?: {
       // in full anyway, so the verdict lands without a forced pass.
       return;
     }
-    const dbPath = resolveDbPath();
     if (hasRecordedWithheldScan(dbPath)) {
       return;
     }
@@ -171,6 +220,29 @@ export function createOpencodeCollector(opts?: {
   }
 
   /**
+   * ISS-8561: which store a parse SIDE-report describes.
+   *
+   * The report is applied by the manager, which knows the source it just
+   * parsed, so `sourcePath` is the answer whenever it is supplied. The two
+   * fallbacks cover callers that predate it: with a single store there is only
+   * one possible answer, and an OpenCode load always carries a withheld report
+   * that names its own source. Returning `undefined` is the honest "cannot
+   * tell", and the caller turns that into a refused seal rather than a guess.
+   */
+  function resolveReportStore(
+    report: CollectorParseSideReport
+  ): string | undefined {
+    if (report.sourcePath) {
+      return report.sourcePath;
+    }
+    const dbPaths = resolveDbPaths();
+    if (dbPaths.length === 1) {
+      return dbPaths[0];
+    }
+    return report.withheldOpencodeSubagents?.sourcePath;
+  }
+
+  /**
    * ISS-5266: record ONE store's complete withhold set, and latch the outcome.
    *
    * The single place either path — the in-process `parse` or the replayed
@@ -180,21 +252,32 @@ export function createOpencodeCollector(opts?: {
    * source is re-read and re-recorded next launch.
    */
   async function applyWithheldReport(
-    report: OpencodeWithheldSubagentReport
+    report: OpencodeWithheldSubagentReport,
+    // ISS-7696: does this write own the seal latch? The RECORD is written for
+    // every caller — ISS-5266 routes the rebuild's re-read through here on
+    // purpose, so a rebuilt store's verdict is current rather than the last
+    // import pass's. The LATCH is a different thing: it is the seal gate, and
+    // the only pass that seals is the import one. Letting a rebuild clear it
+    // would answer "did MY write land?" with somebody else's write.
+    ownsSealLatch = true
   ): Promise<void> {
+    const ingest = ingestFor(report.sourcePath);
     try {
       await recordWithheld(report);
-      ingest.withheldRecordFailed = false;
+      if (ownsSealLatch) {
+        ingest.withheldRecordFailed = false;
+      }
     } catch (error) {
-      ingest.withheldRecordFailed = true;
+      if (ownsSealLatch) {
+        ingest.withheldRecordFailed = true;
+      }
       log(
         `collector opencode withheld-subagent record failed: ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
 
-  function fingerprintDbFiles(): string {
-    const home = resolveHome();
+  function fingerprintDbFiles(home: string): string {
     const parts: string[] = [];
     for (const name of getOpenCodeDbWatchFiles()) {
       try {
@@ -207,13 +290,22 @@ export function createOpencodeCollector(opts?: {
     return parts.join("|");
   }
 
+  /**
+   * A source is always `<dataDir>/opencode.db`, so its directory IS the store's
+   * home — which is what makes the per-source hooks below resolvable without a
+   * second lookup table to keep in step with {@link resolveDbPaths}.
+   */
+  function fingerprintForSource(dbPath: string): string {
+    return fingerprintDbFiles(path.dirname(dbPath));
+  }
+
   return {
     key: "opencode",
     cacheName: "opencode",
     batch: true,
 
     watchRoots(): string[] {
-      return [resolveHome()];
+      return [...resolveHomes()];
     },
 
     watchMatch(filename: string): boolean {
@@ -223,20 +315,24 @@ export function createOpencodeCollector(opts?: {
     },
 
     sourcePathsForWatchEvent(): string[] {
-      return [resolveDbPath()];
+      return resolveDbPaths();
     },
 
     listSources(): string[] {
-      ensureSeeded();
-      const dbPath = resolveDbPath();
-      if (!fs.existsSync(dbPath)) {
-        return [];
+      const sources: string[] = [];
+      for (const dbPath of resolveDbPaths()) {
+        ensureSeeded(dbPath);
+        if (!fs.existsSync(dbPath)) {
+          continue;
+        }
+        if (
+          fingerprintForSource(dbPath) === ingestFor(dbPath).lastFingerprint
+        ) {
+          continue;
+        }
+        sources.push(dbPath);
       }
-      const fingerprint = fingerprintDbFiles();
-      if (fingerprint === ingest.lastFingerprint) {
-        return [];
-      }
-      return [dbPath];
+      return sources;
     },
 
     async parse(dbPath: string): Promise<NormalizedSession[]> {
@@ -351,14 +447,84 @@ export function createOpencodeCollector(opts?: {
     // paths through `applyWithheldReport` means the seal gate is ONE mechanism:
     // there is no second copy of the check to drift out of step.
     applyParseSideReport(report): Promise<void> {
+      // ISS-8561: attribute the report to ONE store before touching any seal
+      // gate. An unattributable report is not "nothing happened" — it may be
+      // describing a load that came back short, so it refuses EVERY store's
+      // seal rather than letting one be sealed over a partial read. It clears
+      // on the next attributable report, so this converges exactly like the
+      // truncation latch it protects.
+      const store = resolveReportStore(report);
+      for (const dbPath of resolveDbPaths()) {
+        ingestFor(dbPath).unattributedSideReport = store === undefined;
+      }
+      if (store === undefined) {
+        log(
+          "collector opencode import failed: parse side-report names no store and more than one is configured; refusing every seal this pass so a short load is not sealed in"
+        );
+        return Promise.resolve();
+      }
+      const ingest = ingestFor(store);
+      // ISS-7696: the seal-gate fields belong to the IMPORT pass, which is the
+      // only caller that goes on to seal. The DATA_REVISION rebuild re-reads the
+      // same store through the same worker on this same instance, always from
+      // offset 0 and on its own schedule, so letting its report through here
+      // would overwrite an in-flight pass's verdict about a DIFFERENT window —
+      // and that pass's `markSourceImported` would then seal on it. The withheld
+      // record below is still WRITTEN for a rebuild — ISS-5266 routes it here on
+      // purpose — but its failure LATCH is part of the same seal gate, so that
+      // half is scoped too.
+      const ownsSealGate = report.scope !== CollectorParseScope.Rebuild;
+      if (ownsSealGate) {
+        // ISS-5854: latch a budget-truncated load onto THIS instance, the one
+        // that owns the fingerprint. Set before the withheld replay below so an
+        // early return cannot skip it.
+        ingest.truncatedByBudget = Boolean(report.droppedSessions);
+        // ISS-7696: PENDING, not active. This runs before the manager has read a
+        // single session out of the window it describes, so promoting it here
+        // would advance the continuation past sessions the pass may never
+        // import.
+        ingest.pendingResumeAfter = report.resumeAfter;
+      }
       if (!report.withheldOpencodeSubagents) {
         return Promise.resolve();
       }
-      return applyWithheldReport(report.withheldOpencodeSubagents);
+      return applyWithheldReport(
+        report.withheldOpencodeSubagents,
+        ownsSealGate
+      );
     },
 
-    sourceFingerprint(): string {
-      return fingerprintDbFiles();
+    sourceFingerprint(source): string {
+      return fingerprintForSource(source);
+    },
+
+    /**
+     * ISS-7696 (whitlockk review): a continuation is only meaningful against the
+     * exact store state it was earned from, so it is handed out only while that
+     * state still stands.
+     *
+     * The worker's own index/id check (`resolveHistoricalParseResumeOffset`)
+     * validates the BOUNDARY session alone, which cannot see a change EARLIER in
+     * the prefix: after delivering `[A, B]`, a store that becomes `[X, B, …]`
+     * still has `B` at the boundary index, so the worker would resume past an
+     * `X` it never delivered, and a later whole window would seal over the hole.
+     * A touched session that keeps its position is the same hole with the same
+     * ending. Neither is visible at the boundary; both move the fingerprint.
+     *
+     * So the fingerprint is the gate and the boundary check is defence in depth.
+     * A store that moved drops the cursor and the source restarts from 0, which
+     * is safe in the direction that matters: re-delivery is idempotent (the
+     * import path upserts on session id) and skipping is the silent loss this
+     * mechanism exists to end.
+     */
+    resumeAfterForSource(source): HistoricalParseWorkerResumePoint | undefined {
+      const confirmed = ingestFor(source).confirmedResumeAfter;
+      if (!confirmed) {
+        return undefined;
+      }
+      return confirmed.fingerprint === fingerprintForSource(source)
+        ? confirmed.point
+        : undefined;
     },
 
     // ISS-5028 (whitlockk review): report whether the snapshot was actually
@@ -366,7 +532,36 @@ export function createOpencodeCollector(opts?: {
     // the pass, so the import is not a complete picture of it — but the caller
     // must know, because a refused source returns as pending on the next scan
     // and must not be counted as finished for first-pass progress.
-    markSourceImported(_source, snapshot): boolean {
+    markSourceImported(source, snapshot): boolean {
+      const ingest = ingestFor(source);
+      // ISS-7696: reaching here is the manager's statement that it ran the whole
+      // session loop for the window it was handed and committed it — the
+      // mid-source live yield and a failed session both return before this call.
+      // So this is the one place a continuation may be promoted, and it happens
+      // BEFORE the refusals below, because a refused seal over a TRUNCATED load
+      // is precisely the case that must go on to ask for the suffix.
+      //
+      // ISS-7696 (whitlockk review): promoted WITH the fingerprint it was earned
+      // against, rather than promoted bare. This runs ahead of the stale-snapshot
+      // refusal below on purpose, so binding is what stops a pass whose store
+      // moved underneath it from leaving a cursor that outlives the list it
+      // describes; `resumeAfterForSource` re-checks the binding before handing it
+      // out. Moving the promotion below that refusal instead would strand the
+      // truncated case, which refuses earlier and is the one that must continue.
+      // The snapshot's fingerprint is the store as the parse SAW it; the
+      // `??` mirrors the `lastFingerprint` assignment below for a caller that
+      // supplies no snapshot.
+      ingest.confirmedResumeAfter = ingest.pendingResumeAfter
+        ? {
+            point: ingest.pendingResumeAfter,
+            fingerprint: snapshot?.fingerprint ?? fingerprintForSource(source),
+          }
+        : undefined;
+      // ISS-8561: refuse the seal when the last side-report could not be
+      // attributed to a store — it may have described a short load of THIS one.
+      if (ingest.unattributedSideReport) {
+        return false;
+      }
       // ISS-5266: refuse the seal when the withhold record did not land. The
       // fingerprint is the gate that stops unchanged bytes being re-read, so
       // advancing it here would make a transient write failure permanent and
@@ -374,7 +569,22 @@ export function createOpencodeCollector(opts?: {
       if (ingest.withheldRecordFailed) {
         return false;
       }
-      const currentFingerprint = fingerprintDbFiles();
+      // ISS-5854: refuse the seal over a load the response budget cut short.
+      // Refusing is what keeps `listSources` returning this sentinel: the
+      // store's bytes did not change, so sealing here would freeze the
+      // under-count as a real zero — the exact freeze `opencode-parse-failure.ts`
+      // records being fixed once already.
+      //
+      // ISS-7696 made that refusal converge instead of latching forever. The
+      // worker request now carries a continuation, so each refused pass asks for
+      // the SUFFIX it has not seen; the load that finally carries the tail
+      // reports nothing dropped, clears this flag through
+      // `applyParseSideReport`, and seals. Until then the answer is still "not
+      // fully imported", which is the honest one.
+      if (ingest.truncatedByBudget) {
+        return false;
+      }
+      const currentFingerprint = fingerprintForSource(source);
       if (
         snapshot?.fingerprint &&
         snapshot.fingerprint !== currentFingerprint
@@ -382,6 +592,12 @@ export function createOpencodeCollector(opts?: {
         return false;
       }
       ingest.lastFingerprint = snapshot?.fingerprint ?? currentFingerprint;
+      // ISS-8561: a store sealed this run is seeded BY that seal. The persisted
+      // mark is a cold-start substitute for a load this process has not done,
+      // so letting `ensureSeeded` run afterwards would replace a fresh in-memory
+      // high-water mark with a stale file (or, with no file, with `null`) and
+      // re-offer a store that was just imported.
+      ingest.seeded = true;
       persistFingerprint(ingest.lastFingerprint);
       return true;
     },
@@ -398,7 +614,11 @@ export function createOpencodeCollector(opts?: {
       // unrepresentable: a field added to `OpencodeIngestState` tomorrow cannot
       // compile without an initial value there, and it is therefore reset here
       // by construction, with no second site to keep in sync.
-      ingest = createOpencodeIngestState();
+      //
+      // ISS-8561: dropping the whole per-store map keeps that property — the
+      // next `ingestFor` rebuilds each store's state through the same factory,
+      // so no field survives a reset and none can be forgotten.
+      ingestByStore.clear();
       if (!fingerprintPath) {
         return;
       }
@@ -415,11 +635,7 @@ export function createOpencodeCollector(opts?: {
      * opencode sessions even when the underlying DB hasn't changed.
      */
     listSourcesForRebuild(): string[] {
-      const dbPath = resolveDbPath();
-      if (!fs.existsSync(dbPath)) {
-        return [];
-      }
-      return [dbPath];
+      return resolveDbPaths().filter((dbPath) => fs.existsSync(dbPath));
     },
   };
 }
@@ -448,6 +664,49 @@ type OpencodeIngestState = {
    * durable retry path.
    */
   withheldRecordFailed: boolean;
+  /**
+   * ISS-5854: did the last load come back with sessions dropped by the worker
+   * response budget?
+   *
+   * Like `withheldRecordFailed`, it converges: ISS-7696 gave the worker request
+   * a continuation, so each pass this flag refuses buys asks for the sessions
+   * the last one could not carry, and the pass that finally carries the tail
+   * arrives with nothing dropped and clears it. It describes the LAST load, so
+   * it must be re-evaluated on every load rather than only when something was
+   * dropped — see `applyParseSideReport`.
+   */
+  truncatedByBudget: boolean;
+  /**
+   * ISS-7696: the continuation the LAST load came back with, not yet usable.
+   *
+   * Two fields rather than one because the two events are separated by the whole
+   * session loop: the worker states where it stopped before the manager has
+   * imported anything from that window, and the manager may abandon the window's
+   * tail (a mid-source live yield) or leave the source unmarked (a failed
+   * session). Only `markSourceImported` — which neither of those paths reaches —
+   * promotes pending to confirmed, so an unconsumed window is re-delivered
+   * instead of skipped.
+   */
+  pendingResumeAfter: HistoricalParseWorkerResumePoint | undefined;
+  /**
+   * The continuation a completed pass earned, bound to the store state it was
+   * earned against; what the next request carries while that state stands.
+   *
+   * See {@link BatchHarnessCollector.resumeAfterForSource} on this collector for
+   * why the binding — not the worker's boundary check — is what makes a resume
+   * skip-safe.
+   */
+  confirmedResumeAfter: ConfirmedResumePoint | undefined;
+  /**
+   * ISS-8561: could the LAST parse side-report be attributed to a store?
+   *
+   * With one store the answer is always yes — there is nothing else it could
+   * describe. With several, a report that names no source could be about any of
+   * them, including one whose load came back short, so every store refuses its
+   * seal until an attributable report arrives. Like `truncatedByBudget` it
+   * describes the last report rather than latching, so it converges.
+   */
+  unattributedSideReport: boolean;
 };
 
 function createOpencodeIngestState(): OpencodeIngestState {
@@ -455,5 +714,47 @@ function createOpencodeIngestState(): OpencodeIngestState {
     lastFingerprint: null,
     seeded: false,
     withheldRecordFailed: false,
+    truncatedByBudget: false,
+    pendingResumeAfter: undefined,
+    confirmedResumeAfter: undefined,
+    unattributedSideReport: false,
   };
+}
+
+/**
+ * ISS-7696 (whitlockk review): a continuation plus the store fingerprint it was
+ * earned against, kept together because neither half is safe to act on alone.
+ *
+ * A bare resume point is a pair of numbers that only describes the session list
+ * it was taken from; carrying the fingerprint beside it is what lets
+ * `resumeAfterForSource` prove that list is still the one in front of us before
+ * asking the worker to slice past its prefix.
+ */
+type ConfirmedResumePoint = {
+  point: HistoricalParseWorkerResumePoint;
+  fingerprint: string;
+};
+
+/**
+ * ISS-8561: normalize the two data-dir overrides into the one list the collector
+ * reads, or `null` for the live `getOpenCodeHome()` layout.
+ *
+ * Supplying both is rejected rather than resolved by precedence: the two would
+ * disagree about which stores exist, and the loser's sessions would simply never
+ * be imported — a silent omission, which is the failure this corpus exists to
+ * catch.
+ */
+function resolveOverrideDataDirs(opts?: {
+  dataDir?: string;
+  dataDirs?: readonly string[];
+}): readonly string[] | null {
+  if (opts?.dataDir !== undefined && opts?.dataDirs !== undefined) {
+    throw new Error(
+      "opencode collector: pass dataDir or dataDirs, never both — they would disagree about which stores exist"
+    );
+  }
+  if (opts?.dataDirs !== undefined) {
+    return opts.dataDirs;
+  }
+  return opts?.dataDir === undefined ? null : [opts.dataDir];
 }

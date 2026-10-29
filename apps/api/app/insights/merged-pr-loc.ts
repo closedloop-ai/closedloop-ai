@@ -4,11 +4,15 @@
  *
  * This is the SSOT for two things a projected `PullRequestDetail` row set needs
  * before any Delivery figure is taken of it: WHICH PULL REQUEST a row is
- * ({@link projectedPrIdentity}, {@link dedupeMergedPrs},
- * {@link distinctMergedPrCount}) and HOW MANY LINES it moved
- * ({@link mergedPrLoc}, {@link mergedPrLocTotals}). Every merged-PR facet in
- * one Delivery response reads the same identity here, so they all report pull
- * requests rather than rows.
+ * ({@link projectedPrIdentity}, {@link dedupeMergedPrs}) and HOW MANY LINES it moved
+ * ({@link mergedPrLocTotals}). Every merged-PR facet in one Delivery response
+ * reads the same identity here, so they all report pull requests rather than
+ * rows.
+ *
+ * ISS-11589 moved the twin tie-break and the per-row size out to
+ * `@repo/lib/pull-requests/merged-pr-twin-resolution`, which `packages/lib` can
+ * import: the Branches card was dropping both rows of a twin pair this module
+ * resolves, so one label published two populations.
  *
  * The LOC half replaces the previous
  * branch-file-cache derivation, which was wrong in two ways the plan's D1 calls
@@ -38,7 +42,13 @@ import {
   withSizeCoverage,
 } from "@closedloop-ai/loops-api/insights";
 import type { KpiStat } from "@repo/api/src/types/insights";
-import { median, round } from "@repo/api/src/utils/math";
+import { MERGED_LOC_LABEL } from "@repo/api/src/types/insights-loc-terminology-flag";
+import { round } from "@repo/api/src/utils/math";
+import {
+  mergedPullRequestLoc,
+  resolveMergedPullRequestTwins,
+} from "@repo/lib/pull-requests/merged-pr-twin-resolution";
+import type { DeliveryPullRequestFacts } from "./delivery-pull-request-facts";
 
 /**
  * The projection fields this module needs to identify one merged PR.
@@ -53,7 +63,13 @@ export type ProjectedPrIdentityInput = {
   number: number;
   /** GitHub node id; globally unique when present, so the strongest identity. */
   githubId: string | null;
-  /** Normalized `owner/name`; the producer-independent repo identity. */
+  /**
+   * Installed repository authority, when the row is linked to an App-owned repo
+   * record. This wins over the denormalized PR row name because an App row can
+   * retain stale text there while admission resolves through the installed repo.
+   */
+  repository?: { fullName: string } | null;
+  /** Normalized `owner/name`; the repo-less/Desktop fallback identity. */
   repositoryFullName: string | null;
   /** Installation-repo surrogate; only App-adopted rows carry it. */
   repositoryId: string | null;
@@ -86,10 +102,12 @@ export type MergedPrLocTotals = {
  *
  * Repo identity LEADS, per the repo-wide PR identity rule: repository plus
  * number when a repository is known, never number alone, because two repos can
- * each have a PR #42 and collapsing them would UNDER-count. `repositoryFullName`
- * is the producer-independent component (schema.prisma D2) — both the desktop
- * sync writer and the GitHub App projection writer stamp it — so it is the one
- * key under which two projections of ONE pull request actually meet.
+ * each have a PR #42 and collapsing them would UNDER-count. The installed
+ * repository relation is the strongest repo name when present: admission can
+ * resolve an App row through that authority even if the denormalized
+ * `repositoryFullName` on the PR row is stale. Repo-less/Desktop rows fall back
+ * to their own normalized `repositoryFullName`, so the App row and its Desktop
+ * twin still meet on the same canonical `repo:` identity.
  *
  * `githubId` deliberately does NOT lead, though it is the strongest-looking
  * field: `PullRequestDetail.githubId` is `@unique`, so no two rows can ever
@@ -117,8 +135,9 @@ export type MergedPrLocTotals = {
  * reader and not the other.
  */
 export function projectedPrIdentity(pr: ProjectedPrIdentityInput): string {
-  if (pr.repositoryFullName) {
-    return `repo:${pr.repositoryFullName.toLowerCase()}#${pr.number}`;
+  const repositoryFullName = projectedRepositoryFullName(pr);
+  if (repositoryFullName) {
+    return `repo:${repositoryFullName.toLowerCase()}#${pr.number}`;
   }
   if (pr.repositoryId) {
     return `repoId:${pr.repositoryId}#${pr.number}`;
@@ -130,49 +149,16 @@ export function projectedPrIdentity(pr: ProjectedPrIdentityInput): string {
 }
 
 /**
- * One PR's size, preserving unknown.
- *
- * BOTH counts must be present: a row carrying additions but no deletions is a
- * partially-projected row, not a PR that removed nothing. This is the same
- * all-or-nothing rule `isLocEnriched` applies on the Branches surface, so a
- * half-projected row reads as unavailable rather than as a wrong-but-plausible
- * size.
- */
-export function mergedPrLoc(pr: MergedPrLocInput): number | null {
-  const additions = finiteCount(pr.additions);
-  const deletions = finiteCount(pr.deletions);
-  if (additions === null || deletions === null) {
-    return null;
-  }
-  return additions + deletions;
-}
-
-/**
  * Dedupe merged PRs by identity, returning the winning ROWS so callers keep
  * every field they selected (the KLOC trend still needs `mergedAt`).
  *
- * Two tie-breaks, in order:
- *
- * 1. **A sized row beats an unsized one** — a repo-less desktop row missing its
- *    diff stats must never suppress the webhook-projected row for the same PR.
- * 2. **When BOTH carry LOC and the counts disagree, the App-owned row wins** —
- *    the one carrying a `githubId`, which only the App/webhook path writes. Left
- *    to arrival order the reported size of one PR would depend on row ordering,
- *    which is not a fact about the PR; GitHub's own numbers are the tiebreaker
- *    with a claim to being right.
+ * `projectedPrIdentity` always yields a key, so no row here is ever
+ * unidentified and the shared resolver's count of those is nothing to report.
  */
 export function dedupeMergedPrs<T extends MergedPrLocInput>(
   rows: readonly T[]
 ): T[] {
-  const byIdentity = new Map<string, T>();
-  for (const row of rows) {
-    const identity = projectedPrIdentity(row);
-    const existing = byIdentity.get(identity);
-    if (!existing || winsDedupe(existing, row)) {
-      byIdentity.set(identity, row);
-    }
-  }
-  return [...byIdentity.values()];
+  return resolveMergedPullRequestTwins(rows, projectedPrIdentity).values;
 }
 
 /**
@@ -221,7 +207,7 @@ export function dedupeMergedPrsWithEarliestCreation<
 }
 
 /**
- * Null-preserving KLOC/median/coverage inputs over ALREADY-DEDUPED rows — pass
+ * Null-preserving KLOC/coverage inputs over ALREADY-DEDUPED rows — pass
  * the output of {@link dedupeMergedPrs} or of
  * {@link dedupeMergedPrsWithEarliestCreation}, so one window is deduped exactly
  * once and every derived number is taken of the same population.
@@ -231,7 +217,7 @@ export function mergedPrLocTotals(
 ): MergedPrLocTotals {
   const knownLocValues: number[] = [];
   for (const pr of dedupedRows) {
-    const loc = mergedPrLoc(pr);
+    const loc = mergedPullRequestLoc(pr);
     if (loc !== null) {
       knownLocValues.push(loc);
     }
@@ -244,101 +230,18 @@ export function mergedPrLocTotals(
   };
 }
 
-/**
- * An exact merged-PR ROW count corrected down to distinct PULL REQUESTS
- * (ISS-5411).
- *
- * The headline count is a `count()` over the same predicate the row scan uses,
- * so it is exact and — unlike the scan — uncapped. What it counts is rows
- * though, and one real pull request can be two of them (see
- * {@link projectedPrIdentity} for why that pair exists and cannot be forbidden
- * by a unique constraint). Subtracting the duplicates the scan can see turns it
- * into a pull-request count without giving up the uncapped exactness the
- * separate `count()` exists for.
- *
- * `scannedRows` MUST come from the same window and predicate as
- * `exactRowCount`. Identity is row-local, so every duplicate pair the scan
- * holds is a duplicate pair in the full population — the correction is never an
- * over-count. When the scan is capped it sees only some of them, so the result
- * lands between the true distinct count and the raw row count: still short of
- * the truth by the unseen duplicates, but never further from it than the
- * uncorrected count was.
- *
- * ISS-5624: this is now the ONLY approximate operand. The windows the endpoint
- * holds no rows for — the prior merged window and the closed side of the merge
- * rate — count their distinct identities in SQL and are exact at any size, so a
- * ratio taken against one of them reconciles exactly below the cap and, above
- * it, carries this side's unseen duplicates alone rather than a difference
- * between two independently-capped slices. Correcting the current window the
- * same way would cost nothing extra in queries; it is left alone here because
- * the scan it corrects is already in hand and every sibling merged-PR facet is
- * built from that same capped scan.
- */
-export function distinctMergedPrCount(
-  exactRowCount: number,
-  scannedRows: readonly ProjectedPrIdentityInput[]
-): number {
-  const identities = new Set<string>();
-  for (const row of scannedRows) {
-    identities.add(projectedPrIdentity(row));
-  }
-  // Distinct pull requests the scan PROVED, plus at most one pull request per
-  // row the count saw beyond the scan (the cap overflow). When the two racing
-  // queries disagree — a twin row written between them — the overflow term
-  // clamps to zero and the scan's own distinct count is the floor that cannot
-  // lie, never a zero the sibling facets built from the same scan contradict.
-  return identities.size + Math.max(0, exactRowCount - scannedRows.length);
-}
-
-/**
- * Which of two rows for the SAME pull request should represent it.
- *
- * A sized row always beats an unsized one. Between two sized rows the counts
- * normally agree (both project the same PR), and when they do this is a no-op;
- * when they DISAGREE the App-owned row — the one carrying the `githubId` only
- * the App/webhook path writes — wins, so the reported size of a PR is never
- * decided by which row the query happened to emit first.
- */
-function winsDedupe(
-  existing: MergedPrLocInput,
-  row: MergedPrLocInput
-): boolean {
-  const existingLoc = mergedPrLoc(existing);
-  const rowLoc = mergedPrLoc(row);
-  if (existingLoc === null) {
-    return rowLoc !== null;
-  }
-  if (rowLoc === null || rowLoc === existingLoc) {
-    return false;
-  }
-  return Boolean(row.githubId) && !existing.githubId;
-}
-
-/**
- * Narrow a projected diff count to a usable number, or `null`.
- *
- * The declared type is `number | null`, but this sits at a persistence
- * boundary: a Prisma row that never selected the column, a partially-written
- * projection, or a corrupt value can all present as `undefined`, `NaN`, or
- * `Infinity` at runtime. Comparing against `null` alone let `undefined` through
- * and produced a `NaN` KLOC — a number that renders as garbage rather than as
- * the honest "unknown" the caller is prepared to handle.
- *
- * A NEGATIVE count is unknown for the same reason: `Number.isFinite(-5)` is
- * true, so a corrupt projection could otherwise subtract from the KLOC sum and
- * drive lines-per-dollar below zero — a number no diff can produce. Anything
- * that is not a finite, non-negative number is unknown.
- */
-function finiteCount(value: number | null): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? value
-    : null;
+function projectedRepositoryFullName(
+  pr: ProjectedPrIdentityInput
+): string | null {
+  return pr.repository?.fullName || pr.repositoryFullName;
 }
 
 /** The Delivery KPIs derived wholly from {@link MergedPrLocTotals}. */
 export type MergedLocKpis = {
   kloc: KpiStat;
+  loc: KpiStat;
   mergedKloc: KpiStat;
+  mergedLoc: KpiStat;
   prsWithoutLoc: KpiStat;
   prsScanned: KpiStat;
   prSize: KpiStat;
@@ -348,18 +251,25 @@ export type MergedLocKpis = {
  * Builds every Delivery KPI that reads nothing but {@link MergedPrLocTotals}.
  *
  * Lives beside the derivation rather than in the grandfathered `service.ts` for
- * the reason stated in the module header: the KLOC sum, the median population,
+ * the reason stated in the module header: the KLOC sum
  * and the coverage the two captions quote are one cohesive unit, and splitting
  * them across two files is what let the caption drift from the number before.
  * `service.ts` splices the returned KPIs into its list, so their order on the
  * wire is unchanged.
  */
-export function mergedLocKpis({
-  totalLines,
-  knownLocValues,
-  prCount,
-  unknownLocCount,
-}: MergedPrLocTotals): MergedLocKpis {
+export function mergedLocKpis(
+  { totalLines, knownLocValues, prCount, unknownLocCount }: MergedPrLocTotals,
+  /**
+   * ISS-11589: the median the Branches card publishes
+   * (`readDeliveryPullRequestFacts`), WITH its own population — the two numbers are
+   * folded over the Product-eligible cohort, not over the row scan the KLOC
+   * figures use, so the median's caption has to quote these and not `prCount`.
+   */
+  medianPrSize: Pick<
+    DeliveryPullRequestFacts,
+    "medianSize" | "merged" | "sized"
+  > | null
+): MergedLocKpis {
   // A window where NO merged PR carries projected LOC has an UNKNOWN KLOC, not
   // a KLOC of zero: `round(0/1000)` would render "0.0 thousand lines landed"
   // over PRs that certainly landed lines — the unavailable-as-real-zero
@@ -368,10 +278,14 @@ export function mergedLocKpis({
   // `unknownLocCount` carries how much of the population it could not see.
   const klocValue =
     knownLocValues.length > 0 ? round(totalLines / 1000, 1) : null;
+  // ISS-8184: the same sum on its true basis, on the same no-evidence rule. It
+  // is not `klocValue * 1000` because that value is rounded to one decimal, so
+  // the factor would round-trip a real line count to the nearest hundred.
+  const locValue = knownLocValues.length > 0 ? totalLines : null;
   // ISS-5414: the coverage pair below is `internal` and backs no tile, so this
-  // clause is where it reaches a reader. Both the KLOC sum and the median are
-  // taken over the sized REST of `prCount`; without it the tiles present that
-  // lower bound as if it were the whole figure.
+  // clause is where it reaches a reader. The KLOC sum is taken over the
+  // sized REST of `prCount`; without it the tile presents that lower bound as if
+  // it were the whole figure.
   const coverageSub = (sub: string) =>
     withSizeCoverage(
       sub,
@@ -379,6 +293,19 @@ export function mergedLocKpis({
       unknownLocCount,
       SizeCoveragePopulation.Merged
     );
+  // The median's own population, which is NOT `prCount`. Both tiles say "sized
+  // N of M", and the two Ms are genuinely different cohorts: a caption quoting
+  // the scan beside a value taken of the eligible set counts a merged pull
+  // request the value excluded.
+  const medianCoverageSub = (sub: string) =>
+    medianPrSize === null
+      ? sub
+      : withSizeCoverage(
+          sub,
+          medianPrSize.merged,
+          medianPrSize.merged - medianPrSize.sized,
+          SizeCoveragePopulation.Merged
+        );
   return {
     kloc: kpi(
       "kloc",
@@ -386,6 +313,17 @@ export function mergedLocKpis({
       klocValue,
       KpiFormat.Number,
       coverageSub("thousand lines landed")
+    ),
+    // ISS-8184: the raw-line twin of `kloc`, backing the same tile under the LOC
+    // terminology flag. It ships ALONGSIDE rather than replacing, because the
+    // flag-off shape still needs the thousands operand and a version-skewed
+    // client still reads `kloc`.
+    loc: kpi(
+      "loc",
+      MERGED_LOC_LABEL,
+      locValue,
+      KpiFormat.Number,
+      coverageSub("lines landed")
     ),
     // FEA-2947: surface-agnostic MERGED-lines KLOC the shared AI-Impact card reads
     // as its "Tokens per KLOC" denominator. Here it equals the visible `kloc` tile
@@ -403,6 +341,17 @@ export function mergedLocKpis({
       "thousand lines landed",
       true
     ),
+    // ISS-8184 ruling 3: the raw-line successor to `mergedKloc`, which stays
+    // emitting until a human approves its removal. Carries LINES, so the
+    // AI-Impact card's ratio needs no factor of its own.
+    mergedLoc: kpi(
+      "mergedLoc",
+      MERGED_LOC_LABEL,
+      locValue,
+      KpiFormat.Number,
+      "lines landed",
+      true
+    ),
     // PLN-1535 M4 coverage pair. Without them the response cannot distinguish
     // "the org merged this many lines" from "…this many lines THAT WE CAN SEE",
     // since KLOC and Median PR size are taken over the sized REST of the
@@ -410,11 +359,13 @@ export function mergedLocKpis({
     // them through the two captions above and below instead.
     //
     // They ship together on purpose: the population is `mergedPrsScanned` — the
-    // deduped, cap-bounded row scan — NOT the `merged` count, which corrects an
-    // exact uncapped `countMergedPrsInRange`. "7 without size" beside
-    // "Merged PRs 120" invites the wrong denominator. Both now count pull
-    // requests rather than rows (ISS-5411), so the scan cap is the only thing
-    // left that makes them diverge.
+    // deduped, cap-bounded row scan — NOT the `merged` count, which is the
+    // shared fold's exact uncapped count. "7 without size" beside
+    // "Merged PRs 120" invites the wrong denominator. Both count pull requests
+    // rather than rows (ISS-5411); what still makes them diverge is the scan cap
+    // AND, since ISS-12408, eligibility — the scan admits Product-ineligible
+    // branches the fold excludes, and windows on `merged_at <= end` where the
+    // fold uses `< end`. ISS-12485 owns that second gap.
     //
     // Both use plain `kpi()` (ISS-4995): neither computes a prior-window
     // figure, so the emitted `deltaPct` stays null and now declares
@@ -440,18 +391,12 @@ export function mergedLocKpis({
     prSize: kpi(
       "pr-size",
       "Median PR size",
-      // FEA-2923: no merged PR with a KNOWN size in the window ⇒ nothing to
-      // median ⇒ emit `null` so the KPI renders `—` (formatKpiValue), not a
-      // misleading 0. `null` is JSON-serializable (unlike a non-finite number)
-      // and matches the `KpiStat.value: number | null` contract. Mirrors
-      // desktop `computeDelivery`.
-      //
-      // PLN-1535 M4: the population is now PRs whose own projection carries
-      // both diff counts, rather than PRs whose BRANCH file cache was Fresh.
-      // Same intent — median over known sizes only — against per-PR truth.
-      knownLocValues.length > 0 ? (median(knownLocValues) ?? 0) : null,
+      // FEA-2923: `null` (no merged PR with a KNOWN size) renders `—`, not 0.
+      // ISS-11589: read in SQL over the Branches card's population, which is
+      // also the population its caption quotes.
+      medianPrSize?.medianSize ?? null,
       KpiFormat.Number,
-      coverageSub("lines changed")
+      medianCoverageSub("lines changed")
     ),
   };
 }

@@ -6,6 +6,7 @@ import { normalizeArtifactSubtype } from "@repo/api/src/types/artifact";
 import { expandSlugAliases } from "@repo/api/src/types/slug-prefix";
 import { ArtifactType, withDb } from "@repo/database";
 import { NextResponse } from "next/server";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
 
 type RouteParams = { params: Promise<{ slug: string }> };
 
@@ -27,19 +28,39 @@ function normalizeSubtypeForWire(
 /**
  * Public endpoint returning title, type, and status for a given document slug.
  * Consumed by OG-metadata generation (apps/app/lib/og-metadata.ts) for PRD,
- * plan, and feature pages. No authentication required.
+ * plan, and feature pages.
+ *
+ * This route takes no auth, and whether it SHOULD is OPEN under ISS-6916 — not
+ * settled here in either direction. The link-preview crawlers this exists for
+ * carry no session, so the posture is at least deliberate-looking; against that,
+ * it returns a document's title, type and status to anyone who can guess a slug,
+ * and adding auth would break every current caller. That trade is a human's
+ * call, not an implementation lane's. (Note for whoever makes it: the three
+ * not-found branches all return an identical `{ error: "Not found" }` 404, so
+ * there is no response-shape oracle distinguishing an unknown org from a known
+ * org with no such document — only a timing one, one query versus two.)
+ *
+ * Until that decision is made, the org read below stays narrowed to the id it
+ * resolves (ISS-6325), and the `no-unauthenticated-org-read` source gate fails
+ * the build if anyone widens it.
  *
  * When `?org=<orgSlug>` is provided, scopes the lookup by organization
  * using the compound unique index (organizationId, slug). Without the
  * param, falls back to an unscoped findFirst for backward compatibility.
  */
-export async function GET(request: Request, { params }: RouteParams) {
+async function handleGet(request: Request, { params }: RouteParams) {
   const { slug } = await params;
   const orgSlug = new URL(request.url).searchParams.get("org");
 
   if (orgSlug) {
     const org = await withDb((db) =>
-      db.organization.findUnique({ where: { slug: orgSlug } })
+      // Unauthenticated route: read the id it resolves and nothing else, so the
+      // org's encrypted Claude API key and settings blob never enter this
+      // process on a public unfurl.
+      db.organization.findUnique({
+        where: { slug: orgSlug },
+        select: { id: true },
+      })
     );
 
     if (!org) {
@@ -92,3 +113,5 @@ export async function GET(request: Request, { params }: RouteParams) {
     status: artifact.status,
   });
 }
+
+export const GET = withRequestCompleted(handleGet);

@@ -7,10 +7,15 @@ import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
 import { fireEvent, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
+  SESSIONS_BRANCHES_COLUMN_ID,
+  SESSIONS_OWNER_COLUMN_ID,
+} from "../../../lib/sessions-table-columns";
+import {
   createAgentSessionListItemFixture,
   mixedAgentSessionListFixtures,
 } from "../session-list-fixtures";
 import { SyncedSessionsTable } from "../synced-sessions-table";
+import { sessionsColumnLabel } from "./sessions-column-label.test-helpers";
 import {
   GRID_EMPTY_VALUE_TEXT_REGEX,
   getBranchCellForSessionName,
@@ -50,14 +55,15 @@ describe("SyncedSessionsTable — rendering, columns, and chips", () => {
       screen.queryByText("/worktrees/shared-list")
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByText("/workspace/example-repo")
+      screen.queryByText("/workspace/closedloop-ai")
     ).not.toBeInTheDocument();
-    // ISS-5770: `Awaiting input` was a qualifier chip in the removed `Signals`
-    // column. The fact is not lost — the API projects it into Status as
-    // `Waiting` (`session-status-projection.ts`, FEA-4301) — so this asserts it
-    // at its surviving home rather than dropping the coverage.
-    expect(screen.getAllByText("Waiting").length).toBeGreaterThan(0);
-    expect(screen.getByText("Linked branches")).toBeInTheDocument();
+    // ISS-10364 (operator ruling, 2026-09-23/24) retired the Waiting word this
+    // assertion used to pin: the fixture's awaiting-input row now badges the
+    // same "Active" every other non-terminal row does, with no distinct chip.
+    expect(screen.getAllByText("Active").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(sessionsColumnLabel(SESSIONS_BRANCHES_COLUMN_ID))
+    ).toBeInTheDocument();
     expect(screen.getAllByText("fea-2036")).not.toHaveLength(0);
     // FEA-4274: an unresolved repository never fabricates a cwd folder name — a
     // numbered worktree dir must not surface "3" or the raw path as a repo.
@@ -135,7 +141,9 @@ describe("SyncedSessionsTable — rendering, columns, and chips", () => {
       />
     );
 
-    const branchHeader = screen.getByText("Linked branches");
+    const branchHeader = screen.getByText(
+      sessionsColumnLabel(SESSIONS_BRANCHES_COLUMN_ID)
+    );
     expect(branchHeader).toBeInTheDocument();
     expect(branchHeader.closest("button")).toBeNull();
     fireEvent.click(branchHeader);
@@ -166,8 +174,27 @@ describe("SyncedSessionsTable — rendering, columns, and chips", () => {
       />
     );
 
-    expect(screen.queryByText("Linked branches")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(sessionsColumnLabel(SESSIONS_BRANCHES_COLUMN_ID))
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("fea-2036")).not.toBeInTheDocument();
+  });
+
+  it("keeps Autonomy non-sortable on the legacy shared table", () => {
+    const onSort = vi.fn();
+    renderWithNav(
+      <SyncedSessionsTable
+        getSessionHref={(item) => `/sessions/${item.id}`}
+        items={mixedAgentSessionListFixtures}
+        onSort={onSort}
+        sortDir="asc"
+      />
+    );
+
+    const autonomyHeader = screen.getByText("Autonomy");
+    expect(autonomyHeader.closest("button")).toBeNull();
+    fireEvent.click(autonomyHeader);
+    expect(onSort).not.toHaveBeenCalled();
   });
 
   it("FEA-4300: an Owner header click emits the server sort key `user`, and a `user` sort lights the Owner header", () => {
@@ -230,7 +257,9 @@ describe("SyncedSessionsTable — rendering, columns, and chips", () => {
 
     // FEA-4006: Owner is a shown-by-default column (matching the agent-detail
     // mock), so a table with no `visibleColumns` renders it.
-    expect(screen.getByText("Owner")).toBeInTheDocument();
+    expect(
+      screen.getByText(sessionsColumnLabel(SESSIONS_OWNER_COLUMN_ID))
+    ).toBeInTheDocument();
     expect(screen.getByText("Daveth Oakhurst")).toBeInTheDocument();
     // Owner-less session (its user outlived deletion, FEA-1699) shows the shared
     // em-dash placeholder rather than leaking a raw missing value.
@@ -247,7 +276,9 @@ describe("SyncedSessionsTable — rendering, columns, and chips", () => {
         visibleColumns={new Set(["status", "repo"])}
       />
     );
-    expect(screen.queryByText("Owner")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(sessionsColumnLabel(SESSIONS_OWNER_COLUMN_ID))
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("Daveth Oakhurst")).not.toBeInTheDocument();
   });
 

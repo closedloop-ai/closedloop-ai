@@ -23,7 +23,6 @@ export type NavIconName =
   | "branches"
   | "agents"
   | "insights"
-  | "loops"
   | "agent-monitoring"
   | "judges";
 
@@ -47,7 +46,7 @@ export const artifactsNav: readonly NavItem[] = [
   { label: "Issues", icon: "issues" },
   { label: "Sessions", icon: "sessions" },
   { label: "Branches", icon: "branches", isActive: true },
-  { label: "Agents", icon: "agents" },
+  { label: "Agentic Components", icon: "agents" },
 ];
 
 export const teams: readonly TeamItem[] = [
@@ -67,7 +66,6 @@ export const teams: readonly TeamItem[] = [
 
 export const labsNav: readonly NavItem[] = [
   { label: "Insights", icon: "insights" },
-  { label: "Loops", icon: "loops" },
   { label: "Agent Monitoring", icon: "agent-monitoring" },
   { label: "Judges", icon: "judges" },
 ];
@@ -179,13 +177,13 @@ export const branchRows: readonly BranchRow[] = [
     id: "br_1284",
     branchName: "agent/synthetic-seed-generator",
     baseBranch: "main",
-    repo: "closedloop-ai/example-repo",
+    repo: "closedloop-ai/closedloop-ai",
     owner: "Alex Rivera",
     status: BranchStatus.Review,
     provenance: Provenance.Agent,
     prNumber: 1284,
     prTitle: "Synthetic seed generator for fixtures",
-    prUrl: "https://github.com/closedloop-ai/example-repo/pull/1284",
+    prUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/1284",
     prState: PrState.Open,
     checksPassed: 9,
     checksTotal: 11,
@@ -248,13 +246,13 @@ export const branchRows: readonly BranchRow[] = [
     id: "br_saml",
     branchName: "agent/saml-sso-implementation",
     baseBranch: "main",
-    repo: "closedloop-ai/example-repo",
+    repo: "closedloop-ai/closedloop-ai",
     owner: "Sam Chen",
     status: BranchStatus.Open,
     provenance: Provenance.Agent,
     prNumber: 1290,
     prTitle: "SAML SSO — implementation",
-    prUrl: "https://github.com/closedloop-ai/example-repo/pull/1290",
+    prUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/1290",
     prState: PrState.Open,
     checksPassed: 10,
     checksTotal: 12,

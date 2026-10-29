@@ -113,10 +113,8 @@ export function rejectIfDbHostShuttingDown<TResult>(
  */
 export type DbGuardedChannel =
   | `desktop:db:${string}`
-  | `desktop:scheduled-tasks:${string}`
   | `desktop:shared-agent-sessions:${string}`
-  | `desktop:shared-branches:${string}`
-  | `desktop:shared-trace-comments:${string}`;
+  | `desktop:shared-branches:${string}`;
 
 /**
  * `unknown` for a normal channel, `never` for a {@link DbGuardedChannel}.

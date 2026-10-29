@@ -1,4 +1,9 @@
 import { z } from "zod";
+import { storableSyncTimestampSchema } from "./sync-timestamp.ts";
+import {
+  TranscriptSkipReason,
+  toKnownTranscriptSkipReason,
+} from "./transcript-skip-reason-constants.ts";
 
 /**
  * Shared wire contract for the desktop transcript control plane (FEA-2714,
@@ -33,106 +38,24 @@ export type TranscriptUploadStatus =
   (typeof TranscriptUploadStatus)[keyof typeof TranscriptUploadStatus];
 
 /**
- * Why the desktop permanently skipped a transcript (FEA-3476 / PRD-536 D7).
- * Persisted on `SessionTranscript.permanentFailureReason` and surfaced to the
- * UI so a permanently-unavailable transcript explains *why* (not just "failed").
+ * ISS-9884: `TranscriptSkipReason`, `toKnownTranscriptSkipReason` and
+ * `isRecoverableTranscriptSkipReason` MOVED OUT of this module to the Zod-FREE
+ * sibling `transcript-skip-reason-constants`. Import them from there; there is
+ * deliberately no re-export shim here, exactly as the ISS-4848
+ * `transcript-disposition-constants` split has none (Biome `noBarrelFile`
+ * rejects one).
  *
- * - `too_large`: the file exceeds the desktop `TRANSCRIPT_SYNC_MAX_FILE_BYTES`
- *   cap, or one JSONL line exceeds the redacted transcript line cap, and is
- *   dead-lettered rather than synced. Raising those caps is a separate product
- *   decision; until then the archive will never contain this file.
- * - `source_gone` (FEA-3555): the local transcript source (a `~/.codex` rollout
- *   or `~/.claude` transcript) that this row was fingerprinted from is no longer
- *   on disk and nothing was ever uploaded (`syncedByteOffset === 0`), after a
- *   bounded number of consecutive missing-source observations. This is the
- *   old-session case: the file was rotated/deleted before the sweep could sync
- *   any bytes, so re-deriving from point-in-time local FS state can never
- *   recover it. Terminal so the cloud stops representing it as `syncing` forever
- *   and the read path derives `failedPermanent` (parity with `too_large`).
- * - `retries_exhausted` (ISS-4621): the desktop dead-lettered the file after the
- *   bounded consecutive-upload-failure ladder was exhausted (transport/S3/plan
- *   errors — the source file itself may still exist). Before ISS-4621 this
- *   generic dead-letter never told the cloud, so the transcript read as
- *   `syncing` forever with no failure reason. Terminal for the AUTOMATIC lane
- *   only: a later change to the source file re-queues it locally (one more
- *   chance), and a successful upload then supersedes the skip server-side.
- * - `materialized_source_unavailable` (ISS-4695 item 3, Option A): the local
- *   source is a BATCH-MATERIALIZED harness projection (OpenCode: `main.jsonl` /
- *   `subagent:<id>.jsonl` re-derived from the foreign `opencode.db` every sweep)
- *   that was absent at sync time and crossed the missing-source attempt cap.
- *   Unlike `source_gone` — a genuinely-vanished raw Claude/Codex rollout that can
- *   never be recovered — a materialized source CAN be regenerated on a later
- *   sweep, so this is a RECOVERABLE terminal: the cloud maps it to a non-permanent
- *   disposition (see `dispositionForAvailability` in
- *   `apps/api/app/agent-sessions/transcript-availability.ts`) so redrive/recovery
- *   stays possible rather than a hard `failedPermanent` that would hide that the
- *   transcript can still come back. Grow-only + version-skew safe: the WRITE-side
- *   enum accepts it server-side BEFORE the desktop starts emitting it (the server
- *   leads the deploy), and an older client reading it back degrades it to `null`
- *   via {@link toKnownTranscriptSkipReason}.
- */
-export const TranscriptSkipReason = {
-  TooLarge: "too_large",
-  SourceGone: "source_gone",
-  RetriesExhausted: "retries_exhausted",
-  MaterializedSourceUnavailable: "materialized_source_unavailable",
-} as const;
-export type TranscriptSkipReason =
-  (typeof TranscriptSkipReason)[keyof typeof TranscriptSkipReason];
-
-const TRANSCRIPT_SKIP_REASON_VALUES = new Set<string>(
-  Object.values(TranscriptSkipReason)
-);
-
-/**
- * Narrow a wire value to a known {@link TranscriptSkipReason}, else `null`.
- * READ-side version-skew guard (ISS-4621 review): skip reasons are grow-only
- * (`retries_exhausted` was added after `too_large`/`source_gone` shipped), so a
- * client parsing a response from a NEWER server can meet a reason its bundled
- * enum does not know. A closed `z.enum` there rejects the whole descriptor —
- * and with it the entire `files` array — turning one unknown label into a
- * broken transcript panel. Reasons are display detail, so the safe degrade is
- * `null` (the UI's generic "not archived" copy), never a parse failure. The
- * WRITE-side schema (`transcriptSkipRequestSchema`) intentionally stays a
- * closed enum: the server must not persist labels it cannot serve back.
- */
-export function toKnownTranscriptSkipReason(
-  value: string | null | undefined
-): TranscriptSkipReason | null {
-  return value != null && TRANSCRIPT_SKIP_REASON_VALUES.has(value)
-    ? (value as TranscriptSkipReason)
-    : null;
-}
-
-/**
- * ISS-4820 — whether a terminal skip reason is RECOVERABLE (the source can be
- * regenerated, so the row may yet sync) or HARD (the bytes are gone for good).
+ * The move exists because this module is not tree-shakeable — it opens with
+ * `zod` and builds its schemas at module scope — and the Sessions LIST
+ * surfaces now compare against a reason at RUNTIME to tell an environmental
+ * give-up from an ordinary retrying failure (`session-sync-status.ts`,
+ * `CloudSyncStateBadge`, and the dashboard/insights/telemetry embeds that
+ * mount `SyncedSessionsTable`). Those are precisely the bundle-sensitive
+ * consumers that split exists to protect.
  *
- * This is the single source of truth for that split. It previously existed only
- * as an inline arm of the API's private `dispositionForTerminalSkipReason` and
- * a literal comparison in the renderer, which is how a recoverable reason came
- * to be able to overwrite a hard one server-side: nothing shared a notion of
- * which reasons outrank which.
- *
- * Exhaustive on purpose — a newly added reason fails `tsc` here until someone
- * decides, deliberately, which side of the line it falls on.
+ * The write boundary below still closes over the same enum, so the two halves
+ * cannot drift: `transcriptSkipRequestSchema` builds its `z.enum` from it.
  */
-export function isRecoverableTranscriptSkipReason(
-  reason: TranscriptSkipReason
-): boolean {
-  switch (reason) {
-    case TranscriptSkipReason.MaterializedSourceUnavailable:
-      return true;
-    case TranscriptSkipReason.TooLarge:
-    case TranscriptSkipReason.SourceGone:
-    case TranscriptSkipReason.RetriesExhausted:
-      return false;
-    default: {
-      const exhaustive: never = reason;
-      return exhaustive;
-    }
-  }
-}
 
 /**
  * ISS-4820 — harnesses whose transcript source is a desktop-MATERIALIZED
@@ -197,6 +120,13 @@ export const transcriptFileKeySchema = z
   );
 
 /**
+ * Query parameter on `GET /agent-sessions/{id}/transcript` naming the one file
+ * whose URL the caller wants signed (ISS-12276). A server that predates it
+ * ignores it and signs every readable file.
+ */
+export const TRANSCRIPT_ACCESS_FILE_KEY_PARAM = "fileKey";
+
+/**
  * Fields identifying one transcript file. `externalSessionId` is a harness
  * session id (not necessarily a UUID); ownership is enforced by the DB lookup
  * on top of the `computeTargetId` UUID check.
@@ -234,12 +164,10 @@ export const transcriptSyncPlanRequestSchema =
       .string()
       .regex(SHA256_HEX, "sha256 must be 64 lowercase hex chars"),
     crc64nvme: z.string().min(1),
-    // Source file mtime as an ISO-8601 string.
-    sourceMtime: z
-      .string()
-      .refine((value) => !Number.isNaN(Date.parse(value)), {
-        message: "sourceMtime must be an ISO-8601 date string",
-      }),
+    // Source file mtime as an ISO-8601 string. An instant Postgres cannot hold
+    // degrades to absent (the column is nullable) rather than rejecting the
+    // plan request (ISS-8735).
+    sourceMtime: storableSyncTimestampSchema,
     // sha256 of the client's archive object prefix [0, serverSyncedOffset),
     // compared to the stored object hash to detect compaction/rewrite. Omit
     // when the client does not know the server offset (e.g. after losing local
@@ -357,13 +285,20 @@ export const transcriptSkipRequestSchema = transcriptFileIdentitySchema
     reason: z.enum(TranscriptSkipReason),
   })
   // ISS-4820 item 5: the two fields were validated independently, so a
-  // malformed or version-skewed desktop could pair the RECOVERABLE
+  // malformed or version-skewed desktop could pair
   // `materialized_source_unavailable` with a raw Claude/Codex harness. The
   // reason-only read branch would then report `Syncing` forever for a source
   // that can never regenerate — a row stuck "still uploading" with nothing on
-  // any queue. A recoverable reason is only meaningful for a materialized
-  // projection, so reject the pairing at the write boundary rather than
-  // persisting a state the read path cannot honestly serve.
+  // any queue. THAT reason is only meaningful for a materialized projection, so
+  // reject the pairing at the write boundary rather than persisting a state the
+  // read path cannot honestly serve.
+  //
+  // ISS-9884: the predicate is narrowed to that ONE reason by name, and must
+  // stay that way. Generalizing it to `isRecoverableTranscriptSkipReason` reads
+  // like a tidy-up and is not: `environment_unavailable` is recoverable and
+  // harness-AGNOSTIC — an environmental give-up says nothing about the shape of
+  // the source — so the generalized form would reject the new reason for every
+  // raw Claude and Codex row, which is the whole population it exists for.
   .refine(
     (value) =>
       value.reason !== TranscriptSkipReason.MaterializedSourceUnavailable ||
@@ -467,7 +402,9 @@ export const transcriptFileDescriptorSchema = z.object({
   // the read and write surfaces stay on the same namespace.
   fileKey: transcriptFileKeySchema,
   availability: z.enum(TranscriptAvailability),
-  // Signed GET URL, minted per request; null unless available/stale.
+  // Signed GET URL, minted per request; null unless available/stale, and null
+  // for every file but the requested one when the request names a `fileKey`
+  // (ISS-12276).
   url: z.string().nullable(),
   // Verified archive byte size; null until an upload has completed.
   byteSize: z.number().int().nonnegative().nullable(),
@@ -567,3 +504,60 @@ export type TranscriptForceArchiveResult =
   | { kind: "unavailable" }
   | { kind: "failed"; reason: string }
   | { kind: "permanent"; reason: string };
+
+/**
+ * ISS-8599 (PRD-699 §6 item 8): the machine-readable `code` a transcript-lane
+ * 403 carries in its `ApiResult` failure envelope.
+ *
+ * The three control routes (`sync-plan`, `complete`, `skip`) answer 403 for two
+ * unrelated conditions, and until this existed the desktop could not tell them
+ * apart from the status alone — so it kept BOTH on the per-row retry ladder,
+ * burning a policy-denied org's whole corpus toward a terminal skip for a
+ * refusal no row is at fault for (`main/sync/AGENTS.md` invariant 4).
+ *
+ * Additive and skew-safe in both directions. The STATUS is unchanged, so a
+ * Desktop build that predates this reads the body-less 403 exactly as before; a
+ * server that predates it omits the field entirely (`failure()` spreads an
+ * absent `code` away rather than serializing `null`), and the desktop's resolver
+ * folds both absence and an unrecognized value to `undefined` — the bare-403
+ * behaviour. Never widen this into a status change.
+ */
+export const TranscriptForbiddenCode = {
+  /**
+   * The compute target is not owned by this user/org (`findOwnedById` missed).
+   * An identity condition: every file on that target draws the same answer, and
+   * only a sign-in or a target switch changes it.
+   */
+  NotOwned: "transcript_target_not_owned",
+  /**
+   * FEA-4169: the org's server-owned session-sync policy is OFF, so no
+   * transcript bytes may be ingested for this organization. Nothing about the
+   * file is wrong and nothing the desktop does resolves it — only an org admin
+   * re-enabling the policy.
+   */
+  PolicyDisabled: "transcript_policy_disabled",
+} as const;
+export type TranscriptForbiddenCode =
+  (typeof TranscriptForbiddenCode)[keyof typeof TranscriptForbiddenCode];
+
+const TRANSCRIPT_FORBIDDEN_CODES: ReadonlySet<string> = new Set(
+  Object.values(TranscriptForbiddenCode)
+);
+
+/**
+ * Resolve an untrusted `code` string off a 403 body to a member of
+ * {@link TranscriptForbiddenCode}, or `undefined` when there is nothing this
+ * build can name.
+ *
+ * The ONE place absence and non-recognition are folded together, so no call site
+ * can decide to treat a newer server's unfamiliar code as one it knows. Both
+ * answer `undefined`, which is the bare-403 path — the pre-ISS-8599 behaviour,
+ * and the only classification that is safe without knowing what the code means.
+ */
+export function asTranscriptForbiddenCode(
+  value: string | null | undefined
+): TranscriptForbiddenCode | undefined {
+  return value && TRANSCRIPT_FORBIDDEN_CODES.has(value)
+    ? (value as TranscriptForbiddenCode)
+    : undefined;
+}

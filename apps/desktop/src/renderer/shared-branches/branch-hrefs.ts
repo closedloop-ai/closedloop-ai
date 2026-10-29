@@ -2,7 +2,8 @@ import {
   BRANCH_DETAIL_TAB_PARAM,
   BranchDetailTabParam,
 } from "@repo/api/src/types/notification-routes";
-import { branchDetailHref } from "../navigation/route-table";
+import type { BranchRowSession } from "@repo/app/branches/lib/branch-row";
+import { branchDetailHref, sessionDetailHref } from "../navigation/route-table";
 
 type BranchHrefItem = {
   id: string;
@@ -38,4 +39,21 @@ export function desktopBranchDetailHref(item: BranchHrefItem): string {
  */
 export function desktopBranchSessionsHref(item: BranchHrefItem): string {
   return `${branchDetailHref(item.id)}?${BRANCH_DETAIL_TAB_PARAM}=${BranchDetailTabParam.SessionsTimeline}`;
+}
+
+/**
+ * ISS-8972: one Linked Sessions CHIP's destination — that Session's own detail,
+ * not the branch's Sessions tab (`desktopBranchSessionsHref` above, which the
+ * count chip and the row-actions menu still use).
+ *
+ * Built off `sessionDetailHref`, so the `navigableRef` is `encodeURIComponent`-ed
+ * exactly the way every other desktop session link encodes its id and the route
+ * decodes the segment back to the ref we issued. UNPREFIXED for the same reason
+ * the branch hrefs are: the port Link resolves it through the route table, and a
+ * `#`-prefixed href would make an ordinary left-click a no-op (FEA-4051).
+ */
+export function desktopBranchSessionChipHref(
+  session: BranchRowSession
+): string {
+  return sessionDetailHref(session.navigableRef);
 }

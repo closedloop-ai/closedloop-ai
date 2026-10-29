@@ -15,14 +15,15 @@
  *  - web (`apps/app`) reads it as a PostHog flag via
  *    `AGENTS_INVOCATIONS_DEDUPE_FEATURE_FLAG_KEY`
  *    (`packages/app/shared/lib/feature-flags.ts`).
- *  - the desktop main process registers it as a Labs toggle via
- *    `DESKTOP_AGENTS_INVOCATIONS_DEDUPE_FEATURE_FLAG_KEY`
- *    (`apps/desktop/src/shared/feature-flags.ts`).
+ *  - the desktop renderer resolves the byte-for-byte-equal key from the
+ *    signed-in account's PostHog assignment, delivered over the IPC bridge,
+ *    under the alias `DESKTOP_AGENTS_INVOCATIONS_DEDUPE_FEATURE_FLAG_KEY`
+ *    (`apps/desktop/src/shared/feature-flags-labs-surfaces.ts`).
  *
  * The card is rendered by the SHARED `AgentsGroupedList`, so it exists on both
- * surfaces and must be gated on both — importing one constant on each side means
- * a rename touches a single definition and cannot silently split PostHog from
- * Desktop the way two parallel string literals could.
+ * surfaces and must be gated on both — importing one constant on each side
+ * means a rename touches a single definition and cannot silently split the two
+ * surfaces' reads of it the way two parallel string literals could.
  */
 export const AGENTS_INVOCATIONS_DEDUPE_FLAG_KEY =
   "agents-invocations-dedupe" as const;

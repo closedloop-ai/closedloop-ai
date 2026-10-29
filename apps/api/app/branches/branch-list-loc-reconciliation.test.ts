@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", async () => {
   const { createDatabaseMockModule } = await import(
@@ -78,6 +78,10 @@ import {
 import { mockWithDbCall, mockWithDbTx } from "../../__tests__/utils/db-helpers";
 import { branchReadService } from "./branch-read-service";
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 // FEA-4268: the Branches LIST row must show the SAME available changed-LOC the
 // detail reports, while the client-side analytics KPIs stay on the file-cache
 // basis. This regression lives in a focused sibling file (not the grandfathered
@@ -115,7 +119,7 @@ describe("branchReadService — FEA-4268 list↔detail LOC reconciliation", () =
     const branchRow = makeBranchRow({
       status: GitHubPRState.Merged,
       currentPullRequestDetail: prWithDiffStats,
-      // No branch file-cache rows → sumFileChanges yields null LOC (the repro):
+      // No branch file-cache rows → the fold yields null LOC (the repro):
       // without the backfill the list row would render additions/deletions null.
       fileChanges: [],
     });

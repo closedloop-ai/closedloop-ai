@@ -2,6 +2,7 @@ import type { DocumentDetail } from "@repo/api/src/types/document";
 import { describe, expect, test } from "vitest";
 import {
   getLatestContentForAttachmentWarnings,
+  getSelectedContentForAttachmentVisibility,
   resolveActiveRoomId,
 } from "../document-editor-scaffold-helpers";
 
@@ -52,6 +53,59 @@ function createDocumentDetail(
     ...overrides,
   };
 }
+
+describe("getSelectedContentForAttachmentVisibility", () => {
+  test("uses the SELECTED version's own body while reading history", () => {
+    // The two derivations deliberately disagree here, and that is the point:
+    // visibility asks "is the reader looking at this image?" (the selected
+    // version), while the delete warning asks "would deleting it break the
+    // document?" (the latest saved body). Sharing one input made a historical
+    // view hide a file that version never renders.
+    const document = createDocumentDetail();
+
+    expect(
+      getSelectedContentForAttachmentVisibility({
+        currentVersion: 1,
+        document,
+        latestDraftContent: "Unsaved draft from a different selected version.",
+      })
+    ).toBe(selectedHistoricalContent);
+    expect(
+      getLatestContentForAttachmentWarnings({
+        currentVersion: 1,
+        document,
+        latestDraftContent: "Unsaved draft from a different selected version.",
+      })
+    ).toBe(savedLatestContent);
+  });
+
+  test("uses the live draft while the latest version is selected", () => {
+    const latestDraftContent = "Draft ![new](attachment://new-image).";
+
+    expect(
+      getSelectedContentForAttachmentVisibility({
+        currentVersion: 3,
+        document: createDocumentDetail(),
+        latestDraftContent,
+      })
+    ).toBe(latestDraftContent);
+  });
+
+  test("falls back to an empty body when the selected version has no content", () => {
+    const document = createDocumentDetail();
+
+    expect(
+      getSelectedContentForAttachmentVisibility({
+        currentVersion: 1,
+        document: {
+          ...document,
+          version: { ...document.version, content: null },
+        },
+        latestDraftContent: "ignored",
+      })
+    ).toBe("");
+  });
+});
 
 describe("getLatestContentForAttachmentWarnings", () => {
   test("uses saved latest-version content while a historical version is selected", () => {

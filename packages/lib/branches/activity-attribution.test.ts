@@ -102,6 +102,34 @@ describe("attributeBranchSessionActivity", () => {
     expect(attributed).toBe(1.0);
   });
 
+  it("attributes events correctly when ordered spans receive out-of-order events", () => {
+    const spans = [
+      span("implement", 0, 100),
+      span("review", 100, 200),
+      span("validate", 200, 300),
+    ];
+    const result = attributeBranchSessionActivity(spans, [
+      event(250, 0.3),
+      event(50, 0.2),
+      event(150, 0.1),
+    ]);
+
+    expect(result[0]).toMatchObject({ phase: "implement", costUsd: 0.2 });
+    expect(result[1]).toMatchObject({ phase: "review", costUsd: 0.1 });
+    expect(result[2]).toMatchObject({ phase: "validate", costUsd: 0.3 });
+  });
+
+  it("preserves first-covering behavior for overlapping spans", () => {
+    const spans = [span("first", 0, 200), span("second", 100, 300)];
+    const result = attributeBranchSessionActivity(spans, [
+      event(250, 0.1),
+      event(150, 0.4),
+    ]);
+
+    expect(result[0]).toMatchObject({ phase: "first", costUsd: 0.4 });
+    expect(result[1]).toMatchObject({ phase: "second", costUsd: 0.1 });
+  });
+
   it("keeps cost null (never 0) when every covered turn is unpriced, but still counts tokens", () => {
     const spans = [span("implement", 0, 100)];
     const result = attributeBranchSessionActivity(spans, [

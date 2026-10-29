@@ -10,6 +10,7 @@ import {
 } from "../scripts/generate-collector-allowlist";
 import {
   CollectorAllowedAttributeKeys,
+  RoutineAuditTelemetryAttributes,
   TelemetryAttribute,
 } from "../src/attributes";
 
@@ -199,5 +200,73 @@ describe("collector allow-list drift guard", () => {
     const message = messagesOf(findings);
     expect(message).toContain("stale");
     expect(message).toContain(dropped);
+  });
+});
+
+/**
+ * ISS-6313: the wire names of the routine/audit group, written out as literals
+ * rather than projected from `TelemetryAttribute`.
+ *
+ * The duplication IS the test. Every other assertion in this file derives its
+ * expectation from the same const the artifacts are generated from, so renaming
+ * an attribute's VALUE — the string Datadog dashboards and the collector
+ * allow-list key off — keeps them all green as long as the TypeScript key is
+ * untouched. Pinning the strings here is what makes a rename, a deletion, or a
+ * regenerate this PR forgot fail in CI instead of in a customer's pipeline.
+ */
+const ROUTINE_AUDIT_WIRE_KEYS = [
+  "audit.actor_kind",
+  "audit.decision",
+  "audit.event",
+  "routine.event",
+  "routine.failure_reason",
+  "routine.id",
+  "routine.outcome",
+  "routine.step_index",
+  "routine.trigger",
+] as const;
+
+const isRoutineAuditKey = (key: string): boolean =>
+  key.startsWith("routine.") || key.startsWith("audit.");
+
+describe("routine/audit attribute group reaches the collector allow-list", () => {
+  it("publishes exactly the pinned wire names in the committed manifest", () => {
+    const manifest = JSON.parse(committedManifest);
+    const published: string[] = manifest.allowedKeys.filter(isRoutineAuditKey);
+
+    expect(published).toEqual([...ROUTINE_AUDIT_WIRE_KEYS]);
+  });
+
+  it("publishes exactly the pinned wire names in the committed redaction fragment", () => {
+    const parsed = YAML.parse(committedFragment);
+    const published: string[] =
+      parsed.redaction.allowed_keys.filter(isRoutineAuditKey);
+
+    expect(published).toEqual([...ROUTINE_AUDIT_WIRE_KEYS]);
+    // Positive control for the deny-by-default claim below: the same fragment
+    // this filter read really does carry keys, so an empty routine/audit slice
+    // would mean the group is missing, not that the parse produced nothing.
+    expect(parsed.redaction.allowed_keys.length).toBeGreaterThan(
+      ROUTINE_AUDIT_WIRE_KEYS.length
+    );
+    expect(parsed.redaction.allow_all_keys).toBe(false);
+  });
+
+  it("keeps the group's declared members and its published keys in agreement", () => {
+    const declared = RoutineAuditTelemetryAttributes.filter(isRoutineAuditKey);
+
+    expect([...declared].sort()).toEqual([...ROUTINE_AUDIT_WIRE_KEYS]);
+  });
+
+  it("reuses the canonical duration attribute instead of a routine-namespaced twin", () => {
+    expect(RoutineAuditTelemetryAttributes).toContain(
+      TelemetryAttribute.DurationMs
+    );
+    expect(CollectorAllowedAttributeKeys).toContain(
+      TelemetryAttribute.DurationMs
+    );
+    expect(
+      RoutineAuditTelemetryAttributes.filter(isRoutineAuditKey)
+    ).not.toContain("routine.duration_ms");
   });
 });

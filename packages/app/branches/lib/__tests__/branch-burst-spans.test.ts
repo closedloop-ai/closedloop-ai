@@ -68,6 +68,34 @@ describe("computeBurstSpans", () => {
     ).toEqual([]);
   });
 
+  it("keeps a tool run inside its burst instead of idling through it", () => {
+    // ISS-8720 at the consumer whitlockk named: the swimlane's bursts and the hour
+    // buckets' cost allocation both weight a session by active time, so sizing
+    // the pause start-to-start does not merely mislabel it — the run's own ten
+    // minutes stop being active at all and the first burst disappears.
+    const bursts = computeBurstSpans({
+      startedAt: "2026-06-10T10:00:00.000Z",
+      endedAt: "2026-06-10T10:20:00.000Z",
+      items: [
+        toolRun("2026-06-10T10:00:00.000Z", "2026-06-10T10:10:00.000Z"),
+        say("2026-06-10T10:16:00.000Z"),
+      ],
+    });
+
+    expect(bursts).toEqual([
+      {
+        startT: "2026-06-10T10:00:00.000Z",
+        endT: "2026-06-10T10:10:00.000Z",
+        isResumption: false,
+      },
+      {
+        startT: "2026-06-10T10:16:00.000Z",
+        endT: "2026-06-10T10:20:00.000Z",
+        isResumption: true,
+      },
+    ]);
+  });
+
   it("extends the window to trace items that run past `endedAt`", () => {
     // The Branch-details shape: the session's own timestamps cover minutes, but
     // its trace items run for days. The timeline must span the trace, not the
@@ -132,6 +160,20 @@ describe("trace-item timing survives the API client's date revival (ISS-5771)", 
     expect(bursts.at(-1)?.endT).toBe(SESSION_ENDED_AT);
   });
 });
+
+/** The one merged-trace variant carrying an extent, so the one that can be enclosed. */
+function toolRun(t: string, endT: string): MergedTraceItem {
+  return {
+    type: "tools",
+    sessionId: "s1",
+    t,
+    tMs: Date.parse(t),
+    endMs: Date.parse(endT),
+    summary: "12 migration tools",
+    hasFail: false,
+    failN: 0,
+  };
+}
 
 /** The Branch-details fixture's shape: minutes of session, days of trace. */
 const SESSION_STARTED_AT = "2026-07-30T09:00:00.000Z";

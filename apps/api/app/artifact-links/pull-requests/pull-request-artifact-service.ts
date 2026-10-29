@@ -11,6 +11,7 @@ import {
 import type {
   CreatePrArtifactInput,
   CreatePrArtifactResponse,
+  PullRequestArtifactLinkResult,
 } from "@repo/api/src/types/pull-request-artifact-link";
 import {
   emptyPullRequestLabelSyncResult,
@@ -21,7 +22,8 @@ import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import { GitHubInstallationStatus, withDb } from "@repo/database";
 import { GitHubProviderResultStatus, getSinglePullRequest } from "@repo/github";
 import { log } from "@repo/observability/log";
-import { branchService } from "@/app/branches/branch-service";
+import type { BranchUpsertWrite } from "@/app/branches/branch-service";
+import { upsertBranchArtifactWithAttribution } from "@/app/branches/branch-upsert-with-attribution";
 import {
   createPullRequestRestAuthorityProvenance,
   toPullRequestRestAuthorityObservation,
@@ -32,6 +34,7 @@ import {
   type ArtifactPullRequestLabelSyncInput,
   syncPullRequestLabelsFromArtifactTags,
 } from "@/lib/github/pull-request-label-sync";
+import type { RecordWriteInTransaction } from "@/lib/record-write-in-transaction";
 import { parseGitHubPullRequestUrl } from "./pull-request-url";
 
 type LivePullRequest = NonNullable<
@@ -54,20 +57,21 @@ export const pullRequestArtifactLinkService = {
    * repositories and live GitHub state, then materialize it as branch-owned PR
    * detail through the branch service.
    */
-  async createPullRequestArtifact(input: {
-    body: CreatePrArtifactInput;
-    createdById: string;
-    organizationId: string;
-  }): Promise<
-    Result<CreatePrArtifactResponse, CreatePullRequestArtifactError>
-  > {
+  async createPullRequestArtifact(
+    input: {
+      body: CreatePrArtifactInput;
+      createdById: string;
+      organizationId: string;
+    },
+    recordWritten?: RecordWriteInTransaction<BranchUpsertWrite>
+  ): Promise<Result<CreatePrArtifactResponse, CreatePullRequestArtifactError>> {
     const project = await withDb((db) =>
       db.project.findUnique({
         where: {
           id: input.body.projectId,
           organizationId: input.organizationId,
         },
-        select: { id: true, settings: true },
+        select: { id: true, name: true, settings: true },
       })
     );
     if (!project) {
@@ -80,9 +84,13 @@ export const pullRequestArtifactLinkService = {
       projectSettings: (project.settings ?? {}) as JsonObject,
     });
     if (allowedRepositories.length === 0) {
+      // ISS-10169: the bare sentence named neither the project nor a remedy, so
+      // a caller holding several projects could not tell WHICH one was
+      // unconfigured, nor what to do about it.
       return serviceError(
         Status.BadRequest,
-        "Project has no primary repository configured"
+        `Project "${project.name}" (${project.id}) has no primary repository configured. Add a repository to one of the project's teams and mark it primary in the project's repository settings, then retry.`,
+        { code: "project_primary_repository_missing" }
       );
     }
 
@@ -109,44 +117,64 @@ export const pullRequestArtifactLinkService = {
         repository.githubRepoId &&
       normalizeRepoFullName(headAuthority.repository.fullName) ===
         normalizeRepoFullName(repository.fullName);
-    const result = await branchService.upsertBranchArtifact({
-      organizationId: input.organizationId,
-      repositoryId: headMatchesBase ? repository.id : null,
-      repositoryFullName: headAuthority.repository.fullName,
-      branchName: livePullRequest.headBranch,
-      repositoryDefaultObservation: { authority: headAuthority },
-      pullRequestRepositoryId: repository.id,
-      pullRequestBaseRepositoryFullName: repository.fullName,
-      baseBranch: livePullRequest.baseBranch,
-      baseBranchSource: BranchBaseBranchSource.PullRequestBase,
-      headSha: livePullRequest.headSha,
-      headShaSource: BranchHeadShaSource.PullRequestWebhook,
-      projectId: input.body.projectId,
-      createdById: input.createdById,
-      // ISS-4759: the PRODUCES link is written INSIDE this transaction, by the
-      // path that already validates the owner (org + project + DOCUMENT +
-      // allowed subtype + repo-snapshot scope). Previously the branch upsert
-      // ran without it and the client wrote the link in a SECOND request, so a
-      // failure there left GitHub labelled against no committed relationship.
-      sourceArtifactId: input.body.linkSourceArtifactId ?? null,
-      pullRequest: {
-        githubId: livePullRequest.githubId,
-        number: livePullRequest.number,
-        title: livePullRequest.title,
-        htmlUrl: livePullRequest.htmlUrl,
-        state: livePullRequest.state,
-        isDraft: livePullRequest.isDraft,
-        // FEA-3552: GitHub PR createdAt — anchors the rail's "PR opened" dot.
-        githubCreatedAt: dateOrNull(livePullRequest.createdAt),
-        closedAt: dateOrNull(livePullRequest.closedAt),
-        mergedAt: dateOrNull(livePullRequest.mergedAt),
-        mergeCommitSha: livePullRequest.mergeCommitSha,
-        headRepositoryObservation: { authority: headAuthority },
+    const result = await upsertBranchArtifactWithAttribution(
+      {
+        organizationId: input.organizationId,
+        repositoryId: headMatchesBase ? repository.id : null,
+        repositoryFullName: headAuthority.repository.fullName,
+        branchName: livePullRequest.headBranch,
+        repositoryDefaultObservation: { authority: headAuthority },
+        pullRequestRepositoryId: repository.id,
+        pullRequestBaseRepositoryFullName: repository.fullName,
+        baseBranch: livePullRequest.baseBranch,
+        baseBranchSource: BranchBaseBranchSource.PullRequestBase,
+        headSha: livePullRequest.headSha,
+        headShaSource: BranchHeadShaSource.PullRequestWebhook,
+        projectId: input.body.projectId,
+        createdById: input.createdById,
+        // ISS-4759: the PRODUCES link is written INSIDE this transaction, by the
+        // path that already validates the owner (org + project + DOCUMENT +
+        // allowed subtype + repo-snapshot scope). Previously the branch upsert
+        // ran without it and the client wrote the link in a SECOND request, so a
+        // failure there left GitHub labelled against no committed relationship.
+        sourceArtifactId: input.body.linkSourceArtifactId ?? null,
+        pullRequest: {
+          githubId: livePullRequest.githubId,
+          number: livePullRequest.number,
+          title: livePullRequest.title,
+          htmlUrl: livePullRequest.htmlUrl,
+          state: livePullRequest.state,
+          isDraft: livePullRequest.isDraft,
+          authorLogin: livePullRequest.authorLogin,
+          authorProviderUserId: livePullRequest.authorProviderUserId,
+          authorActorType: livePullRequest.authorActorType,
+          // FEA-3552: GitHub PR createdAt — anchors the rail's "PR opened" dot.
+          githubCreatedAt: dateOrNull(livePullRequest.createdAt),
+          closedAt: dateOrNull(livePullRequest.closedAt),
+          mergedAt: dateOrNull(livePullRequest.mergedAt),
+          mergeCommitSha: livePullRequest.mergeCommitSha,
+          headRepositoryObservation: { authority: headAuthority },
+        },
       },
-    });
+      recordWritten
+    );
 
     if (!result.ok) {
       return branchArtifactServiceError(result.error);
+    }
+    const { linkedArtifacts } = result.value;
+    if (input.body.linkSourceArtifactId && linkedArtifacts.length === 0) {
+      // ISS-10169: the branch transaction committed but reported no edge for an
+      // owner the caller asked to link. Unreachable while `writeBranchSourceLink`
+      // holds its contract (it returns empty only when nothing was requested),
+      // which is exactly why it is a guard: a regression there would otherwise
+      // surface as a 200 claiming a link nobody wrote — the defect this ticket
+      // is about — rather than as a failure.
+      return serviceError(
+        Status.Error,
+        "Pull request was linked to its branch, but the requested produces-relationship was not written",
+        { code: "pull_request_source_link_not_written" }
+      );
     }
 
     // ISS-4664: the PR now implements `sourceArtifactId`, so carry that
@@ -178,15 +206,28 @@ export const pullRequestArtifactLinkService = {
 
     return Result.ok({
       id: result.value.id,
+      // ISS-10169: the three facts that let a caller verify this write without a
+      // second request. `linkedArtifacts` is always present because its
+      // EMPTINESS is the answer to "did you link anything".
+      linkedArtifacts,
+      branchArtifactCreated: result.value.created,
+      currentPullRequest: result.value.pullRequest
+        ? {
+            number: result.value.pullRequest.number,
+            htmlUrl: result.value.pullRequest.htmlUrl,
+          }
+        : null,
       // ISS-4764: report what actually happened to the labels. Omitted (never
       // `null`) when propagation was not requested, so an older client sees the
       // exact previous response shape.
       ...(labelSync ? { labelSync } : {}),
       // ISS-4759: echo the link owner ONLY when this request wrote the link, so
       // a newer client can tell whether it still has to write one itself.
-      ...(input.body.linkSourceArtifactId
-        ? { linkedSourceArtifactId: input.body.linkSourceArtifactId }
-        : {}),
+      //
+      // ISS-10169: taken from the WRITE's own report, not from the request. It
+      // used to be `input.body.linkSourceArtifactId` echoed straight back, which
+      // said only "you asked for this" while reading as "this was committed".
+      ...linkedSourceArtifactEcho(linkedArtifacts, input.body),
     });
   },
 };
@@ -290,9 +331,13 @@ async function validateSelectedPullRequest(input: {
 
   const mismatch = findAssertionMismatch(input.body, livePullRequest);
   if (mismatch) {
+    // ISS-10169: a bare "did not match" cannot be acted on. The `githubId` case
+    // is the one that actually bit callers — this endpoint wants the numeric
+    // REST id AS A STRING, and a GraphQL node id ("PR_kwDO…") is the natural
+    // thing to send — so the expected FORM travels with the failure.
     return serviceError(
       Status.BadRequest,
-      "Pull request assertions did not match",
+      `Pull request assertions did not match: ${mismatch}. ${assertionFieldExpectation(mismatch)}`,
       {
         code: "pull_request_assertion_mismatch",
         details: { field: mismatch },
@@ -343,11 +388,15 @@ function branchArtifactServiceError(
 export function findAssertionMismatch(
   body: CreatePrArtifactInput,
   livePullRequest: LivePullRequest
-): string | null {
-  const requiredAssertions: [string, unknown, unknown][] = [
-    ["githubId", body.githubId, livePullRequest.githubId],
-    ["number", body.number, livePullRequest.number],
-    ["state", body.state, livePullRequest.state],
+): PullRequestAssertionField | null {
+  const requiredAssertions: [PullRequestAssertionField, unknown, unknown][] = [
+    [
+      PullRequestAssertionField.GithubId,
+      body.githubId,
+      livePullRequest.githubId,
+    ],
+    [PullRequestAssertionField.Number, body.number, livePullRequest.number],
+    [PullRequestAssertionField.State, body.state, livePullRequest.state],
   ];
   for (const [field, expected, actual] of requiredAssertions) {
     if (expected !== actual) {
@@ -355,20 +404,24 @@ export function findAssertionMismatch(
     }
   }
 
-  const optionalAssertions: [string, unknown, unknown][] = [
-    ["headSha", body.headSha, livePullRequest.headSha],
-    ["isDraft", body.isDraft, livePullRequest.isDraft],
+  const optionalAssertions: [PullRequestAssertionField, unknown, unknown][] = [
+    [PullRequestAssertionField.HeadSha, body.headSha, livePullRequest.headSha],
+    [PullRequestAssertionField.IsDraft, body.isDraft, livePullRequest.isDraft],
     [
-      "closedAt",
+      PullRequestAssertionField.ClosedAt,
       normalizeIsoOrNull(body.closedAt),
       normalizeIsoOrNull(livePullRequest.closedAt),
     ],
     [
-      "mergedAt",
+      PullRequestAssertionField.MergedAt,
       normalizeIsoOrNull(body.mergedAt),
       normalizeIsoOrNull(livePullRequest.mergedAt),
     ],
-    ["mergeCommitSha", body.mergeCommitSha, livePullRequest.mergeCommitSha],
+    [
+      PullRequestAssertionField.MergeCommitSha,
+      body.mergeCommitSha,
+      livePullRequest.mergeCommitSha,
+    ],
   ];
   for (const [field, expected, actual] of optionalAssertions) {
     if (expected !== undefined && expected !== actual) {
@@ -418,4 +471,72 @@ async function syncLabelsBestEffort(
     );
     return emptyPullRequestLabelSyncResult(PullRequestLabelSyncStatus.Failed);
   }
+}
+
+/**
+ * The fields this endpoint asserts a caller's payload against, named once.
+ *
+ * Backend-only (`apps/api`): the values reach the wire as the freeform
+ * `details.field` of an assertion-mismatch error, never as a request field a
+ * client has to construct.
+ */
+export const PullRequestAssertionField = {
+  GithubId: "githubId",
+  Number: "number",
+  State: "state",
+  HeadSha: "headSha",
+  IsDraft: "isDraft",
+  ClosedAt: "closedAt",
+  MergedAt: "mergedAt",
+  MergeCommitSha: "mergeCommitSha",
+} as const;
+
+export type PullRequestAssertionField =
+  (typeof PullRequestAssertionField)[keyof typeof PullRequestAssertionField];
+
+/**
+ * ISS-10169: what each asserted field is expected to LOOK like.
+ *
+ * An exhaustive `Record`, so a field added to `findAssertionMismatch` fails
+ * `tsc` here rather than silently falling back to a generic sentence — the
+ * fallback is what made the original message unactionable.
+ */
+const ASSERTION_FIELD_EXPECTATION: Record<PullRequestAssertionField, string> = {
+  [PullRequestAssertionField.GithubId]:
+    'Expected the pull request\'s NUMERIC REST id as a string (e.g. "2847113905"), not the GraphQL node id ("PR_kwDO…").',
+  [PullRequestAssertionField.Number]:
+    "Expected the pull request number shown in its GitHub URL, as an integer.",
+  [PullRequestAssertionField.State]:
+    "Expected the pull request's current state as GitHub reports it right now; it may have changed since the payload was built.",
+  [PullRequestAssertionField.HeadSha]:
+    "Expected the pull request's current head commit sha; omit the field rather than asserting a stale one.",
+  [PullRequestAssertionField.IsDraft]:
+    "Expected the pull request's current draft flag; omit the field rather than asserting a stale one.",
+  [PullRequestAssertionField.ClosedAt]:
+    "Expected the pull request's closed timestamp as an ISO-8601 string, or null when it is open.",
+  [PullRequestAssertionField.MergedAt]:
+    "Expected the pull request's merged timestamp as an ISO-8601 string, or null when it is unmerged.",
+  [PullRequestAssertionField.MergeCommitSha]:
+    "Expected the pull request's merge commit sha, or null when it is unmerged.",
+};
+
+/** The expected form of the one field that failed, for the error message. */
+function assertionFieldExpectation(field: PullRequestAssertionField): string {
+  return ASSERTION_FIELD_EXPECTATION[field];
+}
+
+/**
+ * The ISS-4759 link echo, derived from what the write reported.
+ *
+ * Spread into the response so an absent echo stays ABSENT rather than becoming
+ * `null` — an older client must keep seeing exactly the previous shape.
+ */
+function linkedSourceArtifactEcho(
+  linkedArtifacts: PullRequestArtifactLinkResult[],
+  body: CreatePrArtifactInput
+): { linkedSourceArtifactId?: string } {
+  const written = linkedArtifacts.find(
+    (link) => link.sourceArtifactId === body.linkSourceArtifactId
+  );
+  return written ? { linkedSourceArtifactId: written.sourceArtifactId } : {};
 }

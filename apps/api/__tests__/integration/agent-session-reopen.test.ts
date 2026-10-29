@@ -16,7 +16,7 @@ import {
   type SyncedAgentSessionEvent,
 } from "@repo/api/src/types/agent-session";
 import {
-  DISPLAYED_SESSION_STATUS,
+  LEGACY_WAITING_WIRE_STATUS,
   SESSION_STATUS,
 } from "@repo/api/src/types/session-status";
 import { withDb } from "@repo/database";
@@ -25,10 +25,20 @@ import { describe, expect, it } from "vitest";
 import { agentSessionsService } from "@/app/agent-sessions/service";
 import { staleSessionReaperService } from "@/app/agent-sessions/stale-session-reaper-service";
 import {
-  autoRollbackTransaction,
+  autoRollbackTransactionJoining,
   createTestOrganization,
   createTestUser,
 } from "../utils/db-helpers";
+
+/**
+ * ISS-11104 — this suite lets its ambient transaction absorb the nested
+ * `withDb.tx` its production path opens, discarding that call's own budget.
+ * The reason below is the whole statement: it is what a reviewer reads to tell
+ * a suite that does not need the real boundary from one that is blind to it.
+ */
+const joinAmbientTransaction = autoRollbackTransactionJoining(
+  "these cases pin reopen and last_activity_at monotonicity plus what the stale sweep classifies, not the reaper's per-batch commit boundary — which still has no committed-fixture coverage anywhere — nor the sync batch's per-session boundary, which has its own committed fixture in app/agent-sessions/service/upsert-sessions-batch-commit-boundary.integration.test.ts (ISS-11312)"
+);
 
 const env = keys();
 const hasDatabase = !!env.DATABASE_URL;
@@ -142,7 +152,7 @@ describeIfDb("agent-session reopen (FEA-3810)", () => {
     // Unique external id per run so parallel CI executions do not collide.
     const extId = `reopen-newer-${randomUUID()}`;
 
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransaction(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -199,7 +209,7 @@ describeIfDb("agent-session reopen (FEA-3810)", () => {
   it("leaves an inactive session inactive when the resync carries no new events", async () => {
     const extId = `reopen-stale-${randomUUID()}`;
 
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransaction(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);
@@ -239,7 +249,7 @@ describeIfDb("agent-session reopen (FEA-3810)", () => {
         ctx,
         buildPayload([
           buildSession(extId, {
-            status: DISPLAYED_SESSION_STATUS.WAITING,
+            status: LEGACY_WAITING_WIRE_STATUS,
             awaitingInputSince: TEST_NOW.toISOString(),
             events: [],
           }),
@@ -280,7 +290,7 @@ describeIfDb("agent-session last_activity_at monotonicity (ISS-4439)", () => {
   it("keeps last_activity_at at the later event's time when a replacement sync re-inserts an older event set", async () => {
     const extId = `iss4439-monotonic-${randomUUID()}`;
 
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransaction(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const computeTarget = await createComputeTarget(organizationId, user.id);

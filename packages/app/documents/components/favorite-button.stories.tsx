@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { expect, userEvent, within } from "storybook/test";
 import type { FixtureRoute } from "../../shared/storybook/fixture-fetch";
-import { artifactFavoriteKeys } from "../hooks/use-artifact-favorites";
+import { artifactFavoriteKeys } from "../hooks/artifact-favorite-keys";
 import { FavoriteButton } from "./favorite-button";
 
 /**
@@ -79,7 +79,8 @@ const favoriteRoutes: FixtureRoute[] = [
 ];
 
 const meta: Meta<typeof FavoriteButton> = {
-  title: "App Core/Documents/Favorite Button",
+  title: "Composites v1.0/Documents/Favorite Button",
+  tags: ["deprecated"],
   component: FavoriteButton,
   parameters: {
     appCore: {

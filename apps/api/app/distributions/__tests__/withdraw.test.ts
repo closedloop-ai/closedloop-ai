@@ -13,10 +13,11 @@
  *    does not rewrite who withdrew it or when;
  *  - a non-admin is refused, and editing a withdrawn distribution is refused.
  *
- * The reads under test are exercised through mocks that ACTUALLY APPLY the
- * `withdrawnAt` predicate to a mixed fixture, so dropping the filter from the
- * query makes the withdrawn row reappear and fails the test — rather than the
- * test merely asserting the shape of a `where` object.
+ * The reads and writes under test are exercised through mocks that ACTUALLY
+ * APPLY the `withdrawnAt` and `organizationId` predicates to a mixed fixture, so
+ * dropping either filter from a query makes a row that must not match reappear
+ * and fails the test — rather than the test merely asserting the shape of a
+ * `where` object.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -26,7 +27,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  isOrgAdmin: vi.fn(),
+  getOrgAdminStatus: vi.fn(),
   computeTargetsService: {
     findOwnedById: vi.fn(),
   },
@@ -44,7 +45,7 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
-vi.mock("@repo/aws", () => ({
+vi.mock("@repo/aws/catalog-assets", () => ({
   getCatalogAssetDownloadUrl: mocks.getCatalogAssetDownloadUrl,
 }));
 
@@ -53,7 +54,7 @@ vi.mock("@repo/aws/keys", () => ({
 }));
 
 vi.mock("@/lib/auth/org-admin", () => ({
-  isOrgAdmin: mocks.isOrgAdmin,
+  getOrgAdminStatus: mocks.getOrgAdminStatus,
 }));
 
 vi.mock("@/app/compute-targets/service", () => ({
@@ -66,6 +67,11 @@ import {
   DistributionTargetStatusValue,
 } from "@repo/api/src/types/distribution";
 import { Status } from "@repo/api/src/types/result";
+import {
+  ORG_ADMIN_STATUS_ADMIN,
+  ORG_ADMIN_STATUS_NOT_ADMIN,
+  ORG_ADMIN_STATUS_PROVIDER_ERROR,
+} from "@/__tests__/support/auth/org-admin-gate.test-fixtures";
 import { distributionsService } from "../service";
 
 // ---------------------------------------------------------------------------
@@ -124,6 +130,7 @@ function buildTargetStatusRow(distributionId: string) {
  */
 type DistributionRow = {
   id: string;
+  organizationId: string;
   withdrawnAt: Date | null;
   withdrawnById: string | null;
   [key: string]: unknown;
@@ -186,17 +193,23 @@ function matchesId(idFilter: unknown, id: string): boolean {
 
 function matchesRow(
   where: WhereClause | undefined,
-  row: { id: string; withdrawnAt: Date | null }
+  row: { id: string; organizationId: string; withdrawnAt: Date | null }
 ): boolean {
   if (!matchesId(where?.id, row.id)) {
+    return false;
+  }
+  if (
+    where?.organizationId !== undefined &&
+    where.organizationId !== row.organizationId
+  ) {
     return false;
   }
   return !(requiresLive(where) && row.withdrawnAt !== null);
 }
 
 /**
- * A `db` double whose distribution reads genuinely honour `withdrawnAt`, over a
- * fixture holding one live and one withdrawn distribution.
+ * A `db` double whose distribution reads and writes genuinely honour
+ * `withdrawnAt` and `organizationId`, over the fixture rows it is given.
  */
 function installFilteringDb(
   rows: DistributionRow[],
@@ -275,7 +288,7 @@ beforeEach(() => {
 
 describe("distributionsService.withdraw — authorization", () => {
   it("refuses a non-admin and leaves the distribution distributed", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(false);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_NOT_ADMIN);
     const rows = liveAndWithdrawnRows();
     const db = installFilteringDb(rows);
 
@@ -294,13 +307,39 @@ describe("distributionsService.withdraw — authorization", () => {
     expect(rows[0]?.withdrawnAt).toBeNull();
   });
 
-  it("returns 404 for a distribution in another org", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
-    installFilteringDb([]);
+  // ISS-8661: an unresolved role is not a refusal. The sibling case above is
+  // what keeps this honest — a gate that answered 503 for both would pass here
+  // and fail there.
+  it("answers 503 when the role could not be resolved, and still withdraws nothing", async () => {
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_PROVIDER_ERROR);
+    const rows = liveAndWithdrawnRows();
+    const db = installFilteringDb(rows);
 
     const result = await distributionsService.withdraw(
       ORG_ID,
-      "dist-elsewhere",
+      LIVE_ID,
+      "user-member",
+      CLERK_ORG_ID,
+      CLERK_USER_ID
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.error).toBe(Status.ServiceUnavailable);
+    expect(db.distribution.updateMany).not.toHaveBeenCalled();
+    expect(rows[0]?.withdrawnAt).toBeNull();
+  });
+
+  it("returns 404 for a distribution in another org", async () => {
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
+    const foreign = buildDistributionRow({
+      id: FOREIGN_ID,
+      organizationId: FOREIGN_ORG_ID,
+    });
+    installFilteringDb([...liveAndWithdrawnRows(), foreign]);
+
+    const result = await distributionsService.withdraw(
+      ORG_ID,
+      FOREIGN_ID,
       ADMIN_USER_ID,
       CLERK_ORG_ID,
       CLERK_USER_ID
@@ -308,6 +347,11 @@ describe("distributionsService.withdraw — authorization", () => {
 
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.error).toBe(Status.NotFound);
+    // The 404 must be earned by the write as well as the re-read: an
+    // `updateMany` scoped only by id would stamp the other org's row and then
+    // still answer 404, withdrawing a pack for an org that never asked.
+    expect(foreign.withdrawnAt).toBeNull();
+    expect(foreign.withdrawnById).toBeNull();
   });
 });
 
@@ -317,7 +361,7 @@ describe("distributionsService.withdraw — authorization", () => {
 
 describe("distributionsService.withdraw — happy path", () => {
   beforeEach(() => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
   });
 
   it("stamps withdrawnAt and records who withdrew it", async () => {
@@ -444,7 +488,7 @@ describe("withdrawn distributions are no longer offered", () => {
   });
 
   it("cannot be edited — a racing PATCH is refused rather than silently ignored", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
     installFilteringDb(liveAndWithdrawnRows());
 
     const result = await distributionsService.update(
@@ -470,7 +514,7 @@ describe("withdrawn distributions are no longer offered", () => {
    * the withdrawal as it hands back the live row, which is exactly that window.
    */
   it("refuses a targeting PATCH withdrawn between the read and the write, without rebuilding entries", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
     const rows = [buildDistributionRow({ id: LIVE_ID })];
     const db = installFilteringDb(rows);
     const raced = rows[0];
@@ -508,7 +552,7 @@ describe("withdrawn distributions are no longer offered", () => {
   });
 
   it("refuses a scalar-only PATCH withdrawn between the read and the write", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.getOrgAdminStatus.mockResolvedValue(ORG_ADMIN_STATUS_ADMIN);
     const rows = [buildDistributionRow({ id: LIVE_ID })];
     const db = installFilteringDb(rows);
     const raced = rows[0];
@@ -571,3 +615,6 @@ describe("withdrawal does not break an install already in flight", () => {
     expect(result.ok && result.value).toBe(1);
   });
 });
+
+const FOREIGN_ORG_ID = "org-2";
+const FOREIGN_ID = "dist-elsewhere";

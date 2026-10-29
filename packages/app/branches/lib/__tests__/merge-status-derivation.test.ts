@@ -24,11 +24,14 @@ describe("deriveLifecycleBadge", () => {
     [GitHubPRState.Merged, "Merged", LifecycleTone.Merged],
     [GitHubPRState.Closed, "Closed", LifecycleTone.Closed],
     [GitHubPRState.Open, "Open", LifecycleTone.Open],
-  ])("falls back to the projected PR state %s when no branch status is set", (prState, label, tone) => {
-    expect(
-      deriveLifecycleBadge({ persisted: { prState, status: null } })
-    ).toEqual({ label, tone });
-  });
+  ])(
+    "falls back to the projected PR state %s when no branch status is set",
+    (prState, label, tone) => {
+      expect(
+        deriveLifecycleBadge({ persisted: { prState, status: null } })
+      ).toEqual({ label, tone });
+    }
+  );
 
   it("prefers the branch status over the PR state when both are present", () => {
     expect(

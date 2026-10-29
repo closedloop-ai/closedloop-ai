@@ -15,14 +15,14 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, test } from "node:test";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import { installCoachingArtifact } from "../src/main/agent-monitor/agent-coaching-harness.js";
 import {
   coachingSkillSlug,
   installCoachingSkillArtifact,
   installCoachingSkillFile,
 } from "../src/main/agent-monitor/agent-coaching-skill-install.js";
-import { parseSkillFrontmatter } from "../src/main/packs/pack-scanner.js";
+import { parseSkillFrontmatter } from "../src/main/packs/skill-files.js";
 
 const FRONTMATTER_NAME_HEAD_PATTERN = /^---\nname: "repo-state-inspection"\n/;
 const FRONTMATTER_DESCRIPTION_PATTERN =
@@ -169,7 +169,7 @@ describe("installCoachingArtifact dispatch by kind (FEA-3687 #4)", () => {
 
   afterEach(() => {
     if (originalClaudeHome === undefined) {
-      process.env.CLAUDE_HOME = undefined;
+      Reflect.deleteProperty(process.env, "CLAUDE_HOME");
       delete process.env.CLAUDE_HOME;
     } else {
       process.env.CLAUDE_HOME = originalClaudeHome;

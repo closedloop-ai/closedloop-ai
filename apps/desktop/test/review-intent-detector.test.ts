@@ -7,7 +7,7 @@
  * (3) `computeReviewRequestMs` collecting + de-duplicating request timestamps.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   computeReviewRequestMs,
   isReviewRequestCommandName,

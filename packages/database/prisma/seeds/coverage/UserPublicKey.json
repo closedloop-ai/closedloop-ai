@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Browser-command signing keys, read only when enforcing signed browser commands."
+}

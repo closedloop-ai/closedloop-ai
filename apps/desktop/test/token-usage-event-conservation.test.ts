@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { Harness } from "../src/main/collectors/types.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { healTokenUsageEventConservation } from "../src/main/database/token-cost-maintenance.js";
@@ -181,6 +181,11 @@ test("tiered multi-event import: conservation uses Σ(per-event base-tier prices
     const dbEventSum = await tokenEventSum(db, sessionId);
     const storedCost = await tokenUsageCost(db, sessionId, model);
     assert.ok(storedCost !== null, "token_usage.cost must be set");
+    assert.equal(
+      storedCost,
+      3 * perEventCostUsd,
+      `token_usage.cost (${storedCost}) must equal 3× pricing-table per-event cost (${3 * perEventCostUsd})`
+    );
     assert.equal(
       storedCost,
       dbEventSum,
@@ -443,6 +448,11 @@ test("live-hook two-append: second append reads full persisted event series, not
     assert.ok(costAfterSecond !== null, "cost must be set after second append");
     assert.equal(
       costAfterSecond,
+      2 * perEventCostUsd,
+      `token_usage.cost (${costAfterSecond}) must equal 2× pricing-table per-event cost (${2 * perEventCostUsd})`
+    );
+    assert.equal(
+      costAfterSecond,
       dbEventSum,
       `token_usage.cost (${costAfterSecond}) must equal DB event sum (${dbEventSum})`
     );
@@ -658,6 +668,8 @@ test("boot heal corrects divergent rows, cascades to sessions and session_analyt
     const sessionId = "sess-heal-e2e";
     const model = "gpt-5.4";
 
+    const perEventCostUsd = price(model, PER_EVENT.input, PER_EVENT.output);
+    const expectedConservedCostUsd = 3 * perEventCostUsd;
     const aggregateCostUsd = price(model, 300_000, 300);
 
     const session = makeSession({
@@ -708,6 +720,11 @@ test("boot heal corrects divergent rows, cascades to sessions and session_analyt
 
     // ── conservation applied ──
     const storedCost = await tokenUsageCost(db, sessionId, model);
+    assert.equal(
+      storedCost,
+      expectedConservedCostUsd,
+      `token_usage.cost (${storedCost}) must be healed to pricing-table event total (${expectedConservedCostUsd})`
+    );
     assert.equal(
       storedCost,
       dbEventSum,

@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { Octokit } from "@octokit/rest";
+import { parseRepositoryFullName } from "@repo/api/src/types/branch-repository";
 import {
   SelectedPullRequestContentAvailability,
   SelectedPullRequestContentClassification,
@@ -100,12 +101,15 @@ async function readContentReference(
       reason: reference.reason,
     };
   }
-  const [owner, repo] = evidence.identity.repositoryFullName.split("/");
-  if (!(owner && repo)) {
+  const identity = parseRepositoryFullName(
+    evidence.identity.repositoryFullName
+  );
+  if (!identity) {
     return contentUnavailable(
       SelectedPullRequestContentUnavailableReason.MalformedRequest
     );
   }
+  const { owner, repo } = identity;
   try {
     const result = signal
       ? await getClassifiedBoundedFileContentAtRef(

@@ -377,7 +377,7 @@ export function tokenBreakdownFor(range: RangeDays): ModelSlice[] {
   return TOKEN_BREAKDOWN_BY_RANGE[range].map((slice) => ({ ...slice }));
 }
 
-export function totalTokensFor(range: RangeDays): number {
+function totalTokensFor(range: RangeDays): number {
   return tokenBreakdownFor(range).reduce((sum, slice) => sum + slice.value, 0);
 }
 

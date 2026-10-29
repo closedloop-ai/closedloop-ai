@@ -152,7 +152,10 @@ export function buildTokenTrendSeries(
   // arrive: a skewed producer that omits `points` would throw on `.length`, and
   // one that omits `models` would throw from `new Set(undefined)` below — either
   // crashing the whole detail page over a field the chart can rebuild itself.
-  const sourcePoints = data && Array.isArray(data.points) ? data.points : [];
+  const sourcePoints =
+    data && Array.isArray(data.points)
+      ? data.points.filter(isTokenTrendPoint)
+      : [];
   if (!data || sourcePoints.length === 0) {
     return { series: [], points: [] };
   }
@@ -193,13 +196,25 @@ export function buildTokenTrendSeries(
     }
     const date = bucketDay(point.sessionStartedAt);
     const model = modelKeyOf(point);
-    const values = byDate.get(date) ?? {};
+    // ISS-8565: null-prototype bucket, matching the cloud arm's ISS-8233 fix in
+    // `apps/api/app/insights/service/model-series.ts`. On a plain `{}` a model
+    // named `__proto__` reads back Object.prototype, so the `?? 0` never fires,
+    // `Object.prototype + value` coerces to a string, and the assign is a
+    // silent no-op — losing that model's whole day while `modelKeys` still
+    // gives it a legend series with nothing plotted.
+    // Annotated on the DECLARATION: `Object.create(null)` is typed `any`, so
+    // without this `values` widens to `any` and the accumulator below stops
+    // being typechecked.
+    const values: Record<string, number> =
+      byDate.get(date) ?? Object.create(null);
     values[model] = (values[model] ?? 0) + value;
     byDate.set(date, values);
   }
   const points = [...byDate.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, values]) => ({ date, values }));
+    // Spread restores a normal prototype for the chart consumers (object
+    // spread defines rather than assigns, so an own `__proto__` key survives).
+    .map(([date, values]) => ({ date, values: { ...values } }));
   return { series, points };
 }
 
@@ -276,7 +291,12 @@ export function buildVersionMarkers(
   if (versions.length === 0) {
     return [];
   }
-  const firstUsed = firstUsedDayByHash(usageSessions, data?.points ?? []);
+  // ISS-8884: same wire-supplied array as `buildTokenTrendSeries`; a truthy
+  // non-array `points` would throw inside `for…of` and take the page down.
+  const points = Array.isArray(data?.points)
+    ? data.points.filter(isTokenTrendPoint)
+    : [];
+  const firstUsed = firstUsedDayByHash(usageSessions, points);
   const markers: TimeSeriesMarker[] = [];
   const seenHashes = new Set<string>();
   for (const version of versions) {
@@ -306,4 +326,16 @@ export function buildVersionMarkers(
     }
   }
   return markers;
+}
+
+/**
+ * ISS-8884, whitlockk review — an ELEMENT of `points[]` is exactly as untrusted as
+ * the array around it. A `null` entry survives the `Array.isArray` guard and
+ * reaches `point.model` in the very next line, throwing the same TypeError that
+ * guard exists to prevent, one level in. Dropping the entry rather than folding
+ * it onto `Unattributed` is deliberate: a non-object carries no metric value to
+ * account for, so counting it would invent usage.
+ */
+function isTokenTrendPoint(point: unknown): point is TokenTrendPoint {
+  return typeof point === "object" && point !== null;
 }

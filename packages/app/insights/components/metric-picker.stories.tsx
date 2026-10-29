@@ -1,5 +1,6 @@
 import { BranchKpiState } from "@repo/api/src/types/branch";
 import { InsightsSection } from "@repo/api/src/types/insights";
+import { GitHubConnectAction } from "@repo/app/github/lib/github-connect-action";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
 import { INSIGHTS_SPEND_OUTCOME_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
@@ -59,9 +60,9 @@ function withSpendOutcomeFlag(children: ReactNode) {
 }
 
 const meta = {
-  title: "App Core/Insights/Metric Picker",
+  title: "Composites v1.0/Insights/Metric Picker",
   component: MetricPicker,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "fullscreen" },
   args: {
     open: true,
@@ -165,6 +166,9 @@ export const UnavailableWithConnectGitHub: Story = {
     availableSections: [InsightsSection.Delivery],
     sections: deliverySections,
     getTileAvailability: () => ({ state: BranchKpiState.Gated }),
-    githubConnectHref: "https://example.com/connect/github",
+    githubConnect: {
+      action: GitHubConnectAction.Connect,
+      href: "https://example.com/connect/github",
+    },
   },
 };

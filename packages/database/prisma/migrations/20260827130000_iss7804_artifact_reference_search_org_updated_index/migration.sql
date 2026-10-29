@@ -1,0 +1,110 @@
+-- ISS-7804 (1 of 2): the index the ARTIFACT-sourced reference typeahead needs.
+--
+-- WHAT ASKS FOR IT. `referenceSearchService.searchTargets`
+-- (apps/api/app/custom-fields/reference-search-service.ts) pages the candidates a
+-- REFERENCE custom field may point at. A field sourced to ARTIFACT admits every
+-- artifact type, so `referenceSourceScope` returns `ALL` and the query carries NO
+-- type predicate at all — the whole WHERE is the organization, and the ORDER BY
+-- is `updated_at DESC, id ASC` with `take: limit + 1`. None of the eight existing
+-- `artifacts` indexes can serve that: the only two carrying `updated_at`
+-- (`artifacts_org_assignee_created_id_idx`, `artifacts_org_assignee_updated_idx`)
+-- both require an `assignee_id` equality this query never supplies, so Postgres
+-- reached the tenant's rows through an org-prefixed index and then top-N sorted
+-- the ENTIRE tenant partition to find 21 rows.
+--
+-- SHAPE: `(organization_id, updated_at DESC, id ASC)`, matching the ORDER BY
+-- exactly so the LIMIT terminates the scan instead of a sort node consuming the
+-- partition first. `id ASC` is in the index because it is in the ORDER BY: it is
+-- the tiebreak that makes `hasMore` mean something when several artifacts share
+-- an `updated_at`, and leaving it out would put a sort back on top.
+--
+-- MEASURED (EXPLAIN ANALYZE, Postgres 16, throwaway database with every
+-- migration applied; 500,000 artifacts across 12 organizations, the tenant under
+-- test holding 120,319 of them — 84,406 SESSION, 17,941 BRANCH, 15,482 DOCUMENT
+-- over five subtypes, 2,490 DEPLOYMENT. The SQL is the statement Prisma actually
+-- emits, taken from the server's own `log_statement=all` output while running
+-- `searchTargets`'s `findMany` with the production `referenceSourceScope`
+-- predicate, `take: 21` included):
+--
+--   ARTIFACT source, nothing typed
+--     before  Gather Merge -> Sort (top-N heapsort)
+--               -> Parallel Bitmap Heap Scan on artifacts
+--                    Recheck Cond: (organization_id = ...)
+--                    rows=40,106 per worker, x3: the whole tenant partition
+--             Buffers: shared hit=9859      Execution Time: 32.4 ms
+--     after   Index Scan using artifacts_org_updated_id_idx
+--               Index Cond: (organization_id = ...)
+--               no sort node at all
+--             Buffers: shared hit=31        Execution Time: 0.20 ms
+--
+-- IT ALSO SERVES THE MULTI-SOURCE ARM, which no type-leading index can. A field
+-- sourced to several populations compiles to an `OR` of type predicates, and an
+-- `OR` gets a BitmapOr plus a sort rather than one ordered scan. The planner
+-- instead drives this index and applies the disjunction as a filter:
+--
+--   SESSION + ISSUE (83% of the tenant)
+--     before  BitmapOr -> Parallel Bitmap Heap Scan -> Sort
+--             Buffers: shared hit=9895      Execution Time: 34.9 ms
+--     after   Index Scan using artifacts_org_updated_id_idx, 6 rows filtered
+--             Buffers: shared hit=30        Execution Time: 0.09 ms
+--
+-- AND THE HONEST BOUND ON THAT. The ordered scan pays in proportion to how RARE
+-- the selected sources are, because it walks the tenant in `updated_at` order
+-- until 21 rows pass the filter. A deliberately narrow disjunction
+-- (DEPLOYMENT or DOCUMENT/PRD, 2.6% of this tenant) still used this index and
+-- still beat the old plan — 391 buffers, 5.3 ms, 360 rows filtered — but that
+-- cost grows with TENANT SIZE at fixed source selectivity, where the sibling
+-- index in 20260827130100 does not. That is why both ship.
+--
+-- THE TYPED-TEXT ARM IS NOT SERVED HERE, AND THAT IS THE RECORDED DECISION.
+-- `contains` compiles to a bare `ILIKE '%term%'`, which no btree serves. Its cost
+-- now depends on how selective the term is: a term matching plenty of rows rides
+-- this index and terminates early (0.33 ms, 104 buffers, 76 rows filtered), and a
+-- term matching almost nothing degenerates to the same bounded bitmap scan it
+-- already was (71 ms, 9,844 buffers) — no worse than before this migration.
+-- Trigram support was BUILT AND MEASURED rather than assumed, and rejected:
+-- `pg_trgm` GIN on `slug` and `name` cost 12 MB + 71 MB on this 500k-row slice,
+-- improved the type-filtered typed-text arm 32 ms -> 16 ms, and made the
+-- ARTIFACT typed-text arm SEVEN TIMES WORSE — 62 ms -> 443 ms, 9.8k -> 121k
+-- buffers — because the trigram selectivity estimate convinced the planner the
+-- ordered scan would terminate early and it instead walked all 120,300 tenant
+-- rows. Dropping the two GIN indexes restored the old plan, confirming the
+-- regression was theirs. So: the typed-text arm is accepted as a scan within the
+-- bounded `take`, and trigram is a separate decision to be re-measured against
+-- real traffic — of which there is none yet, because no UI calls these endpoints
+-- until ISS-7052 wires the reference cell.
+--
+-- COST, stated rather than left to the reader: 28 MB on this 500k-row slice, and
+-- `updated_at` carries `@updatedAt`, so EVERY update to an artifact writes a new
+-- entry here. That is the price of the ordered scan, on one of the largest tables
+-- in the schema.
+--
+-- CONCURRENTLY, AND THEREFORE ALONE AND BARE IN THIS FILE. `artifacts` is written
+-- continuously by session and branch ingest, so a plain `CREATE INDEX` would hold
+-- ACCESS EXCLUSIVE for the whole build and stall that ingest at production size.
+-- `CREATE INDEX CONCURRENTLY` takes only SHARE UPDATE EXCLUSIVE. It cannot run
+-- inside a transaction block (SQLSTATE 25001), and `prisma migrate deploy` only
+-- splits a migration file into per-statement simple queries when it can do so
+-- confidently — a `DO $$ … $$` block, embedded semicolons or a
+-- `DROP INDEX CONCURRENTLY` push the whole file onto the single-transaction
+-- fallback where every CONCURRENTLY statement fails 25001. So this file is ONE
+-- bare statement, and the sibling index lives in its own migration rather than
+-- here.
+--
+-- NO `IF NOT EXISTS`: required by the concurrent-index lint
+-- (scripts/lint/destructive-migrations/index-ddl.ts) so a retry after a cancelled
+-- or crashed build fails closed on SQLSTATE 42P07 against the same-named INVALID
+-- remnant instead of recording the migration APPLIED over a permanently-unusable
+-- index. Recovery is operator-driven: `DROP INDEX CONCURRENTLY` the remnant in
+-- psql autocommit, then re-run migrate deploy.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations-core.mjs) — a pure
+-- non-unique perf-only index, and CONCURRENTLY's instance-wide transaction wait
+-- is the ISS-4437 P1002 advisory-lock amplifier on ephemeral `preview_*` schemas.
+-- CI-enforced by packages/database/__tests__/preview-heavy-migrations.test.ts.
+--
+-- Purely additive: a non-unique index changes plan choice only, never results.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "artifacts_org_updated_id_idx" ON "artifacts"("organization_id", "updated_at" DESC, "id" ASC);

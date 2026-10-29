@@ -25,6 +25,8 @@ export const DistributionsIpcChannel = {
    * installable in that window.
    */
   EnsureAssigned: "desktop:distributions:ensure-assigned",
+  /** Refresh the opt-in snapshot after a generic distribution install. */
+  Handled: "desktop:distributions:handled",
 } as const;
 
 export type DistributionsIpcChannel =

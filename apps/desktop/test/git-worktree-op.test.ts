@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
 import { OperationDispatcher } from "../src/server/operation-dispatcher.js";
+import { getResolvedGitPath } from "../src/server/operations/binary-path-overrides.js";
 import { GIT_GATEWAY_EXEC_TIMEOUT_MS } from "../src/server/operations/git-gateway-constants.js";
 import { registerGitWorktreeRoutes } from "../src/server/operations/git-worktree.js";
-import { getResolvedGitPath } from "../src/server/operations/symphony-loop.js";
 import type { ExecResult } from "../src/server/process-manager.js";
 import {
   createGitOpTempDirs,

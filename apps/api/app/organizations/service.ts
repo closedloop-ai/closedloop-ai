@@ -14,7 +14,7 @@ import { getPrismaErrorCode } from "@/lib/db-utils";
  */
 export const organizationsService = {
   toOrganization(
-    organization: Prisma.OrganizationModel | null
+    organization: OrganizationPayloadRow | null
   ): Organization | null {
     return organization
       ? {
@@ -24,34 +24,57 @@ export const organizationsService = {
       : null;
   },
   /**
-   * Find an organization by ID
+   * Resolve an organization's identity by ID.
+   *
+   * Identity, not the row: this is the lookup every authenticated request makes
+   * to turn a credential into an org, so it reads the two columns those callers
+   * consume and leaves the credential columns and the settings blob in Postgres.
+   * A caller that renders the organization wants `findDetailById`.
    */
-  findById(id: string): Promise<Organization | null> {
+  findById(id: string): Promise<OrganizationIdentity | null> {
     return withDb((db) =>
       db.organization.findUnique({
         where: { id },
+        select: ORGANIZATION_IDENTITY_SELECT,
       })
-    ).then(this.toOrganization);
+    );
   },
 
   /**
-   * Find an organization by Clerk ID
+   * Resolve an organization's identity by Clerk ID. Same narrowing, and the
+   * same reason, as `findById`.
    */
-  findByClerkId(clerkId: string): Promise<Organization | null> {
+  findByClerkId(clerkId: string): Promise<OrganizationIdentity | null> {
     return withDb((db) =>
       db.organization.findUnique({
         where: { clerkId },
+        select: ORGANIZATION_IDENTITY_SELECT,
       })
-    ).then(this.toOrganization);
+    );
   },
 
   /**
-   * Find an organization by slug
+   * Resolve an organization's identity by slug. Its one caller is the slug
+   * uniqueness check, which compares ids.
    */
-  findBySlug(slug: string): Promise<Organization | null> {
+  findBySlug(slug: string): Promise<OrganizationIdentity | null> {
     return withDb((db) =>
       db.organization.findUnique({
         where: { slug },
+        select: ORGANIZATION_IDENTITY_SELECT,
+      })
+    );
+  },
+
+  /**
+   * Read the full organization payload by ID, for the routes that serialize an
+   * organization to the caller rather than just resolving one.
+   */
+  findDetailById(id: string): Promise<Organization | null> {
+    return withDb((db) =>
+      db.organization.findUnique({
+        where: { id },
+        select: ORGANIZATION_PAYLOAD_SELECT,
       })
     ).then(this.toOrganization);
   },
@@ -67,6 +90,7 @@ export const organizationsService = {
           name: input.name,
           slug: input.slug,
         },
+        select: ORGANIZATION_PAYLOAD_SELECT,
       })
     ).then((organization) => this.toOrganization(organization)!);
   },
@@ -82,35 +106,55 @@ export const organizationsService = {
       db.organization.update({
         where: { id },
         data: input,
+        select: ORGANIZATION_PAYLOAD_SELECT,
       })
     ).then(this.toOrganization);
   },
 
   /**
-   * Update an existing organization by Clerk ID
+   * Apply a Clerk-sourced mirror write, gated on the payload's own timestamp.
+   *
+   * ISS-7132: Svix delivers at-least-once and unordered, so a webhook handler
+   * cannot assume the payload it holds is the newest state Clerk produced. An
+   * unconditional write therefore lets a retry — or a delivery that overtook a
+   * newer one — revert `name`/`slug` to an older value, and `slug` is the
+   * `[orgSlug]` routing key, so that changes every URL the org's users hold.
+   * `clerkUpdatedAt` is Clerk's own stamp on the last payload written here, so
+   * it is the only value that orders two deliveries against each other; ours
+   * (`updatedAt`) records when we wrote, on a different clock.
+   *
+   * The comparison lives in the `where` clause rather than in a read-then-write
+   * so one statement decides it: two deliveries racing cannot both read the
+   * stale value and then both write. `lt`, not `lte`, so an exact replay of an
+   * already-applied delivery is a no-op — that is the dedup half of the guard.
+   *
+   * `clerkUpdatedAt: null` means the row has never been stamped from a Clerk
+   * payload — it predates this column, or `findOrCreateByClerkId` created it
+   * from a membership payload that carries no organization timestamp — so the
+   * first Clerk write is accepted and stamps it.
+   *
+   * @returns the number of rows written: 0 when the payload was a replay or
+   *          arrived out of order, and equally when no row matches `clerkId`.
+   *          Callers that ran `findOrCreateByClerkId` first know the row exists
+   *          and can read 0 as "rejected by the guard".
    */
   updateByClerkId(
     clerkId: string,
-    input: Omit<UpdateOrganizationInput, "id">
-  ): Promise<Organization | null> {
+    input: Omit<UpdateOrganizationInput, "id">,
+    clerkUpdatedAt: Date
+  ): Promise<number> {
     return withDb((db) =>
-      db.organization.update({
-        where: { clerkId },
-        data: input,
+      db.organization.updateMany({
+        where: {
+          clerkId,
+          OR: [
+            { clerkUpdatedAt: null },
+            { clerkUpdatedAt: { lt: clerkUpdatedAt } },
+          ],
+        },
+        data: { ...input, clerkUpdatedAt },
       })
-    ).then(this.toOrganization);
-  },
-
-  /**
-   * Deactivate an organization (soft delete)
-   */
-  deactivate(id: string): Promise<Organization | null> {
-    return withDb((db) =>
-      db.organization.update({
-        where: { id },
-        data: { active: false },
-      })
-    ).then(this.toOrganization);
+    ).then(({ count }) => count);
   },
 
   /**
@@ -121,6 +165,7 @@ export const organizationsService = {
       db.organization.update({
         where: { clerkId },
         data: { active: false },
+        select: ORGANIZATION_PAYLOAD_SELECT,
       })
     ).then(this.toOrganization);
   },
@@ -135,7 +180,7 @@ export const organizationsService = {
   async findOrCreateByClerkId(
     clerkOrgId: string,
     payload?: { name: string; slug: string | null }
-  ): Promise<Organization> {
+  ): Promise<OrganizationIdentity> {
     const existing = await organizationsService.findByClerkId(clerkOrgId);
 
     if (existing) {
@@ -170,7 +215,10 @@ export const organizationsService = {
         clerkOrgId,
       });
 
-      return organization;
+      // Returned as identity, not as the created row: `create` resolves the
+      // whole payload, and handing that back would make the declared return
+      // type narrower than the object callers actually receive.
+      return { id: organization.id, clerkId: organization.clerkId };
     } catch (error) {
       // Handle race condition: concurrent requests may both attempt to create
       // the same org. If a unique constraint violation occurs (P2002), the org
@@ -184,4 +232,61 @@ export const organizationsService = {
       throw error;
     }
   },
+
+  /**
+   * Whether the organization exists and is active. `organization.deleted`
+   * deactivates the row rather than removing it, so the row existing is not
+   * the org being live.
+   */
+  async isActive(id: string): Promise<boolean> {
+    const row = await withDb((db) =>
+      db.organization.findUnique({
+        where: { id },
+        select: { active: true },
+      })
+    );
+    return row?.active === true;
+  },
 };
+
+/**
+ * What an organization lookup on the authenticated path resolves to: the
+ * internal id every org-scoped query keys on, and the Clerk id the membership
+ * and admin checks key on. Nothing else — a caller needing more asks for the
+ * payload read by name.
+ */
+export type OrganizationIdentity = Pick<Organization, "id" | "clerkId">;
+
+/**
+ * Derived from the select clause rather than restated, so the row type cannot
+ * drift from the columns the query actually asks for.
+ */
+type OrganizationPayloadRow = Prisma.OrganizationGetPayload<{
+  select: typeof ORGANIZATION_PAYLOAD_SELECT;
+}>;
+
+const ORGANIZATION_IDENTITY_SELECT = {
+  id: true,
+  clerkId: true,
+} satisfies Record<keyof OrganizationIdentity, true>;
+
+/**
+ * The columns the `Organization` payload is made of, and only those.
+ *
+ * `GET`/`PUT /organizations/:id` serialize this object straight back to the
+ * caller, so a column present on the row is a column present in the HTTP
+ * response. The `satisfies` guard is bidirectional — a new
+ * `Organization` field fails typecheck here until it is selected, and a column
+ * that is not part of the payload cannot be added.
+ */
+const ORGANIZATION_PAYLOAD_SELECT = {
+  id: true,
+  clerkId: true,
+  name: true,
+  slug: true,
+  active: true,
+  settings: true,
+  searchIncludeTranscripts: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Record<keyof Organization, true>;

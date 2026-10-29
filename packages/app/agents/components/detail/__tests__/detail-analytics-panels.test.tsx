@@ -125,9 +125,7 @@ function withProviders(ui: React.ReactElement) {
   return <AppCoreStoryProviders>{ui}</AppCoreStoryProviders>;
 }
 
-// ---------------------------------------------------------------------------
 // FEA-3557: analytics sub-tab permalink (?view=)
-// ---------------------------------------------------------------------------
 
 function viewQuery(href: string): string | null {
   const q = href.indexOf("?");

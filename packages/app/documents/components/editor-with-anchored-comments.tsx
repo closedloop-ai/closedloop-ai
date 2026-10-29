@@ -1,10 +1,14 @@
 "use client";
 
+import { DocSyncFloatingToolbar } from "@repo/collaboration/client/doc-sync-floating-toolbar";
 import { OptionalComments } from "@repo/collaboration/client/optional-comments";
 import { cn } from "@repo/design-system/lib/utils";
 import type { TiptapEditor } from "@repo/rich-text";
-import { RichTextToolbar } from "@repo/rich-text/rich-text-toolbar";
 import { Suspense, useState } from "react";
+import {
+  DocumentRichTextToolbar,
+  useEditorHasLiveblocksExtension,
+} from "./document-rich-text-toolbar";
 import { RichTextEditorHost } from "./rich-text-editor-host";
 
 export type EditorWithAnchoredCommentsProps = {
@@ -24,8 +28,10 @@ export type EditorWithAnchoredCommentsProps = {
   liveblocksRoomId?: string | null;
   /**
    * When true, the editor uses the Liveblocks Tiptap extension for content
-   * sync. Independent of `liveblocksRoomId`, which controls whether the
-   * comment surfaces mount.
+   * sync. The comment surfaces need that same extension, so they mount only
+   * when this is true AND `liveblocksRoomId` is set — never on the room id
+   * alone, which is slug-derived and therefore set on historical versions the
+   * host renders with a plain editor (ISS-9849).
    */
   editorUsesLiveblocksContent: boolean;
   onEditorInstance?: (editor: TiptapEditor | null) => void;
@@ -40,14 +46,6 @@ export type EditorWithAnchoredCommentsProps = {
   placeholder?: string;
   readOnly?: boolean;
   showComments?: boolean;
-  /**
-   * When true, the Feed sidebar is mounted at the editor host level and
-   * owns thread display. Suppresses the legacy gutter
-   * `AnchoredThreads`/`FloatingThreads` so only one thread surface renders.
-   * `FloatingComposer` + `FloatingToolbar` still mount so thread creation
-   * is unchanged.
-   */
-  hasFeedSidebar?: boolean;
   /**
    * The version of the document the user is currently editing. Flows
    * through to `<OptionalComments>` so the `FloatingComposer` stamps
@@ -77,18 +75,27 @@ export function EditorWithAnchoredComments({
   placeholder,
   readOnly,
   showComments = true,
-  hasFeedSidebar = false,
   currentVersion,
   hideLeadingTitleHeading = false,
 }: Readonly<EditorWithAnchoredCommentsProps>) {
   const [editor, setEditor] = useState<TiptapEditor | null>(null);
-  const roomMounted = !!liveblocksRoomId;
+  // Every comment surface below reaches into the Liveblocks Tiptap extension's
+  // editor storage, and the host only registers that extension when the editor
+  // reads its content from the room. `liveblocksRoomId` is slug-derived and so
+  // is non-null on EVERY version, including historical ones the host renders
+  // with a plain editor — gating on it alone mounted `FloatingComposer` against
+  // an editor with no `liveblocksComments` storage, which threw (ISS-9849).
+  // Same condition the toolbar uses for its Add Comment control.
+  const editorHasLiveblocksExtension = useEditorHasLiveblocksExtension(
+    editorUsesLiveblocksContent
+  );
+  const commentsMounted = !!liveblocksRoomId && editorHasLiveblocksExtension;
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       {/* Formatting toolbar — spans full width above the editor+comments split */}
       {!(readOnly || externalToolbar) && (
-        <RichTextToolbar
+        <DocumentRichTextToolbar
           editor={editor}
           hasLiveblocksExtension={editorUsesLiveblocksContent}
           onPasteMarkdown={(markdown) => editor?.resetContent(markdown)}
@@ -114,6 +121,8 @@ export function EditorWithAnchoredComments({
                 onBodyClick && readOnly && "cursor-text",
                 hideLeadingTitleHeading && HIDE_LEADING_TITLE_HEADING_CLASS
               )}
+              data-analytics-action={onBodyClick ? "true" : undefined}
+              data-analytics-label="Edit document"
               onClick={onBodyClick}
             >
               <RichTextEditorHost
@@ -136,26 +145,20 @@ export function EditorWithAnchoredComments({
             </div>
           </div>
 
-          {roomMounted && (
-            <Suspense fallback={null}>
-              {/* Floating comments on mobile/tablet (< 1280px) */}
-              <div className={showComments ? "xl:hidden" : "hidden"}>
-                <OptionalComments
-                  currentVersion={currentVersion}
-                  editor={editor}
-                  mode="floating"
-                  renderGutterThreads={!hasFeedSidebar}
-                  roomId={liveblocksRoomId}
-                />
-              </div>
+          {/* On doc-sync, the selection toolbar without the Comment control
+              (PLN-2189 T-2.9); it renders nothing on Liveblocks. */}
+          {editorUsesLiveblocksContent && (
+            <DocSyncFloatingToolbar editor={editor} />
+          )}
 
-              {/* Anchored comments on desktop (>= 1280px) */}
-              <div className={showComments ? "hidden xl:block" : "hidden"}>
+          {/* The feed rail owns thread display; this mount carries the
+              composer and toolbar that create threads. */}
+          {commentsMounted && (
+            <Suspense fallback={null}>
+              <div className={showComments ? undefined : "hidden"}>
                 <OptionalComments
                   currentVersion={currentVersion}
                   editor={editor}
-                  mode="anchored"
-                  renderGutterThreads={!hasFeedSidebar}
                   roomId={liveblocksRoomId}
                 />
               </div>

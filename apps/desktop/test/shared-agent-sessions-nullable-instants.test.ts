@@ -17,8 +17,8 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { describe, it } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { mapListItem } from "../src/main/session/shared-agent-sessions-api.js";
 

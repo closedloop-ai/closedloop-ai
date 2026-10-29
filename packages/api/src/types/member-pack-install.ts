@@ -98,8 +98,10 @@ export type MemberPackInstallDispatchState =
  *    may be running. Surfaced as non-terminal `Pending`, NOT a terminal failure
  *    the member could retry into a duplicate run. `RelayDispatchFailed` is the
  *    cloud→relay fetch timeout/throw; `TargetNotConnected` is the relay's wire
- *    reason, which it also returns when a cross-instance peer proxy times out or
- *    returns a non-JSON body after the peer may have emitted.
+ *    reason. Newer relays add optional operator diagnostics alongside that
+ *    coarse reason, but this member-facing contract deliberately keeps the
+ *    stable reason vocabulary so copy and retry semantics do not drift during
+ *    rolling deploys.
  *  - `TargetOffline` — the in-process relay bus proved there is no local
  *    subscriber; a definitive offline state (terminal, surfaced honestly).
  */

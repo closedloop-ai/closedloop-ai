@@ -10,10 +10,14 @@ import {
   queryBundledPullRequestsWithProviderResult,
 } from "../index";
 import {
-  classifyBundledRepositoryAccessFailure,
+  classifyGitHubInstallationClientAcquisitionError,
   classifyGitHubProviderError,
+  classifyGitHubRepositoryAccessProbeError,
+  classifyRepositoryAccessFailure,
   getGitHubRetryAfterSeconds,
+  graphqlErrorPaths,
 } from "../provider-error-classification";
+import { GitHubOperationProviderResultStatus } from "../provider-result";
 
 const NOW_MS = Date.parse("2026-06-01T12:00:00Z");
 
@@ -74,10 +78,10 @@ describe("GitHub provider error shapes", () => {
     ).toBeNull();
   });
 
-  describe("classifyBundledRepositoryAccessFailure via queryBundledPullRequestsWithProviderResult (ISS-5093)", () => {
+  describe("classifyRepositoryAccessFailure via queryBundledPullRequestsWithProviderResult (ISS-5093)", () => {
     // Cases 1-5 drive the REAL PRODUCTION SEAM: queryBundledPullRequestsWithProviderResult
     // calls resolveBundledPullRequestsPageFailure which calls
-    // classifyBundledRepositoryAccessFailure. Testing through this seam ensures a
+    // classifyRepositoryAccessFailure. Testing through this seam ensures a
     // deleted call site in index.ts makes the suite go red — a direct helper-only
     // test stays green after the call site is removed.
     //
@@ -261,7 +265,7 @@ describe("GitHub provider error shapes", () => {
         data: { repository: null },
       };
 
-      expect(classifyBundledRepositoryAccessFailure(error, 1)).toBeNull();
+      expect(classifyRepositoryAccessFailure(error, 1)).toBeNull();
     });
 
     it("hostile repo name containing 'rate-limit' does not suppress the no-access verdict", () => {
@@ -277,7 +281,7 @@ describe("GitHub provider error shapes", () => {
         data: { repository: null },
       };
 
-      const result = classifyBundledRepositoryAccessFailure(error, 0);
+      const result = classifyRepositoryAccessFailure(error, 0);
 
       expect(result).toEqual({
         status: GitHubProviderResultStatus.ProviderRepoNotFound,
@@ -289,5 +293,114 @@ describe("GitHub provider error shapes", () => {
         status: GitHubProviderResultStatus.ProviderUnavailable,
       });
     });
+  });
+});
+
+describe("GitHub operation stage classifiers", () => {
+  it("maps a 401 on the repository access probe to CredentialUnauthorized", () => {
+    expect(
+      classifyGitHubRepositoryAccessProbeError({ status: 401 }, NOW_MS)
+    ).toEqual({ status: GitHubProviderResultStatus.CredentialUnauthorized });
+  });
+
+  it("maps installation-token acquisition 404, 401 and 5xx to their own statuses", () => {
+    expect(
+      classifyGitHubInstallationClientAcquisitionError({ status: 404 })
+    ).toEqual({
+      status: GitHubProviderResultStatus.ProviderInstallationNotFound,
+    });
+    expect(
+      classifyGitHubInstallationClientAcquisitionError({ status: 401 })
+    ).toEqual({ status: GitHubProviderResultStatus.CredentialUnauthorized });
+    expect(
+      classifyGitHubInstallationClientAcquisitionError({ status: 503 })
+    ).toEqual({ status: GitHubProviderResultStatus.ProviderUnavailable });
+  });
+
+  it("reads a non-numeric status as InvalidResponse but a non-object rejection as ProviderUnavailable", () => {
+    expect(
+      classifyGitHubInstallationClientAcquisitionError({ status: "500" })
+    ).toEqual({ status: GitHubOperationProviderResultStatus.InvalidResponse });
+    expect(
+      classifyGitHubInstallationClientAcquisitionError("connection reset")
+    ).toEqual({ status: GitHubProviderResultStatus.ProviderUnavailable });
+  });
+});
+
+describe("classifyRepositoryAccessFailure guards", () => {
+  const unresolvedRepositoryErrors = [
+    {
+      type: "NOT_FOUND",
+      path: ["repository"],
+      message: "Could not resolve to a Repository",
+    },
+  ];
+
+  it("returns null for a rejection that is not a GraphQL envelope", () => {
+    expect(classifyRepositoryAccessFailure("connection reset", 0)).toBeNull();
+  });
+
+  it("returns null when an HTTP 429 accompanies an unresolved repository", () => {
+    expect(
+      classifyRepositoryAccessFailure(
+        {
+          status: 429,
+          data: { repository: null },
+          errors: unresolvedRepositoryErrors,
+        },
+        0
+      )
+    ).toBeNull();
+  });
+
+  it("returns null when a Retry-After header accompanies an unresolved repository", () => {
+    expect(
+      classifyRepositoryAccessFailure(
+        {
+          headers: { "retry-after": "30" },
+          data: { repository: null },
+          errors: unresolvedRepositoryErrors,
+        },
+        0
+      )
+    ).toBeNull();
+  });
+
+  it("ignores a root error with no type and keeps scanning to the next entry", () => {
+    expect(
+      classifyRepositoryAccessFailure(
+        { data: { repository: null }, errors: [{ path: ["repository"] }] },
+        0
+      )
+    ).toBeNull();
+    expect(
+      classifyRepositoryAccessFailure(
+        {
+          data: { repository: null },
+          errors: [
+            { path: ["repository"] },
+            { type: "FORBIDDEN", path: ["repository"] },
+          ],
+        },
+        0
+      )
+    ).toEqual({ status: GitHubProviderResultStatus.ProviderRepoForbidden });
+  });
+});
+
+describe("graphqlErrorPaths", () => {
+  it("dots the first `limit` entries that carry a path and skips entries without one", () => {
+    expect(
+      graphqlErrorPaths(
+        [
+          { path: ["repository", "pr0", 3] },
+          { message: "no path" },
+          null,
+          { path: ["rateLimit"] },
+          { path: ["repository", "pr9"] },
+        ],
+        2
+      )
+    ).toEqual(["repository.pr0.3", "rateLimit"]);
   });
 });

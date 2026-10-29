@@ -29,9 +29,11 @@ import {
  *     ```
  *
  *   • {@link mockTooltipModule} — the parameterised factory, when a trigger can
- *     wrap plain text rather than an element (the agents-table name lead's
- *     no-href path renders a native `<button>` trigger, and its test asserts the
- *     trigger is a focusable `BUTTON`, not a `<span>`):
+ *     wrap plain text rather than an element, or when Vitest's hoisted mock can
+ *     execute before a top-level imported `tooltipMockModule` binding is
+ *     initialized. The no-options factory has the same rendered shape as the
+ *     ready-made object; importing it dynamically moves initialization inside
+ *     the hoisted factory and avoids that TDZ failure:
  *
  *     ```ts
  *     vi.mock(
@@ -84,8 +86,26 @@ function buildTooltipModule({
       }
       return <span {...triggerProps}>{children}</span>;
     },
-    TooltipContent: ({ children }: { children: ReactNode }) => (
-      <div data-testid="tooltip-content">{children}</div>
+    // `aria-label` is forwarded, and ONLY that. The real `TooltipContent`
+    // spreads every prop onto Radix's content, where `aria-label` REPLACES what
+    // a screen reader announces (`ariaLabel || children`) — so a mock that
+    // swallowed it would let a test assert an announcement production does not
+    // make. A blanket `...props` spread is NOT the fix: it lands Radix-only
+    // props (`side`, `align`, collision handlers) on a bare `<div>`, and the
+    // resulting React warnings fail this package's suites outright.
+    // `role="tooltip"` is what Radix's own content carries, and it is what
+    // makes `aria-label` legal on this node at all — a bare `div` has no role
+    // to support it (`lint/a11y/useAriaPropsSupportedByRole`).
+    TooltipContent: ({
+      children,
+      "aria-label": ariaLabel,
+    }: {
+      children: ReactNode;
+      "aria-label"?: string;
+    }) => (
+      <div aria-label={ariaLabel} data-testid="tooltip-content" role="tooltip">
+        {children}
+      </div>
     ),
   };
 }
@@ -97,10 +117,11 @@ function buildTooltipModule({
 export const tooltipMockModule = buildTooltipModule();
 
 /**
- * Parameterised mock-module factory. Call from the hoisted `vi.mock` factory
- * when a trigger can wrap plain text and the test needs the native focusable
- * `<button>` shape (default) — or pass `{ textTrigger: "span" }` for the legacy
- * pass-through.
+ * Parameterised mock-module factory. Call through a dynamic import inside a
+ * hoisted `vi.mock` when the tested import graph reaches Tooltip before static
+ * helper imports initialize. It also owns the plain-text trigger option: the
+ * default is the native focusable `<button>` shape, while
+ * `{ textTrigger: "span" }` retains the legacy pass-through.
  */
 export function mockTooltipModule(options: MockTooltipOptions = {}) {
   return buildTooltipModule(options);

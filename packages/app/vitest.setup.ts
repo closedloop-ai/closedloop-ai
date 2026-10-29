@@ -6,3 +6,6 @@ import "../typescript-config/vitest-localstorage-setup";
 // Shared with the Storybook portable-stories project (ISS-5287) rather than kept
 // as a per-package copy; the behavior is unchanged from when they were inline.
 import "../typescript-config/vitest-jsdom-setup";
+// ISS-9661: drain the macrotask a final unmount can schedule (Radix's focus
+// scope) so it runs inside this file rather than against a torn-down jsdom.
+import "../typescript-config/vitest-teardown-drain";

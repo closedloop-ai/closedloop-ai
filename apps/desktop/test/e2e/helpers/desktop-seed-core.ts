@@ -19,6 +19,7 @@
 
 import path from "node:path";
 import { createClient } from "@libsql/client";
+import { connectionPragmaStatements } from "../../../src/main/database/connection-pragmas.js";
 import { MIGRATIONS } from "../../../src/main/database/migration/migrations-manifest.js";
 
 /** The single-file libSQL store the desktop opens in the app's user-data dir. */
@@ -36,6 +37,10 @@ export const SEED_SCHEMA_TIMEOUT_MS = 30_000;
 const SQLITE_BUSY_ERROR = "SQLITE_BUSY";
 const SQLITE_LOCKED_MESSAGE = "database is locked";
 const SQLITE_MISSING_TABLE_MESSAGE = "no such table";
+
+/** The app PRAGMAs a seeder applies (see {@link applyDesktopSeedPragmas}). */
+const SEED_PRAGMA_PATTERN =
+  /^PRAGMA (?:busy_timeout|journal_mode|foreign_keys)=/;
 
 /** A seeder's libSQL connection to the desktop store. */
 export type SeedClient = ReturnType<typeof createClient>;
@@ -66,18 +71,17 @@ export function isSqliteBusyError(error: unknown): boolean {
 }
 
 /**
- * Match the desktop's per-connection PRAGMAs (connection-pragmas.ts): WAL for
- * multi-process concurrency, a generous busy timeout to ride out brief writer
- * locks, and foreign keys enabled so seed batches obey the production schema.
+ * Apply the desktop's own writer PRAGMAs (connection-pragmas.ts), in its
+ * order, narrowed to the three a seeder needs: WAL for multi-process
+ * concurrency, a generous busy timeout to ride out brief writer locks, and
+ * foreign keys enabled so seed batches obey the production schema.
  */
 export async function applyDesktopSeedPragmas(
   client: SeedClient
 ): Promise<void> {
-  for (const pragma of [
-    "PRAGMA journal_mode=WAL",
-    "PRAGMA busy_timeout=15000",
-    "PRAGMA foreign_keys=ON",
-  ]) {
+  for (const pragma of connectionPragmaStatements("writer").filter(
+    (statement) => SEED_PRAGMA_PATTERN.test(statement)
+  )) {
     await client.execute(pragma);
   }
 }

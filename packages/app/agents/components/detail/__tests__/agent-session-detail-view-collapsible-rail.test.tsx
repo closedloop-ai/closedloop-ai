@@ -308,6 +308,28 @@ describe("collapsible comments rail (FEA-2479)", () => {
   });
 });
 
+/**
+ * ISS-11004 (tamsinb, PR #8562): a followed comment link reaches the host
+ * that owns the header toggle, through the view and its workspace.
+ */
+describe("addressed comment with the header toggle off", () => {
+  it("asks the host to re-open its rail", async () => {
+    const onRevealCommentsRail = vi.fn();
+    renderCollapsibleDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        commentsRailOpen={false}
+        isLoading={false}
+        onRevealCommentsRail={onRevealCommentsRail}
+        selectedThreadId="00000000-0000-7000-8000-0000000000aa"
+        session={populatedAgentSessionDetailFixture}
+      />
+    );
+
+    await waitFor(() => expect(onRevealCommentsRail).toHaveBeenCalledOnce());
+  });
+});
+
 // FEA-4002: the collapse control is now permanent (flag graduated), so the
 // collapsible-rail specs render exactly like any other detail view.
 function renderCollapsibleDetail(ui: React.ReactElement) {

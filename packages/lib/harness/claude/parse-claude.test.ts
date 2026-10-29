@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { parseClaudeTranscript } from "./parse-claude";
 import { ASSISTANT_LINE, USER_LINE } from "./parse-claude.test-fixtures";
-import { parseClaudeTranscript } from "./parse-claude-core";
 
 describe("parseClaudeTranscript", () => {
   it("parses a minimal transcript from an in-memory line iterable", async () => {

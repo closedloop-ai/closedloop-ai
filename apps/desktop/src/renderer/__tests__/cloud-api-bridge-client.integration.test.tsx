@@ -7,12 +7,10 @@ import {
   type AgentComponentInvocationReadRow,
   AgentComponentInvocationRelationship,
 } from "@repo/api/src/types/agent-component-invocation";
+import { LONG_RUNNING_API_TIMEOUT_MS } from "@repo/api/src/types/long-running-api-timeout";
 import { InvocationEvidenceList } from "@repo/app/agents/components/workspace/invocation-evidence-list";
 import { ApiError } from "@repo/app/shared/api/api-error";
-import {
-  DEFAULT_API_TIMEOUT_MS,
-  LONG_RUNNING_API_TIMEOUT_MS,
-} from "@repo/app/shared/api/api-timeout";
+import { DEFAULT_API_TIMEOUT_MS } from "@repo/app/shared/api/api-timeout";
 import { ApiAdapterProvider } from "@repo/app/shared/api/provider";
 import { useApiClient } from "@repo/app/shared/api/use-api-client";
 import { shouldRetryQuery } from "@repo/app/shared/query/query-client";
@@ -190,6 +188,26 @@ describe("cloud-API bridge through the shared useApiClient (PLN-1138 D-G)", () =
     // reviveWithDates ran during the client's JSON.parse — same as on web.
     expect(data.createdAt).toBeInstanceOf(Date);
     expect(data.createdAt.toISOString()).toBe("2026-01-02T03:04:05.000Z");
+  });
+
+  it("posts existing Liveblocks room auth through main IPC and preserves the raw token", async () => {
+    cloudApiFetch.mockResolvedValue(
+      respondWith(JSON.stringify({ token: "liveblocks-token" }))
+    );
+    const result = await renderAuthenticatedClient();
+    const room = "org-1:artifact:DOC-1";
+    const auth = await result.current.client.postRaw<{ token: string }>(
+      "/collaboration/auth",
+      { room }
+    );
+    expect(auth).toEqual({ token: "liveblocks-token" });
+    expect(cloudApiFetch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: "/collaboration/auth",
+        method: "POST",
+        body: JSON.stringify({ room }),
+      })
+    );
   });
 
   it("scopes revival to the endpoint, exactly as web does (ISS-6208)", async () => {

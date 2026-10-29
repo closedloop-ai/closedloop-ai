@@ -17,11 +17,12 @@ import {
 const FLAG = "some-flag";
 
 function Probe() {
-  const { enabled, isReady } = useFeatureFlagGate(FLAG);
+  const { enabled, isReady, isResolved } = useFeatureFlagGate(FLAG);
   return (
     <div
       data-enabled={enabled ? "true" : "false"}
       data-ready={isReady ? "true" : "false"}
+      data-resolved={isResolved ? "true" : "false"}
       data-testid="probe"
     />
   );
@@ -40,6 +41,7 @@ function readProbe() {
   return {
     enabled: probe.getAttribute("data-enabled"),
     ready: probe.getAttribute("data-ready"),
+    resolved: probe.getAttribute("data-resolved"),
   };
 }
 
@@ -58,7 +60,11 @@ describe("useFeatureFlagGate", () => {
       useFeatureFlagResolved: () => false,
     });
 
-    expect(readProbe()).toEqual({ enabled: "false", ready: "false" });
+    expect(readProbe()).toEqual({
+      enabled: "false",
+      ready: "false",
+      resolved: "false",
+    });
   });
 
   it("is ready, and enabled, once the adapter resolves the flag on", () => {
@@ -67,16 +73,25 @@ describe("useFeatureFlagGate", () => {
       useFeatureFlagResolved: () => true,
     });
 
-    expect(readProbe()).toEqual({ enabled: "true", ready: "true" });
+    expect(readProbe()).toEqual({
+      enabled: "true",
+      ready: "true",
+      resolved: "true",
+    });
   });
 
   it("is ready immediately for an adapter with no async resolution to report", () => {
-    // The desktop Labs adapter and the static test adapter resolve
-    // synchronously, so omitting the optional hook must read as resolved rather
-    // than blocking their surfaces forever.
+    // An adapter reading no asynchronous source omits the hook, so the gate
+    // must read it as resolved rather than block its surface forever. Which
+    // adapters those are is the port's contract — see
+    // {@link FeatureFlagAdapter.useFeatureFlagResolved}.
     renderWithAdapter({ useFeatureFlagEnabled: () => false });
 
-    expect(readProbe()).toEqual({ enabled: "false", ready: "true" });
+    expect(readProbe()).toEqual({
+      enabled: "false",
+      ready: "true",
+      resolved: "true",
+    });
   });
 
   it("proceeds on the closed default once the resolution deadline passes", () => {
@@ -92,7 +107,11 @@ describe("useFeatureFlagGate", () => {
     });
 
     // A PostHog outage must degrade to the pre-flag screen, never to no screen.
-    expect(readProbe()).toEqual({ enabled: "false", ready: "true" });
+    expect(readProbe()).toEqual({
+      enabled: "false",
+      ready: "true",
+      resolved: "false",
+    });
   });
 
   it("does not wait out the deadline when the flag resolves first", () => {
@@ -105,6 +124,10 @@ describe("useFeatureFlagGate", () => {
       vi.advanceTimersByTime(FEATURE_FLAG_RESOLUTION_DEADLINE_MS * 2);
     });
 
-    expect(readProbe()).toEqual({ enabled: "true", ready: "true" });
+    expect(readProbe()).toEqual({
+      enabled: "true",
+      ready: "true",
+      resolved: "true",
+    });
   });
 });

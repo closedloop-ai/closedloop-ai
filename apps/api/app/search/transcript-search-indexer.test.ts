@@ -34,8 +34,32 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
+import { createHash } from "node:crypto";
 import { withDb } from "@repo/database";
-import { transcriptSearchIndexService } from "./transcript-search-indexer";
+import {
+  indexKeyCandidates,
+  projectIndexKey,
+  storedIndexKeyCandidates,
+} from "@/lib/index-key-projection";
+import {
+  TranscriptIdentityOrigin,
+  transcriptSearchIndexService,
+} from "./transcript-search-indexer";
+
+/**
+ * A HIGH-ENTROPY session id past every index-key budget. Entropy matters for the
+ * same reason it does in the integration suites: a low-entropy string compresses
+ * and would not exercise the bound it claims to.
+ */
+function overLimitSessionId(): string {
+  let digest = "iss-8125-indexer";
+  let out = "";
+  while (out.length < 2048) {
+    digest = createHash("sha256").update(digest).digest("hex");
+    out += digest;
+  }
+  return out.slice(0, 2048);
+}
 
 const mockWithDb = withDb as unknown as Mock;
 
@@ -65,17 +89,27 @@ function installDb(options: {
   organizationId?: string;
   hasSession?: boolean;
   transcriptUploaded?: boolean;
+  /** The session artifact's stored priority; unset when omitted. */
+  priority?: string | null;
+  /** The session artifact's assignee (its Owner, ISS-12251). */
+  assigneeId?: string;
 }) {
   const executeRaw = vi.fn().mockResolvedValue(1);
   const sessionOrg = options.organizationId ?? ORG;
   const hasSession = options.hasSession ?? true;
   const transcriptUploaded = options.transcriptUploaded ?? true;
+  const priority = options.priority ?? null;
 
   const db = {
     $executeRaw: executeRaw,
     sessionDetail: {
       findFirst: vi.fn(
-        (args: { where: { artifact: { is: { organizationId: string } } } }) => {
+        (args: {
+          where: {
+            artifact: { is: { organizationId: string } };
+            externalSessionId?: unknown;
+          };
+        }) => {
           // Org-scoping: the session is only visible to its owning org.
           if (
             !hasSession ||
@@ -87,7 +121,8 @@ function installDb(options: {
             artifactId: ARTIFACT_ID,
             artifact: {
               name: "Login bug session",
-              assigneeId: "user-1",
+              assigneeId: options.assigneeId ?? "user-1",
+              priority,
               updatedAt: new Date("2026-02-02"),
               organization: { searchIncludeTranscripts: options.gateOn },
             },
@@ -96,7 +131,7 @@ function installDb(options: {
       ),
     },
     sessionTranscript: {
-      findFirst: vi.fn(() =>
+      findFirst: vi.fn((_args: { where: { externalSessionId?: unknown } }) =>
         Promise.resolve(
           transcriptUploaded ? { objectStorageKey: OBJECT_KEY } : null
         )
@@ -177,6 +212,35 @@ describe("transcriptSearchIndexService.index — gating", () => {
     expect(sqlValues).toContain(SearchEntityType.AgentSession);
     expect(sqlValues).toContain(ARTIFACT_ID);
     expect(sqlValues).toContain("Fix the login bug\nPatched.");
+  });
+
+  it("projects the session artifact's priority into the row (ISS-10332)", async () => {
+    const { executeRaw } = installDb({ gateOn: true, priority: "URGENT" });
+    const readTranscriptBytes = vi
+      .fn()
+      .mockResolvedValue(Buffer.from(MAIN_TRANSCRIPT, "utf8"));
+
+    await transcriptSearchIndexService.index(input(), { readTranscriptBytes });
+
+    // The value the `:priority` filter compares against is the artifact's own,
+    // read in the same statement as the title and owner — not a hardcoded null.
+    expect(interpolatedValues(executeRaw)).toContain("URGENT");
+  });
+
+  it("projects the session artifact's assignee into the row (ISS-12251)", async () => {
+    const { executeRaw } = installDb({
+      gateOn: true,
+      assigneeId: "user-assignee-12251",
+    });
+    const readTranscriptBytes = vi
+      .fn()
+      .mockResolvedValue(Buffer.from(MAIN_TRANSCRIPT, "utf8"));
+
+    await transcriptSearchIndexService.index(input(), { readTranscriptBytes });
+
+    // `@owner` search matches a session by this column, so it is the artifact's
+    // assignee — the Owner ingest sets — not a fixed or recording user.
+    expect(interpolatedValues(executeRaw)).toContain("user-assignee-12251");
   });
 
   it("does NOT index (no S3 read, no upsert) when the org gate is OFF", async () => {
@@ -319,5 +383,163 @@ describe("transcriptSearchIndexService.indexAfterCommit — fail-open", () => {
     });
 
     await expect(waitUntilMock.mock.calls[0][0]).resolves.toBeUndefined();
+  });
+});
+
+describe("transcriptSearchIndexService.index — ISS-8125 projected identity", () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  /**
+   * ISS-8125 (review, davetho): `complete/route.ts` hands this the RAW wire
+   * identity, but both tables it reads store that identity PROJECTED. An exact
+   * raw match finds neither row for a long id, so the upload reports `Uploaded`
+   * while the search document is silently skipped.
+   *
+   * Asserted on the `where` the production path actually issues, because that
+   * is the contract that broke: the mock returns the same row whatever it is
+   * asked for, so a test that only checked the return value would stay green
+   * with the raw lookup restored.
+   */
+  it("probes a long session id by its PROJECTED key first, never by the raw wire value", async () => {
+    const longSessionId = overLimitSessionId();
+    const { db } = installDb({ gateOn: true });
+    const readTranscriptBytes = vi
+      .fn()
+      .mockResolvedValue(Buffer.from(MAIN_TRANSCRIPT, "utf8"));
+
+    await transcriptSearchIndexService.index(
+      { ...input(), externalSessionId: longSessionId },
+      { readTranscriptBytes }
+    );
+
+    const sessionWhere = db.sessionDetail.findFirst.mock.calls[0]?.[0].where;
+    const transcriptWhere =
+      db.sessionTranscript.findFirst.mock.calls[0]?.[0].where;
+
+    // ISS-8200 (review, davetho): the ORDERED probe, so the first statement
+    // each table receives asks for the projected key — the one every write
+    // since ISS-8069 lands on. `SessionDetail` and `SessionTranscript` both
+    // store `externalSessionId` at `INDEX_KEY_MAX_BYTES`, so one rule serves
+    // both and the pair cannot settle on different rows.
+    const [projectedKey, rawKey] = indexKeyCandidates(longSessionId);
+    expect(sessionWhere.externalSessionId).toBe(projectedKey);
+    expect(transcriptWhere.externalSessionId).toBe(projectedKey);
+
+    // Not vacuous: the projected key really is a different string, and the raw
+    // wire value is still reachable as the SECOND candidate — just never first.
+    expect(projectedKey).not.toBe(longSessionId);
+    expect(rawKey).toBe(longSessionId);
+
+    // The first probe hit, so the legacy candidate cost nothing.
+    expect(db.sessionDetail.findFirst).toHaveBeenCalledTimes(1);
+    expect(db.sessionTranscript.findFirst).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * ISS-8200 (review, davetho): the defect the ordered probe removes.
+   *
+   * Both tables can hold a legacy raw row AND its projected sibling — exactly
+   * the duplicate pair a pre-ISS-8069 ingest could mint. The two reads are
+   * separate statements, so under the old unordered `in` lists Postgres could
+   * answer one from the raw row and the other from the projected one, pairing
+   * one row's session metadata with the other row's transcript.
+   */
+  it("resolves the session and its transcript onto the SAME row when a legacy raw sibling also exists", async () => {
+    const longSessionId = overLimitSessionId();
+    const [projectedKey, rawKey] = indexKeyCandidates(longSessionId);
+    const { db, executeRaw } = installDb({ gateOn: true });
+    const artifactFor = (key: unknown) => ({
+      artifactId: key === projectedKey ? "artifact-projected" : "artifact-raw",
+      artifact: {
+        name: "Login bug session",
+        assigneeId: "user-1",
+        priority: null,
+        updatedAt: new Date("2026-02-02"),
+        organization: { searchIncludeTranscripts: true },
+      },
+    });
+    db.sessionDetail.findFirst.mockImplementation(
+      (args: {
+        where: {
+          artifact: { is: { organizationId: string } };
+          externalSessionId?: unknown;
+        };
+      }) => Promise.resolve(artifactFor(args.where.externalSessionId))
+    );
+    db.sessionTranscript.findFirst.mockImplementation(
+      (args: { where: { externalSessionId?: unknown } }) =>
+        Promise.resolve({
+          objectStorageKey:
+            args.where.externalSessionId === projectedKey
+              ? "projected-row.jsonl"
+              : "raw-row.jsonl",
+        })
+    );
+    const readTranscriptBytes = vi
+      .fn()
+      .mockResolvedValue(Buffer.from(MAIN_TRANSCRIPT, "utf8"));
+
+    await transcriptSearchIndexService.index(
+      { ...input(), externalSessionId: longSessionId },
+      { readTranscriptBytes }
+    );
+
+    // Both halves came from the PROJECTED row — the metadata indexed and the
+    // transcript object read cannot belong to different rows.
+    expect(interpolatedValues(executeRaw)).toContain("artifact-projected");
+    expect(readTranscriptBytes.mock.calls[0]?.[0]).toBe("projected-row.jsonl");
+
+    // Positive control on the same selectors: the raw row WAS reachable, so the
+    // assertions above pin a precedence rather than an empty store.
+    await expect(
+      db.sessionTranscript.findFirst({
+        where: { externalSessionId: rawKey },
+      })
+    ).resolves.toEqual({ objectStorageKey: "raw-row.jsonl" });
+  });
+});
+
+describe("transcriptSearchIndexService.index — ISS-8125 stored identity", () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("asks for a STORED id as itself, never re-projected", async () => {
+    // ISS-8125 (operator review): `scripts/backfill-transcript-search.ts` pages
+    // over `SessionTranscript` and hands this the value it SELECTed, which is
+    // already whatever the column holds. Projecting it again digests the
+    // projection rather than the session id and lands on a key neither table
+    // holds — the sweep then indexes nothing for exactly the sessions whose id
+    // had to be bound, and a missed lookup is indistinguishable from a session
+    // with nothing to index.
+    const storedId = projectIndexKey(overLimitSessionId()).value;
+    const { db } = installDb({ gateOn: true });
+    const readTranscriptBytes = vi
+      .fn()
+      .mockResolvedValue(Buffer.from(MAIN_TRANSCRIPT, "utf8"));
+
+    await transcriptSearchIndexService.index(
+      {
+        ...input(),
+        externalSessionId: storedId,
+        identityOrigin: TranscriptIdentityOrigin.Stored,
+      },
+      { readTranscriptBytes }
+    );
+
+    const sessionWhere = db.sessionDetail.findFirst.mock.calls[0]?.[0].where;
+    const transcriptWhere =
+      db.sessionTranscript.findFirst.mock.calls[0]?.[0].where;
+
+    // ISS-8200: the ordered probe asks for one key at a time, and for a stored
+    // value that key is the value itself — the stored rule offers nothing else.
+    expect(sessionWhere.externalSessionId).toBe(storedId);
+    expect(transcriptWhere.externalSessionId).toBe(storedId);
+    expect(db.sessionDetail.findFirst).toHaveBeenCalledTimes(1);
+    // The default wire handling really would ask for something else, so the
+    // assertions above are not vacuously true.
+    expect(indexKeyCandidates(storedId)).not.toEqual(
+      storedIndexKeyCandidates(storedId)
+    );
   });
 });

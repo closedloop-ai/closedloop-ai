@@ -12,6 +12,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
+import type { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
+import type { TranscriptDeadInput } from "../../src/main/database/transcript-sync-settle.js";
 import type { TranscriptSyncStore } from "../../src/main/database/transcript-sync-store.js";
 import type { DesktopTranscriptsClient } from "../../src/main/transcript/desktop-transcripts-client.js";
 import type { TranscriptFingerprint } from "../../src/main/transcript-sync/transcript-sync-types.js";
@@ -42,6 +44,7 @@ export function fingerprint(
     missingSourceCount: 0,
     nextAttemptAt: null,
     lastError: null,
+    laneStalledSince: null,
     ...overrides,
   };
 }
@@ -64,7 +67,21 @@ export type RecordingStore = TranscriptSyncStore & {
    */
   cloudUploadedTargets: (string | null)[];
   uploadingMarks: string[];
-  dead: { id: string; key: string; reason: string }[];
+  /**
+   * ISS-9884: `terminalSkipReason` is the reason the CLOUD reported
+   * persisting, which the executor must write to `markDead` instead of the one
+   * it requested. The double dropped it, so the one link this change exists to
+   * move (`settleTerminalSkip` → the dead settle) was unrecorded and nothing
+   * could assert it. `terminalSkipComputeTargetId` is recorded for the same
+   * reason: it scopes the lane recovery's revival.
+   */
+  dead: {
+    id: string;
+    key: string;
+    reason: string;
+    terminalSkipReason: TranscriptSkipReason | null;
+    terminalSkipComputeTargetId: string | null;
+  }[];
   failures: {
     id: string;
     key: string;
@@ -83,7 +100,13 @@ export function recordingStore(): RecordingStore {
     cloudUploaded: [] as string[],
     cloudUploadedTargets: [] as (string | null)[],
     uploadingMarks: [] as string[],
-    dead: [] as { id: string; key: string; reason: string }[],
+    dead: [] as {
+      id: string;
+      key: string;
+      reason: string;
+      terminalSkipReason: TranscriptSkipReason | null;
+      terminalSkipComputeTargetId: string | null;
+    }[],
     failures: [] as {
       id: string;
       key: string;
@@ -99,7 +122,7 @@ export function recordingStore(): RecordingStore {
     observe: () => Promise.resolve(fingerprint()),
     markUploading: (id: string, key: string) => {
       store.uploadingMarks.push(`${id}:${key}`);
-      return Promise.resolve();
+      return Promise.resolve(true);
     },
     markIdle: (id: string, key: string) => {
       store.idled.push(`${id}:${key}`);
@@ -115,8 +138,14 @@ export function recordingStore(): RecordingStore {
       store.cloudUploadedTargets.push(computeTargetId);
       return Promise.resolve();
     },
-    markDead: (id: string, key: string, reason: string) => {
-      store.dead.push({ id, key, reason });
+    markDead: (input: TranscriptDeadInput) => {
+      store.dead.push({
+        id: input.externalSessionId,
+        key: input.fileKey,
+        reason: input.reason,
+        terminalSkipReason: input.terminalSkipReason,
+        terminalSkipComputeTargetId: input.terminalSkipComputeTargetId,
+      });
       return Promise.resolve();
     },
     recordUploaded: (input: unknown) => {
@@ -143,7 +172,7 @@ export function recordingStore(): RecordingStore {
       });
       return Promise.resolve();
     },
-    requeueStale: () => Promise.resolve(0),
+    requeueExpiredUploadLeases: () => Promise.resolve(0),
   };
   return store as unknown as RecordingStore;
 }
@@ -213,6 +242,11 @@ export function recordingClient(
         sessionDetailId: null,
       });
     },
+    // ISS-9884: the echoed reason is a FIXED `too_large`, deliberately not the
+    // requested one. A double that answers with whatever it was asked cannot
+    // tell a caller reading `permanentFailureReason` from one echoing its own
+    // request back, and the server really does substitute (its precedence rule
+    // keeps a hard reason already on the row).
     skip: (request: unknown) => {
       client.skipRequests.push(request);
       return Promise.resolve({

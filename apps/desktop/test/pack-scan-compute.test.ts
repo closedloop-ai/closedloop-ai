@@ -11,7 +11,7 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type {
   DefinitionRootsResolution,
   DefinitionScanRoots,
@@ -29,6 +29,7 @@ import type {
   PackScanRunner,
 } from "../src/main/packs/utility-process-pack-scan-runner.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
+import { waitForCondition } from "./wait-for-condition.js";
 
 function emptyResult(
   overrides: Partial<PackScanComputeResult> = {}
@@ -444,7 +445,7 @@ test("stop() mid-computeDefinitions fires neither applyDefinitions nor collectDe
   });
 
   const scan = coordinator.run();
-  await new Promise((resolve) => setTimeout(resolve, 10)); // let the walk start
+  await waitForCondition(() => rejectDefinitions !== null); // let the walk start
   coordinator.stop();
   // `PackScanRunner.stop()` rejects pending work as the app tears down. Without
   // the guard this would queue a full home-tree walk into a closing db-host —
@@ -515,7 +516,7 @@ test("coordinator does not start the heavy fallback scan when stopped mid-flight
   });
 
   const scan = coordinator.run();
-  await new Promise((resolve) => setTimeout(resolve, 10)); // let compute start
+  await waitForCondition(() => rejectCompute !== null); // let compute start
   coordinator.stop();
   // The worker dies as the app tears down; the coordinator must NOT respond by
   // launching the heavy in-db-host scan during shutdown.
@@ -558,7 +559,7 @@ test("coordinator coalesces back-to-back triggers into at most one trailing reru
   const fourth = coordinator.run();
   // The first scan reaches computeScan only after its recentRoots read resolves
   // (a microtask); let that settle before releasing it.
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await waitForCondition(() => releaseFirst !== null);
   assert.ok(releaseFirst, "first scan should be in flight");
   (releaseFirst as unknown as () => void)();
   await Promise.all([first, second, third, fourth]);

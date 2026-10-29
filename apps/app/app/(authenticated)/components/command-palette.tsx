@@ -1,9 +1,9 @@
 "use client";
 
-import { useFeatureFlag } from "@repo/analytics/client";
 import { INSIGHTS_FEATURE_FLAG_KEY } from "@repo/api/src/types/insights";
-import { ROUTINES_FEATURE_FLAG_KEY } from "@repo/api/src/types/routines";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import {
+  AGENTS_NAV_FEATURE_FLAG_KEY,
   ArtifactFlag,
   JUDGES_FEATURE_FLAG_KEY,
   LABS_NAV_SECTION_FEATURE_FLAG_KEY,
@@ -17,6 +17,7 @@ import {
   CommandItem,
   CommandList,
 } from "@repo/design-system/components/ui/command";
+import { normalizedEventKey } from "@repo/design-system/lib/keyboard-event-key";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { useOrgPath } from "@repo/navigation/use-org-path";
 import { BarChart3, type LucideIcon } from "lucide-react";
@@ -119,26 +120,35 @@ export function CommandPalette() {
   // FEA-4155: Branches/Sessions are always-on now (their nav destinations no
   // longer carry a featureFlag), so they need no entry here.
   const enabledByFlag: Record<string, boolean> = {
-    [ArtifactFlag.Issues]:
-      useFeatureFlag(ArtifactFlag.Issues)?.enabled === true,
-    [INSIGHTS_FEATURE_FLAG_KEY]:
-      useFeatureFlag(INSIGHTS_FEATURE_FLAG_KEY)?.enabled === true,
-    // Routines is gated behind the PostHog `routines` flag until GA; resolve it
-    // here so a flag-ON user actually gets the palette entry (the featureFlag on
-    // the registry destination is inert unless the flag key is queried).
-    [ROUTINES_FEATURE_FLAG_KEY]:
-      useFeatureFlag(ROUTINES_FEATURE_FLAG_KEY)?.enabled === true,
-    [JUDGES_FEATURE_FLAG_KEY]:
-      useFeatureFlag(JUDGES_FEATURE_FLAG_KEY)?.enabled === true,
+    [ArtifactFlag.Documents]: useFeatureFlagEnabled(ArtifactFlag.Documents),
+    [ArtifactFlag.Issues]: useFeatureFlagEnabled(ArtifactFlag.Issues),
+    [INSIGHTS_FEATURE_FLAG_KEY]: useFeatureFlagEnabled(
+      INSIGHTS_FEATURE_FLAG_KEY
+    ),
+    [JUDGES_FEATURE_FLAG_KEY]: useFeatureFlagEnabled(JUDGES_FEATURE_FLAG_KEY),
+    // ISS-5041/ISS-7835: Agents is gated again. This map is hand-maintained and
+    // an ABSENT key reads as `undefined`, which filters the command out for
+    // everyone — so a registry destination gaining a flag without an entry here
+    // hides it even from a user the flag is ON for, rather than gating it.
+    [AGENTS_NAV_FEATURE_FLAG_KEY]: useFeatureFlagEnabled(
+      AGENTS_NAV_FEATURE_FLAG_KEY
+    ),
     // ISS-5037: the Labs container gate, resolved alongside the per-item flags
     // so the hook call order stays stable (rules-of-hooks).
-    [LABS_NAV_SECTION_FEATURE_FLAG_KEY]:
-      useFeatureFlag(LABS_NAV_SECTION_FEATURE_FLAG_KEY)?.enabled === true,
+    [LABS_NAV_SECTION_FEATURE_FLAG_KEY]: useFeatureFlagEnabled(
+      LABS_NAV_SECTION_FEATURE_FLAG_KEY
+    ),
   };
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() === "k" && (event.metaKey || event.ctrlKey)) {
+      // ISS-7493: this listener is on `document` for every authenticated page,
+      // so it receives synthetic events whose `key` the DOM type does not
+      // actually constrain — see `normalizedEventKey`. No usable key, no chord.
+      if (
+        normalizedEventKey(event) === "k" &&
+        (event.metaKey || event.ctrlKey)
+      ) {
         event.preventDefault();
         setOpen((previous) => !previous);
       }

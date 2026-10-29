@@ -2,7 +2,8 @@ import {
   TokenSourceIdentityAvailability,
   TokenSourceIdentityUnavailableReason,
 } from "@repo/api/src/types/token-cost-provenance";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { readStorageTokenCountAlias } from "./token-counts";
 import type { NormalizedTokenCounts, NormalizedTokenRecord } from "./types";
 import type { RawCacheWriteTtl } from "./usage-dedup";
 import {
@@ -140,7 +141,15 @@ describe("Claude usage source identity", () => {
 
     const entry = map.get("message-1|request-1");
     expect(entry?.sourceRecordIds).toHaveLength(64);
-    expect(entry?.overflowReplaySourceRecordIds.size).toBeLessThanOrEqual(64);
+    recordUsageLine(
+      map,
+      usageLine({
+        lineUuid: "00000000-0000-4000-8000-000000004050",
+        input: 7777,
+      })
+    );
+    expect(foldDedupMap(map).tokenSeries[0]?.input).toBe(4096);
+    expect(entry?.overflowReplaySourceRecordIds.size).toBe(64);
     recordUsageLine(
       map,
       usageLine({
@@ -464,7 +473,7 @@ describe("validateCacheWriteTtl — each rejection reason", () => {
  * string kept as a uuid is not merely untidy — it is a key component every such
  * line shares, so distinct turns collide into one entry and their tokens are
  * folded away. Same shape as the `""` timestamp that sorted before every real
- * one in `isoTs`.
+ * one in `toIso`.
  */
 describe("recordUsageLine — an empty lineUuid is absent, not a key", () => {
   function noMessageIdLine(
@@ -523,5 +532,255 @@ describe("recordUsageLine — an empty lineUuid is absent, not a key", () => {
       noMessageIdLine(SECOND_UUID, "2026-08-02T10:00:00.000Z")
     );
     expect(map.size).toBe(2);
+  });
+});
+
+describe("unreadable timestamps keep their dedup identity (ISS-6738)", () => {
+  it("does not collapse two id-less lines whose stamps are both unreadable", () => {
+    // The reachable shape: a line with neither `messageId` nor `lineUuid` is
+    // keyed by its timestamp. `toIso` answers null for text no `Date` can read
+    // and the caller stores that as "", so without a raw identity component both
+    // lines land on the key `"|"` and last-occurrence-wins drops the first
+    // line's tokens from `tokensByModel` — which sums every entry in the map,
+    // independent of whether `firstTs` is empty (whitlockk, ISS-6738 review).
+    const map = new Map<string, UsageDedupEntry>();
+    recordUsageLine(
+      map,
+      usageLine({
+        lineUuid: null,
+        messageId: null,
+        requestId: null,
+        timestamp: "",
+        rawTimestamp: "not-a-date",
+        input: 10,
+        output: 5,
+      })
+    );
+    recordUsageLine(
+      map,
+      usageLine({
+        lineUuid: null,
+        messageId: null,
+        requestId: null,
+        timestamp: "",
+        rawTimestamp: "also-not-a-date",
+        input: 20,
+        output: 8,
+      })
+    );
+
+    expect(map.size).toBe(2);
+    const folded = foldDedupMap(map);
+    expect(folded.tokensByModel["claude-opus-4-1"].input).toBe(30);
+    expect(folded.tokensByModel["claude-opus-4-1"].output).toBe(13);
+  });
+
+  it("still collapses when the raw stamp itself carries no identity", () => {
+    // The fallback is not a licence to invent identity: a raw value that is
+    // neither a non-empty string nor a finite number says nothing, so those
+    // lines legitimately share a key exactly as they did before.
+    const map = new Map<string, UsageDedupEntry>();
+    for (const raw of [null, undefined]) {
+      recordUsageLine(
+        map,
+        usageLine({
+          lineUuid: null,
+          messageId: null,
+          requestId: null,
+          timestamp: "",
+          rawTimestamp: raw,
+        })
+      );
+    }
+    expect(map.size).toBe(1);
+  });
+});
+
+/**
+ * Every `NormalizedTokenCounts` field a poisoned fold writes onto a shared
+ * object. `cacheWriteTtl` belongs here with the four counts:
+ * `accumulateCacheWriteTtl` reads `target.cacheWriteTtl ?? {...}`, so an
+ * inherited one is truthy and the next session accumulates onto the LEAKED
+ * object instead of a fresh zero — which is how an incomplete cleanup here
+ * silently corrupted the unrelated happy-path case below.
+ */
+const POLLUTABLE_COUNT_KEYS = [
+  "input",
+  "output",
+  "cacheRead",
+  "cacheWrite",
+  "cacheWriteTtl",
+] as const;
+
+/** Named so `noProto`/`useLiteralKeys` never see a literal `__proto__` access. */
+const PROTO_MODEL = "__proto__";
+
+/**
+ * Every object a poisoned write can land on. Only `__proto__` resolves through
+ * the prototype getter to `Object.prototype`; the other three inherited names
+ * resolve to the member ITSELF — the `Object` constructor and the
+ * `toString`/`valueOf` function objects — so sweeping `Object.prototype` alone
+ * would both miss the leak and carry it into the next case.
+ */
+const POLLUTION_OWNERS: readonly object[] = [
+  Object.prototype,
+  Object,
+  Object.prototype.toString,
+  Object.prototype.valueOf,
+];
+
+/** The count fields a poisoned fold leaked onto a shared object, if any. */
+function pollutedKeys(): string[] {
+  return POLLUTION_OWNERS.flatMap((owner) =>
+    POLLUTABLE_COUNT_KEYS.filter((key) => Object.hasOwn(owner, key))
+  );
+}
+
+describe("ISS-8235 — a model name that collides with Object.prototype", () => {
+  // Unconditional, never the last line of a case: a case that fails midway
+  // would otherwise leak a polluted owner into every later test in this
+  // worker and turn the report into a file of unrelated red.
+  afterEach(() => {
+    for (const owner of POLLUTION_OWNERS) {
+      for (const key of POLLUTABLE_COUNT_KEYS) {
+        Reflect.deleteProperty(owner, key);
+      }
+    }
+  });
+
+  it.each(["__proto__", "constructor", "toString", "valueOf"])(
+    "folds a model named %s into an own key, polluting no shared object",
+    (model) => {
+      const map = new Map<string, UsageDedupEntry>();
+      recordUsageLine(map, usageLine({ lineUuid: FIRST_UUID, model }));
+
+      const folded = foldDedupMap(map);
+
+      expect(Object.hasOwn(folded.tokensByModel, model)).toBe(true);
+      expect(folded.tokensByModel[model]).toEqual({
+        input: 10,
+        output: 5,
+        cacheRead: 2,
+        cacheWrite: 3,
+        cacheWriteTtl: { fiveM: 1, oneH: 2 },
+      });
+      // The assertion that kills the mutation: a fix guarding only the emitted
+      // object still writes the running total onto that owner on the way.
+      expect(pollutedKeys()).toEqual([]);
+    }
+  );
+
+  it("conserves the token total across poisoned and normal model names", () => {
+    const map = new Map<string, UsageDedupEntry>();
+    const models = ["__proto__", "constructor", "claude-opus-4-1"];
+    models.forEach((model, index) => {
+      recordUsageLine(
+        map,
+        usageLine({
+          lineUuid: `00000000-0000-4000-8000-00000000001${index}`,
+          messageId: `message-${index}`,
+          model,
+          input: 100 * (index + 1),
+        })
+      );
+    });
+
+    const folded = foldDedupMap(map);
+
+    // The invariant the bug breaks, and the one that survives a change of fix
+    // shape: today the poisoned models' spend vanishes from the emitted object.
+    const emitted = Object.values(folded.tokensByModel).reduce(
+      (sum, counts) => sum + counts.input,
+      0
+    );
+    expect(emitted).toBe(
+      [...map.values()].reduce((sum, entry) => sum + entry.input, 0)
+    );
+    expect(emitted).toBe(600);
+  });
+
+  it("leaves a normal model name byte-identical and normally prototyped", () => {
+    const map = new Map<string, UsageDedupEntry>();
+    recordUsageLine(map, usageLine({ lineUuid: FIRST_UUID }));
+
+    const folded = foldDedupMap(map);
+
+    expect(JSON.stringify(folded.tokensByModel)).toBe(
+      '{"claude-opus-4-1":{"input":10,"output":5,"cacheRead":2,"cacheWrite":3,"cacheWriteTtl":{"fiveM":1,"oneH":2}}}'
+    );
+    // The null-prototype accumulator must not reach consumers: `deriveSessionUsage`
+    // hands this object straight out, and a caller calling a prototype method on
+    // it would throw if the fold leaked its bare accumulator.
+    expect(Object.getPrototypeOf(folded.tokensByModel)).toBe(Object.prototype);
+    expect(Object.hasOwn(folded.tokensByModel, "claude-opus-4-1")).toBe(true);
+  });
+
+  it("keeps readStorageTokenCountAlias honest for an unrelated record", () => {
+    const map = new Map<string, UsageDedupEntry>();
+    recordUsageLine(
+      map,
+      usageLine({ lineUuid: FIRST_UUID, model: PROTO_MODEL, input: 100 })
+    );
+
+    foldDedupMap(map);
+
+    // The second-order harm, and the dangerous half: once `Object.prototype.input`
+    // is a real number, a record that legitimately has NO `input` field inherits
+    // it, `value != null` passes, and an unrelated session that never contained
+    // the poisoned name is billed a fabricated 100.
+    expect(readStorageTokenCountAlias({}, "unrelated.input", ["input"])).toBe(
+      0
+    );
+  });
+
+  // The merge target is a caller-owned plain `{}`, so unlike the fold's
+  // null-prototype accumulator it INHERITS all four names — this is the site
+  // where a write under `constructor`/`toString`/`valueOf` actually reaches
+  // `Object` and the two function objects.
+  it.each(["__proto__", "constructor", "toString", "valueOf"])(
+    "merges a model named %s into a caller-owned target without polluting",
+    (model) => {
+      const target: {
+        tokensByModel: Record<string, NormalizedTokenCounts>;
+        tokenSeries: NormalizedTokenRecord[];
+      } = { tokensByModel: {}, tokenSeries: [] };
+      const map = new Map<string, UsageDedupEntry>();
+      recordUsageLine(map, usageLine({ lineUuid: FIRST_UUID, model }));
+
+      mergeFoldedUsage(target, foldDedupMap(map));
+
+      expect(Object.hasOwn(target.tokensByModel, model)).toBe(true);
+      expect(target.tokensByModel[model].input).toBe(10);
+      expect(pollutedKeys()).toEqual([]);
+      // An unguarded ASSIGN under `__proto__` would have invoked the setter and
+      // swapped this object's prototype instead of storing a bucket. Fixing
+      // only `foldDedupMap` leaves every one of these cases red.
+      expect(Object.getPrototypeOf(target.tokensByModel)).toBe(
+        Object.prototype
+      );
+    }
+  );
+
+  it("accumulates a poisoned model across repeated merges", () => {
+    const target: {
+      tokensByModel: Record<string, NormalizedTokenCounts>;
+      tokenSeries: NormalizedTokenRecord[];
+    } = { tokensByModel: {}, tokenSeries: [] };
+    const foldOne = () => {
+      const map = new Map<string, UsageDedupEntry>();
+      recordUsageLine(
+        map,
+        usageLine({ lineUuid: FIRST_UUID, model: PROTO_MODEL })
+      );
+      return foldDedupMap(map);
+    };
+
+    mergeFoldedUsage(target, foldOne());
+    mergeFoldedUsage(target, foldOne());
+
+    // Exercises the second-write path, where the own-key check must find the
+    // bucket it defined on the first pass rather than re-initializing it.
+    expect(target.tokensByModel[PROTO_MODEL].input).toBe(20);
+    expect(pollutedKeys()).toEqual([]);
   });
 });

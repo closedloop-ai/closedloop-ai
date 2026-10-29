@@ -7,7 +7,7 @@ import {
 
 const mocks = vi.hoisted(() => ({
   user: { id: "user-1", organizationId: "org-1" },
-  isOrgAdmin: vi.fn(),
+  requireOrgAdmin: vi.fn(),
   importPackRepoComponents: vi.fn(),
 }));
 
@@ -27,16 +27,20 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
 }));
 
 vi.mock("@/lib/auth/org-admin", () => ({
-  isOrgAdmin: mocks.isOrgAdmin,
+  requireOrgAdmin: mocks.requireOrgAdmin,
 }));
 
 vi.mock("../../service", () => ({
   importPackRepoComponents: mocks.importPackRepoComponents,
 }));
 
+import {
+  ORG_ADMIN_ADMITTED,
+  orgAdminRefused,
+} from "@/__tests__/support/auth/org-admin-gate.test-fixtures";
 import { POST } from "./route";
 
-const PACK_ID = "pack-uuid-1";
+const PACK_ID = "0199a000-0000-7000-8000-000000000104";
 
 function request(body: unknown) {
   return new NextRequest(
@@ -61,7 +65,7 @@ const validBody = { repoFullName: "acme/shared-assets" };
 describe("POST /catalog/[id]/import-repo", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.requireOrgAdmin.mockResolvedValue(ORG_ADMIN_ADMITTED);
   });
 
   it("returns 200 with the import result on success", async () => {
@@ -133,7 +137,7 @@ describe("POST /catalog/[id]/import-repo", () => {
   });
 
   it("returns 403 when the caller is not an org admin", async () => {
-    mocks.isOrgAdmin.mockResolvedValue(false);
+    mocks.requireOrgAdmin.mockImplementation(orgAdminRefused);
 
     const response = await invoke(validBody);
 

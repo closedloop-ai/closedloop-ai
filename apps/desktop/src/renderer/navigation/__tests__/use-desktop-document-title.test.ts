@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_NAV_ID, NavId } from "../route-table";
+import { NavId } from "../route-table";
 import { resolveDesktopDocumentTitle } from "../use-desktop-document-title";
 
 const NO_DETAIL = {
@@ -26,10 +26,10 @@ describe("ISS-5574: resolveDesktopDocumentTitle", () => {
       resolveDesktopDocumentTitle({
         detailBranchId: null,
         detailSessionId: "ses-1",
-        detailTitle: "example-repo-iss-5273",
+        detailTitle: "closedloop-ai-iss-5273",
         routeNavId: null,
       })
-    ).toBe("example-repo-iss-5273");
+    ).toBe("closedloop-ai-iss-5273");
     expect(
       resolveDesktopDocumentTitle({
         detailBranchId: "br-1",
@@ -77,13 +77,21 @@ describe("ISS-5574: resolveDesktopDocumentTitle", () => {
   });
 
   // Review (closedloop-ai-stage on #4661): a non-nav route this change does not
-  // own has no nav id of its own, and App.tsx's sticky `navId` would hand it
-  // DEFAULT_NAV_ID on a relaunch or bookmark straight into it — titling an agent
-  // detail window "Sessions" while its breadcrumb read "Agents / <name>".
-  // Resolving the list arm off `routeNavId` (null for every kind but `nav`)
-  // closes the whole class, not just the agent route.
+  // own has no nav id of its own, and App.tsx's sticky `navId` would hand it the
+  // last nav id visited — titling an agent detail window "Sessions" while its
+  // breadcrumb read "Agents / <name>". Resolving the list arm off `routeNavId`
+  // (null for every kind but `nav`) closes the whole class, not just the agent
+  // route.
   it("stays silent on a non-nav route that borrows the default nav id", () => {
-    expect(DEFAULT_NAV_ID).toBe(NavId.Sessions);
+    // No `DEFAULT_NAV_ID` pin here, because a pin would misrepresent what this
+    // tier can show. The resolver is handed a `routeNavId`; it cannot see the
+    // borrow at all, so this asserts only its half of the contract — `null` in,
+    // silence out. Whether the SHELL hands it the sticky id is the other half,
+    // and `app-shell-document-title.test.tsx` owns it. That distinction matters
+    // now that the borrowed id is Dashboard, which "leaves every other surface's
+    // title alone" above already proves resolves to null: substituting it for
+    // `null` here would change nothing, so a pin claiming to make this case
+    // non-vacuous would be claiming something untrue.
     expect(
       resolveDesktopDocumentTitle({ ...NO_DETAIL, routeNavId: null })
     ).toBeNull();

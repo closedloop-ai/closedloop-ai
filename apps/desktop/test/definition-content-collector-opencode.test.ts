@@ -19,8 +19,8 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { Harness } from "@repo/api/src/types/agent-component";
+import { test } from "vitest";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import { collectDefinitionContent } from "../src/main/packs/definition-content-collector.js";
 import { openTestPrisma } from "./prisma-test-utils.js";

@@ -9,7 +9,7 @@
  * explicitly because both were live bugs found by measuring the corpus.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import {
   CommandEffect,
   classifyCommandEffect,
@@ -299,7 +299,7 @@ describe("AA-04 command effect: mixed-mode subcommand paths", () => {
       CommandEffect.ReadOnly
     );
     assert.equal(
-      classifyCommandEffect("gh -R closedloop-ai/example-repo pr view 1"),
+      classifyCommandEffect("gh -R closedloop-ai/closedloop-ai pr view 1"),
       CommandEffect.ReadOnly
     );
   });

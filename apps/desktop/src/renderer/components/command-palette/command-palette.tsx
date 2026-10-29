@@ -13,22 +13,38 @@
  * palette would be dead UI — and with Labs off it would be a keyboard jump to a
  * destination the shell has withdrawn). Built on the
  * design-system `CommandDialog` catalog (cmdk) — no hand-rolled dialog/list.
+ *
+ * The `portable-search-surface` PostHog key, read once below, then chooses
+ * between `SearchSurfaceV2` and this palette's own `DocsCommandGroup`. The two
+ * gates are not a pair: the Labs gate decides whether the docs CORPUS is
+ * reachable on this build at all, the PostHog key decides which component
+ * renders it. Neither branch knows either gate exists.
  */
+
 import {
   CommandDialog,
   CommandEmpty,
   CommandInput,
   CommandList,
 } from "@closedloop-ai/design-system/components/ui/command";
+import { normalizedEventKey } from "@closedloop-ai/design-system/lib/keyboard-event-key";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { PORTABLE_SEARCH_SURFACE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { useCallback, useEffect, useState } from "react";
 import { helpPageHref } from "../../navigation/route-table";
 import { useDocsHelpSurfaceEnabled } from "../../navigation/use-nav-gates";
 import { DocsCommandGroup } from "./docs-command-group";
+import {
+  DOCS_NOT_RUN_PROMPT,
+  DocsSearchSurfaceGroup,
+} from "./docs-search-surface-group";
 
 /** Does the platform-appropriate palette chord fire on this keydown? */
 function isPaletteChord(event: KeyboardEvent): boolean {
-  return event.key.toLowerCase() === "k" && (event.metaKey || event.ctrlKey);
+  // ISS-7493: the listener is on `window`, so what it is handed is not
+  // constrained by the DOM type — see `normalizedEventKey` for the RUM evidence.
+  return normalizedEventKey(event) === "k" && (event.metaKey || event.ctrlKey);
 }
 
 export function CommandPalette() {
@@ -43,6 +59,9 @@ export function CommandPalette() {
 
 function CommandPaletteInner() {
   const { navigate } = useNavigation();
+  const portableSearchSurface = useFeatureFlagEnabled(
+    PORTABLE_SEARCH_SURFACE_FEATURE_FLAG_KEY
+  );
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
 
@@ -79,6 +98,14 @@ function CommandPaletteInner() {
     [navigate]
   );
 
+  // The surface's rows are real links that navigate themselves, so the host
+  // only has to dismiss — and it must dismiss even when the destination is
+  // already current, where no navigation event fires at all.
+  const handleDismiss = useCallback(() => {
+    setOpen(false);
+    setQuery("");
+  }, []);
+
   return (
     <CommandDialog
       // cmdk filters items by their text against the input; our Docs hits are
@@ -96,12 +123,22 @@ function CommandPaletteInner() {
         value={query}
       />
       <CommandList>
-        <CommandEmpty>
-          {query.trim().length === 0
-            ? "Type to search the documentation."
-            : `No documentation matches “${query.trim()}”.`}
-        </CommandEmpty>
-        <DocsCommandGroup onSelectDoc={handleSelectDoc} query={query} />
+        {/* cmdk renders `CommandEmpty` whenever the list holds no items, which
+            is also every non-`Ready` state of the surface — so on the surface
+            branch it would stack a second, blunter empty line under the one the
+            surface already owns. The surface branch omits it entirely. */}
+        {portableSearchSurface ? (
+          <DocsSearchSurfaceGroup onDismiss={handleDismiss} query={query} />
+        ) : (
+          <>
+            <CommandEmpty>
+              {query.trim().length === 0
+                ? DOCS_NOT_RUN_PROMPT
+                : `No documentation matches “${query.trim()}”.`}
+            </CommandEmpty>
+            <DocsCommandGroup onSelectDoc={handleSelectDoc} query={query} />
+          </>
+        )}
       </CommandList>
     </CommandDialog>
   );

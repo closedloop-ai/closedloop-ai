@@ -7,9 +7,13 @@ import {
 } from "@repo/api/src/types/agent-component";
 import type { PackAnalyticsResponse } from "@repo/api/src/types/analytics";
 import { legacyKlocPerDollarFromLoc } from "@repo/api/src/utils/loc-per-dollar";
-import { withDb } from "@repo/database";
-import { displayUserName } from "@/lib/user-display-name";
+import { Prisma, withDb } from "@repo/database";
 import { computeCohortPerformance } from "./cohort-performance";
+import {
+  namesForUserIds,
+  resolveOwnerFallbackByUserId,
+} from "./component-authors";
+import { installerUserIdsOf } from "./installer-roster";
 import { loadSessionLocCost, locPerDollarForKind } from "./loc-per-dollar";
 import { loadChildUsageByPackId } from "./plugin-child-usage";
 
@@ -48,21 +52,13 @@ function getPackAnalytics(
       where: { organizationId, packId, uninstalledAt: null },
       select: {
         computeTargetId: true,
-        computeTarget: {
-          select: {
-            user: {
-              select: {
-                id: true,
-                firstName: true,
-                lastName: true,
-                email: true,
-              },
-            },
-          },
-        },
+        computeTarget: { select: { userId: true } },
       },
       // Deterministic order to match every other bounded query in this area.
-      orderBy: [{ lastSeenAt: "desc" }, { id: "asc" }],
+      // `lastSeenAt` is nullable and PostgreSQL sorts nulls FIRST on a
+      // descending sort, so without `nulls: "last"` a legacy row that never
+      // recorded one would lead the roster ahead of genuinely recent installs.
+      orderBy: [{ lastSeenAt: { sort: "desc", nulls: "last" } }, { id: "asc" }],
       take: MAX_PACK_INVENTORY_ROWS,
     });
 
@@ -83,33 +79,67 @@ function getPackAnalytics(
     const locVerifiable = isLocPerDollarVerifiableKind(
       AgentComponentKind.Plugin
     );
-    const locCost = await loadSessionLocCost(db, organizationId, sessionIds);
+    // Comparison-based delivery metrics (success rate, token efficiency,
+    // merged PRs, deltas vs. a bounded baseline, + hidden quality) over the
+    // same pack cohort — the shared, bounded computation both surfaces use.
+    // ISS-9114 batches it with the independent LOC/cost load; the two stay
+    // separate reads for the reasons spelled out at the sibling call site in
+    // `service/detail-read.ts`.
+    const [locCost, cohortMetrics] = await Promise.all([
+      loadSessionLocCost(db, organizationId, sessionIds),
+      // ISS-9853: `loadChildUsageByPackId` carries no `take` (ISS-6891), so
+      // this id set IS the pack's cohort, not a sample of it.
+      computeCohortPerformance(db, organizationId, sessionIds, {
+        cohortSampled: false,
+      }),
+    ]);
     const locPerDollar = locPerDollarForKind(
       AgentComponentKind.Plugin,
       sessionIds,
       locCost
     );
 
-    // Comparison-based delivery metrics (success rate, token efficiency,
-    // merged PRs, deltas vs. a bounded baseline, + hidden quality) over the
-    // same pack cohort — the shared, bounded computation both surfaces use.
-    const cohortMetrics = await computeCohortPerformance(
-      db,
-      organizationId,
-      sessionIds
+    // ISS-6768: the shared roster fold — the component detail read emits the
+    // SAME set as `AgentComponentDetail.installers`, so the web Packs detail and
+    // this desktop overlay answer "Used by" from one producer. Names resolve
+    // through the org-scoped `User` read rather than a nested
+    // `computeTarget.user` join, which would surface whatever user a stale
+    // cross-org target link points at.
+    const ownerUserIds = installerUserIdsOf(inventory);
+    const owners = namesForUserIds(
+      ownerUserIds,
+      await resolveOwnerFallbackByUserId(db, organizationId, ownerUserIds)
     );
 
-    const ownerIds = new Set<string>();
-    const owners: string[] = [];
-    const deviceIds = new Set<string>();
-    for (const row of inventory) {
-      deviceIds.add(row.computeTargetId);
-      const user = row.computeTarget?.user;
-      if (user && !ownerIds.has(user.id)) {
-        ownerIds.add(user.id);
-        owners.push(displayUserName(user));
-      }
-    }
+    // ISS-9854: exact counts from a rowless aggregate so adoption metrics are
+    // not bounded by MAX_PACK_INVENTORY_ROWS. The cloud-authored sentinel
+    // exclusion mirrors `isCloudAuthoredRow` (identity.ts:778). Installers are
+    // counted through the org-scoped `users` join for the same reason `owners`
+    // resolves through `resolveOwnerFallbackByUserId`: `ComputeTarget` carries
+    // its own org foreign key, so a stale cross-org target link would otherwise
+    // count a user this tenant cannot see and report more installers than the
+    // roster names.
+    type PackInstallAggregate = {
+      deviceCount: number;
+      installerCount: number;
+    };
+    const [aggregate] = await db.$queryRaw<PackInstallAggregate[]>(Prisma.sql`
+      SELECT
+        COUNT(DISTINCT ac."compute_target_id")::int AS "deviceCount",
+        COUNT(DISTINCT CASE
+          WHEN NOT (ac."metadata" IS NOT NULL
+                    AND ac."metadata" @> '{"cloudAuthored":true}'::jsonb)
+          THEN u."id"
+        END)::int AS "installerCount"
+      FROM "agent_components" ac
+      JOIN "compute_targets" ct ON ct."id" = ac."compute_target_id"
+      LEFT JOIN "users" u
+        ON u."id" = ct."user_id"
+       AND u."organization_id" = ${organizationId}::uuid
+      WHERE ac."organization_id" = ${organizationId}::uuid
+        AND ac."pack_id" = ${packId}
+        AND ac."uninstalled_at" IS NULL
+    `);
 
     // ISS-4667 version skew (emit side): the cloud deploys ahead of the Desktop
     // builds installed on people's machines. A pre-ISS-4667 desktop's
@@ -128,7 +158,8 @@ function getPackAnalytics(
       locPerDollar,
       klocPerDollar: legacyKlocPerDollarFromLoc(locPerDollar),
       owners,
-      deviceCount: deviceIds.size,
+      deviceCount: aggregate?.deviceCount ?? 0,
+      installerCount: aggregate?.installerCount ?? 0,
       ...cohortMetrics,
       // FEA-4144: override the spread `locDelta`. The LOC/$ delta is the same
       // unverifiable Plugin signal as the gated headline, and the overlay

@@ -1,15 +1,10 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LOCAL_SESSION_SOURCE_STATUSES } from "../../shared/local-session-source-status";
-import { DesktopNavigationApp } from "../App";
-import {
-  createDesktopNavigation,
-  type DesktopNavigation,
-} from "../navigation/desktop-adapter";
+import { act, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   detailTitleKey,
   usePublishDetailTitle,
 } from "../navigation/detail-title-context";
+import { renderDesktopApp, setupAppShellSuite } from "./app-shell-harness";
 
 /**
  * ISS-4838 + ISS-4839: the desktop shell's DETAIL-route loading presentation,
@@ -71,6 +66,11 @@ const detailGate = vi.hoisted(() => {
 // desktop flag provider.
 vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   useFeatureFlagEnabled: () => false,
+  // ISS-9092: the shell now also mounts `UndoKeybindingLayer`, which reads the
+  // OPTIONAL variant from this same module. A partial mock naming only
+  // `useFeatureFlagEnabled` leaves that export `undefined` at every mount site
+  // below, so the whole suite fails on a hook this suite does not test.
+  useFeatureFlagEnabledOptional: () => false,
 }));
 
 vi.mock("../components/sessions/SessionsView", () => ({
@@ -83,9 +83,6 @@ vi.mock("../components/desktop-session-expired-banner", () => ({
 }));
 vi.mock("../components/desktop-sync-prompt", () => ({
   DesktopSyncPrompt: () => null,
-}));
-vi.mock("../components/first-launch-import-banner", () => ({
-  FirstLaunchImportBanner: () => null,
 }));
 vi.mock("../components/opt-in-distributions-banner", () => ({
   OptInDistributionsBanner: () => null,
@@ -128,25 +125,14 @@ vi.mock("../components/sessions/SessionDetailView", () => ({
     MockSessionDetail({ sessionId }),
 }));
 
-const activeNavigations = new Set<DesktopNavigation>();
-let desktopApiDescriptor: PropertyDescriptor | undefined;
-let matchMediaDescriptor: PropertyDescriptor | undefined;
-let resizeObserverDescriptor: PropertyDescriptor | undefined;
-
 describe("Desktop detail-route loading state (ISS-4838 / ISS-4839)", () => {
+  // ISS-8118: adopt the shared harness for timeout budgets and lifecycle —
+  // asyncUtilTimeout (15 s) < testTimeout (30 s), matchMedia, ResizeObserver,
+  // localStorage, desktopApi, and afterEach cleanup.
+  setupAppShellSuite();
+
   beforeEach(() => {
     detailGate.reset();
-    installStubs();
-  });
-
-  afterEach(() => {
-    for (const navigation of activeNavigations) {
-      navigation.dispose();
-    }
-    activeNavigations.clear();
-    cleanup();
-    window.location.hash = "";
-    restoreStubs();
   });
 
   it("shows a detail-shaped skeleton naming what is loading, not a bare Loading…, while the detail chunk resolves", async () => {
@@ -263,76 +249,8 @@ function MockSessionDetail({ sessionId }: { sessionId: string }) {
   return <div data-testid="session-detail-marker">detail:{sessionId}</div>;
 }
 
-function installStubs() {
-  matchMediaDescriptor = Object.getOwnPropertyDescriptor(window, "matchMedia");
-  Object.defineProperty(window, "matchMedia", {
-    configurable: true,
-    value: vi.fn(() => ({
-      addEventListener: vi.fn(),
-      addListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-      matches: false,
-      media: "",
-      onchange: null,
-      removeEventListener: vi.fn(),
-      removeListener: vi.fn(),
-    })),
-  });
-  resizeObserverDescriptor = Object.getOwnPropertyDescriptor(
-    globalThis,
-    "ResizeObserver"
-  );
-  Object.defineProperty(globalThis, "ResizeObserver", {
-    configurable: true,
-    value: class {
-      disconnect = vi.fn();
-      observe = vi.fn();
-      unobserve = vi.fn();
-    },
-  });
-  desktopApiDescriptor = Object.getOwnPropertyDescriptor(window, "desktopApi");
-  Object.defineProperty(window, "desktopApi", {
-    configurable: true,
-    value: {
-      getAgentMonitorUrl: vi.fn(() =>
-        Promise.resolve({
-          localSessionSourceStatus: LOCAL_SESSION_SOURCE_STATUSES.ready,
-          ready: true,
-        })
-      ),
-      getAllFlags: vi.fn(() => Promise.resolve({ flags: [] })),
-      getRuntimeStatus: vi.fn(() => new Promise(() => undefined)),
-      onDbChanged: vi.fn(() => () => undefined),
-    },
-  });
-}
-
-function restoreStubs() {
-  restoreDescriptor(window, "desktopApi", desktopApiDescriptor);
-  restoreDescriptor(window, "matchMedia", matchMediaDescriptor);
-  restoreDescriptor(globalThis, "ResizeObserver", resizeObserverDescriptor);
-  desktopApiDescriptor = undefined;
-  matchMediaDescriptor = undefined;
-  resizeObserverDescriptor = undefined;
-}
-
-function restoreDescriptor(
-  target: object,
-  key: string,
-  descriptor: PropertyDescriptor | undefined
-) {
-  if (descriptor) {
-    Object.defineProperty(target, key, descriptor);
-  } else {
-    Reflect.deleteProperty(target, key);
-  }
-}
-
 async function renderShell(initialHash: string): Promise<void> {
-  window.location.hash = initialHash;
-  const navigation = createDesktopNavigation();
-  activeNavigations.add(navigation);
-  render(<DesktopNavigationApp navigation={navigation} />);
+  renderDesktopApp(initialHash);
   await act(async () => {
     await Promise.resolve();
   });

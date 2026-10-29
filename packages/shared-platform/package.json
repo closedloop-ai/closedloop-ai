@@ -1,123 +1,97 @@
 {
   "name": "@closedloop-ai/shared-platform",
-  "version": "0.2.0",
+  "version": "0.0.0",
   "type": "module",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/closedloop-ai/example-repo.git",
-    "directory": "packages/shared-platform"
-  },
   "exports": {
-    "./gateway-probe": {
-      "import": {
-        "types": "./dist/gateway-probe.d.ts",
-        "default": "./dist/gateway-probe.js"
-      },
-      "require": {
-        "types": "./dist/gateway-probe.d.cts",
-        "default": "./dist/gateway-probe.cjs"
-      },
-      "default": "./dist/gateway-probe.js"
-    },
     "./detection-store": {
-      "import": {
-        "types": "./dist/detection-store.d.ts",
-        "default": "./dist/detection-store.js"
-      },
-      "require": {
-        "types": "./dist/detection-store.d.cts",
-        "default": "./dist/detection-store.cjs"
-      },
+      "types": "./dist/detection-store.d.ts",
+      "import": "./dist/detection-store.js",
+      "require": "./dist/detection-store.cjs",
       "default": "./dist/detection-store.js"
     },
-    "./routing-store": {
-      "import": {
-        "types": "./dist/routing-store.d.ts",
-        "default": "./dist/routing-store.js"
-      },
-      "require": {
-        "types": "./dist/routing-store.d.cts",
-        "default": "./dist/routing-store.cjs"
-      },
-      "default": "./dist/routing-store.js"
-    },
-    "./storage": {
-      "import": {
-        "types": "./dist/storage.d.ts",
-        "default": "./dist/storage.js"
-      },
-      "require": {
-        "types": "./dist/storage.d.cts",
-        "default": "./dist/storage.cjs"
-      },
-      "default": "./dist/storage.js"
-    },
-    "./types": {
-      "import": {
-        "types": "./dist/types.d.ts",
-        "default": "./dist/types.js"
-      },
-      "require": {
-        "types": "./dist/types.d.cts",
-        "default": "./dist/types.cjs"
-      },
-      "default": "./dist/types.js"
-    },
-    "./relay-request-model": {
-      "import": {
-        "types": "./dist/relay-request-model.d.ts",
-        "default": "./dist/relay-request-model.js"
-      },
-      "require": {
-        "types": "./dist/relay-request-model.d.cts",
-        "default": "./dist/relay-request-model.cjs"
-      },
-      "default": "./dist/relay-request-model.js"
+    "./gateway-constants": {
+      "types": "./dist/gateway-constants.d.ts",
+      "import": "./dist/gateway-constants.js",
+      "require": "./dist/gateway-constants.cjs",
+      "default": "./dist/gateway-constants.js"
     },
     "./gateway-dispatch": {
-      "import": {
-        "types": "./dist/gateway-dispatch.d.ts",
-        "default": "./dist/gateway-dispatch.js"
-      },
-      "require": {
-        "types": "./dist/gateway-dispatch.d.cts",
-        "default": "./dist/gateway-dispatch.cjs"
-      },
+      "types": "./dist/gateway-dispatch.d.ts",
+      "import": "./dist/gateway-dispatch.js",
+      "require": "./dist/gateway-dispatch.cjs",
       "default": "./dist/gateway-dispatch.js"
     },
     "./gateway-fetch-shim": {
-      "import": {
-        "types": "./dist/gateway-fetch-shim.d.ts",
-        "default": "./dist/gateway-fetch-shim.js"
-      },
-      "require": {
-        "types": "./dist/gateway-fetch-shim.d.cts",
-        "default": "./dist/gateway-fetch-shim.cjs"
-      },
+      "types": "./dist/gateway-fetch-shim.d.ts",
+      "import": "./dist/gateway-fetch-shim.js",
+      "require": "./dist/gateway-fetch-shim.cjs",
       "default": "./dist/gateway-fetch-shim.js"
     },
-    "./gateway-constants": {
-      "import": {
-        "types": "./dist/gateway-constants.d.ts",
-        "default": "./dist/gateway-constants.js"
-      },
-      "require": {
-        "types": "./dist/gateway-constants.d.cts",
-        "default": "./dist/gateway-constants.cjs"
-      },
-      "default": "./dist/gateway-constants.js"
+    "./gateway-probe": {
+      "types": "./dist/gateway-probe.d.ts",
+      "import": "./dist/gateway-probe.js",
+      "require": "./dist/gateway-probe.cjs",
+      "default": "./dist/gateway-probe.js"
     },
     "./keyless-telemetry": {
-      "import": {
-        "types": "./dist/keyless-telemetry.d.ts",
-        "default": "./dist/keyless-telemetry.js"
-      },
-      "require": {
-        "types": "./dist/keyless-telemetry.d.cts",
-        "default": "./dist/keyless-telemetry.cjs"
-      },
+      "types": "./dist/keyless-telemetry.d.ts",
+      "import": "./dist/keyless-telemetry.js",
+      "require": "./dist/keyless-telemetry.cjs",
       "default": "./dist/keyless-telemetry.js"
+    },
+    "./parse-env-ms": {
+      "types": "./dist/parse-env-ms.d.ts",
+      "import": "./dist/parse-env-ms.js",
+      "require": "./dist/parse-env-ms.cjs",
+      "default": "./dist/parse-env-ms.js"
+    },
+    "./relay-request-model": {
+      "types": "./dist/relay-request-model.d.ts",
+      "import": "./dist/relay-request-model.js",
+      "require": "./dist/relay-request-model.cjs",
+      "default": "./dist/relay-request-model.js"
+    },
+    "./routing-store": {
+      "types": "./dist/routing-store.d.ts",
+      "import": "./dist/routing-store.js",
+      "require": "./dist/routing-store.cjs",
+      "default": "./dist/routing-store.js"
+    },
+    "./storage": {
+      "types": "./dist/storage.d.ts",
+      "import": "./dist/storage.js",
+      "require": "./dist/storage.cjs",
+      "default": "./dist/storage.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.js",
+      "require": "./dist/types.cjs",
+      "default": "./dist/types.js"
     }
+  },
+  "scripts": {
+    "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=src/**/*.{ts,tsx}'",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
+    "build": "tsup"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@repo/vitest-config": "workspace:*",
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.2.17",
+    "react": "19.2.9",
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "vitest": "^5.0.2",
+    "tsup": "^8.5.1"
+  },
+  "dependencies": {
+    "zod": "catalog:"
   },
   "files": [
     "dist"
@@ -125,25 +99,9 @@
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   },
-  "scripts": {
-    "build": "tsup",
-    "clean": "git clean -xdf .cache .turbo dist node_modules",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit --emitDeclarationOnly false"
-  },
-  "peerDependencies": {
-    "react": "^19.0.0"
-  },
-  "devDependencies": {
-    "@repo/typescript-config": "workspace:*",
-    "@types/node": "^25.9.1",
-    "@types/react": "^19.2.17",
-    "react": "19.2.8",
-    "tsup": "^8.5.1",
-    "typescript": "npm:@typescript/typescript6@6.0.2",
-    "vitest": "^4.1.9"
-  },
-  "dependencies": {
-    "zod": "^4.3.6"
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/closedloop-ai/closedloop-ai.git",
+    "directory": "packages/shared-platform"
   }
 }

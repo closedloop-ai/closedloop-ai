@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { computeSessionTiming } from "../src/shared/session-timing.js";
 
 /** Helper: build an event with a given type and ISO timestamp. */

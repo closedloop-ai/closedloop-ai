@@ -607,7 +607,10 @@ async function emitRepositoryAuthorityWriteDiagnostics(
     }
     const incomingObservedAt = new Date(authority.provenance.observedAt);
     if (row.defaultBranchObservedAt > incomingObservedAt) {
-      log.error("github_repository_default_authority_stale_rejected", {
+      // `observedAt` is our own receipt clock, so concurrent deliveries for one
+      // repository make this ordinary: the later-received one legitimately won
+      // and this write was correctly rejected. Not an integrity failure.
+      log.info("github_repository_default_authority_stale_rejected", {
         githubRepoId: repository.githubRepoId,
         repositoryFullName: repository.fullName,
         source: authority.provenance.source,

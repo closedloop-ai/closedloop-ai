@@ -1,40 +1,55 @@
-import { isOrgAdmin } from "@/lib/auth/org-admin";
-import { withAuth } from "@/lib/auth/with-auth";
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { machineWriteReceipt } from "@/lib/machine-write-receipt";
 import {
-  errorResponse,
-  forbiddenResponse,
-  parseBody,
-  successResponse,
-} from "@/lib/route-utils";
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
+import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import { requireCustomFieldsAdmin } from "../../../custom-fields-admin-gate";
 import { enumOptionsService } from "../../../enum-options-service";
 import { reorderEnumOptionsValidator } from "../../../enum-options-validators";
 
-export const POST = withAuth<
-  { reordered: true },
-  "/custom-fields/[id]/enum-options/reorder"
->(async ({ user, clerkOrgId, clerkUserId }, request, params) => {
-  if (!(await isOrgAdmin(clerkOrgId, clerkUserId))) {
-    return forbiddenResponse();
-  }
+export const POST = withAnyAuth(
+  withOperationReceipts<
+    { reordered: true },
+    "/custom-fields/[id]/enum-options/reorder"
+  >(
+    OperationKind.OrganizationWrite,
+    async ({ user, clerkOrgId, clerkUserId }, request, params, receipts) => {
+      const denial = await requireCustomFieldsAdmin(clerkOrgId, clerkUserId);
+      if (denial) {
+        return denial;
+      }
 
-  const { id } = await params;
+      const { id } = await params;
 
-  const { body, errorResponse: parseError } = await parseBody(
-    request,
-    reorderEnumOptionsValidator
-  );
-  if (parseError) {
-    return parseError;
-  }
+      const { body, errorResponse: parseError } = await parseBody(
+        request,
+        reorderEnumOptionsValidator
+      );
+      if (parseError) {
+        return parseError;
+      }
 
-  try {
-    await enumOptionsService.reorderEnumOptions(
-      id,
-      user.organizationId,
-      body.optionIds
-    );
-    return successResponse({ reordered: true as const });
-  } catch (error) {
-    return errorResponse("Failed to reorder enum options", error);
-  }
-});
+      try {
+        await enumOptionsService.reorderEnumOptions(
+          id,
+          user.organizationId,
+          body.optionIds,
+          receipts.whenRecording((tx, { changed }) =>
+            receipts.record(
+              tx,
+              machineWriteReceipt(OperationKind.OrganizationWrite, changed)
+            )
+          )
+        );
+        return successResponse(
+          withOperationReceipt({ reordered: true as const }, receipts)
+        );
+      } catch (error) {
+        return errorResponse("Failed to reorder enum options", error);
+      }
+    }
+  )
+);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 
 const APP_DIR = path.join(import.meta.dirname, "..");
 const COMPUTE_TOKEN_COST_PATTERN = /\bcomputeTokenCost\b/;

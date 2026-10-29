@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { pinnedReporters } from "@repo/vitest-config";
 import { defineConfig } from "vitest/config";
 import { SEED_DB_TEST_TIMEOUT_MS } from "./scripts/seed/__tests__/timeouts";
 
@@ -20,6 +21,7 @@ const __dirname = fileURLToPath(new URL(".", import.meta.url));
 // vitest.config.ts) keeps the fast 5s default so unit hangs fail fast.
 export default defineConfig({
   test: {
+    reporters: pinnedReporters(),
     globals: true,
     environment: "node",
     include: [
@@ -28,12 +30,23 @@ export default defineConfig({
     ],
     testTimeout: SEED_DB_TEST_TIMEOUT_MS,
     hookTimeout: SEED_DB_TEST_TIMEOUT_MS,
+    // ISS-4436: `database-integration-tests` sets
+    // `NODE_OPTIONS=-r dd-trace/ci/init --import dd-trace/register.js` whenever
+    // DD_API_KEY is present, and suites in this tier spawn real CLIs. A child
+    // whose cwd is a temp directory cannot resolve `dd-trace` from there and
+    // dies during preload. This is the canonical stripper — surgical over
+    // `TRACER_PRELOAD_TOKENS`, so `--max-old-space-size` survives — rather than
+    // a per-spawn `NODE_OPTIONS: ""`, which each new suite would have to
+    // remember. See scripts/vitest-setup-strip-tracer.ts.
+    setupFiles: [
+      path.resolve(__dirname, "../../scripts/vitest-setup-strip-tracer.ts"),
+    ],
   },
   resolve: {
     alias: {
       "server-only": path.resolve(
         __dirname,
-        "../../apps/app/vitest-mocks/server-only.ts"
+        "../typescript-config/vitest-server-only-stub.ts"
       ),
     },
   },

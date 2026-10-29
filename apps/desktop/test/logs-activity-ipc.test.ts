@@ -10,15 +10,12 @@
  * than returning data, making these assertions falsifiable at the gate level.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
-import { vi } from "vitest";
+import { describe, test, vi } from "vitest";
 import type { ActivityLogStore } from "../src/main/diagnostics/activity-log-store.js";
-import {
-  LogsActivityIpcChannel,
-  registerLogsActivityIpcHandlers,
-} from "../src/main/ipc/logs-activity-ipc.js";
+import { registerLogsActivityIpcHandlers } from "../src/main/ipc/logs-activity-ipc.js";
 import type { LogEntry } from "../src/main/logging/gateway-logger.js";
 import type { ActivityEvent } from "../src/shared/activity-panel-contract.js";
+import { LogsActivityIpcChannel } from "../src/shared/logs-activity-ipc-channel.js";
 import {
   createIpcRegistrar,
   UNTRUSTED_EVENT,

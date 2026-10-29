@@ -11,6 +11,8 @@ import { describe, expect, it, vi } from "vitest";
 import { AppCoreStoryProviders } from "../../../../shared/storybook/decorators";
 import { AgentsTable } from "../agents-table";
 
+const INVOCATIONS_COLUMN_LABEL = "Invocations";
+
 // FEA-3866: the GridTable card fallback on the Agents table. `mode` is forwarded
 // to GridTable; `compact` forces the card list and `expanded` forces the grid,
 // so the layout is deterministic in jsdom without a real container-width
@@ -104,7 +106,7 @@ describe("AgentsTable card fallback (FEA-3866)", () => {
     // announces.
     const authorsLabel = screen.getByText(AGENT_COMPONENT_AUTHORS_LABEL);
     expect(authorsLabel.tagName).toBe("DT");
-    const invocationsLabel = screen.getByText("Invocations");
+    const invocationsLabel = screen.getByText(INVOCATIONS_COLUMN_LABEL);
     expect(invocationsLabel.tagName).toBe("DT");
     const invocationsValue = invocationsLabel.nextElementSibling as HTMLElement;
     expect(invocationsValue.tagName).toBe("DD");
@@ -127,7 +129,7 @@ describe("AgentsTable card fallback (FEA-3866)", () => {
     // Authors.
     expect(screen.getByText(AGENT_COMPONENT_AUTHORS_LABEL)).toBeInTheDocument();
     expect(
-      screen.queryByRole("term", { name: "Invocations" })
+      screen.queryByRole("term", { name: INVOCATIONS_COLUMN_LABEL })
     ).not.toBeInTheDocument();
   });
 });

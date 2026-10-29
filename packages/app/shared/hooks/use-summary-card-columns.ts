@@ -4,8 +4,9 @@ import {
   gridTierQuery,
   matchesGridTier,
 } from "@repo/app/shared/lib/summary-card-grid-tier";
+import { useIsomorphicLayoutEffect } from "@repo/design-system/hooks/use-isomorphic-layout-effect";
 import type { RefObject } from "react";
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { useCallback, useRef } from "react";
 
 /**
  * The CSS custom property a summary strip publishes its per-card width floor
@@ -35,8 +36,7 @@ const MAX_TRAILING_EMPTY_CELLS = 1;
  * painted frame rather than landing a frame later as a visible reflow. React
  * never runs a layout effect on the server, so fall back to `useEffect` there.
  */
-const useMeasureEffect =
-  globalThis.window === undefined ? useEffect : useLayoutEffect;
+const useMeasureEffect = useIsomorphicLayoutEffect;
 
 /** Parse a resolved CSS length, or `null` when it is absent/not a length. */
 function readLengthPx(value: string | null | undefined): number | null {

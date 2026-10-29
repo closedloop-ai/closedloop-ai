@@ -1,11 +1,8 @@
-import {
-  LOC_PER_DOLLAR_LABEL,
-  LOC_PER_DOLLAR_MERGED_LABEL,
-} from "@repo/api/src/utils/loc-per-dollar";
+import { TOTAL_ESTIMATED_COST_ALIAS_LABEL } from "@repo/api/src/types/total-estimated-cost-copy";
+import { LOC_PER_DOLLAR_LABEL } from "@repo/api/src/utils/loc-per-dollar";
 import { summaryCardClass } from "@repo/app/shared/components/summary-card-row";
 import type { Meta, StoryObj } from "@storybook/react";
 import { expect, within } from "storybook/test";
-import { SESSIONS_COST_METRIC_CARD_LABEL } from "./cost-metric-card";
 import { SESSIONS_METRIC_CARD_LABEL } from "./sessions-summary-card-labels";
 import { SessionsSummaryCardsLoading } from "./sessions-summary-cards-loading";
 
@@ -46,16 +43,16 @@ const LOADING_DETAIL = "Loading…";
 const IMPORTING_HISTORY_DETAIL = "Importing your history";
 
 const meta = {
-  title: "App Core/Agents/Sessions Summary Cards Loading",
+  title: "Composites v1.0/Sessions/Sessions Summary Cards Loading",
   component: SessionsSummaryCardsLoading,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     // Both production hosts opt into the wrapping grid, so the shell lays out the
     // way it actually ships rather than as the legacy scrolling flex row.
     cardClassName: summaryCardClass(true),
     loadingDetail: LOADING_DETAIL,
-    locPerDollarLabel: LOC_PER_DOLLAR_MERGED_LABEL,
+    locPerDollarLabel: LOC_PER_DOLLAR_LABEL,
     reservesDeltaSlot: true,
     wrapBelow: true,
   },
@@ -98,9 +95,9 @@ export const Default: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText(SESSIONS_METRIC_CARD_LABEL)).toBeVisible();
     await expect(
-      canvas.getByText(SESSIONS_COST_METRIC_CARD_LABEL)
+      canvas.getByText(TOTAL_ESTIMATED_COST_ALIAS_LABEL)
     ).toBeVisible();
-    await expect(canvas.getByText(LOC_PER_DOLLAR_MERGED_LABEL)).toBeVisible();
+    await expect(canvas.getByText(LOC_PER_DOLLAR_LABEL)).toBeVisible();
     // Nothing numeric is claimed while the read is pending.
     await expect(canvas.queryByText(FABRICATED_ZERO)).not.toBeInTheDocument();
     await expect(
@@ -144,18 +141,6 @@ export const NonComparingSurface: Story = {
  */
 export const ImportingHistory: Story = {
   args: { loadingDetail: IMPORTING_HISTORY_DETAIL },
-};
-
-/**
- * The fifth card's label is picked by the caller from a flag and passed in, so
- * the loading shell and the settled row cannot disagree about which label it
- * carries. This is the shorter of the two, the bare unit with no "(Merged)"
- * scope, and it is the one worth looking at because its SHORTNESS changes the
- * row's shared label reservation: with every label on one line the strip reserves
- * one line, not two.
- */
-export const UnscopedLocPerDollarLabel: Story = {
-  args: { locPerDollarLabel: LOC_PER_DOLLAR_LABEL },
 };
 
 /**

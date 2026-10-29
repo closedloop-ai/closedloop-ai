@@ -15,10 +15,8 @@ import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/s
 import { renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it } from "vitest";
-import {
-  DESKTOP_AGENTS_NAV_FEATURE_FLAG_KEY,
-  DESKTOP_LABS_NAV_FEATURE_FLAG_KEY,
-} from "../../../shared/feature-flags";
+import { DESKTOP_AGENTS_NAV_FEATURE_FLAG_KEY } from "../../../shared/feature-flags";
+import { DESKTOP_LABS_NAV_FEATURE_FLAG_KEY } from "../../../shared/feature-flags-labs-detail";
 import { NavSection, navItemsForSection, navSectionFor } from "../nav-config";
 import { NavId } from "../route-table";
 import {
@@ -82,13 +80,18 @@ describe("ISS-5310 Agents nav placement", () => {
     );
   });
 
-  it("leaves the other focus pages in the top-level group", () => {
+  it("leaves the other focus pages out of Labs", () => {
     // Guards the blast radius of dropping Agents from FOCUSED_NAV_IDS: the edit
     // must move ONE entry, not collapse the focus group.
+    //
+    // BEHAVIOR CHANGE (2026-09-04, restored Artifacts group): Sessions and
+    // Branches now DISPLAY under `artifacts`, the section they declare, because
+    // that section became FOCUS_MODE-exempt. They are still not in Labs, which
+    // is what this case guards; the top-level group now holds Dashboard alone.
     const mainIds = navItemsForSection(NavSection.Main).map((e) => e.id);
     expect(mainIds).toContain(NavId.Dashboard);
-    expect(mainIds).toContain(NavId.Sessions);
-    expect(mainIds).toContain(NavId.Branches);
+    expect(navSectionFor(NavId.Sessions)).toBe(NavSection.Artifacts);
+    expect(navSectionFor(NavId.Branches)).toBe(NavSection.Artifacts);
   });
 });
 
@@ -180,6 +183,29 @@ describe("ISS-5310 Agents gate nesting — the #/agents destination", () => {
         pageId: NavId.Sessions,
       })
     ).toBe(LabsPageOutcome.Render);
+  });
+
+  it("applies a declared per-item gate to Documents and Issues outside Labs, whatever the container", () => {
+    for (const pageId of [NavId.Documents, NavId.Issues]) {
+      expect(
+        resolveLabsPageOutcome({
+          active: true,
+          desktopFlagsResolved: true,
+          labsItemOn: false,
+          labsNavOn: true,
+          pageId,
+        })
+      ).toBe(LabsPageOutcome.Redirect);
+      expect(
+        resolveLabsPageOutcome({
+          active: true,
+          desktopFlagsResolved: true,
+          labsItemOn: true,
+          labsNavOn: false,
+          pageId,
+        })
+      ).toBe(LabsPageOutcome.Render);
+    }
   });
 
   it("defaults `labsItemOn` to open for the container-gated-only destinations", () => {

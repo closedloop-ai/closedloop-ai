@@ -1,3 +1,5 @@
+import { Status } from "@repo/api/src/types/result";
+import { TeamRole } from "@repo/api/src/types/teams";
 import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
@@ -214,9 +216,13 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
         const orgId = await createTestOrganization();
         const user = await createTestUser(orgId);
 
-        const team = await teamsService.createWithOwner(orgId, user.id, {
+        const created = await teamsService.createWithOwner(orgId, user.id, {
           name: "New Team",
         });
+        if (!created.ok) {
+          throw new Error(`createWithOwner reported ${created.error}`);
+        }
+        const team = created.value;
 
         expect(team.name).toBe("New Team");
         expect(team.organizationId).toBe(orgId);
@@ -234,9 +240,13 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
         const orgId = await createTestOrganization();
         const user = await createTestUser(orgId);
 
-        const team = await teamsService.createWithOwner(orgId, user.id, {
+        const created = await teamsService.createWithOwner(orgId, user.id, {
           name: "My Awesome Team",
         });
+        if (!created.ok) {
+          throw new Error(`createWithOwner reported ${created.error}`);
+        }
+        const team = created.value;
 
         expect(team.slug).toBe("my-awesome-team");
       });
@@ -247,10 +257,14 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
         const orgId = await createTestOrganization();
         const user = await createTestUser(orgId);
 
-        const team = await teamsService.createWithOwner(orgId, user.id, {
+        const created = await teamsService.createWithOwner(orgId, user.id, {
           name: "My Team",
           slug: "custom-slug",
         });
+        if (!created.ok) {
+          throw new Error(`createWithOwner reported ${created.error}`);
+        }
+        const team = created.value;
 
         expect(team.slug).toBe("custom-slug");
       });
@@ -272,8 +286,13 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
           name: "New Name",
         });
 
-        expect(updated?.name).toBe("New Name");
-        expect(updated?.slug).toBe("old-name"); // Unchanged
+        expect(updated).toEqual({
+          ok: true,
+          value: expect.objectContaining({
+            name: "New Name",
+            slug: "old-name", // Unchanged
+          }),
+        });
       });
     });
 
@@ -295,7 +314,10 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
           slug: "new-slug",
         });
 
-        expect(updated?.slug).toBe("new-slug");
+        expect(updated).toEqual({
+          ok: true,
+          value: expect.objectContaining({ slug: "new-slug" }),
+        });
       });
     });
 
@@ -320,10 +342,13 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
           })
         );
 
-        // Attempt to update from wrong org should fail
-        await expect(
-          teamsService.update(team.id, orgId2, { name: "Hacked" })
-        ).rejects.toThrow();
+        // Attempt to update from wrong org should fail. The org predicate is
+        // in the `where`, so Prisma raises P2025 on the zero-row match and the
+        // service reports it as NotFound rather than throwing.
+        const attempt = await teamsService.update(team.id, orgId2, {
+          name: "Hacked",
+        });
+        expect(attempt).toEqual({ ok: false, error: Status.NotFound });
 
         // Original should be unchanged
         const original = await teamsService.findById(team.id, orgId1);
@@ -369,13 +394,12 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
           })
         );
 
-        // Perform deletion directly (teamsService.delete uses withDb.tx which
-        // doesn't work well with autoRollbackTransaction's implicit transaction)
-        await withDb(async (db) => {
-          await db.teamMember.deleteMany({ where: { teamId: team.id } });
-          await db.projectTeam.deleteMany({ where: { teamId: team.id } });
-          await db.team.delete({ where: { id: team.id } });
-        });
+        // The real service. It used to be inlined here because
+        // `teamsService.delete` opened a `withDb.tx` that joined this
+        // harness's ambient transaction; one org-scoped statement has no
+        // such boundary, so the production path is what runs.
+        const result = await teamsService.delete(team.id, orgId);
+        expect(result).toEqual({ ok: true, value: true });
 
         // Team should be gone
         const deletedTeam = await withDb((db) =>
@@ -383,13 +407,13 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
         );
         expect(deletedTeam).toBeNull();
 
-        // Members should be gone
+        // Members and project links are removed by the FK cascade the service
+        // now relies on instead of deleting them itself.
         const members = await withDb((db) =>
           db.teamMember.findMany({ where: { teamId: team.id } })
         );
         expect(members).toHaveLength(0);
 
-        // Project associations should be gone
         const projectTeams = await withDb((db) =>
           db.projectTeam.findMany({ where: { teamId: team.id } })
         );
@@ -400,6 +424,43 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
           db.project.findUnique({ where: { id: project.id } })
         );
         expect(existingProject).not.toBeNull();
+      });
+    });
+
+    it("reports NotFound for another organization's team and strips nothing", async () => {
+      await autoRollbackTransaction(async () => {
+        const orgId = await createTestOrganization();
+        const otherOrgId = await createTestOrganization();
+        const user = await createTestUser(orgId);
+
+        const team = await withDb((db) =>
+          db.team.create({
+            data: {
+              organizationId: orgId,
+              name: "Test Team",
+              slug: "test-team",
+            },
+          })
+        );
+        await withDb((db) =>
+          db.teamMember.create({
+            data: { teamId: team.id, userId: user.id, role: "OWNER" },
+          })
+        );
+
+        const result = await teamsService.delete(team.id, otherOrgId);
+
+        expect(result).toEqual({ ok: false, error: Status.NotFound });
+        // The membership is the row a `teamId`-only delete would have taken
+        // before the org-scoped statement reported the miss.
+        const members = await withDb((db) =>
+          db.teamMember.findMany({ where: { teamId: team.id } })
+        );
+        expect(members).toHaveLength(1);
+        const survivor = await withDb((db) =>
+          db.team.findUnique({ where: { id: team.id } })
+        );
+        expect(survivor).not.toBeNull();
       });
     });
   });
@@ -633,7 +694,12 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
           })
         );
 
-        const hasAdmin = await teamsService.hasRole(team.id, user.id, "ADMIN");
+        const hasAdmin = await teamsService.hasRole({
+          teamId: team.id,
+          organizationId: orgId,
+          userId: user.id,
+          requiredRole: TeamRole.Admin,
+        });
         expect(hasAdmin).toBe(true);
       });
     });
@@ -659,7 +725,12 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
           })
         );
 
-        const hasAdmin = await teamsService.hasRole(team.id, user.id, "ADMIN");
+        const hasAdmin = await teamsService.hasRole({
+          teamId: team.id,
+          organizationId: orgId,
+          userId: user.id,
+          requiredRole: TeamRole.Admin,
+        });
         expect(hasAdmin).toBe(true);
       });
     });
@@ -685,11 +756,12 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
           })
         );
 
-        const hasMember = await teamsService.hasRole(
-          team.id,
-          user.id,
-          "MEMBER"
-        );
+        const hasMember = await teamsService.hasRole({
+          teamId: team.id,
+          organizationId: orgId,
+          userId: user.id,
+          requiredRole: TeamRole.Member,
+        });
         expect(hasMember).toBe(true);
       });
     });
@@ -715,11 +787,34 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
           })
         );
 
-        const hasAdmin = await teamsService.hasRole(team.id, user.id, "ADMIN");
+        const hasAdmin = await teamsService.hasRole({
+          teamId: team.id,
+          organizationId: orgId,
+          userId: user.id,
+          requiredRole: TeamRole.Admin,
+        });
         expect(hasAdmin).toBe(false);
       });
     });
 
+    it("returns false for a team that does not exist", async () => {
+      await autoRollbackTransaction(async () => {
+        const orgId = await createTestOrganization();
+        const user = await createTestUser(orgId);
+
+        // No membership row can exist for a team that was never there. Since
+        // ISS-7533 the routes no longer turn that into a 403: `requireTeamRole`
+        // probes the org first, so a missing team answers 404 and `hasRole` is
+        // never reached.
+        const hasOwner = await teamsService.hasRole({
+          teamId: "00000000-0000-7000-8000-000000000000",
+          organizationId: orgId,
+          userId: user.id,
+          requiredRole: TeamRole.Owner,
+        });
+        expect(hasOwner).toBe(false);
+      });
+    });
     it("returns false for non-member", async () => {
       await autoRollbackTransaction(async () => {
         const orgId = await createTestOrganization();
@@ -735,12 +830,58 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
           })
         );
 
-        const hasMember = await teamsService.hasRole(
-          team.id,
-          user.id,
-          "MEMBER"
-        );
+        const hasMember = await teamsService.hasRole({
+          teamId: team.id,
+          organizationId: orgId,
+          userId: user.id,
+          requiredRole: TeamRole.Member,
+        });
         expect(hasMember).toBe(false);
+      });
+    });
+
+    it("scopes the membership lookup to the organization", async () => {
+      await autoRollbackTransaction(async () => {
+        const orgId1 = await createTestOrganization({
+          clerkId: "org_hasrole_1",
+          slug: "org-hasrole-1",
+        });
+        const orgId2 = await createTestOrganization({
+          clerkId: "org_hasrole_2",
+          slug: "org-hasrole-2",
+        });
+        const user = await createTestUser(orgId1);
+
+        const team = await withDb((db) =>
+          db.team.create({
+            data: {
+              organizationId: orgId1,
+              name: "Org1 Team",
+              slug: "org1-team",
+            },
+          })
+        );
+        await withDb((db) =>
+          db.teamMember.create({
+            data: { teamId: team.id, userId: user.id, role: TeamRole.Owner },
+          })
+        );
+
+        const fromOwnOrg = await teamsService.hasRole({
+          teamId: team.id,
+          organizationId: orgId1,
+          userId: user.id,
+          requiredRole: TeamRole.Owner,
+        });
+        const fromOtherOrg = await teamsService.hasRole({
+          teamId: team.id,
+          organizationId: orgId2,
+          userId: user.id,
+          requiredRole: TeamRole.Owner,
+        });
+
+        expect(fromOwnOrg).toBe(true);
+        expect(fromOtherOrg).toBe(false);
       });
     });
   });

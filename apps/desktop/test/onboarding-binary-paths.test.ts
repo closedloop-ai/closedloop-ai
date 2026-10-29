@@ -9,8 +9,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { SettingsStore } from "../src/main/settings/settings-store.js";
+import {
+  CLI_BINARY_TOOLS,
+  type CliBinaryTool,
+} from "../src/shared/cli-binary-tools.js";
 
 const tempDirs: string[] = [];
 
@@ -55,23 +59,11 @@ test("patchBinaryPaths: completing onboarding with binaryPaths persists them", (
   // Simulate what the IPC handler does: filter non-blank keys and patch
   const binaryPaths = {
     claude: "/absolute/path/to/claude",
+    gh: "/usr/local/bin/gh",
     git: "/usr/bin/git",
   };
-  const patch: Partial<
-    Record<
-      "claude" | "gh" | "codex" | "cursor" | "opencode" | "python3" | "git",
-      string | null
-    >
-  > = {};
-  for (const key of [
-    "claude",
-    "gh",
-    "codex",
-    "cursor",
-    "opencode",
-    "python3",
-    "git",
-  ] as const) {
+  const patch: Partial<Record<CliBinaryTool, string | null>> = {};
+  for (const key of CLI_BINARY_TOOLS) {
     const value = binaryPaths[key as keyof typeof binaryPaths];
     if (typeof value === "string" && value.trim()) {
       patch[key] = value.trim();
@@ -99,21 +91,8 @@ test("patchBinaryPaths: empty string values are excluded before patching", () =>
   const { store } = makeTempStore();
   // Simulate IPC handler: empty strings are skipped, not passed to patch
   const binaryPaths = { claude: "", git: "/usr/bin/git" };
-  const patch: Partial<
-    Record<
-      "claude" | "gh" | "codex" | "cursor" | "opencode" | "python3" | "git",
-      string | null
-    >
-  > = {};
-  for (const key of [
-    "claude",
-    "gh",
-    "codex",
-    "cursor",
-    "opencode",
-    "python3",
-    "git",
-  ] as const) {
+  const patch: Partial<Record<CliBinaryTool, string | null>> = {};
+  for (const key of CLI_BINARY_TOOLS) {
     const value = binaryPaths[key as keyof typeof binaryPaths];
     if (typeof value === "string" && value.trim()) {
       patch[key] = value.trim();

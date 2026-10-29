@@ -48,12 +48,23 @@ export type GoldenDatasetCandidate = {
 export const GOLDEN_CANDIDATE_LIST_DEFAULT_LIMIT = 50;
 /** Upper bound on a single golden-candidate page (FEA-4171). */
 export const GOLDEN_CANDIDATE_LIST_MAX_LIMIT = 100;
+/**
+ * ISS-8734: ceiling on the `offset` accepted by `GET /golden-candidates`. Level
+ * with `SESSION_LIST_MAX_OFFSET` and its siblings; rejected at the schema,
+ * never clamped.
+ */
+export const GOLDEN_CANDIDATE_LIST_MAX_OFFSET = 10_000;
 
 /**
  * Paginated response for `GET /golden-candidates` (FEA-4171). `total` is the full
  * org-scoped count of parsing-bug-flagged comments for the applied filters;
- * `nextCursor` is an opaque offset token (null when exhausted), matching the
- * aggregate trace-comment list's offset pagination.
+ * `nextCursor` is an opaque offset token, matching the aggregate trace-comment
+ * list's offset pagination. It is `null` when the result set is exhausted AND
+ * when the next offset would exceed {@link GOLDEN_CANDIDATE_LIST_MAX_OFFSET} —
+ * the schema rejects a `cursor` past that ceiling, so minting one would answer
+ * 400 to a token this endpoint issued. `total` still reports the whole
+ * population, so more-rows-than-returned with no cursor means the pagination
+ * cannot reach the rest, not that there are none.
  */
 export type GoldenCandidateListResponse = {
   items: GoldenDatasetCandidate[];
@@ -78,8 +89,20 @@ export const goldenCandidateListQuerySchema = z.object({
     .positive()
     .max(GOLDEN_CANDIDATE_LIST_MAX_LIMIT)
     .optional(),
-  offset: z.coerce.number().int().nonnegative().optional(),
-  cursor: z.coerce.number().int().nonnegative().optional(),
+  offset: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .max(GOLDEN_CANDIDATE_LIST_MAX_OFFSET)
+    .optional(),
+  // The cursor encodes the next offset, and the service prefers it over a raw
+  // `offset`, so it carries the same ceiling or the bound is a rename away.
+  cursor: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .max(GOLDEN_CANDIDATE_LIST_MAX_OFFSET)
+    .optional(),
 });
 
 export type GoldenCandidateListQuery = z.infer<

@@ -1,6 +1,5 @@
 import { ArtifactType, LinkType } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
-import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import {
   type ArtifactRepositorySnapshot,
   BATCH_META_MAX_SLUGS,
@@ -14,9 +13,7 @@ import {
   type DocumentMetaMap,
   DocumentType,
   type DocumentWithProject,
-  type FindDocumentsOptions,
   fallbackStatusForSubtype,
-  type GenerationStatus,
   isProjectOptionalDocumentType,
   MAX_CREATE_DOCUMENT_INLINE_EXPANDED_CONTENT_CHARS,
   normalizeDocumentType,
@@ -26,37 +23,42 @@ import {
   type UpdateDocumentInput,
 } from "@repo/api/src/types/document";
 import type { CreatedDocumentVersionInlineImage } from "@repo/api/src/types/document-version";
-import type { MoveArtifactRequest } from "@repo/api/src/types/project-artifact-move";
 import {
   Result,
   type Result as ServiceResult,
-  Status,
 } from "@repo/api/src/types/result";
-import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
 import { expandSlugAliases } from "@repo/api/src/types/slug-prefix";
-import { Prisma, type TransactionClient, withDb } from "@repo/database";
+import { type Prisma, type TransactionClient, withDb } from "@repo/database";
 import { waitUntil } from "@vercel/functions";
-import { customFieldValuesService } from "@/app/custom-fields/values-service";
+import { nextProducesLinkSortOrder } from "@/app/artifact-links/produces-link-sort-order";
 import {
-  computeNextSortOrder,
-  type MoveArtifactError,
-  resolveInsertIndex,
-  STACK_RANK_GAP,
-} from "@/app/documents/document-sort-order";
+  type AuditActor,
+  systemAuditActor,
+} from "@/app/audit/audit-emit-service";
+import { documentMoveService } from "@/app/documents/document-move-service";
+import { computeNextSortOrder } from "@/app/documents/document-sort-order";
 import {
   documentProjection,
   searchIndexService,
 } from "@/app/search/search-index-service";
-import { mapTagRelations } from "@/app/tags/service";
 import { documentWhere } from "@/lib/artifact-adapters";
+import type { RecordWriteInTransaction } from "@/lib/record-write-in-transaction";
 import { generateArtifactSlug } from "@/lib/slug-generator";
-import { displayUserName } from "@/lib/user-display-name";
+import {
+  isUserInOrganization,
+  USER_NOT_IN_ORGANIZATION_MESSAGE,
+} from "@/lib/user-org-membership";
 import {
   cleanupFailedInlineImageDocument,
   createDocumentInlineImageErrorCodes,
   toCreatedDocumentInlineImage,
   updateInitialDocumentVersionContent,
 } from "./create-document-inline-image-helpers";
+import type { DocumentListQueryOptions } from "./custom-field-ordered-read";
+import {
+  DELETED_DOCUMENT_SELECT,
+  documentDeleteService,
+} from "./document-delete-service";
 import {
   buildCreatedInlineImage,
   createInlineImageAttachmentSafely,
@@ -64,26 +66,20 @@ import {
   validateInlineImagesBeforeSideEffects,
 } from "./document-inline-image-helpers";
 import {
-  attachCustomFieldValues,
-  buildDocumentListWhere,
-  resolveDocumentListSkip,
-  resolveDocumentListTake,
-} from "./document-list-query";
+  findAllDocuments,
+  findAllDocumentsWithCustomFields,
+} from "./document-list-read";
 import {
   documentIncludeWithContext,
   documentIncludeWithUser,
-  type RawDocumentWithContext,
   splitDocumentPayload,
   toDocument,
+  toDocumentWithProject,
 } from "./document-utils";
-import {
-  mergeLoopStatuses,
-  suppressDismissedFailuresForDocumentMap,
-} from "./generation-status-helpers";
 import type { CreateInlineImageAttachmentError } from "./inline-image-attachment-contract";
 import {
-  buildSnapshotFromLoopSelection,
   buildSnapshotFromProjectDefaults,
+  buildSnapshotFromRepositorySelection,
   inheritSnapshotFromParent,
   parseStoredSnapshot,
 } from "./repository-snapshot-helpers";
@@ -92,13 +88,11 @@ import { sanitizeAndLog } from "./sanitize-content";
 
 /**
  * Document general/CRUD service. Owns reads, writes, deletes, listing,
- * template handling, related-document graph traversal, batch utilities, and
- * the helpers that the generation/execution flows compose with.
+ * template handling, related-document graph traversal, and batch utilities.
  *
  * Per FEA-680: this is the entity-level CRUD module for DOCUMENT artifacts —
- * named after the entity, not after the responsibility. Generation,
- * execution, evaluation, performance, versioning, and merge live in their
- * own sibling files and import from here.
+ * named after the entity, not after the responsibility. Evaluation,
+ * versioning, and merge live in their own sibling files and import from here.
  */
 
 /**
@@ -109,60 +103,35 @@ async function validateUserInOrg(
   userId: string,
   organizationId: string
 ): Promise<void> {
-  const user = await withDb((db) =>
-    db.user.findFirst({
-      where: { id: userId, organizationId },
-      select: { id: true },
-    })
+  const inOrg = await withDb((db) =>
+    isUserInOrganization(db, userId, organizationId)
   );
-  if (!user) {
-    throw new Error("Invalid user ID: user not found in this organization");
+  if (!inOrg) {
+    throw new Error(USER_NOT_IN_ORGANIZATION_MESSAGE);
   }
-}
-
-/**
- * Look up the user's name and email for git commit attribution. Used to set
- * committer identity on bot commits so Vercel can match the author to a team
- * member and trigger preview deploys.
- *
- * Exported for use by generation/execution flows when triggering workflows.
- */
-export async function getCommitterInfo(
-  userId: string
-): Promise<{ committerName: string; committerEmail: string } | undefined> {
-  const user = await withDb((db) =>
-    db.user.findUnique({
-      where: { id: userId },
-      select: { email: true, firstName: true, lastName: true },
-    })
-  );
-  if (!user?.email) {
-    return undefined;
-  }
-  return {
-    committerName: displayUserName({ ...user, email: user.email }),
-    committerEmail: user.email,
-  };
 }
 
 /**
  * Create a single artifact record within an existing transaction. Centralized
- * so the create() route AND the start-plan-loop-from-local helper share the
- * same artifact-shape contract (slug generation, version 1 seeding, optional
+ * so the create() route AND the source-linked plan service share the same
+ * artifact-shape contract (slug generation, version 1 seeding, optional
  * source link).
- *
- * Exported for use by `documentExecutionService.startPlanLoopFromLocal`.
  */
 export async function createDocumentRecord(
   tx: TransactionClient,
   organizationId: string,
   userId: string,
-  rawInput: CreateDocumentInput
+  rawInput: CreateDocumentInput,
+  /**
+   * An id the caller chose before the transaction, for a write that must name
+   * the artifact before it exists (an attachment's signed storage key).
+   */
+  artifactId?: string
 ): Promise<Document | null> {
   // ISS-4397: `CreateDocumentInput.type` is the request-side superset
   // (DocumentType + the `ISSUE` alias). The HTTP path already normalizes at the
-  // create validator, but this helper is also called in-code by generation /
-  // plan-from-local / context-attachment services, so normalize here too — the
+  // create validator, but this helper is also called in-code by the
+  // source-linked plan service, so normalize here too — the
   // persisted `subtype`, slug prefix, and status vocabulary must key off the
   // canonical DocumentType, never the `ISSUE` alias.
   const input: CreateDocumentInput & { type: DocumentType } = {
@@ -171,8 +140,8 @@ export async function createDocumentRecord(
   };
   // Project-bound subtypes (PRD/IMPLEMENTATION_PLAN/FEATURE) must carry a
   // project. The HTTP path enforces this in the create validator, but this
-  // helper is also called directly by generate-prd-from-doc / plan-from-local /
-  // context-attachment services that build a `CreateDocumentInput` in code —
+  // helper is also called directly by the source-linked plan service, which
+  // builds a `CreateDocumentInput` in code —
   // where `projectId` is typed optional (FEA-4345). Guard here so a direct
   // caller that omits it for a project-bound type is rejected (null return =
   // "failed to create", the contract every caller already handles) instead of
@@ -243,6 +212,7 @@ export async function createDocumentRecord(
     data: {
       ...artifactData,
       ...(nextSortOrder !== null && { sortOrder: nextSortOrder }),
+      ...(artifactId && { id: artifactId }),
       organizationId,
       createdById: userId,
       document: { create: detailData },
@@ -263,12 +233,18 @@ export async function createDocumentRecord(
   });
 
   if (sourceId) {
+    const sortOrder = await nextProducesLinkSortOrder(
+      tx,
+      organizationId,
+      sourceId
+    );
     await tx.artifactLink.create({
       data: {
         organizationId,
         sourceId,
         targetId: createdArtifact.id,
         linkType: LinkType.Produces,
+        sortOrder,
       },
       select: { id: true },
     });
@@ -307,7 +283,7 @@ async function resolveRepositorySnapshot(opts: {
   } = opts;
 
   if (repositorySelection) {
-    return buildSnapshotFromLoopSelection(repositorySelection);
+    return buildSnapshotFromRepositorySelection(repositorySelection);
   }
 
   if (sourceId) {
@@ -349,84 +325,16 @@ async function resolveRepositorySnapshot(opts: {
   );
 }
 
-/** Transform Artifact + detail into the DocumentWithProject wire shape. */
-function toDocumentWithProject(
-  artifact: RawDocumentWithContext,
-  maps?: {
-    generationStatusMap?: Map<string, GenerationStatus>;
-  }
-): DocumentWithProject {
-  const generationStatus = maps?.generationStatusMap?.get(artifact.id);
-  const base = toDocument(artifact);
-
-  return {
-    ...base,
-    project: artifact.project
-      ? {
-          id: artifact.project.id,
-          name: artifact.project.name,
-          teams: artifact.project.teams.map(
-            (pt: { team: { id: string; name: string } }) => pt.team
-          ),
-        }
-      : null,
-    tags: mapTagRelations(artifact.tagArtifacts ?? []),
-    ...(generationStatus && { generationStatus }),
-  };
-}
-
 export const documentService = {
   /**
    * Find all DOCUMENT artifacts with optional filters (org-scoped). Returns
-   * each document with its project (with teams), and generation status
-   * (resolved from Loop records, with dismissed failures suppressed).
+   * each document with its project (with teams).
    */
   async findAll(
-    options: FindDocumentsOptions & { organizationId: string },
+    options: DocumentListQueryOptions,
     now: Date = new Date()
   ): Promise<DocumentWithProject[]> {
-    // FEA-4373: the list is unbounded by default — every matching artifact is
-    // loaded — which the shared Documents index, plan/document pickers, and
-    // version-skewed API clients all still depend on to show and select older
-    // artifacts. Only a caller that explicitly asks to page (My Tasks, whose
-    // board renders one row/card per artifact and could crash on a very large
-    // assigned set) opts into the bound by passing `limit`; when it is omitted
-    // the query stays unbounded and this endpoint's default contract is
-    // unchanged. When a caller does page, the value is clamped to
-    // [1, DOCUMENT_LIST_MAX_LIMIT] (the validator clamps client input; this is
-    // defense in depth for direct service callers) and `offset` to
-    // [0, DOCUMENT_LIST_MAX_OFFSET]. Offset without a limit is meaningless, so
-    // it applies only alongside a limit.
-    const take = resolveDocumentListTake(options.limit);
-    const skip = resolveDocumentListSkip(take, options.offset);
-
-    const artifacts = await withDb((db) =>
-      db.artifact.findMany({
-        // ISS-4576: the same predicate builder the honest-total `count` uses, so
-        // the page and its total always describe one population.
-        where: buildDocumentListWhere(options, now),
-        include: documentIncludeWithContext,
-        // Stable secondary sort on id so `createdAt` ties order deterministically
-        // across pages (two rows sharing a millisecond can't swap between pages).
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        take,
-        skip,
-      })
-    );
-
-    const documentIds = artifacts.map((a) => a.id);
-    const generationStatusMap = new Map<string, GenerationStatus>();
-
-    await mergeLoopStatuses(documentIds, generationStatusMap);
-
-    await suppressDismissedFailuresForDocumentMap(
-      documentIds,
-      generationStatusMap
-    );
-
-    return artifacts.map((a: RawDocumentWithContext) =>
-      toDocumentWithProject(a, { generationStatusMap })
-    );
+    return await findAllDocuments(options, now);
   },
 
   /**
@@ -435,21 +343,10 @@ export const documentService = {
    * surfaces return the identical document shape (PLN-874).
    */
   async findAllWithCustomFields(
-    options: FindDocumentsOptions & { organizationId: string },
+    options: DocumentListQueryOptions,
     now: Date = new Date()
   ): Promise<DocumentWithProject[]> {
-    const documents = await documentService.findAll(options, now);
-    if (documents.length === 0) {
-      return documents;
-    }
-
-    const allValues = await customFieldValuesService.getValuesForEntity(
-      CustomFieldEntityType.Document,
-      documents.map((d) => d.id),
-      options.organizationId
-    );
-
-    return attachCustomFieldValues(documents, allValues);
+    return await findAllDocumentsWithCustomFields(options, now);
   },
 
   /** Find a DOCUMENT artifact by id (org-scoped) with project context. */
@@ -468,7 +365,7 @@ export const documentService = {
       return null;
     }
 
-    return toDocumentWithProject(artifact, {});
+    return toDocumentWithProject(artifact);
   },
 
   /** Find a DOCUMENT artifact by slug (org-scoped) with project context. */
@@ -491,7 +388,26 @@ export const documentService = {
       return null;
     }
 
-    return toDocumentWithProject(artifact, {});
+    return toDocumentWithProject(artifact);
+  },
+
+  /**
+   * The id and stored slug of the DOCUMENT {@link findBySlug} resolves,
+   * without its include graph.
+   */
+  async findCanonicalSlugAndId(
+    slug: string,
+    organizationId: string
+  ): Promise<{ id: string; slug: string } | null> {
+    const artifact = await withDb((db) =>
+      db.artifact.findFirst({
+        where: { organizationId, slug: { in: expandSlugAliases(slug) } },
+        select: { id: true, slug: true, type: true },
+      })
+    );
+    return artifact?.type === ArtifactType.Document && artifact.slug !== null
+      ? { id: artifact.id, slug: artifact.slug }
+      : null;
   },
 
   /** Find a DOCUMENT artifact by id (org-scoped) without related context. */
@@ -532,38 +448,16 @@ export const documentService = {
   async create(
     organizationId: string,
     userId: string,
-    input: CreateDocumentInput
+    input: CreateDocumentInput,
+    /** {@link RecordCreatedArtifact} (ISS-10993). */
+    recordCreated?: RecordCreatedArtifact
   ): Promise<Document | null> {
-    const isTemplate = input.type === DocumentType.Template;
-
-    // Kept, and more honest now that the sentinel is gone: templates really are
-    // org-level, so being handed a project for one is a caller error.
-    if (isTemplate && input.projectId) {
-      throw new Error(
-        "Templates are organization-level artifacts and cannot be associated with a project"
-      );
-    }
-    // FEA-1749: the converse guard ("artifacts except templates must have a
-    // project") is deliberately NOT here. `documents/validators.ts` requires
-    // projectId on every document create and still does — this was a second,
-    // redundant enforcement of a rule the entry point already owns, and the
-    // storage layer holding an opinion about it is what blocked unparented
-    // BRANCH/SESSION artifacts from ever existing.
-
-    const createdDocument = await withDb.tx((tx) =>
-      createDocumentRecord(tx, organizationId, userId, input)
+    return await createDocumentWithReceipt(
+      organizationId,
+      userId,
+      input,
+      recordCreated
     );
-
-    if (createdDocument) {
-      await createDocumentRoom(createdDocument);
-      // FEA-3863 / Phase-2 (parent FEA-3800): best-effort, post-commit,
-      // fail-open search projection upsert. Never blocks or fails the create.
-      // Index the seeded v1 content as the searchable body and carry slug + type
-      // for the routable deep link.
-      indexDocumentProjection(createdDocument, input.content ?? null);
-    }
-
-    return createdDocument;
   },
 
   /**
@@ -574,7 +468,9 @@ export const documentService = {
     organizationId: string,
     userId: string,
     input: CreateDocumentInput,
-    inlineImages: CreateDocumentInlineImageInput[]
+    inlineImages: CreateDocumentInlineImageInput[],
+    /** {@link RecordCreatedArtifact} (ISS-10993). */
+    recordCreated?: RecordCreatedArtifact
   ): Promise<CreateDocumentWithInlineImagesResult> {
     const placeholderValidation = validateInlineImagesBeforeSideEffects(
       input.content,
@@ -589,7 +485,8 @@ export const documentService = {
     const createdDocument = await documentService.create(
       organizationId,
       userId,
-      input
+      input,
+      recordCreated
     );
     if (!createdDocument) {
       return Result.err({
@@ -685,10 +582,11 @@ export const documentService = {
     if (input.approverId) {
       await validateUserInOrg(input.approverId, organizationId);
     }
-    if (input.projectId) {
+    const { projectId } = input;
+    if (projectId) {
       const project = await withDb((db) =>
         db.project.findUnique({
-          where: { id: input.projectId, organizationId },
+          where: { id: projectId, organizationId },
           select: { id: true },
         })
       );
@@ -742,235 +640,27 @@ export const documentService = {
   },
 
   /**
-   * Delete a DOCUMENT artifact and its Liveblocks room.
-   * ArtifactLink rows cascade via FK ON DELETE CASCADE; Loops are preserved
-   * (onDelete: SetNull) to retain execution history.
+   * Delete a DOCUMENT artifact, its audit entry and its Liveblocks room. The
+   * implementation, and the same-transaction audit contract that makes a delete
+   * and its only surviving record atomic, live in `document-delete-service.ts`.
    */
-  async delete(id: string, organizationId: string): Promise<void> {
-    const artifact = await withDb((db) =>
-      db.artifact.findUnique({
-        where: { id, organizationId },
-        select: { slug: true, organizationId: true, type: true },
-      })
-    );
-
-    if (artifact?.type !== ArtifactType.Document) {
-      return;
-    }
-
-    await withDb((db) => db.artifact.delete({ where: { id, organizationId } }));
-
-    // FEA-3863: best-effort, post-commit, fail-open search projection removal.
-    searchIndexService.removeAfterCommit({
-      organizationId,
-      entityType: SearchEntityType.Document,
-      entityId: id,
-    });
-
-    if (artifact.slug) {
-      await deleteDocumentRoom(organizationId, artifact.slug);
-    }
-  },
+  delete: documentDeleteService.delete,
 
   /**
-   * Reorder documents in a project by setting sortOrder values atomically.
-   * Validates that every documentId belongs to the supplied project AND the
-   * caller's organization.
-   *
-   * Performance: a single `UPDATE … FROM (VALUES …)` statement updates every
-   * row in one Postgres round-trip regardless of input size, instead of one
-   * round-trip per row. The validation `findMany` adds one more query for a
-   * total of 2 statements per call.
-   *
-   * Caller assigns sortOrder by array position: `documentIds[i]` → sortOrder
-   * = `i * STACK_RANK_GAP`. The caller is responsible for choosing the gap
-   * strategy (full reindex vs. affected-window-only). For single-item moves,
-   * prefer `moveArtifact` which computes a minimal affected window internally.
+   * Reorder every document in a project by array position. The implementation
+   * lives in `document-move-service.ts`, beside the single-item move built on
+   * it — rewriting a project's ordering is a separate responsibility from
+   * writing a document.
    */
-  reorder(
-    projectId: string,
-    documentIds: string[],
-    organizationId: string
-  ): Promise<string[]> {
-    if (documentIds.length === 0) {
-      return Promise.resolve([]);
-    }
-
-    const uniqueIds = [...new Set(documentIds)];
-
-    return withDb.tx(async (tx) => {
-      const artifacts = await tx.artifact.findMany({
-        where: documentWhere({
-          id: { in: uniqueIds },
-          projectId,
-          organizationId,
-        }),
-        select: { id: true },
-      });
-
-      if (artifacts.length !== uniqueIds.length) {
-        const foundIds = new Set(artifacts.map((a: { id: string }) => a.id));
-        const missingIds = uniqueIds.filter((id) => !foundIds.has(id));
-        throw new Error(
-          `Invalid artifact IDs for project ${projectId}: ${missingIds.join(", ")} not found in organization`
-        );
-      }
-
-      const valueRows = uniqueIds.map(
-        (id, index) => Prisma.sql`(${id}::uuid, ${index * STACK_RANK_GAP}::int)`
-      );
-      await tx.$executeRaw(Prisma.sql`
-        UPDATE "artifacts"
-        SET "sort_order" = data.new_order
-        FROM (VALUES ${Prisma.join(valueRows)}) AS data(id, new_order)
-        WHERE "artifacts"."id" = data.id
-          AND "artifacts"."organization_id" = ${organizationId}::uuid
-          AND "artifacts"."project_id" = ${projectId}::uuid
-          AND "artifacts"."type" = ${ArtifactType.Document}::"ArtifactType"
-      `);
-
-      return uniqueIds;
-    });
-  },
+  reorder: documentMoveService.reorder,
 
   /**
    * Move one root DOCUMENT artifact to a new position in its project's stack
-   * rank. Single-item primitive that backs drag-drop, keyboard ⌘↑/⌘↓, and the
-   * row-menu "Move to top" / "Move to bottom" actions in the project page
-   * (PRD-421).
-   *
-   * Implementation: fetches the current project ordering, splices the moved
-   * id into the requested slot, and delegates to `reorder` which rewrites
-   * sortOrder for every row of the project in a single SQL statement. The
-   * gap-based midpoint optimisation that would touch only O(window) rows is
-   * deferred — the simpler full-project reindex is correct, easy to test, and
-   * runs in a single `UPDATE … FROM (VALUES …)` round-trip (FEA-821), which
-   * stays well under the 250ms p95 target even for PRO-16's 834 artifacts.
-   *
-   * Returns `Result.err` for client-error paths the route maps to 4xx (per
-   * apps/api/AGENTS.md "Errors as values"):
-   *  - `Status.NotFound` — `artifactId` not in `projectId` OR
-   *    `referenceArtifactId` not in the same project. A caller with a stale
-   *    id should not see a 500.
-   *  - `Status.BadRequest` — `referenceArtifactId` equals `artifactId`
-   *    (ambiguous), or `Before`/`After` is missing `referenceArtifactId`
-   *    (the Zod validator already catches the latter at the boundary; the
-   *    service still guards defensively).
+   * rank, including the optional expected-order precondition (ISS-8728). The
+   * implementation, and the transaction that makes the precondition check and
+   * the write observe one snapshot, live in `document-move-service.ts`.
    */
-  moveArtifact(
-    projectId: string,
-    organizationId: string,
-    input: MoveArtifactRequest
-  ): Promise<Result<{ newSortOrder: number }, MoveArtifactError>> {
-    return withDb.tx(async (tx) => {
-      const orderedRoots = await tx.artifact.findMany({
-        where: documentWhere({ projectId, organizationId }),
-        orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
-        select: { id: true },
-      });
-      const ids = orderedRoots.map((row) => row.id);
-
-      if (!ids.includes(input.artifactId)) {
-        return Result.err({
-          status: Status.NotFound,
-          message: `Artifact ${input.artifactId} not found in project ${projectId}`,
-        });
-      }
-      const indexResult = resolveInsertIndex(ids, input, projectId);
-      if (!indexResult.ok) {
-        return indexResult;
-      }
-      const insertIndex = indexResult.value;
-
-      const withoutTarget = ids.filter((id) => id !== input.artifactId);
-      const newOrder = [
-        ...withoutTarget.slice(0, insertIndex),
-        input.artifactId,
-        ...withoutTarget.slice(insertIndex),
-      ];
-
-      // Delegate to the batch reorder. Inner withDb.tx participates in this
-      // transaction via AsyncLocalStorage so the read + write are atomic.
-      await documentService.reorder(projectId, newOrder, organizationId);
-
-      return Result.ok({ newSortOrder: insertIndex * STACK_RANK_GAP });
-    });
-  },
-
-  /**
-   * Move multiple documents to a target project atomically. Validates that
-   * all artifacts and the target project belong to the user's organization.
-   *
-   * Per PRD-421 § Cross-project move: the source project's `sortOrder` is
-   * discarded; each moved artifact is appended to the bottom of the
-   * destination's stack rank in array order. New sortOrders are spaced by
-   * `STACK_RANK_GAP` and start one gap above the destination's current MAX
-   * (or `0` if the destination is empty).
-   */
-  batchMove(
-    documentIds: string[],
-    targetProjectId: string,
-    organizationId: string
-  ): Promise<string[]> {
-    const uniqueIds = [...new Set(documentIds)];
-
-    if (uniqueIds.length === 0) {
-      return Promise.resolve([]);
-    }
-
-    return withDb.tx(async (tx) => {
-      const targetProject = await tx.project.findFirst({
-        where: { id: targetProjectId, organizationId },
-        select: { id: true },
-      });
-
-      if (!targetProject) {
-        throw new Error(
-          "Invalid project ID: project not found in this organization"
-        );
-      }
-
-      const artifacts = await tx.artifact.findMany({
-        where: documentWhere({ id: { in: uniqueIds }, organizationId }),
-        select: { id: true },
-      });
-
-      if (artifacts.length !== uniqueIds.length) {
-        const foundIds = new Set(artifacts.map((a: { id: string }) => a.id));
-        const missingIds = uniqueIds.filter((id) => !foundIds.has(id));
-        throw new Error(
-          `Invalid artifact IDs: ${missingIds.join(", ")} not found in organization`
-        );
-      }
-
-      const destStart = await computeNextSortOrder(
-        tx,
-        organizationId,
-        targetProjectId
-      );
-      // Single `UPDATE … FROM (VALUES …)` rewrites projectId + sortOrder for
-      // every moved artifact in one Postgres round-trip. Avoids the
-      // interactive-transaction footgun of `Promise.all(tx.artifact.update)`,
-      // which serialises on a single connection and was the pre-FEA-821
-      // pattern. Same shape as `reorder` above, with an extra projectId
-      // column in the VALUES tuple.
-      const valueRows = uniqueIds.map(
-        (id, index) =>
-          Prisma.sql`(${id}::uuid, ${destStart + index * STACK_RANK_GAP}::int)`
-      );
-      await tx.$executeRaw(Prisma.sql`
-        UPDATE "artifacts"
-        SET "project_id" = ${targetProjectId}::uuid,
-            "sort_order" = data.new_order
-        FROM (VALUES ${Prisma.join(valueRows)}) AS data(id, new_order)
-        WHERE "artifacts"."id" = data.id
-          AND "artifacts"."organization_id" = ${organizationId}::uuid
-          AND "artifacts"."type" = ${ArtifactType.Document}::"ArtifactType"
-      `);
-
-      return uniqueIds;
-    });
-  },
+  moveArtifact: documentMoveService.moveArtifact,
 
   /**
    * Batch-fetch document metadata by slug (org-scoped). Returns a map of slug
@@ -1013,110 +703,28 @@ export const documentService = {
   },
 
   /**
-   * Update the status of multiple documents atomically. Validates that all
-   * artifacts exist and belong to the organization.
-   *
-   * Returns both the full set of valid IDs (`updatedIds`, the caller-facing
-   * response contract) and the subset whose status actually changed
-   * (`changedIds`) — documents already at the requested status are excluded from
-   * `changedIds`. The audit ledger emits only on real transitions, so it must
-   * not treat a no-op re-apply as a `DocumentStatusChanged` event (mirrors the
-   * single-document PUT route, which guards on `status !== existing.status`).
-   */
-  batchUpdateStatus(
-    documentIds: string[],
-    status: string,
-    organizationId: string
-  ): Promise<{ updatedIds: string[]; changedIds: string[] }> {
-    const uniqueIds = [...new Set(documentIds)];
-
-    return withDb.tx(async (tx) => {
-      const artifacts = await tx.artifact.findMany({
-        where: documentWhere({ id: { in: uniqueIds }, organizationId }),
-        select: { id: true, subtype: true, status: true },
-      });
-
-      if (artifacts.length !== uniqueIds.length) {
-        const foundIds = new Set(artifacts.map((a: { id: string }) => a.id));
-        const missingIds = uniqueIds.filter((id) => !foundIds.has(id));
-        throw new Error(
-          `Invalid artifact IDs: ${missingIds.join(", ")} not found in organization`
-        );
-      }
-
-      // Documents and Features carry disjoint status vocabularies on the same
-      // column (PRD-495). Reject the batch if the requested status is invalid
-      // for any target artifact's subtype rather than persisting an
-      // out-of-vocabulary value.
-      const invalidIds = artifacts
-        .filter((a) => !statusOptionsForSubtype(a.subtype).includes(status))
-        .map((a) => a.id);
-      if (invalidIds.length > 0) {
-        throw new Error(
-          `Status "${status}" is not valid for artifact(s): ${invalidIds.join(", ")}`
-        );
-      }
-
-      // Only rows not already at the target status represent a real transition.
-      const changedIds = artifacts
-        .filter((a) => a.status !== status)
-        .map((a) => a.id);
-
-      if (changedIds.length > 0) {
-        await tx.artifact.updateMany({
-          // Scope on the DB-verified changed ids (mirrors batchDelete) rather
-          // than the caller-supplied uniqueIds — self-documenting and robust if
-          // the existence/validation guards above ever change. No-op rows are
-          // excluded so `updateMany` touches only rows that actually change.
-          where: documentWhere({ id: { in: changedIds }, organizationId }),
-          data: { status },
-        });
-      }
-
-      return { updatedIds: uniqueIds, changedIds };
-    });
-  },
-
-  /**
-   * Read the current status of a set of artifacts, org-scoped. Returns a map of
-   * artifact id → status for every id that exists in the organization (ids not
-   * found are simply absent from the map).
-   *
-   * Used by the batch-status write path to snapshot the "before" status for the
-   * activity feed (FEA-3864). Best-effort: a race with a concurrent write only
-   * affects the recorded before-value, never the mutation itself.
-   */
-  async getStatusesByIds(
-    documentIds: string[],
-    organizationId: string
-  ): Promise<Map<string, string>> {
-    const uniqueIds = [...new Set(documentIds)];
-    if (uniqueIds.length === 0) {
-      return new Map();
-    }
-    const rows = await withDb((db) =>
-      db.artifact.findMany({
-        where: documentWhere({ id: { in: uniqueIds }, organizationId }),
-        select: { id: true, status: true },
-      })
-    );
-    return new Map(rows.map((row) => [row.id, row.status]));
-  },
-
-  /**
    * Delete multiple documents and their Liveblocks rooms. Returns the IDs that
    * were successfully deleted and any that were not found.
+   *
+   * Each deleted document gets its OWN `document.deleted` audit entry, enqueued
+   * in the same transaction as the `deleteMany` (ISS-10029): these deletes are
+   * as hard as the single-document path, so a batch cannot commit without the
+   * entries that are all that outlive its rows. `recordDeleted` runs on that
+   * same transaction with the ids it deleted (ISS-12552).
    */
   async batchDelete(
     documentIds: string[],
-    organizationId: string
+    organizationId: string,
+    actor: AuditActor,
+    transactionId: string,
+    recordDeleted?: RecordWriteInTransaction<{ deletedIds: string[] }>
   ): Promise<{ deletedIds: string[]; failedIds: string[] }> {
     const uniqueIds = [...new Set(documentIds)];
 
     const foundArtifacts = await withDb.tx(async (tx) => {
       const artifacts = await tx.artifact.findMany({
         where: documentWhere({ id: { in: uniqueIds }, organizationId }),
-        select: { id: true, slug: true },
+        select: { id: true, ...DELETED_DOCUMENT_SELECT },
       });
 
       const foundIds = artifacts.map((a: { id: string }) => a.id);
@@ -1125,25 +733,29 @@ export const documentService = {
         where: { id: { in: foundIds }, organizationId },
       });
 
+      // One bulk insert, and it throws: the rows above are gone either way, so
+      // a batch whose audit entries cannot be written must roll back with them.
+      await documentDeleteService.enqueueBatchAuditEvents(
+        organizationId,
+        actor,
+        artifacts,
+        transactionId
+      );
+      await recordDeleted?.(tx, { deletedIds: foundIds });
+
       return artifacts;
     });
 
-    const foundIds = foundArtifacts.map(
-      (a: { id: string; slug: string | null }) => a.id
-    );
+    const foundIds = foundArtifacts.map((a) => a.id);
     const foundIdSet = new Set(foundIds);
     const missingIds = uniqueIds.filter((id) => !foundIdSet.has(id));
 
     // Clean up Liveblocks rooms after the transaction commits
+    const deletedSlugs = foundArtifacts
+      .map((a) => a.slug)
+      .filter((slug): slug is string => slug !== null);
     await Promise.all(
-      foundArtifacts
-        .filter(
-          (a: {
-            id: string;
-            slug: string | null;
-          }): a is { id: string; slug: string } => a.slug !== null
-        )
-        .map((a) => deleteDocumentRoom(organizationId, a.slug))
+      deletedSlugs.map((slug) => deleteDocumentRoom(organizationId, slug))
     );
 
     return { deletedIds: foundIds, failedIds: missingIds };
@@ -1186,7 +798,14 @@ async function deleteCreatedInlineImageDocument(
   organizationId: string
 ): Promise<boolean> {
   try {
-    await documentService.delete(documentId, organizationId);
+    // An internal compensating delete of an artifact this same call just
+    // created, so the ledger attributes it to `system` rather than to the user
+    // whose create failed part-way.
+    await documentService.delete(
+      documentId,
+      organizationId,
+      systemAuditActor()
+    );
     return true;
   } catch {
     return false;
@@ -1202,6 +821,14 @@ async function deleteCreatedInlineImageDocument(
  * edit. Best-effort throughout: the projection upsert already runs post-commit
  * via `waitUntil` and swallows errors, and the content read here is scheduled
  * the same way so a failed read never affects the user's write.
+ *
+ * CALLER CONTRACT (ISS-10993): call this with NO transaction open. The read and
+ * the projection upsert both start eagerly, before `waitUntil` sees them, and
+ * `withDb` joins an ambient transaction — so inside one they issue on the
+ * caller's transaction client, where a projection failure aborts the caller's
+ * write and a statement queued past the commit is swallowed against a closed
+ * transaction. Nothing enforces this; `PUT /documents/[id]` is the caller that
+ * has to hold it, and it indexes after its own `withDb.tx` resolves.
  */
 export function indexDocumentProjection(
   document: Document,
@@ -1260,4 +887,87 @@ function latestDocumentVersionContent(
     });
     return latest?.content ?? null;
   });
+}
+
+/**
+ * The create itself, as a module function rather than a member, so
+ * `createWithInlineImages` does not have to reference `documentService` from
+ * inside its own initializer.
+ *
+ * ISS-10993: the artifact row and its creation receipt are written on ONE
+ * transaction, so a receipt that cannot be persisted refuses the create instead
+ * of leaving the feed with no row to start from. The Liveblocks room and the
+ * search projection stay OUTSIDE it — both are post-commit and neither should
+ * hold a pooled connection across a network call.
+ */
+async function createDocumentWithReceipt(
+  organizationId: string,
+  userId: string,
+  input: CreateDocumentInput,
+  recordCreated?: RecordCreatedArtifact
+): Promise<Document | null> {
+  // Kept, and more honest now that the sentinel is gone: templates really are
+  // org-level, so being handed a project for one is a caller error.
+  if (input.type === DocumentType.Template && input.projectId) {
+    throw new Error(
+      "Templates are organization-level artifacts and cannot be associated with a project"
+    );
+  }
+  // FEA-1749: the converse guard ("artifacts except templates must have a
+  // project") is deliberately NOT here. `documents/validators.ts` requires
+  // projectId on every document create and still does — this was a second,
+  // redundant enforcement of a rule the entry point already owns, and the
+  // storage layer holding an opinion about it is what blocked unparented
+  // BRANCH/SESSION artifacts from ever existing.
+
+  const createdDocument = await withDb.tx(async (tx) => {
+    const created = await createDocumentRecord(
+      tx,
+      organizationId,
+      userId,
+      input
+    );
+    if (created) {
+      await recordCreated?.(tx, created);
+    }
+    return created;
+  });
+
+  if (createdDocument) {
+    await publishCreatedDocument(createdDocument, input.content ?? null);
+  }
+
+  return createdDocument;
+}
+
+/**
+ * The receipt a caller writes for a newly created artifact, on the create's OWN
+ * transaction (ISS-10993), so a receipt that cannot be persisted refuses the
+ * create instead of leaving the activity feed with no row to start from.
+ *
+ * A CALLBACK rather than an actor the store captures for itself: the store has
+ * no business knowing what a receipt is, and `POST /documents` is the only
+ * caller that owns one. Absent — every other caller — nothing is written, which
+ * is what those callers have always done.
+ */
+export type RecordCreatedArtifact = (
+  tx: TransactionClient,
+  created: Document
+) => Promise<void>;
+
+/**
+ * The post-commit half of a document create: its Liveblocks room and its
+ * search projection. Neither belongs inside the create's transaction, since
+ * both are network calls.
+ */
+export async function publishCreatedDocument(
+  document: Document,
+  content: string | null
+): Promise<void> {
+  await createDocumentRoom(document);
+  // FEA-3863 / Phase-2 (parent FEA-3800): best-effort, post-commit,
+  // fail-open search projection upsert. Never blocks or fails the create.
+  // Index the seeded v1 content as the searchable body and carry slug + type
+  // for the routable deep link.
+  indexDocumentProjection(document, content);
 }

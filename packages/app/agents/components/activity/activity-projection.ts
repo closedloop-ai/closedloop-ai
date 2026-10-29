@@ -1,6 +1,6 @@
 import type { AgentSessionListItem } from "@repo/api/src/types/agent-session";
 import {
-  DISPLAYED_SESSION_STATUS,
+  LEGACY_WAITING_WIRE_STATUS,
   SESSION_STATUS,
 } from "@repo/api/src/types/session-status";
 
@@ -107,7 +107,9 @@ function classifyActivityStatus(
 
   if (
     (normalizedStatus === SESSION_STATUS.ACTIVE ||
-      normalizedStatus === DISPLAYED_SESSION_STATUS.WAITING) &&
+      // ISS-10364 retired `DISPLAYED_SESSION_STATUS.WAITING`; a legacy/
+      // version-skewed producer can still serve this raw spelling.
+      normalizedStatus === LEGACY_WAITING_WIRE_STATUS) &&
     item.awaitingInputSince
   ) {
     return AgentSessionActivityStatus.AwaitingInput;

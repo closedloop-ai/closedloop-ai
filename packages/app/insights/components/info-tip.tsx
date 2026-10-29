@@ -1,7 +1,13 @@
 "use client";
 
+import { INSIGHTS_LOC_TERMINOLOGY_FLAG_KEY } from "@repo/api/src/types/insights-loc-terminology-flag";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { InfoHint } from "@repo/design-system/components/ui/primitives/info-hint";
-import { getMetricInfo } from "../lib/metric-info";
+import {
+  getMetricInfo,
+  LOC_TERMINOLOGY_METRIC_INFO,
+  METRIC_INFO,
+} from "../lib/metric-info";
 
 /**
  * The (i) info button shown on every insights tile. Surfaces what a metric
@@ -10,7 +16,13 @@ import { getMetricInfo } from "../lib/metric-info";
  * reveals it and pointer-out dismisses it, with no click required (FEA-3819).
  */
 export function InfoTip({ tileId }: { tileId: string }) {
-  const info = getMetricInfo(tileId);
+  const locTerminologyEnabled = useFeatureFlagEnabledOptional(
+    INSIGHTS_LOC_TERMINOLOGY_FLAG_KEY
+  );
+  const info = getMetricInfo(
+    tileId,
+    locTerminologyEnabled ? LOC_TERMINOLOGY_METRIC_INFO : METRIC_INFO
+  );
   if (!info) {
     return null;
   }

@@ -23,9 +23,7 @@ export const distributionKeys = {
   detail: (id: string) => [...distributionKeys.details(), id] as const,
 };
 
-// ---------------------------------------------------------------------------
 // Queries
-// ---------------------------------------------------------------------------
 
 /**
  * Fetches the org's distributions.
@@ -57,9 +55,7 @@ export function useDistribution(id: string) {
   });
 }
 
-// ---------------------------------------------------------------------------
 // Mutations
-// ---------------------------------------------------------------------------
 
 /**
  * Creates a new Distribution (assigns a CatalogItem to a targeting set).

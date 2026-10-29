@@ -6,7 +6,7 @@ import {
   RENDER_MISSING,
   RENDER_UNATTRIBUTED,
 } from "../../lib/branch-row";
-import { BranchesTable } from "../branches-table";
+import { BRANCHES_TABLE_COLUMN_SPECS, BranchesTable } from "../branches-table";
 
 // FEA-3865: the GridTable card fallback on the Branches table. `compact` forces
 // the card list so the selection is deterministic in jsdom; the header must keep
@@ -92,10 +92,20 @@ describe("BranchesTable card fallback (FEA-3865)", () => {
     // Last active still carries a value, so its label remains…
     expect(screen.getByText("Last active")).toBeInTheDocument();
     // …but the empty-rendering columns are omitted, no dash line.
-    expect(screen.queryByText("Repository")).not.toBeInTheDocument();
-    expect(screen.queryByText("Owner")).not.toBeInTheDocument();
-    expect(screen.queryByText("Linked Sessions")).not.toBeInTheDocument();
-    expect(screen.queryByText("Pull request")).not.toBeInTheDocument();
-    expect(screen.queryByText("Checks")).not.toBeInTheDocument();
+    for (const columnId of ["repo", "owner", "sessions", "pr", "checks"]) {
+      expect(
+        screen.queryByText(branchesColumnLabel(columnId))
+      ).not.toBeInTheDocument();
+    }
   });
 });
+
+function branchesColumnLabel(columnId: string): string {
+  const spec = BRANCHES_TABLE_COLUMN_SPECS.find(
+    (entry) => entry.id === columnId
+  );
+  if (!spec) {
+    throw new Error(`no column spec for "${columnId}"`);
+  }
+  return spec.label;
+}

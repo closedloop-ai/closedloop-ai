@@ -54,7 +54,10 @@ import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { documentService } from "../document-service";
 import { documentVersionService } from "../document-version-service";
-import { documentMergeService } from "../merge-service";
+import {
+  documentMergeService,
+  MERGE_REQUEST_TIMEOUT_MS,
+} from "../merge-service";
 import { deleteDocumentRoom } from "../room-utils";
 
 const mockGenerateText = generateText as unknown as Mock;
@@ -105,7 +108,10 @@ describe("documentMergeService.merge", () => {
       return null;
     });
     mockGetLatest.mockResolvedValue({ content: "some content" });
-    mockGenerateText.mockResolvedValue({ text: "merged content" });
+    mockGenerateText.mockResolvedValue({
+      text: "merged content",
+      finishReason: "stop",
+    });
     // Commit succeeds: findUnique returns a detail row, so the tx returns ok.
     mockWithDbTx.mockImplementation(
       async (callback: (tx: unknown) => unknown) =>
@@ -143,6 +149,32 @@ describe("documentMergeService.merge", () => {
     expect(result.ok).toBe(true);
     expect(mockDeleteDocumentRoom).toHaveBeenCalledWith(ORG_ID, SECONDARY_SLUG);
     expect(mockLogError).not.toHaveBeenCalled();
+  });
+
+  /**
+   * ISS-6774: without an `abortSignal` a hung generation is unbounded (the AI
+   * SDK retries serially), so the request outlives the route's platform
+   * `maxDuration` and the caller gets an opaque 504 instead of this route's
+   * JSON error envelope.
+   */
+  it("bounds the generation with the merge request deadline", async () => {
+    // Spy on the factory rather than only the signal's type: a signal that can
+    // never fire (`new AbortController().signal`) is also an AbortSignal, so
+    // asserting the shape alone would stay green under exactly the regression
+    // this pins. This asserts the deadline the signal was armed with AND that
+    // the armed signal is the one handed to the model.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+
+    await documentMergeService.merge(PRIMARY_ID, SECONDARY_ID, ORG_ID, USER_ID);
+
+    expect(timeoutSpy).toHaveBeenCalledWith(MERGE_REQUEST_TIMEOUT_MS);
+    const call = mockGenerateText.mock.calls[0]?.[0] as {
+      abortSignal?: AbortSignal;
+    };
+    expect(call.abortSignal).toBe(timeoutSpy.mock.results[0]?.value);
+    expect(call.abortSignal?.aborted).toBe(false);
+
+    timeoutSpy.mockRestore();
   });
 
   it("still succeeds when the post-commit room delete throws (FEA-3449)", async () => {

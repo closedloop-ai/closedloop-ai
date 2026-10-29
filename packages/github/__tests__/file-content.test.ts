@@ -8,28 +8,15 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
-import type { Octokit } from "@octokit/rest";
-import { SelectedPullRequestContentClassification } from "@repo/api/src/types/selected-pull-request-evidence";
 import { log } from "@repo/observability/log";
+import { getBoundedFileContentAtRef, getMergeBaseSha } from "../file-content";
 import {
-  getBoundedFileContentAtRef,
-  getClassifiedBoundedFileContentAtRef,
-  getMergeBaseSha,
-} from "../file-content";
-
-// The module is credential-agnostic: callers inject the Octokit, so the tests
-// do too — no App env, no auth mocking.
-const mockCompareCommitsWithBasehead = vi.fn();
-const mockReposGetContent = vi.fn();
-const mockGitGetBlob = vi.fn();
-
-const octokit = {
-  rest: {
-    repos: { compareCommitsWithBasehead: mockCompareCommitsWithBasehead },
-  },
-  repos: { getContent: mockReposGetContent },
-  git: { getBlob: mockGitGetBlob },
-} as unknown as Octokit;
+  fileEntryResponse,
+  mockCompareCommitsWithBasehead,
+  mockGitGetBlob,
+  mockReposGetContent,
+  octokit,
+} from "./file-content-fixtures";
 
 describe("getMergeBaseSha", () => {
   beforeEach(() => {
@@ -59,6 +46,38 @@ describe("getMergeBaseSha", () => {
     const sha = await getMergeBaseSha(octokit, "acme", "repo", "main", "gone");
 
     expect(sha).toBeNull();
+  });
+
+  it("returns null when the comparison carries no merge-base commit", async () => {
+    mockCompareCommitsWithBasehead.mockResolvedValue({ data: {} });
+
+    const sha = await getMergeBaseSha(
+      octokit,
+      "acme",
+      "repo",
+      "main",
+      "unrelated"
+    );
+
+    expect(sha).toBeNull();
+  });
+
+  it("records Unknown error when the rejection is not an Error", async () => {
+    mockCompareCommitsWithBasehead.mockRejectedValue({ status: 500 });
+
+    const sha = await getMergeBaseSha(octokit, "acme", "repo", "main", "head");
+
+    expect(sha).toBeNull();
+    expect(log.warn).toHaveBeenCalledWith(
+      "[github/branch-files] Failed to resolve merge base",
+      {
+        owner: "acme",
+        repo: "repo",
+        base: "main",
+        head: "head",
+        error: "Unknown error",
+      }
+    );
   });
 });
 
@@ -276,33 +295,155 @@ describe("getBoundedFileContentAtRef", () => {
       getBoundedFileContentAtRef(octokit, "acme", "repo", "a.ts", "sha", 1024)
     ).resolves.toEqual({ status: "unsupported_encoding" });
   });
-});
 
-describe("getClassifiedBoundedFileContentAtRef", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("returns missing on a 404 and rethrows other errors", async () => {
-    mockReposGetContent.mockRejectedValueOnce(
-      Object.assign(new Error("Not Found"), { status: 404 })
+  it("returns too_large when the blob exceeds a cap the entry size satisfied", async () => {
+    mockReposGetContent.mockResolvedValue(
+      fileEntryResponse({
+        encoding: "none",
+        content: "",
+        sha: "blob-sha-5",
+        size: 8,
+      })
     );
+    mockGitGetBlob.mockResolvedValue({
+      data: {
+        content: Buffer.from("x".repeat(64), "utf8").toString("base64"),
+        encoding: "base64",
+        size: 64,
+      },
+    });
+
     await expect(
-      getClassifiedBoundedFileContentAtRef(
+      getBoundedFileContentAtRef(
         octokit,
         "acme",
         "repo",
-        "src/deleted.ts",
+        "src/big.ts",
         "head-sha",
+        16
+      )
+    ).resolves.toEqual({ status: "too_large" });
+  });
+
+  it.each([
+    {
+      shape: "no content field",
+      response: fileEntryResponse({ encoding: "utf-8", size: 5 }),
+    },
+    {
+      shape: "a non-string content field",
+      response: fileEntryResponse({
+        encoding: "utf-8",
+        content: null,
+        size: 5,
+      }),
+    },
+  ])("returns not_file when a file entry has $shape", async ({ response }) => {
+    mockReposGetContent.mockResolvedValue(response);
+
+    await expect(
+      getBoundedFileContentAtRef(
+        octokit,
+        "acme",
+        "repo",
+        "src/odd.ts",
+        "sha",
         1024
       )
-    ).resolves.toEqual({ status: "missing" });
+    ).resolves.toEqual({ status: "not_file" });
+  });
 
-    mockReposGetContent.mockRejectedValueOnce(
-      Object.assign(new Error("Server error"), { status: 502 })
+  it("returns too_large when base64 decodes past the cap an understated size hid", async () => {
+    mockReposGetContent.mockResolvedValue(
+      fileEntryResponse({
+        encoding: "base64",
+        content: Buffer.from("content beyond the cap", "utf8").toString(
+          "base64"
+        ),
+        size: 1,
+      })
     );
+
     await expect(
-      getClassifiedBoundedFileContentAtRef(
+      getBoundedFileContentAtRef(
+        octokit,
+        "acme",
+        "repo",
+        "understated.txt",
+        "sha",
+        4
+      )
+    ).resolves.toEqual({ status: "too_large" });
+  });
+
+  it.each(["utf8", "utf-8"])(
+    "returns direct %s content without base64 decoding it",
+    async (encoding) => {
+      mockReposGetContent.mockResolvedValue(
+        fileEntryResponse({ encoding, content: "direct text", size: 11 })
+      );
+
+      await expect(
+        getBoundedFileContentAtRef(
+          octokit,
+          "acme",
+          "repo",
+          "direct.txt",
+          "sha",
+          1024
+        )
+      ).resolves.toEqual({ status: "found", content: "direct text" });
+    }
+  );
+
+  it("returns too_large for direct utf-8 content past the cap", async () => {
+    mockReposGetContent.mockResolvedValue(
+      fileEntryResponse({
+        encoding: "utf-8",
+        content: "direct text beyond the cap",
+        size: 1,
+      })
+    );
+
+    await expect(
+      getBoundedFileContentAtRef(
+        octokit,
+        "acme",
+        "repo",
+        "direct.txt",
+        "sha",
+        4
+      )
+    ).resolves.toEqual({ status: "too_large" });
+  });
+
+  it("reports a null encoding when GitHub omits the encoding field", async () => {
+    mockReposGetContent.mockResolvedValue(
+      fileEntryResponse({ content: "raw", size: 3 })
+    );
+
+    await expect(
+      getBoundedFileContentAtRef(
+        octokit,
+        "acme",
+        "repo",
+        "no-encoding.txt",
+        "sha",
+        1024
+      )
+    ).resolves.toEqual({ status: "unsupported_encoding" });
+    expect(log.warn).toHaveBeenCalledWith(
+      "[github/content] Unsupported file encoding",
+      { encoding: null }
+    );
+  });
+
+  it("rethrows a non-Error rejection and records Unknown error", async () => {
+    const rejection = { status: 502 };
+    mockReposGetContent.mockRejectedValueOnce(rejection);
+
+    await expect(
+      getBoundedFileContentAtRef(
         octokit,
         "acme",
         "repo",
@@ -310,302 +451,16 @@ describe("getClassifiedBoundedFileContentAtRef", () => {
         "head-sha",
         1024
       )
-    ).rejects.toThrow("Server error");
-  });
-
-  it("returns unsupported_encoding for an unknown encoding", async () => {
-    mockReposGetContent.mockResolvedValue({
-      data: {
-        type: "file",
-        encoding: "utf-16",
-        content: "xx",
-        sha: "unsupported-sha",
-        size: 2,
-      },
-    });
-
-    await expect(
-      getClassifiedBoundedFileContentAtRef(
-        octokit,
-        "acme",
-        "repo",
-        "unsupported.txt",
-        "sha",
-        1024
-      )
-    ).resolves.toEqual({ status: "unsupported_encoding" });
-  });
-
-  it.each([
-    "",
-    "plain text",
-    "snowman ☃",
-    "literal � character",
-  ])("classifies valid UTF-8 text without changing its content: %j", async (content) => {
-    mockReposGetContent.mockResolvedValue({
-      data: {
-        type: "file",
-        encoding: "base64",
-        content: Buffer.from(content, "utf8").toString("base64"),
-        sha: "text-sha",
-        size: Buffer.byteLength(content, "utf8"),
-      },
-    });
-
-    await expect(
-      getClassifiedBoundedFileContentAtRef(
-        octokit,
-        "acme",
-        "repo",
-        "text.txt",
-        "sha",
-        1024
-      )
-    ).resolves.toEqual({
-      status: "found",
-      classification: SelectedPullRequestContentClassification.Text,
-      content,
-    });
-  });
-
-  it("classifies NUL-bearing bytes as binary without decoding content", async () => {
-    mockReposGetContent.mockResolvedValue({
-      data: {
-        type: "file",
-        encoding: "base64",
-        content: Buffer.from([0x61, 0x00, 0x62]).toString("base64"),
-        sha: "binary-sha",
-        size: 3,
-      },
-    });
-
-    await expect(
-      getClassifiedBoundedFileContentAtRef(
-        octokit,
-        "acme",
-        "repo",
-        "asset.bin",
-        "sha",
-        1024
-      )
-    ).resolves.toEqual({
-      status: "found",
-      classification: SelectedPullRequestContentClassification.Binary,
-    });
-  });
-
-  it("classifies invalid non-NUL UTF-8 as unknown without replacement text", async () => {
-    mockReposGetContent.mockResolvedValue({
-      data: {
-        type: "file",
-        encoding: "base64",
-        content: Buffer.from([0xc3, 0x28]).toString("base64"),
-        sha: "unknown-sha",
-        size: 2,
-      },
-    });
-
-    await expect(
-      getClassifiedBoundedFileContentAtRef(
-        octokit,
-        "acme",
-        "repo",
-        "ambiguous.dat",
-        "sha",
-        1024
-      )
-    ).resolves.toEqual({
-      status: "found",
-      classification: SelectedPullRequestContentClassification.Unknown,
-    });
-  });
-
-  it.each([
-    "c2VjcmV0$",
-    "aGVsbG8=garbage",
-  ])("classifies malformed base64 as unknown: %s", async (content) => {
-    mockReposGetContent.mockResolvedValue({
-      data: {
-        type: "file",
-        encoding: "base64",
-        content,
-        sha: "malformed-base64-sha",
-        size: 8,
-      },
-    });
-
-    await expect(
-      getClassifiedBoundedFileContentAtRef(
-        octokit,
-        "acme",
-        "repo",
-        "malformed.dat",
-        "sha",
-        1024
-      )
-    ).resolves.toEqual({
-      status: "found",
-      classification: SelectedPullRequestContentClassification.Unknown,
-    });
-    expect(log.error).toHaveBeenCalledWith("github_content_malformed_base64", {
-      owner: "acme",
-      repo: "repo",
-      path: "malformed.dat",
-      ref: "sha",
-      encoding: "base64",
-    });
-  });
-
-  it.each([
-    {
-      encoding: "base64",
-      content: Buffer.from("content beyond cap").toString("base64"),
-    },
-    { encoding: "utf8", content: "content beyond cap" },
-  ])("rejects underestimated $encoding content before returning bytes", async ({
-    encoding,
-    content,
-  }) => {
-    mockReposGetContent.mockResolvedValue({
-      data: {
-        type: "file",
-        encoding,
-        content,
-        sha: "underestimated-sha",
-        size: 1,
-      },
-    });
-
-    await expect(
-      getClassifiedBoundedFileContentAtRef(
-        octokit,
-        "acme",
-        "repo",
-        "underestimated.dat",
-        "sha",
-        4
-      )
-    ).resolves.toEqual({ status: "too_large" });
-  });
-
-  it.each([
-    "utf8",
-    "utf-8",
-  ])("classifies direct %s content with the same rules", async (encoding) => {
-    mockReposGetContent.mockResolvedValue({
-      data: {
-        type: "file",
-        encoding,
-        content: "direct text",
-        sha: "direct-sha",
-        size: 11,
-      },
-    });
-
-    await expect(
-      getClassifiedBoundedFileContentAtRef(
-        octokit,
-        "acme",
-        "repo",
-        "direct.txt",
-        "sha",
-        1024
-      )
-    ).resolves.toMatchObject({
-      status: "found",
-      classification: SelectedPullRequestContentClassification.Text,
-      content: "direct text",
-    });
-  });
-
-  it.each([
-    "utf8",
-    "utf-8",
-  ])("classifies direct %s NUL-bearing content as binary", async (encoding) => {
-    mockReposGetContent.mockResolvedValue({
-      data: {
-        type: "file",
-        encoding,
-        content: "direct\0content",
-        sha: "direct-binary-sha",
-        size: 14,
-      },
-    });
-
-    await expect(
-      getClassifiedBoundedFileContentAtRef(
-        octokit,
-        "acme",
-        "repo",
-        "direct.dat",
-        "sha",
-        1024
-      )
-    ).resolves.toEqual({
-      status: "found",
-      classification: SelectedPullRequestContentClassification.Binary,
-    });
-  });
-
-  it.each([
-    "utf8",
-    "utf-8",
-  ])("classifies malformed direct %s text as unknown", async (encoding) => {
-    mockReposGetContent.mockResolvedValue({
-      data: {
-        type: "file",
-        encoding,
-        content: "malformed \ud800 text",
-        sha: "direct-unknown-sha",
-        size: 18,
-      },
-    });
-
-    await expect(
-      getClassifiedBoundedFileContentAtRef(
-        octokit,
-        "acme",
-        "repo",
-        "direct.txt",
-        "sha",
-        1024
-      )
-    ).resolves.toEqual({
-      status: "found",
-      classification: SelectedPullRequestContentClassification.Unknown,
-    });
-  });
-
-  it("uses the same classifier for the Blob fallback", async () => {
-    mockReposGetContent.mockResolvedValue({
-      data: {
-        type: "file",
-        encoding: "none",
-        content: "",
-        sha: "blob-sha",
-        size: 3,
-      },
-    });
-    mockGitGetBlob.mockResolvedValue({
-      data: {
-        content: Buffer.from([0x61, 0x00, 0x62]).toString("base64"),
-        encoding: "base64",
-        size: 3,
-      },
-    });
-
-    await expect(
-      getClassifiedBoundedFileContentAtRef(
-        octokit,
-        "acme",
-        "repo",
-        "asset.bin",
-        "sha",
-        1024
-      )
-    ).resolves.toEqual({
-      status: "found",
-      classification: SelectedPullRequestContentClassification.Binary,
-    });
+    ).rejects.toBe(rejection);
+    expect(log.warn).toHaveBeenCalledWith(
+      "[github/content] Failed to fetch bounded file content at ref",
+      {
+        owner: "acme",
+        repo: "repo",
+        path: "src/index.ts",
+        ref: "head-sha",
+        error: "Unknown error",
+      }
+    );
   });
 });

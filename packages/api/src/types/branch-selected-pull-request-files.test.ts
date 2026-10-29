@@ -7,12 +7,15 @@ import {
   BranchSelectedPullRequestGrossTotalAvailability,
   BranchSelectedPullRequestReadAvailability,
   BranchSelectedPullRequestUnavailableSource,
+  branchSelectedPullRequestAccessUnavailable,
   branchSelectedPullRequestAcquisitionUnavailable,
   branchSelectedPullRequestDiffQuerySchema,
+  branchSelectedPullRequestEvidenceUnavailable,
   branchSelectedPullRequestFilesQuerySchema,
   projectBranchSelectedPullRequestDiff,
   projectBranchSelectedPullRequestFiles,
 } from "./branch-selected-pull-request-files.ts";
+import { GitHubAccessDenialReason } from "./github.ts";
 import {
   SelectedPullRequestContentAvailability,
   SelectedPullRequestContentClassification,
@@ -20,6 +23,8 @@ import {
   SelectedPullRequestContentReferenceAvailability,
   SelectedPullRequestContentUnavailableReason,
   type SelectedPullRequestEvidence,
+  SelectedPullRequestEvidenceAvailability,
+  SelectedPullRequestEvidenceUnavailableReason,
   SelectedPullRequestFileCompleteness,
   SelectedPullRequestFileContentEvidenceAvailability,
   type SelectedPullRequestFileContentEvidenceResult,
@@ -36,14 +41,14 @@ describe("Branch selected-PR query schemas", () => {
   it("canonicalizes repository and revision identity", () => {
     expect(
       branchSelectedPullRequestDiffQuerySchema.parse({
-        repositoryFullName: " /ClosedLoop-AI/Example-Repo.git/ ",
+        repositoryFullName: " /ClosedLoop-AI/ClosedLoop-AI.git/ ",
         pullRequestNumber: "4471",
         path: "apps/api/a file.ts",
         baseSha: BASE_SHA.toUpperCase(),
         headSha: HEAD_SHA.toUpperCase(),
       })
     ).toEqual({
-      repositoryFullName: "closedloop-ai/example-repo",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       pullRequestNumber: 4471,
       path: "apps/api/a file.ts",
       baseSha: BASE_SHA,
@@ -383,22 +388,22 @@ describe("projectBranchSelectedPullRequestDiff", () => {
       overrides: { base: binaryContent() },
       expected: { isNew: false, isDeleted: false },
     },
-  ])("projects confirmed $name content as binary without source strings", ({
-    overrides,
-    expected,
-  }) => {
-    const result = projectBranchSelectedPullRequestDiff(
-      evidence(),
-      contentEvidence(overrides)
-    );
+  ])(
+    "projects confirmed $name content as binary without source strings",
+    ({ overrides, expected }) => {
+      const result = projectBranchSelectedPullRequestDiff(
+        evidence(),
+        contentEvidence(overrides)
+      );
 
-    expect(availableDiff(result).diff).toMatchObject({
-      oldContent: "",
-      newContent: "",
-      isBinary: true,
-      ...expected,
-    });
-  });
+      expect(availableDiff(result).diff).toMatchObject({
+        oldContent: "",
+        newContent: "",
+        isBinary: true,
+        ...expected,
+      });
+    }
+  );
 
   it.each([
     {
@@ -494,6 +499,85 @@ describe("projectBranchSelectedPullRequestDiff", () => {
         SelectedPullRequestContentUnavailableReason.FileMembershipIncomplete,
     });
   });
+
+  it("fails closed when both sides are simultaneously not-applicable", () => {
+    const content = contentEvidence({
+      base: {
+        availability: SelectedPullRequestContentAvailability.NotApplicable,
+        reason: SelectedPullRequestContentNotApplicableReason.AddedFile,
+      },
+      head: {
+        availability: SelectedPullRequestContentAvailability.NotApplicable,
+        reason: SelectedPullRequestContentNotApplicableReason.RemovedFile,
+      },
+    });
+
+    expect(
+      projectBranchSelectedPullRequestDiff(evidence(), content)
+    ).toMatchObject({
+      status: BranchSelectedPullRequestReadAvailability.Unavailable,
+      source: BranchSelectedPullRequestUnavailableSource.ContentSides,
+    });
+  });
+});
+
+describe("branchSelectedPullRequestAccessUnavailable", () => {
+  it("omits retryAfterSeconds when not provided", () => {
+    expect(
+      branchSelectedPullRequestAccessUnavailable(
+        GitHubAccessDenialReason.NotConnected
+      )
+    ).toEqual({
+      status: BranchSelectedPullRequestReadAvailability.Unavailable,
+      source: BranchSelectedPullRequestUnavailableSource.Access,
+      reason: GitHubAccessDenialReason.NotConnected,
+    });
+  });
+
+  it("carries an explicit retryAfterSeconds through", () => {
+    expect(
+      branchSelectedPullRequestAccessUnavailable(
+        GitHubAccessDenialReason.RateLimited,
+        30
+      )
+    ).toEqual({
+      status: BranchSelectedPullRequestReadAvailability.Unavailable,
+      source: BranchSelectedPullRequestUnavailableSource.Access,
+      reason: GitHubAccessDenialReason.RateLimited,
+      retryAfterSeconds: 30,
+    });
+  });
+});
+
+describe("branchSelectedPullRequestEvidenceUnavailable", () => {
+  it("carries the evidence reason without retryAfterSeconds", () => {
+    expect(
+      branchSelectedPullRequestEvidenceUnavailable({
+        status: SelectedPullRequestEvidenceAvailability.Unavailable,
+        reason: SelectedPullRequestEvidenceUnavailableReason.ProviderFailure,
+      })
+    ).toEqual({
+      status: BranchSelectedPullRequestReadAvailability.Unavailable,
+      source: BranchSelectedPullRequestUnavailableSource.Evidence,
+      reason: SelectedPullRequestEvidenceUnavailableReason.ProviderFailure,
+    });
+  });
+
+  it("carries retryAfterSeconds through when the evidence result has one", () => {
+    expect(
+      branchSelectedPullRequestEvidenceUnavailable({
+        status: SelectedPullRequestEvidenceAvailability.Unavailable,
+        reason:
+          SelectedPullRequestEvidenceUnavailableReason.ProviderRateLimited,
+        retryAfterSeconds: 15,
+      })
+    ).toEqual({
+      status: BranchSelectedPullRequestReadAvailability.Unavailable,
+      source: BranchSelectedPullRequestUnavailableSource.Evidence,
+      reason: SelectedPullRequestEvidenceUnavailableReason.ProviderRateLimited,
+      retryAfterSeconds: 15,
+    });
+  });
 });
 
 function evidence(
@@ -510,9 +594,9 @@ function evidence(
   return {
     identity: {
       githubId: "123",
-      repositoryFullName: "closedloop-ai/example-repo",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       number: 4471,
-      url: "https://github.com/closedloop-ai/example-repo/pull/4471",
+      url: "https://github.com/closedloop-ai/closedloop-ai/pull/4471",
     },
     revision: { baseSha: BASE_SHA, headSha: HEAD_SHA },
     files,

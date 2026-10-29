@@ -26,11 +26,12 @@ const AUTHORITY_INJECTION_PAYLOADS = [
 ] as const;
 
 describe("isAllowedDatadogSite", () => {
-  test.each(
-    Object.entries(DatadogSite)
-  )("admits the %s intake host", (_name, site) => {
-    expect(isAllowedDatadogSite(site)).toBe(true);
-  });
+  test.each(Object.entries(DatadogSite))(
+    "admits the %s intake host",
+    (_name, site) => {
+      expect(isAllowedDatadogSite(site)).toBe(true);
+    }
+  );
 
   test.each(AUTHORITY_INJECTION_PAYLOADS)("rejects %j", (payload) => {
     expect(isAllowedDatadogSite(payload)).toBe(false);

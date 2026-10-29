@@ -28,7 +28,8 @@
  * production code hands Prisma, which need no engine to observe.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, type Mock, vi } from "vitest";
+import type { PrismaClient } from "../generated/client";
 import { seedCuratedCatalog } from "../prisma/seeds/catalog-seed";
 import {
   type BackfillClient,
@@ -44,22 +45,29 @@ import { type CoreSeedResult, seedCoreEntities } from "../scripts/seed/core";
 import { seedCuratedCatalogItems } from "../scripts/seed/curated-catalog";
 import { seedCustomizationEntities } from "../scripts/seed/customization";
 import { seedEvaluationEntities } from "../scripts/seed/evaluation";
-import { seedExecutionEntities } from "../scripts/seed/execution";
 import { seedExtendedEntities } from "../scripts/seed/extended";
 import { seedIntegrationEntities } from "../scripts/seed/integrations";
-import { resetOrgData } from "../scripts/seed/reset";
 import { EXPECTED_SEED_WRITE_FINGERPRINTS } from "./test-helpers/seed-write-fingerprints";
-
-/**
- * The mock Prisma client is deliberately untyped at the delegate level — asserting
- * on `.mock.calls` through Prisma's fluent generics buys nothing and costs a cast
- * at every access.
- */
-type AnyDelegate = any;
 
 /** The single-row writes that return the full row unless told otherwise. */
 const WIDE_WRITE_METHODS = ["create", "update", "upsert"] as const;
 type WideWriteMethod = (typeof WIDE_WRITE_METHODS)[number];
+
+/**
+ * Every delegate method this file stubs or reads. The mock client's delegates
+ * are read as plain `vi.fn()` mocks — asserting on `.mock.calls` through
+ * Prisma's fluent generics buys nothing.
+ */
+const DELEGATE_MOCK_METHODS = [
+  "findUnique",
+  "findFirst",
+  "findMany",
+  "count",
+  "updateMany",
+  "deleteMany",
+  ...WIDE_WRITE_METHODS,
+] as const;
+type DelegateMock = Record<(typeof DELEGATE_MOCK_METHODS)[number], Mock>;
 
 /** One observed write: which delegate, which method, and the argument object. */
 type RecordedWrite = {
@@ -100,12 +108,10 @@ function recordNotFoundError(): Error & { code: string } {
 }
 
 /** Every delegate-shaped property on the mock client, keyed by model name. */
-function delegateEntries(prisma: unknown): [string, AnyDelegate][] {
-  return Object.entries(prisma as Record<string, AnyDelegate>).filter(
-    ([, value]) =>
-      value !== null &&
-      typeof value === "object" &&
-      typeof value.upsert === "function"
+function delegateEntries(prisma: PrismaClient): [string, DelegateMock][] {
+  const entries: [string, unknown][] = Object.entries(prisma);
+  return entries.filter((entry): entry is [string, DelegateMock] =>
+    isDelegateMock(entry[1])
   );
 }
 
@@ -123,12 +129,12 @@ function buildResolvingMock() {
     delegate.findMany.mockResolvedValue([]);
     delegate.count.mockResolvedValue(0);
     for (const method of WIDE_WRITE_METHODS) {
-      delegate[method].mockImplementation((args: AnyDelegate) =>
+      delegate[method].mockImplementation((args: unknown) =>
         Promise.resolve({
           id:
-            args?.create?.id ??
-            args?.data?.id ??
-            args?.where?.id ??
+            nestedId(args, "create") ??
+            nestedId(args, "data") ??
+            nestedId(args, "where") ??
             "fallback-id",
         })
       );
@@ -136,31 +142,16 @@ function buildResolvingMock() {
     delegate.updateMany.mockResolvedValue({ count: 0 });
     delegate.deleteMany.mockResolvedValue({ count: 0 });
   }
-  // `loop` is the seed's ONE cross-module read: `seedExtendedEntities` reads back
-  // the loops `seedExecutionEntities` wrote and emits a LoopEvent per row. Under
-  // the blanket empty `findMany` above that branch never runs, so its write would
-  // be silently exempt from every assertion in this file — the write could lose
-  // its `select` and nothing here would go red. Replaying the ids already upserted
-  // on this same mock is what keeps that branch reachable. Inert until a loop
-  // write has actually been recorded, so the single-module cases are unaffected.
-  const loop = (prisma as AnyDelegate).loop;
-  loop.findMany.mockImplementation((args: AnyDelegate) => {
-    const rows = (loop.upsert.mock.calls as AnyDelegate[][]).map((call) => ({
-      id: call[0]?.where?.id,
-    }));
-    return Promise.resolve(
-      typeof args?.take === "number" ? rows.slice(0, args.take) : rows
-    );
-  });
   return prisma;
 }
 
 /** Harvests every `create`/`update`/`upsert` the production code issued. */
-function recordedWrites(prisma: unknown): RecordedWrite[] {
+function recordedWrites(prisma: PrismaClient): RecordedWrite[] {
   const writes: RecordedWrite[] = [];
   for (const [model, delegate] of delegateEntries(prisma)) {
     for (const method of WIDE_WRITE_METHODS) {
-      for (const call of delegate[method].mock.calls as AnyDelegate[][]) {
+      const calls: unknown[][] = delegate[method].mock.calls;
+      for (const call of calls) {
         writes.push({
           model,
           method,
@@ -186,55 +177,45 @@ function writeFingerprint(write: RecordedWrite): string {
   const where = write.args.where as { id?: string } | undefined;
   const create = write.args.create as { id?: string } | undefined;
   const data = write.args.data as { id?: string } | undefined;
-  const identity = where?.id ?? create?.id ?? data?.id ?? "<none>";
+  const identity =
+    where?.id ??
+    create?.id ??
+    data?.id ??
+    compoundKeyIdentity(write.args.where) ??
+    "<none>";
   return `${write.model}.${write.method}(${keys}) id=${identity}`;
+}
+
+/** A composite-key `where` (`{ a_b: { a, b } }`) as `a:b`, so its row is pinned too. */
+function compoundKeyIdentity(where: unknown): string | undefined {
+  if (typeof where !== "object" || where === null) {
+    return;
+  }
+  const [compound] = Object.values(where);
+  if (typeof compound !== "object" || compound === null) {
+    return;
+  }
+  return Object.values(compound).map(String).join(":");
 }
 
 /**
  * Drives every seed module that owns an in-scope write, on one shared mock, in
- * the order `runSeedModules` (`scripts/seed/index.ts`) uses. The order is not
- * cosmetic: execution MUST precede extended, because extended's LoopEvent branch
- * reads back the loops execution wrote. Driving them the other way round leaves
- * that branch unreachable and quietly drops its write from every assertion here.
+ * the order `runSeedModules` (`scripts/seed/index.ts`) uses.
  */
 async function driveSeedModules(): Promise<{
   prisma: ReturnType<typeof buildResolvingMock>;
   coreResult: CoreSeedResult;
 }> {
   const prisma = buildResolvingMock();
-  await seedCuratedCatalog(prisma as AnyDelegate);
-  const coreResult = await seedCoreEntities(
-    prisma as AnyDelegate,
-    baselineContext
-  );
-  await seedExecutionEntities(
-    prisma as AnyDelegate,
-    baselineContext,
-    coreResult
-  );
-  await seedIntegrationEntities(
-    prisma as AnyDelegate,
-    baselineContext,
-    coreResult
-  );
-  await seedEvaluationEntities(
-    prisma as AnyDelegate,
-    baselineContext,
-    coreResult
-  );
-  await seedCustomizationEntities(
-    prisma as AnyDelegate,
-    baselineContext,
-    coreResult
-  );
-  await seedExtendedEntities(
-    prisma as AnyDelegate,
-    baselineContext,
-    coreResult
-  );
+  await seedCuratedCatalog(prisma);
+  const coreResult = await seedCoreEntities(prisma, baselineContext);
+  await seedIntegrationEntities(prisma, baselineContext, coreResult);
+  await seedEvaluationEntities(prisma, baselineContext, coreResult);
+  await seedCustomizationEntities(prisma, baselineContext, coreResult);
+  await seedExtendedEntities(prisma, baselineContext, coreResult);
   // Not part of `runSeedModules`; its own entry point owns it. Order-independent
   // (global rows, no prerequisites), so it runs last rather than interleaved.
-  await seedCuratedCatalogItems(prisma as AnyDelegate);
+  await seedCuratedCatalogItems(prisma);
   return { prisma, coreResult };
 }
 
@@ -257,7 +238,8 @@ function makeBackfillClient(
   lookup: OccurrenceLookup = { exists: false }
 ): BackfillClient {
   const record =
-    (model: string, method: WideWriteMethod) => (args: AnyDelegate) => {
+    (model: string, method: WideWriteMethod) =>
+    (args: Record<string, unknown>) => {
       recorder.writes.push({ model, method, args });
       return Promise.resolve({ id: "occurrence-1" });
     };
@@ -303,7 +285,8 @@ function makePackBackfillClient(
   lookup: OccurrenceLookup = { exists: false }
 ): PackBackfillClient {
   const record =
-    (model: string, method: WideWriteMethod) => (args: AnyDelegate) => {
+    (model: string, method: WideWriteMethod) =>
+    (args: Record<string, unknown>) => {
       recorder.writes.push({ model, method, args });
       return Promise.resolve({ id: "occurrence-1" });
     };
@@ -399,24 +382,10 @@ describe("characterization: the writes packages/database issues", () => {
     }
   });
 
-  // THE PARITY CASE. `resetOrgData` clears identity scalars with a single-row
-  // `organization.update`; a missing org must still blow up rather than quietly
-  // reporting success. This is exactly the assertion an `updateMany` conversion
-  // breaks, and it is unchanged by the `select` conversion.
-  it("propagates P2025 out of resetOrgData when the organization row is absent", async () => {
-    const prisma = buildResolvingMock();
-    const p = prisma as AnyDelegate;
-    p.organization.update.mockRejectedValue(recordNotFoundError());
-
-    await expect(
-      resetOrgData(prisma as AnyDelegate, baselineContext.organizationId)
-    ).rejects.toMatchObject({ code: RECORD_NOT_FOUND_CODE });
-  });
-
   it("propagates P2025 out of the definition-version backfill when the occurrence row vanishes", async () => {
     const recorder: BackfillRecorder = { writes: [] };
     const client = makeBackfillClient(recorder, { exists: true });
-    (client.sourceOccurrence.update as AnyDelegate).mockRejectedValue(
+    vi.mocked(client.sourceOccurrence.update).mockRejectedValue(
       recordNotFoundError()
     );
 
@@ -428,7 +397,7 @@ describe("characterization: the writes packages/database issues", () => {
   it("propagates P2025 out of the pack backfill when the occurrence row vanishes", async () => {
     const recorder: BackfillRecorder = { writes: [] };
     const client = makePackBackfillClient(recorder, { exists: true });
-    (client.sourceOccurrence.update as AnyDelegate).mockRejectedValue(
+    vi.mocked(client.sourceOccurrence.update).mockRejectedValue(
       recordNotFoundError()
     );
 
@@ -439,11 +408,11 @@ describe("characterization: the writes packages/database issues", () => {
 
   it("propagates a failing seed upsert out of the seed module", async () => {
     const prisma = buildResolvingMock();
-    const p = prisma as AnyDelegate;
+    const p = vi.mocked(prisma, true);
     p.team.upsert.mockRejectedValue(recordNotFoundError());
 
     await expect(
-      seedCoreEntities(prisma as AnyDelegate, baselineContext)
+      seedCoreEntities(prisma, baselineContext)
     ).rejects.toMatchObject({ code: RECORD_NOT_FOUND_CODE });
   });
 });
@@ -485,14 +454,13 @@ describe("narrowing: no discarded write returns every column", () => {
     // `team.id` through, `coreResult.teamId` reverts to the deterministic uuid
     // and this fails.
     const prisma = buildResolvingMock();
-    const p = prisma as AnyDelegate;
+    const p = vi.mocked(prisma, true);
     const resolvedTeamId = "resolved-only-from-the-upsert-response";
-    p.team.upsert.mockResolvedValue({ id: resolvedTeamId });
+    vi.mocked(prisma.team.upsert, { partial: true }).mockResolvedValue({
+      id: resolvedTeamId,
+    });
 
-    const coreResult = await seedCoreEntities(
-      prisma as AnyDelegate,
-      baselineContext
-    );
+    const coreResult = await seedCoreEntities(prisma, baselineContext);
 
     const requestedTeamId = p.team.upsert.mock.calls[0][0].create.id as string;
     expect(requestedTeamId).not.toBe(resolvedTeamId);
@@ -507,7 +475,9 @@ describe("narrowing: no discarded write returns every column", () => {
 
     expect(narrowed.length).toBeGreaterThanOrEqual(40);
     for (const write of narrowed) {
-      expect(write.args.select).toEqual({ id: true });
+      expect(write.args.select).toEqual(
+        COMPOSITE_PRIMARY_KEYS[write.model] ?? { id: true }
+      );
     }
   });
 
@@ -547,15 +517,32 @@ describe("narrowing: no discarded write returns every column", () => {
       expect(write.args.select).toEqual({ id: true });
     }
   });
-
-  it("narrows the organization update that resetOrgData discards", async () => {
-    const prisma = buildResolvingMock();
-    const p = prisma as AnyDelegate;
-
-    await resetOrgData(prisma as AnyDelegate, baselineContext.organizationId);
-
-    expect(p.organization.update).toHaveBeenCalledWith(
-      expect.objectContaining({ select: { id: true } })
-    );
-  });
 });
+
+function isDelegateMock(value: unknown): value is DelegateMock {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  return DELEGATE_MOCK_METHODS.every(
+    (method) => method in value && vi.isMockFunction(Reflect.get(value, method))
+  );
+}
+
+/** `args?.[key]?.id` over an argument object the production code built. */
+function nestedId(args: unknown, key: "create" | "data" | "where"): unknown {
+  if (args === null || typeof args !== "object") {
+    return undefined;
+  }
+  const container: unknown = Reflect.get(args, key);
+  if (container === null || typeof container !== "object") {
+    return undefined;
+  }
+  return "id" in container ? container.id : undefined;
+}
+
+/** Models keyed by a composite primary key, which a narrowed write selects whole. */
+const COMPOSITE_PRIMARY_KEYS: Readonly<
+  Partial<Record<string, Record<string, true>>>
+> = {
+  pullRequestCommentAcquisition: { pullRequestDetailId: true, lane: true },
+};

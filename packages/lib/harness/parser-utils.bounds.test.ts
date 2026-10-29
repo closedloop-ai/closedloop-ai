@@ -13,7 +13,12 @@
  * understated number rather than a visible error.
  */
 import { describe, expect, it } from "vitest";
-import { noteTimestamp, pushTurnDuration, safeJson } from "./parser-utils";
+import {
+  isValidTurnDurationMs,
+  noteTimestamp,
+  pushTurnDuration,
+  safeJson,
+} from "./parser-utils";
 import type { NormalizedTurnDuration } from "./types";
 
 function emptyBounds(): {
@@ -148,5 +153,24 @@ describe("safeJson — absent vs unreadable", () => {
     expect(safeJson(obj)).toBe(obj);
     expect(safeJson(42)).toBe(42);
     expect(safeJson(true)).toBe(true);
+  });
+});
+
+describe("isValidTurnDurationMs", () => {
+  // ISS-8886: the one admission rule shared by the timestamp-pair harnesses
+  // (through `pushTurnDuration`) and the Claude parser, which reads the value
+  // as a stated number. Pinned on its own so the two sites cannot drift.
+  it("admits zero, a positive integer and a fractional millisecond", () => {
+    expect(isValidTurnDurationMs(0)).toBe(true);
+    expect(isValidTurnDurationMs(5000)).toBe(true);
+    expect(isValidTurnDurationMs(1.5)).toBe(true);
+  });
+
+  it("refuses a negative, a non-finite and a NaN duration", () => {
+    expect(isValidTurnDurationMs(-1)).toBe(false);
+    expect(isValidTurnDurationMs(-5000)).toBe(false);
+    expect(isValidTurnDurationMs(Number.POSITIVE_INFINITY)).toBe(false);
+    expect(isValidTurnDurationMs(Number.NEGATIVE_INFINITY)).toBe(false);
+    expect(isValidTurnDurationMs(Number.NaN)).toBe(false);
   });
 });

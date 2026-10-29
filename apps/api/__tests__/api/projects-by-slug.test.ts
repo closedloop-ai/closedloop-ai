@@ -1,4 +1,10 @@
+import { Priority } from "@repo/api/src/types/common";
+import {
+  ProjectStatus,
+  type ProjectWithDetails,
+} from "@repo/api/src/types/project";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { toWireJson } from "@/__tests__/support/wire-json.test-helpers";
 import { GET } from "@/app/projects/by-slug/[slug]/route";
 import { projectsService } from "@/app/projects/service";
 import type { AuthContext } from "@/lib/auth/with-auth";
@@ -11,15 +17,19 @@ import {
 let mockAuthContext: AuthContext;
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context.params),
+  withAnyAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context.params),
 }));
 
 vi.mock("@/app/custom-fields/route-helpers", () => ({
-  mergeCustomFieldsIntoResponse: vi.fn(async (entity: any) => ({
-    ...entity,
-    customFields: [],
-  })),
+  mergeCustomFieldsIntoResponse: vi.fn(
+    async (entity: Record<string, unknown>) => ({
+      ...entity,
+      customFields: [],
+    })
+  ),
 }));
 
 vi.mock("@/app/projects/service", async (importOriginal) => {
@@ -33,11 +43,23 @@ vi.mock("@/app/projects/service", async (importOriginal) => {
   };
 });
 
-const mockProjectWithDetails = {
+const mockProjectWithDetails: ProjectWithDetails = {
   id: "project-1",
   organizationId: "org-1",
   name: "Test Project",
+  description: null,
+  priority: Priority.Medium,
+  status: ProjectStatus.InProgress,
+  assigneeId: null,
+  createdById: "user-1",
   slug: "PROJ-1",
+  targetDate: null,
+  codebaseSummary: null,
+  lastIndexedAt: null,
+  settings: {},
+  sortOrder: null,
+  createdAt: new Date("2026-01-01T00:00:00Z"),
+  updatedAt: new Date("2026-01-01T00:00:00Z"),
   completionPercentage: 0,
   teams: [],
 };
@@ -46,13 +68,17 @@ describe("GET /api/projects/by-slug/:slug", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthContext = createTestAuthContext({
-      user: { id: "user-1", organizationId: "org-1" } as any,
+      user: {
+        ...createTestAuthContext().user,
+        id: "user-1",
+        organizationId: "org-1",
+      },
     });
   });
 
   it("returns project when found by slug", async () => {
     vi.mocked(projectsService.findBySlug).mockResolvedValue(
-      mockProjectWithDetails as any
+      mockProjectWithDetails
     );
 
     const request = createMockRequest({
@@ -64,12 +90,14 @@ describe("GET /api/projects/by-slug/:slug", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-    expect(json.data).toEqual({ ...mockProjectWithDetails, customFields: [] });
+    expect(json.data).toEqual(
+      toWireJson({ ...mockProjectWithDetails, customFields: [] })
+    );
   });
 
   it("calls findBySlug with slug and organizationId from auth context", async () => {
     vi.mocked(projectsService.findBySlug).mockResolvedValue(
-      mockProjectWithDetails as any
+      mockProjectWithDetails
     );
 
     const request = createMockRequest({

@@ -1,5 +1,4 @@
 /**
- * @file plugins-panel.content-install-state.test.tsx
  * @description FEA-4071 — the desktop PluginsPanel derives per-component install
  * state for the detail Contents tab from the machine's real installed-component
  * truth (`getPackDetail`).
@@ -14,8 +13,22 @@
 
 import { PackInstallState } from "@repo/app/packs/lib/install-state";
 import type { PackView } from "@repo/app/packs/lib/pack-view";
+import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
+import { NavigationProvider } from "@repo/navigation/provider";
 import { render, screen, waitFor, within } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// ISS-6925: `PluginsPanel` now reads pack selection off the route through the
+// navigation port, so every render needs the adapter the real renderer mounts
+// at its root. Test mechanics only — no expectation here changed.
+function renderWithNav(ui: ReactElement) {
+  const nav = createMemoryNavigation({ initialPath: "/packs" });
+  return render(
+    <NavigationProvider adapter={nav.adapter}>{ui}</NavigationProvider>
+  );
+}
+
 import type {
   CatalogContentItem,
   CatalogEntry,
@@ -26,6 +39,13 @@ import { PluginsPanel } from "../plugins-panel";
 vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   useFeatureFlagEnabled: () => false,
   useFeatureFlagEnabledOptional: () => false,
+  // ISS-6925: the addressable-detail gate, off — these cases drive selection by
+  // clicking a card, which is the component-state shape.
+  useFeatureFlagGateOptional: () => ({
+    enabled: false,
+    isReady: true,
+    isResolved: true,
+  }),
 }));
 
 // Stub the workspace so the test can (a) trigger a pack-select and (b) read the
@@ -35,6 +55,7 @@ vi.mock("@repo/app/packs/components/packs-workspace", () => ({
   PacksWorkspace: (props: {
     packs: PackView[];
     detailPack?: PackView | null;
+    detailContentsUnavailable?: boolean;
     onSelectPack?: (id: string | null) => void;
     onInstall?: (packId: string, harness?: string) => void;
     onUninstall?: (packId: string, harness: string) => void;
@@ -52,6 +73,9 @@ vi.mock("@repo/app/packs/components/packs-workspace", () => ({
       ))}
       {props.detailPack ? (
         <div>
+          <div data-testid="contents-unavailable">
+            {String(Boolean(props.detailContentsUnavailable))}
+          </div>
           <button
             data-testid="install"
             onClick={() => props.onInstall?.(props.detailPack?.id ?? "")}
@@ -100,7 +124,6 @@ function makeCatalogEntry(over: Partial<CatalogEntry> = {}): CatalogEntry {
     installNotes: null,
     placeholderReason: null,
     verified: true,
-    readmeExcerpt: null,
     stars: null,
     forks: null,
     lastRelease: null,
@@ -197,7 +220,7 @@ describe("PluginsPanel per-component install state (FEA-4071)", () => {
       getPackDetail: vi.fn().mockResolvedValue(makePackDetail()),
     });
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
     await waitFor(() => expect(screen.getByTestId("select-rtk")).toBeDefined());
 
     screen.getByTestId("select-rtk").click();
@@ -256,7 +279,7 @@ describe("PluginsPanel per-component install state (FEA-4071)", () => {
       ),
     });
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
     await waitFor(() => expect(screen.getByTestId("select-rtk")).toBeDefined());
     screen.getByTestId("select-rtk").click();
 
@@ -276,13 +299,83 @@ describe("PluginsPanel per-component install state (FEA-4071)", () => {
     ).toBeDefined();
   });
 
+  it("marks contents unavailable without replacing cached contents when refresh returns null", async () => {
+    const db = installDesktopApi({
+      getCatalog: vi.fn().mockResolvedValue([
+        makeCatalogEntry({
+          contentsCache: [
+            {
+              name: "Cached Skill",
+              type: "skill",
+              description: "cached",
+            },
+          ],
+        }),
+      ]),
+      getCatalogContents: vi.fn().mockResolvedValue(null),
+      getPackDetail: vi.fn().mockResolvedValue(null),
+    });
+
+    renderWithNav(<PluginsPanel />);
+    await waitFor(() => expect(screen.getByTestId("select-rtk")).toBeDefined());
+    screen.getByTestId("select-rtk").click();
+
+    await waitFor(() =>
+      expect(db.getCatalogContents).toHaveBeenCalledWith("rtk")
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("contents-unavailable").textContent).toBe(
+        "true"
+      )
+    );
+    expect(screen.getByTestId("content-Cached Skill")).toBeDefined();
+  });
+
+  it("marks contents unavailable when the bridge returns a non-promise result", async () => {
+    const db = installDesktopApi({
+      getCatalogContents: vi.fn().mockReturnValue(null),
+    });
+
+    renderWithNav(<PluginsPanel />);
+    await waitFor(() => expect(screen.getByTestId("select-rtk")).toBeDefined());
+    screen.getByTestId("select-rtk").click();
+
+    await waitFor(() =>
+      expect(db.getCatalogContents).toHaveBeenCalledWith("rtk")
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("contents-unavailable").textContent).toBe(
+        "true"
+      )
+    );
+  });
+
+  it("marks contents unavailable when the bridge method is absent", async () => {
+    installDesktopApi({});
+    (
+      window as unknown as {
+        desktopApi: { db: Partial<DbMock> };
+      }
+    ).desktopApi.db.getCatalogContents = undefined;
+
+    renderWithNav(<PluginsPanel />);
+    await waitFor(() => expect(screen.getByTestId("select-rtk")).toBeDefined());
+    screen.getByTestId("select-rtk").click();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("contents-unavailable").textContent).toBe(
+        "true"
+      )
+    );
+  });
+
   it("marks bundled SKILLS NotInstalled when the pack has no install detail", async () => {
     // getPackDetail resolves null — the pack is not installed on this machine. A
     // skill-kind component reads an explicit NotInstalled; a command-kind one
     // stays UNKNOWN (the skill read never enumerated commands either way).
     installDesktopApi({ getPackDetail: vi.fn().mockResolvedValue(null) });
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
     await waitFor(() => expect(screen.getByTestId("select-rtk")).toBeDefined());
     screen.getByTestId("select-rtk").click();
 
@@ -310,7 +403,7 @@ describe("PluginsPanel per-component install state (FEA-4071)", () => {
       .mockResolvedValue(makePackDetail());
     const db = installDesktopApi({ getPackDetail });
 
-    render(<PluginsPanel />);
+    renderWithNav(<PluginsPanel />);
     await waitFor(() => expect(screen.getByTestId("select-rtk")).toBeDefined());
     screen.getByTestId("select-rtk").click();
 

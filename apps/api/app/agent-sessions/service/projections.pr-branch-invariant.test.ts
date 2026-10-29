@@ -59,7 +59,7 @@ function prHeadRefSourceLink({
     metadata: {
       linkKind: SessionArtifactLinkKind.SessionPr,
       relationTypes: [SessionPrRelationType.Created],
-      repositoryFullName: "closedloop-ai/example-repo",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       prNumber,
       source: "DETERMINISTIC",
       confidence: 1.0,
@@ -69,7 +69,7 @@ function prHeadRefSourceLink({
       name: headRef,
       type: "BRANCH",
       branch: {
-        repository: { fullName: "closedloop-ai/example-repo" },
+        repository: { fullName: "closedloop-ai/closedloop-ai" },
         currentPullRequestDetail: {
           number: prNumber,
           title: "Linked PR",
@@ -78,7 +78,7 @@ function prHeadRefSourceLink({
           mergedAt: null,
           lastVerifiedAt: new Date("2026-07-20T02:09:00.000Z"),
           isCurrent: true,
-          repository: { fullName: "closedloop-ai/example-repo" },
+          repository: { fullName: "closedloop-ai/closedloop-ai" },
         },
       },
     },
@@ -102,7 +102,7 @@ function sessionBranchLink({
     metadata: {
       linkKind: SessionArtifactLinkKind.SessionBranch,
       branchName,
-      branchRepositoryFullName: "closedloop-ai/example-repo",
+      branchRepositoryFullName: "closedloop-ai/closedloop-ai",
     },
     ...(branchParticipation ? { branchParticipation } : {}),
     target: {
@@ -110,7 +110,7 @@ function sessionBranchLink({
       name: branchName,
       type: ArtifactType.Branch,
       branch: {
-        repository: { fullName: "closedloop-ai/example-repo" },
+        repository: { fullName: "closedloop-ai/closedloop-ai" },
         currentPullRequestDetail: null,
       },
     },
@@ -119,15 +119,14 @@ function sessionBranchLink({
 
 describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => {
   // The recurrence: session 019fa508-… showed repo PR #3837 with Branch None,
-  // associated via the cloud path AFTER #3801 shipped. With branch + baseBranch
-  // null and no branch-resolving PR source link, the cloud read boundary must
+  // associated via the cloud path AFTER #3801 shipped. With baseBranch null and
+  // no branch-resolving PR source link, the cloud read boundary must
   // SUPPRESS the orphaned PR rather than render it with Branch = None.
   it("suppresses a legacy-JSON PR when the session resolves no branch", async () => {
     installDb({
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            branch: null,
             baseBranch: null,
             pullRequests: [
               {
@@ -169,7 +168,6 @@ describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => 
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            branch: null,
             baseBranch: null,
             pullRequests: [
               {
@@ -221,7 +219,6 @@ describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => 
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            branch: null,
             // baseBranch NOT overridden — harness default is "main".
             pullRequests: [
               {
@@ -266,7 +263,6 @@ describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => 
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            branch: null,
             baseBranch: null,
             pullRequests: [
               {
@@ -316,7 +312,6 @@ describe("agent-session projection — PR⇒Branch invariant (FEA-4188)", () => 
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           buildSessionListRecord({
-            branch: null,
             baseBranch: null,
             pullRequests: [
               {

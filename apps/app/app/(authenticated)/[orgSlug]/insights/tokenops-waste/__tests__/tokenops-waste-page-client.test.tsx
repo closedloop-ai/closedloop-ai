@@ -16,7 +16,7 @@ vi.mock("@/hooks/queries/use-session-analytics", () => ({
 const { TokenOpsWastePageClient } = await import("../page-client");
 
 const EXCLUDED_AMOUNT = /\$60/;
-const ZERO_CONFIDENCE = /0% of spend ended in error/;
+const ZERO_CONFIDENCE = /0% of cost ended in error/;
 const RECOVERY_ASSUMPTION = /between 35% and 70%/i;
 const ANY_UNAVAILABLE_REASON = /did not return for this range/;
 const MODELS_UNAVAILABLE = /no model can be graded/i;

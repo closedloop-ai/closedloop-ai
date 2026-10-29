@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Receipt for one uploaded invocation-sync part; read only by the ingest retry check in component-invocations.ts."
+}

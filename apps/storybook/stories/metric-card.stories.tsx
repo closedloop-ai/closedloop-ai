@@ -5,13 +5,20 @@ import {
   summaryCardClass,
 } from "@repo/app/shared/components/summary-card-row";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
-import { MetricPolarity } from "@repo/design-system/components/ui/primitives/metric-polarity";
+import {
+  MetricCardLane,
+  MetricCardLaneList,
+} from "@repo/design-system/components/ui/primitives/metric-card-lane";
+import {
+  MetricDeltaTreatment,
+  MetricPolarity,
+} from "@repo/design-system/components/ui/primitives/metric-polarity";
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Primitives/Metric Card",
+  title: "Composites v1.0/Data Display/Metric Card",
   component: MetricCard,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {
     label: {
       control: "text",
@@ -53,6 +60,16 @@ const meta = {
       control: "text",
       description: 'Caption beside the delta chip (e.g. "vs. prior 90 days").',
     },
+    deltaTreatment: {
+      control: { type: "radio" },
+      options: [
+        MetricDeltaTreatment.Legacy,
+        MetricDeltaTreatment.NeutralPill,
+        MetricDeltaTreatment.UnifiedPill,
+      ],
+      description:
+        "Which delta chrome the CONSUMER resolved (ISS-5842, ISS-6493). Defaults to `legacy`, so a caller that passes nothing renders exactly what shipped before. `neutral-pill` pills every tone and KEEPS the verdict word; `unified-pill` is its strict superset and also drops the word. Only a NEUTRAL tone renders differently across the three — scored tones share geometry and colour throughout.",
+    },
     deltaPlaceholder: {
       control: false,
       description:
@@ -61,7 +78,12 @@ const meta = {
     sparkline: {
       control: "object",
       description:
-        "Recent values; when the delta is a number and at least two points are finite, the chip renders a sparkline instead of an icon.",
+        "Recent values, oldest first; when the delta is a number and at least two points are finite, the chip renders a sparkline instead of an icon. A `null` is a bucket that could not be computed: it holds its own slot and breaks the stroke there rather than closing the line over it.",
+    },
+    sparklineWithoutDelta: {
+      control: "boolean",
+      description:
+        "Opt in to drawing `sparkline` in the delta slot even with no numeric delta (ISS-10363), so a card with a real series and no prior window is not left blank.",
     },
     info: {
       control: "object",
@@ -87,6 +109,11 @@ const meta = {
       description:
         'Copy for the no-data value slot when the value is absent (default "No data").',
     },
+    hideWhenUnavailable: {
+      control: "boolean",
+      description:
+        "ISS-9730, off by default: a NOT-COMPUTABLE card renders nothing at all — no card, no glyph, no caption — instead of the no-data slot. Only that one state hides: `loading` keeps its skeleton, `muted` (a FAILED read) keeps rendering because an error is not an absence, and a real `0` was never a no-data state. In `packages/app` the value comes from `useMetricCardHideUnavailable()`; the primitive takes it as a prop because the design system is gated from reading app flags.",
+    },
   },
   parameters: {
     layout: "centered",
@@ -104,6 +131,7 @@ type Story = StoryObj<typeof meta>;
 
 /** Overview grid of the dashboard KPI mocks (label/value/detail/trend only). */
 export const Default: Story = {
+  tags: ["!manifest"],
   render: () => (
     <div className="grid w-[960px] gap-4 md:grid-cols-2 xl:grid-cols-4">
       {metrics.map((metric) => (
@@ -111,6 +139,7 @@ export const Default: Story = {
       ))}
     </div>
   ),
+  parameters: { controls: { disable: true } },
 };
 
 /** `unitLabel` renders a unit suffix beside the formatted value (FEA-2416). */
@@ -133,6 +162,7 @@ export const WithDelta: Story = {
     value: "28.4k",
     delta: 12,
     deltaLabel: "vs. prior 90 days",
+    deltaPolarity: MetricPolarity.HigherIsBetter,
   },
 };
 
@@ -145,6 +175,7 @@ export const WithNegativeDelta: Story = {
     value: 6,
     delta: -8,
     deltaLabel: "vs. prior 90 days",
+    deltaPolarity: MetricPolarity.HigherIsBetter,
   },
 };
 
@@ -184,7 +215,35 @@ export const FlatDelta: Story = {
     value: 42,
     delta: 0,
     deltaLabel: "vs. prior 90 days",
+    deltaPolarity: MetricPolarity.HigherIsBetter,
   },
+};
+
+/**
+ * ISS-6493 `MetricDeltaTreatment.NeutralPill`, mounted on the ONE branch that
+ * exercises it. A scored tone gets identical geometry AND colour under every
+ * treatment, so a card stuck on the `Legacy` default still looks correct there —
+ * a story built on a green +12% would pin nothing. NEUTRAL is the only tone the
+ * treatments render differently: `Legacy` (see {@link FlatDelta} and
+ * {@link NeutralPolarity} directly above, both neutral and both BARE) leaves the
+ * chip without pill chrome, and this treatment gives it the shared pill geometry
+ * plus `bg-foreground/5`.
+ *
+ * The verdict word is the axis this treatment deliberately does NOT move: it
+ * still leads the caption exactly as under `Legacy`. That separation is the
+ * whole ticket — `UnifiedPill` is the strict superset that also drops the word,
+ * and it remains gated behind the unanswered #4823 hue-alone question.
+ */
+export const NeutralPillTreatment: Story = {
+  args: {
+    label: "Tokens",
+    value: "24.1B",
+    delta: -52,
+    deltaLabel: "vs. prior 90 days",
+    deltaPolarity: MetricPolarity.Neutral,
+    deltaTreatment: MetricDeltaTreatment.NeutralPill,
+  },
+  name: "Neutral delta, NeutralPill treatment",
 };
 
 /**
@@ -216,8 +275,79 @@ export const WithSparkline: Story = {
     value: 44,
     delta: 11,
     deltaLabel: "vs. prior 90 days",
+    deltaPolarity: MetricPolarity.HigherIsBetter,
     sparkline: [28, 31, 30, 34, 38, 41, 44],
   },
+};
+
+/**
+ * The standalone mark (ISS-10363): `sparklineWithoutDelta` draws the series in
+ * the delta slot for a card that has no comparable prior figure.
+ *
+ * The series and the delta answer two different questions — what the period
+ * looked like, and how it compares to the one before it. Before this mode the
+ * mark lived only INSIDE the delta chip, so a card with a real series and no
+ * prior window drew nothing: one absent operand deleted a capability computed
+ * from the other. On Branches that is every card in every window.
+ */
+export const StandaloneSparkline: Story = {
+  args: {
+    label: "Total LOC pushed",
+    value: "18,402",
+    detail: "Last 90 days",
+    sparkline: [28, 31, 30, 34, 38, 41, 44],
+    sparklineWithoutDelta: true,
+  },
+  name: "Standalone sparkline (no delta)",
+};
+
+/**
+ * A bucket the producer could not compute is `null`, and it keeps its SLOT.
+ *
+ * The stroke breaks at the gap rather than closing over it, so the mark never
+ * claims a trend through a period that was not measured; a measured bucket with
+ * unmeasured neighbours stays visible as its own point rather than silently
+ * drawing nothing. Beside it, the same series with the gaps filled in, so the
+ * two shapes can be compared directly.
+ */
+export const StandaloneSparklineWithGaps: Story = {
+  render: () => (
+    <div className="grid w-[600px] grid-cols-2 gap-4">
+      <MetricCard
+        detail="Partial coverage"
+        label="Median PR size"
+        sparkline={[28, null, 30, 34, null, null, 44]}
+        sparklineWithoutDelta
+        value="34"
+      />
+      <MetricCard
+        detail="Complete coverage"
+        label="Median PR size"
+        sparkline={[28, 29, 30, 34, 38, 41, 44]}
+        sparklineWithoutDelta
+        value="34"
+      />
+    </div>
+  ),
+  name: "Standalone sparkline holds uncomputable buckets open",
+};
+
+/**
+ * Both operands absent-or-present independently: the card states the missing
+ * comparison in words AND draws the period it does know, rather than letting
+ * either stand in for the other.
+ */
+export const StandaloneSparklineBesidePlaceholder: Story = {
+  args: {
+    label: "Merge rate",
+    value: "72%",
+    sparkline: [61, 64, 63, 68, 70, 71, 72],
+    sparklineWithoutDelta: true,
+    deltaPlaceholder: (
+      <KpiDeltaPlaceholder reason="No prior window to compare" />
+    ),
+  },
+  name: "Standalone sparkline beside a no-comparison placeholder",
 };
 
 /** `info` renders an explainer popover trigger beside the label. */
@@ -292,6 +422,7 @@ export const ValueUnavailable: Story = {
  * metric — never as the dimmed whole-card `muted` failed-read treatment.
  */
 export const ValueUnavailableBesideValue: Story = {
+  tags: ["!manifest"],
   render: () => (
     <div className="grid w-[576px] grid-cols-2 gap-4">
       <MetricCard
@@ -331,6 +462,7 @@ export const ValueUnavailableBesideValue: Story = {
  * what produces the effect, not just a convenient width.
  */
 export const WrappingLabelBaseline: Story = {
+  tags: ["!manifest"],
   render: () => (
     <SummaryCardRow>
       <MetricCard
@@ -375,6 +507,7 @@ export const WrappingLabelBaseline: Story = {
  */
 export const WrappingLabelNarrowColumn: Story = {
   globals: { viewport: { value: "360-720" } },
+  tags: ["!manifest"],
   render: () => (
     <SummaryCardRow wrapBelow>
       <MetricCard
@@ -404,3 +537,134 @@ export const WrappingLabelNarrowColumn: Story = {
  * the thing they are named for.
  */
 const WRAPPING_FIXTURE_LABEL = "A Deliberately Long Metric Label";
+
+/**
+ * The `lanes` slot: a breakdown of the headline into named parts, composed from
+ * `MetricCardLane`. The share column is a fixed track, so it stays aligned down
+ * the list however long the labels are — the whole reason the geometry lives in
+ * the primitive rather than at each call site.
+ */
+export const WithLanes: Story = {
+  args: {
+    label: "Total estimated cost",
+    value: "$154,524",
+    delta: -4.2,
+    deltaPolarity: MetricPolarity.LowerIsBetter,
+    deltaLabel: "vs. prior 30 days",
+    lanes: (
+      <MetricCardLaneList>
+        <MetricCardLane label="API-billed" share="0.0%" value="$0" />
+        <MetricCardLane
+          label="Subscription-covered"
+          share=">99.9%"
+          value="$154,314"
+        />
+        {/* NOT muted: $210 is a real, separately-known amount, which the `muted`
+            contract excludes. `LanesWithWrappingLabel` below is the story that
+            demonstrates the treatment. */}
+        <MetricCardLane label="Billing unknown" share="0.1%" value="$210" />
+      </MetricCardLaneList>
+    ),
+  },
+};
+
+/**
+ * A long lane label WRAPS rather than truncating. `truncate` would be
+ * `overflow:hidden`, which clips away any affordance the label carries; the
+ * fixed value track means a wrapping label cannot collide with the figures.
+ */
+export const LanesWithWrappingLabel: Story = {
+  args: {
+    label: "Total estimated cost",
+    value: "$8,413",
+    lanes: (
+      <MetricCardLaneList>
+        <MetricCardLane
+          label="Subscription-covered"
+          share="94.9%"
+          value="$7,980"
+        />
+        {/* `muted` marks a lane that is not a figure in its own right — this
+            one stands in for two the source could not separate. A lane carrying
+            a real, separately-known amount keeps full weight. */}
+        <MetricCardLane
+          label="Not subscription-covered"
+          muted
+          share="5.1%"
+          value="$433"
+        />
+      </MetricCardLaneList>
+    ),
+  },
+};
+
+/** No `lanes` slot: byte-for-byte the shipped card, so the prop is additive. */
+export const WithoutLanes: Story = {
+  args: {
+    label: "Total estimated cost",
+    value: "$154,524",
+    detail: "+$154,314 if billed to API",
+  },
+};
+
+/**
+ * ISS-9730 `hideWhenUnavailable`, the mode that renders NOTHING. Shown as a row
+ * so the sweep can see what the reader actually gets: the middle card is not
+ * computable and is gone, and the row closes over the gap rather than leaving a
+ * hole — the same three-column grid, two cards wide.
+ *
+ * Compare it against {@link ValueUnavailableBesideValue} directly above, which
+ * is this exact condition with the gate OFF and is what ships today.
+ */
+export const HiddenWhenUnavailable: Story = {
+  tags: ["!manifest"],
+  render: () => (
+    <div className="grid w-[880px] grid-cols-3 gap-4">
+      <MetricCard detail="Last 30 days" label="Merged PRs" value="42" />
+      <MetricCard
+        detail="Estimated cost is unavailable."
+        hideWhenUnavailable
+        label="Value per $"
+        value={null}
+      />
+      <MetricCard detail="Last 30 days" label="Median PR size" value="148" />
+    </div>
+  ),
+  name: "Hidden when unavailable (gate on)",
+};
+
+/**
+ * The three states the hide must never swallow, under the SAME enabled gate.
+ * Each one still renders, and each says something different: a hydrating card
+ * keeps its skeleton rather than shedding and regrowing mid-fetch, a failed read
+ * keeps the reader's only signal that something broke, and a real `$0.00` is a
+ * fact about the population rather than an absence.
+ */
+export const HideGateSpares: Story = {
+  tags: ["!manifest"],
+  render: () => (
+    <div className="grid w-[880px] grid-cols-3 gap-4">
+      <MetricCard
+        detail="Importing your history"
+        hideWhenUnavailable
+        label="Sessions"
+        loading
+        value={null}
+      />
+      <MetricCard
+        detail="Unavailable"
+        hideWhenUnavailable
+        label="Merge rate"
+        muted
+        value="—"
+      />
+      <MetricCard
+        detail="Last 30 days"
+        hideWhenUnavailable
+        label="AI spend"
+        value="$0.00"
+      />
+    </div>
+  ),
+  name: "Hide gate spares loading, failed, and a real zero",
+};

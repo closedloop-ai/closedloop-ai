@@ -9,24 +9,35 @@
  * Lives in a plain module, not a `*.test.ts`, for exactly that reason.
  */
 
+import type { SessionCursorRow } from "../src/main/agent-sync/agent-session-read-model.js";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { prepareAgentSessionPayload } from "../src/main/agent-sync/agent-session-sync-payload.js";
 import type {
   AgentSessionOutboxEntry,
   AgentSessionSyncSource,
-  OutboxRetryState,
   PersistedSyncState,
+  SessionOutboxEngineState,
 } from "../src/main/agent-sync/agent-session-sync-source.js";
+import type { OutboxClearResult } from "../src/main/agent-sync/outbox-clear-result.js";
+import type { PersistedLaneRun } from "../src/main/agent-sync/sync-cursor-state-source.js";
+import { OutboxStatus } from "../src/shared/sync-lane-contract.js";
+import { FakeSyncStateTable } from "./fake-sync-state-table.js";
 
 export class FakeSyncSource implements AgentSessionSyncSource {
   private readonly sessions = new Map<string, SyncedAgentSession>();
-  /** FEA-1962: in-memory stand-in for the sqlite `sync_state` table. */
-  private readonly syncStates = new Map<string, PersistedSyncState>();
+  /**
+   * FEA-1962: in-memory stand-in for the sqlite `sync_state` table, row keying
+   * included (PLN-2028) — see `fake-sync-state-table.ts`.
+   */
+  private readonly syncStateTable = new FakeSyncStateTable();
   /** FEA-1962: records every advanceSyncState call so tests can assert timing. */
-  readonly advanceCalls: Array<{
-    sourceKey: string;
-    state: PersistedSyncState;
-  }> = [];
+  readonly advanceCalls = this.syncStateTable.advanceCalls;
+  /**
+   * PLN-2028 M4: every lane-run write, in order. A give-up is an ISO instant and
+   * a clear is `null`, and the DISTINCTION is the point — an absent write and a
+   * cleared one say opposite things about the lane.
+   */
+  readonly laneRunWrites = this.syncStateTable.laneRunWrites;
   findLocallyOversizedCallCount = 0;
   /** ISS-6031: every id list the local-presence probe was asked about. */
   readonly findExistingSessionIdCalls: string[][] = [];
@@ -43,6 +54,14 @@ export class FakeSyncSource implements AgentSessionSyncSource {
     sinceUpdatedAt: string;
     observedTopIds: readonly string[];
   }> = [];
+  /**
+   * ISS-7265: the durable tiling-debt ledger, in memory. Sessions the lane
+   * recorded as owing the cloud a tiling, those whose debt it settled, and how
+   * many times it asked for the whole ledger to be re-delivered.
+   */
+  readonly tilingDebtOwed: string[] = [];
+  readonly tilingDebtSettled: string[] = [];
+  tilingRepairSweeps = 0;
 
   constructor(sessions: SyncedAgentSession[]) {
     for (const session of sessions) {
@@ -71,25 +90,63 @@ export class FakeSyncSource implements AgentSessionSyncSource {
       deadLetteredIds?: string[];
     }
   ): void {
-    this.syncStates.set(sourceKey, {
+    this.syncStateTable.seed(sourceKey, {
       ...state,
       deadLetteredIds: state.deadLetteredIds ?? [],
     });
   }
 
-  loadSyncState(sourceKey: string): PersistedSyncState | null {
-    return this.syncStates.get(sourceKey) ?? null;
+  /**
+   * ISS-8116: widened to the interface's own union so a subclass can DEFER the
+   * cursor load — the await a superseded hydration's state application sits
+   * behind.
+   */
+  loadSyncState(
+    sourceKey: string
+  ): PersistedSyncState | null | Promise<PersistedSyncState | null> {
+    return this.persistedSyncState(sourceKey);
+  }
+
+  /** Synchronous accessor for assertions; never widened by a subclass. */
+  persistedSyncState(sourceKey: string): PersistedSyncState | null {
+    return this.syncStateTable.load(sourceKey);
   }
 
   advanceSyncState(sourceKey: string, state: PersistedSyncState): void {
-    this.syncStates.set(sourceKey, state);
-    this.advanceCalls.push({ sourceKey, state });
+    this.syncStateTable.advance(sourceKey, state);
+  }
+
+  /**
+   * ISS-9418: the durable lane give-up stamp — the PLN-2028 compatibility alias.
+   * Recorded for assertions AND applied to the stored state, so a later
+   * hydration reads back what a previous process wrote.
+   */
+  recordLaneGiveUp(sourceKey: string, gaveUpAt: string | null): void {
+    this.syncStateTable.recordLaneGiveUp(sourceKey, gaveUpAt);
+  }
+
+  /** PLN-2028: the whole durable lane run, on the same lane-run row. */
+  recordLaneRun(sourceKey: string, run: PersistedLaneRun): void {
+    this.syncStateTable.recordLaneRun(sourceKey, run);
+  }
+
+  recordActivityTilingDebt(sessionIds: string[]): void {
+    this.tilingDebtOwed.push(...sessionIds);
+  }
+
+  settleActivityTilingDebt(sessionIds: string[]): void {
+    this.tilingDebtSettled.push(...sessionIds);
+  }
+
+  requeueOwedActivityTilings(): number {
+    this.tilingRepairSweeps += 1;
+    return 0;
   }
 
   /**
    * FEA-3473: in-memory stand-in for the sqlite `agent_session_sync_outbox`
-   * table, keyed `${sourceKey}\0${externalSessionId}`. `status` is
-   * `pending` or `dead_lettered`; insertion order is preserved so
+   * table, keyed `${sourceKey}\0${externalSessionId}`. `status` is one of
+   * {@link OutboxStatus}; insertion order is preserved so
    * `loadPendingOutboxIds` returns oldest-first like the real `ORDER BY
    * created_at ASC`.
    */
@@ -101,7 +158,11 @@ export class FakeSyncSource implements AgentSessionSyncSource {
       status: string;
       reason?: string;
       attemptCount?: number;
+      permanentAttemptCount?: number;
+      deadLetterRecoveryCount?: number;
       nextAttemptAt?: string | null;
+      /** ISS-7730: the durable lane-wide stall clock, mirroring the real column. */
+      laneStalledSince?: string | null;
     }
   >();
 
@@ -109,10 +170,17 @@ export class FakeSyncSource implements AgentSessionSyncSource {
     return `${sourceKey}\0${id}`;
   }
 
+  /**
+   * ISS-8116: declared with the interface's `void | Promise<void>` (not the
+   * synchronous type this body produces) for the same reason
+   * {@link listAllSessionCursorRows} is — a subclass that DEFERS the durable
+   * seed is the only way to interleave a `stop()`/identity switch INTO the await
+   * the post-seed cursor persist sits behind.
+   */
   enqueueOutboxEntries(
     sourceKey: string,
     entries: AgentSessionOutboxEntry[]
-  ): void {
+  ): void | Promise<void> {
     for (const entry of entries) {
       const key = this.outboxKey(sourceKey, entry.externalSessionId);
       // Upsert that never resurrects a dead_lettered row (mirrors the sqlite
@@ -127,25 +195,56 @@ export class FakeSyncSource implements AgentSessionSyncSource {
     }
   }
 
-  clearOutboxEntries(sourceKey: string, ids: string[]): void {
+  /**
+   * ISS-7957: reports the rows actually removed, mirroring `deleteMany`'s own
+   * `count` in `sqliteClearOutboxEntries`. Counting the ids ASKED FOR instead
+   * would make this fixture agree with the defect rather than with the store —
+   * an id whose row is already gone contributes nothing to a real delete, and
+   * that divergence is the whole subject.
+   */
+  clearOutboxEntries(
+    sourceKey: string,
+    ids: string[]
+  ): OutboxClearResult | undefined | Promise<OutboxClearResult | undefined> {
+    let deletedRowCount = 0;
     for (const id of ids) {
-      this.outbox.delete(this.outboxKey(sourceKey, id));
+      if (this.outbox.delete(this.outboxKey(sourceKey, id))) {
+        deletedRowCount += 1;
+      }
     }
+    return { deletedRowCount };
   }
 
   markOutboxDeadLettered(
     sourceKey: string,
     id: string,
     reason: string,
-    attemptCount = 0
+    attemptCount = 0,
+    permanentAttemptCount: number | null = null,
+    deadLetterRecoveryCount: number | null = null
   ): void {
-    this.outbox.set(this.outboxKey(sourceKey, id), {
+    const key = this.outboxKey(sourceKey, id);
+    this.outbox.set(key, {
       sourceKey,
       id,
       status: "dead_lettered",
       reason,
       attemptCount,
+      permanentAttemptCount:
+        permanentAttemptCount ??
+        this.outbox.get(key)?.permanentAttemptCount ??
+        0,
+      deadLetterRecoveryCount:
+        deadLetterRecoveryCount ??
+        this.outbox.get(key)?.deadLetterRecoveryCount ??
+        0,
       nextAttemptAt: null,
+      // ISS-7730: real-source parity — `outboxDeadLetterFields` does not name
+      // this column, so the sqlite `update` branch leaves whatever the row had.
+      // The stamp is evidence of WHY the row was abandoned; rebuilding the row
+      // without it made the fake report `undefined` where sqlite reports the
+      // preserved value.
+      laneStalledSince: this.outbox.get(key)?.laneStalledSince ?? null,
     });
   }
 
@@ -155,20 +254,35 @@ export class FakeSyncSource implements AgentSessionSyncSource {
    * `pending` and reset the retry budget, so `loadPendingOutboxIds` re-discovers a
    * recovered straggler. A missing/already-pending row is a no-op (mirrors the
    * sqlite `updateMany` `WHERE status = 'dead_lettered'`).
+   *
+   * ISS-7216: returns the same "the row is no longer `dead_lettered`"
+   * confirmation the sqlite source does, so a test driving the cap door through
+   * this fixture observes the real release condition. Declared with the
+   * interface's `boolean | Promise<boolean>` return (not the narrower
+   * synchronous one it happens to produce) so a suite can subclass this fixture
+   * to model a write that rejects or reports a failed flip.
    */
-  reEnqueueRecoveredDeadLetter(sourceKey: string, id: string): void {
+  reEnqueueRecoveredDeadLetter(
+    sourceKey: string,
+    id: string
+  ): boolean | Promise<boolean> {
     const key = this.outboxKey(sourceKey, id);
     const existing = this.outbox.get(key);
     if (existing?.status !== "dead_lettered") {
-      return;
+      return true;
     }
     this.outbox.set(key, {
       sourceKey,
       id,
       status: "pending",
       attemptCount: 0,
+      permanentAttemptCount: existing.permanentAttemptCount ?? 0,
+      deadLetterRecoveryCount: existing.deadLetterRecoveryCount ?? 0,
       nextAttemptAt: null,
+      // ISS-7730: explicit, mirroring the real store — see rePendWithheldOutbox.
+      laneStalledSince: null,
     });
+    return true;
   }
 
   /**
@@ -182,7 +296,9 @@ export class FakeSyncSource implements AgentSessionSyncSource {
     id: string,
     attemptCount: number,
     nextAttemptAt: string,
-    reason: string
+    reason: string,
+    laneStalledSince: string | null,
+    permanentAttemptCount: number | null = null
   ): void {
     const key = this.outboxKey(sourceKey, id);
     const existing = this.outbox.get(key);
@@ -196,8 +312,33 @@ export class FakeSyncSource implements AgentSessionSyncSource {
       status: existing?.status ?? "pending",
       reason,
       attemptCount,
+      permanentAttemptCount:
+        permanentAttemptCount ?? existing?.permanentAttemptCount ?? 0,
+      deadLetterRecoveryCount: existing?.deadLetterRecoveryCount ?? 0,
       nextAttemptAt,
+      // ISS-7730: written on EVERY retry, so a row-attributable defer's null
+      // clears a stall run exactly as the sqlite `update` branch does. Storing
+      // only the truthy value would make the fake unable to reproduce the clear.
+      laneStalledSince,
     });
+  }
+
+  /**
+   * ISS-7730: in-memory stand-in for the sqlite `clearOutboxLaneStall` — a
+   * row-attributable rejection ends the durable lane-wide stall run. Scoped to
+   * `pending` exactly like the real `updateMany`, so a `dead_lettered` row keeps
+   * the stamp that explains why it was abandoned, and touching no other column
+   * so it can never reset a live budget.
+   */
+  clearOutboxLaneStall(sourceKey: string, ids: string[]): void {
+    for (const id of ids) {
+      const key = this.outboxKey(sourceKey, id);
+      const existing = this.outbox.get(key);
+      if (existing?.status !== "pending") {
+        continue;
+      }
+      this.outbox.set(key, { ...existing, laneStalledSince: null });
+    }
   }
 
   /**
@@ -219,25 +360,114 @@ export class FakeSyncSource implements AgentSessionSyncSource {
   }
 
   /**
-   * FEA-3659: in-memory stand-in for the sqlite `loadPendingOutboxRetryState` —
-   * returns the durable retry budget for still-`pending` rows that recorded a
-   * transient backoff (`attemptCount > 0`), so a resume test can assert the
-   * in-memory counters + `nextRetryAfterMs` are rehydrated from the outbox.
+   * FEA-3659: in-memory stand-in for the sqlite `loadPendingSessionOutboxEngineState` —
+   * returns the durable engine state for still-`pending` rows, so a resume test
+   * can assert the in-memory counters, recovery ladder, and `nextRetryAfterMs`
+   * are rehydrated from the outbox.
    */
-  loadPendingOutboxRetryState(sourceKey: string): OutboxRetryState[] {
+  loadPendingSessionOutboxEngineState(
+    sourceKey: string
+  ): SessionOutboxEngineState[] | Promise<SessionOutboxEngineState[]> {
     return [...this.outbox.values()]
       .filter(
         (row) =>
           row.sourceKey === sourceKey &&
-          row.status === "pending" &&
-          (row.attemptCount ?? 0) > 0
+          ((row.status === OutboxStatus.Pending &&
+            ((row.attemptCount ?? 0) > 0 ||
+              (row.permanentAttemptCount ?? 0) > 0 ||
+              (row.deadLetterRecoveryCount ?? 0) > 0 ||
+              row.laneStalledSince != null)) ||
+            (row.status === OutboxStatus.DeadLettered &&
+              (row.deadLetterRecoveryCount ?? 0) > 0))
       )
-      .map((row) => ({
-        id: row.id,
-        attemptCount: row.attemptCount ?? 0,
-        nextAttemptAt: row.nextAttemptAt ?? null,
-        lastError: row.reason ?? null,
-      }));
+      .map((row) =>
+        row.status === OutboxStatus.DeadLettered
+          ? {
+              id: row.id,
+              status: OutboxStatus.DeadLettered,
+              attemptCount: 0,
+              permanentAttemptCount: 0,
+              deadLetterRecoveryCount: row.deadLetterRecoveryCount ?? 0,
+              nextAttemptAt: null,
+              lastError: null,
+              laneStalledSince: null,
+            }
+          : {
+              id: row.id,
+              attemptCount: row.attemptCount ?? 0,
+              permanentAttemptCount: row.permanentAttemptCount ?? 0,
+              deadLetterRecoveryCount: row.deadLetterRecoveryCount ?? 0,
+              nextAttemptAt: row.nextAttemptAt ?? null,
+              lastError: row.reason ?? null,
+              laneStalledSince: row.laneStalledSince ?? null,
+            }
+      );
+  }
+
+  /**
+   * ISS-7246: in-memory stand-in for the sqlite `markOutboxWithheld` — move a
+   * still-`pending` row to `withheld` (nothing substantive to send yet). Guarded
+   * exactly like the real `updateMany WHERE status = 'pending'`: a
+   * `dead_lettered` row is never downgraded (that would drop it out of the
+   * dead-letter recovery lifecycle) and an absent row creates nothing.
+   */
+  markOutboxWithheld(sourceKey: string, ids: string[]): void {
+    for (const id of ids) {
+      const key = this.outboxKey(sourceKey, id);
+      const existing = this.outbox.get(key);
+      if (existing?.status !== OutboxStatus.Pending) {
+        continue;
+      }
+      this.outbox.set(key, {
+        sourceKey,
+        id,
+        status: OutboxStatus.Withheld,
+        attemptCount: 0,
+        permanentAttemptCount: 0,
+        deadLetterRecoveryCount: 0,
+        nextAttemptAt: null,
+      });
+    }
+  }
+
+  /**
+   * ISS-7246: in-memory stand-in for the sqlite `rePendWithheldOutbox` — return
+   * `withheld` rows to `pending` when their session gains new local activity.
+   * Guarded to `withheld` only, so it can neither resurrect a dead-letter nor
+   * reset an in-flight pending retry's budget.
+   */
+  rePendWithheldOutbox(sourceKey: string, ids: string[]): void {
+    for (const id of ids) {
+      const key = this.outboxKey(sourceKey, id);
+      if (this.outbox.get(key)?.status !== OutboxStatus.Withheld) {
+        continue;
+      }
+      this.outbox.set(key, {
+        sourceKey,
+        id,
+        status: OutboxStatus.Pending,
+        attemptCount: 0,
+        permanentAttemptCount: 0,
+        deadLetterRecoveryCount: 0,
+        nextAttemptAt: null,
+        // ISS-7730: the real store writes `laneStalledSince: null` EXPLICITLY
+        // alongside `outboxRePendFields`. Rebuilding the row without the field
+        // would clear it unconditionally, so this fake would keep passing even
+        // if production dropped that write — the drift that makes a fake worse
+        // than no fake.
+        laneStalledSince: null,
+      });
+    }
+  }
+
+  /** ISS-7246: synchronous accessor for the withheld set, for assertions. */
+  withheldOutboxIds(sourceKey: string): string[] {
+    return [...this.outbox.values()]
+      .filter(
+        (row) =>
+          row.sourceKey === sourceKey && row.status === OutboxStatus.Withheld
+      )
+      .map((row) => row.id);
   }
 
   /** Test helper: pre-seed a durable outbox row as if a prior run enqueued it. */
@@ -249,7 +479,16 @@ export class FakeSyncSource implements AgentSessionSyncSource {
     });
   }
 
-  listAllSessionCursorRows() {
+  /**
+   * ISS-8116: this read and {@link listUpdatedSessionCursorRows} carry the UNION
+   * `AgentSessionSyncSource` already declares (`T | Promise<T>`) rather than the
+   * synchronous type their bodies happen to return. A subclass that DEFERS one
+   * of them — the only way to interleave an identity switch INTO the await a
+   * post-await guard protects — otherwise fails `TS2416` against the narrower
+   * inferred base member, and a fixture that cannot defer cannot exercise that
+   * guard at all.
+   */
+  listAllSessionCursorRows(): SessionCursorRow[] | Promise<SessionCursorRow[]> {
     this.listAllCursorCallCount += 1;
     return this.cursorRows();
   }
@@ -266,7 +505,7 @@ export class FakeSyncSource implements AgentSessionSyncSource {
   listUpdatedSessionCursorRows(
     sinceUpdatedAt: string,
     observedTopIds: readonly string[]
-  ) {
+  ): SessionCursorRow[] | Promise<SessionCursorRow[]> {
     // PRD-536 E1: mirror the sqlite predicate `updated_at > $1 OR (updated_at =
     // $1 AND id NOT IN (<observedTopIds>))` — everything strictly newer, PLUS the
     // tied-top cluster minus the exact observed-id set. Excluding the SET (not
@@ -301,7 +540,16 @@ export class FakeSyncSource implements AgentSessionSyncSource {
     return ids.filter((id) => this.sessions.has(id));
   }
 
-  findLocallyOversizedSessions(ids: string[], maxBytes: number) {
+  /**
+   * ISS-8116: widened to the interface's own union so a subclass can DEFER the
+   * oversize scan — the await `deadLetterOversizedLocalSession` resolves into.
+   */
+  findLocallyOversizedSessions(
+    ids: string[],
+    maxBytes: number
+  ):
+    | { id: string; payloadBytes: number }[]
+    | Promise<{ id: string; payloadBytes: number }[]> {
     this.findLocallyOversizedCallCount += 1;
     return ids.flatMap((id) => {
       const session = this.sessions.get(id);

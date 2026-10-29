@@ -7,8 +7,8 @@
  * lifecycle (boot-import skip, concurrency guard, start/stop).
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { describe, test } from "vitest";
 import { z } from "zod";
 import {
   classifyQuickCheckRow,
@@ -710,6 +710,7 @@ describe("the reader is the db-host method proxy in production", () => {
             outOfRangeTokenRows: 0,
             outOfRangeCostRows: 0,
             nonSubagentUsageRows: 0,
+            invalidLineRows: 0,
           });
         }
         if (op === "runForeignKeyIntegrityCheck") {
@@ -813,6 +814,9 @@ describe("ISS-4976: invocation telemetry integrity check", () => {
       outOfRangeTokenRows: 3,
       outOfRangeCostRows: 1,
       nonSubagentUsageRows: 2,
+      // ISS-10730: a fourth offender class, so the classifier must report four
+      // distinct objects rather than the three it was written for.
+      invalidLineRows: 4,
     });
     const probe = createStoreIntegrityProbe(reader, {
       emit: noopEmit,
@@ -825,13 +829,14 @@ describe("ISS-4976: invocation telemetry integrity check", () => {
     const issues = diag.issues.filter(
       (i) => i.check === "invocation_telemetry"
     );
-    assert.equal(issues.length, 3);
+    assert.equal(issues.length, 4);
     assert.ok(
       issues.every((i) => i.category === "invocation_telemetry_out_of_range")
     );
     assert.deepEqual(issues.map((i) => i.object).sort(), [
       "component_kind",
       "estimated_cost",
+      "line_attribution",
       "token_counts",
     ]);
   });
@@ -841,6 +846,7 @@ describe("ISS-4976: invocation telemetry integrity check", () => {
       outOfRangeTokenRows: 0,
       outOfRangeCostRows: 0,
       nonSubagentUsageRows: 0,
+      invalidLineRows: 0,
     });
     const probe = createStoreIntegrityProbe(reader, {
       emit: noopEmit,

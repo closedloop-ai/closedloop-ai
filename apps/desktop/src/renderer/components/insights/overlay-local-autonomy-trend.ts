@@ -15,10 +15,13 @@ import type {
  * turn-level data to derive it from.
  *
  * So when authenticated desktop reads its own Agents data from the cloud (Cloud
- * mode, PRD-461 D3), the trend arrives empty/absent even though the local DB
- * holds the buckets — and the shared overview dashboard hides the Autonomy Trend
- * row entirely (`insights-overview-dashboard.tsx`), so an authenticated+online
- * desktop user loses the chart a signed-out/offline (Local) user still sees.
+ * mode, PRD-461 D3), the field is MISSING even though the local DB holds the
+ * buckets — and the shared row rule (`visibleDashboardRows` in
+ * `dashboard-row-sections.ts`, ISS-9993) hides the Autonomy Trend row on BOTH
+ * hosts when the field is missing, so an authenticated+online desktop user
+ * loses the chart a signed-out/offline (Local) user still sees. A DEFINED trend
+ * with no measured values is a different case: the rule keeps that row, and
+ * this overlay fills it too.
  *
  * This overlay repairs only that one slice: it takes the cloud response and,
  * when the cloud's `autonomyTrend` is missing or carries no measured values,

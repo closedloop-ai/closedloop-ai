@@ -18,9 +18,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { after, test } from "node:test";
+import { success } from "@repo/api/src/types/common";
 import { ORG_IDENTITY_HEADER } from "@repo/api/src/types/headers";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
+import { afterAll, test } from "vitest";
 import {
   registerTranscriptReadIpcHandler,
   type TranscriptReadDeps,
@@ -31,6 +32,7 @@ import {
   TRANSCRIPT_PREPARE_CHANNEL,
   type TranscriptPrepareResult,
 } from "../src/shared/transcript-read-contract.js";
+import { pollUntilDefined } from "./wait-for-condition.js";
 
 const TRUSTED_SENDER = { id: 1 } as unknown as WebContents;
 const UNTRUSTED_SENDER = { id: 2 } as unknown as WebContents;
@@ -48,7 +50,7 @@ const UNTRUSTED_SENDER_ERROR = /untrusted sender/;
 
 const testRoot = mkdtempSync(path.join(tmpdir(), "transcript-read-ipc-test-"));
 let counter = 0;
-after(() => rmSync(testRoot, { recursive: true, force: true }));
+afterAll(() => rmSync(testRoot, { recursive: true, force: true }));
 
 type FileDescriptorOverrides = {
   url?: string | null;
@@ -56,8 +58,9 @@ type FileDescriptorOverrides = {
   fileKey?: string;
 };
 
+/** The read route's body: `successResponse` wraps the descriptor in the envelope. */
 function descriptorResponse(file: FileDescriptorOverrides = {}) {
-  return {
+  return success({
     sessionId: SESSION_ID,
     files: [
       {
@@ -70,7 +73,7 @@ function descriptorResponse(file: FileDescriptorOverrides = {}) {
         lastObservedAt: "2026-07-16T00:00:00.000Z",
       },
     ],
-  };
+  });
 }
 
 const LOCAL_BYTES = "local-line-1\nlocal-line-2\n";
@@ -120,7 +123,7 @@ function createHarness(options: HarnessOptions = {}) {
   const fetchImpl = ((input: string | URL, init?: RequestInit) => {
     const url = String(input);
     fetchCalls.push({ url, headers: init?.headers as Headers | undefined });
-    if (url.endsWith("/transcript")) {
+    if (new URL(url).pathname.endsWith("/transcript")) {
       const descriptor = options.descriptor ?? descriptorResponse();
       return Promise.resolve(
         new Response(JSON.stringify(descriptor), {
@@ -234,12 +237,12 @@ test("mints the URL via the read route, caches the bytes, and returns an app:// 
 
   // Read route was called first with the first-party token + org header.
   const accessCall = fetchCalls.find((call) =>
-    call.url.endsWith("/transcript")
+    new URL(call.url).pathname.endsWith("/transcript")
   );
   assert.ok(accessCall);
   assert.equal(
     accessCall.url,
-    `${API_ORIGIN}/agent-sessions/${SESSION_ID}/transcript`
+    `${API_ORIGIN}/agent-sessions/${SESSION_ID}/transcript?fileKey=main`
   );
   assert.equal(accessCall.headers?.get("authorization"), "Bearer tok-123");
   assert.equal(accessCall.headers?.get(ORG_IDENTITY_HEADER), "org-1");
@@ -584,7 +587,7 @@ function createHangingDownloadHarness() {
   let downloadSignal: AbortSignal | undefined;
   const fetchImpl = ((input: string | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url.endsWith("/transcript")) {
+    if (new URL(url).pathname.endsWith("/transcript")) {
       return Promise.resolve(
         new Response(JSON.stringify(descriptorResponse()), { status: 200 })
       );
@@ -634,7 +637,22 @@ function createHangingDownloadHarness() {
   };
 }
 
-const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
+/**
+ * Wait for the byte download to actually start, bounded, instead of assuming a
+ * fixed sleep is long enough. The descriptor read has to resolve first, and how
+ * long that takes is a property of this host and of whatever the handler's
+ * module graph happens to cost — not of the behaviour under test. A fixed 10ms
+ * budget made this assertion fail on a change that only added a request header.
+ */
+function awaitDownloadSignal(
+  getDownloadSignal: () => AbortSignal | undefined
+): Promise<AbortSignal> {
+  return pollUntilDefined(getDownloadSignal, {
+    timeoutMs: 5000,
+    intervalMs: 10,
+    onTimeout: () => new Error("download never started within 5000ms"),
+  });
+}
 
 test("cancelTranscriptPrepare aborts the in-flight main-process download", async () => {
   const { handler, cancelHandler, getDownloadSignal } =
@@ -648,8 +666,7 @@ test("cancelTranscriptPrepare aborts the in-flight main-process download", async
     requestId,
   });
   // Let the descriptor read resolve and the byte download kick off (and hang).
-  await tick();
-  const signal = getDownloadSignal();
+  const signal = await awaitDownloadSignal(getDownloadSignal);
   assert.ok(signal, "download should have started");
   assert.equal(signal.aborted, false);
 
@@ -670,14 +687,37 @@ test("cancelTranscriptPrepare rejects an untrusted sender", () => {
 });
 
 test("cancelTranscriptPrepare is a no-op for an unknown requestId", async () => {
-  const { cancelHandler, getDownloadSignal } = createHangingDownloadHarness();
-  // No prepare is in flight for this id — must not throw.
+  const { cancelHandler, signal, finish } = await startLivePrepare();
   await cancelHandler(TRUSTED_EVENT, { requestId: "never-registered" });
-  assert.equal(getDownloadSignal(), undefined);
+  assert.equal(signal.aborted, false);
+  await finish();
 });
 
 test("cancelTranscriptPrepare ignores a malformed request", async () => {
-  const { cancelHandler } = createHangingDownloadHarness();
+  const { cancelHandler, requestId, signal, finish } = await startLivePrepare();
   await cancelHandler(TRUSTED_EVENT, { requestId: "" });
   await cancelHandler(TRUSTED_EVENT, {});
+  // The live id plus an unknown key: only `.strict()` keeps this from aborting.
+  await cancelHandler(TRUSTED_EVENT, { requestId, extra: true });
+  assert.equal(signal.aborted, false);
+  await finish();
 });
+
+// A live download under a different requestId, so a cancel that should be a
+// no-op has something in flight it could wrongly abort.
+async function startLivePrepare() {
+  const { handler, cancelHandler, getDownloadSignal } =
+    createHangingDownloadHarness();
+  const requestId = "req-live";
+  const pending = handler(TRUSTED_EVENT, {
+    sessionId: SESSION_ID,
+    fileKey: "main",
+    requestId,
+  });
+  const signal = await awaitDownloadSignal(getDownloadSignal);
+  const finish = async () => {
+    await cancelHandler(TRUSTED_EVENT, { requestId });
+    await pending;
+  };
+  return { cancelHandler, requestId, signal, finish };
+}

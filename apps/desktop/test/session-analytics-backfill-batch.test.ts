@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   backfillSessionAnalytics,
   recomputeHeadlessSessionAnalytics,
@@ -176,9 +176,6 @@ async function readRollups(db: SqliteDb): Promise<{
   const analytics = await db.prisma.client.$queryRawUnsafe<
     Record<string, unknown>[]
   >("SELECT * FROM session_analytics ORDER BY session_id");
-  const tools = await db.prisma.client.$queryRawUnsafe<
-    Record<string, unknown>[]
-  >("SELECT * FROM session_tool_analytics ORDER BY session_id, tool_name");
   const rollups: Record<string, Record<string, unknown>> = {};
   const updatedAtTypes: Record<string, string> = {};
   for (const row of analytics) {
@@ -190,9 +187,6 @@ async function readRollups(db: SqliteDb): Promise<{
     updatedAtTypes[`analytics:${String(row.session_id)}`] = typeof updated_at;
     rollups[`analytics:${String(row.session_id)}`] = rest;
   }
-  for (const row of tools) {
-    rollups[`tool:${String(row.session_id)}:${String(row.tool_name)}`] = row;
-  }
   return { rollups, updatedAtTypes };
 }
 
@@ -202,7 +196,6 @@ test("batched backfill produces identical rollups to the per-session path", asyn
     /* The boot-time backfill is fire-and-forget; wipe any rows it may have
        written so we control the comparison from a clean slate. */
     await db.run("DELETE FROM session_analytics");
-    await db.run("DELETE FROM session_tool_analytics");
 
     await seedSessions(db);
 
@@ -236,14 +229,12 @@ test("batched backfill produces identical rollups to the per-session path", asyn
     assert.equal(golden.rollups["analytics:sess-empty"]?.event_count, 0);
     assert.equal(golden.rollups["analytics:sess-meta-human"]?.is_human, 0);
     assert.equal(golden.rollups["analytics:sess-meta-human"]?.human_turns, 0);
-    assert.ok(golden.rollups["tool:sess-human:Bash"]);
     // `updated_at` is present (a string) on every per-session rollup.
     assert.equal(golden.updatedAtTypes["analytics:sess-human"], "string");
 
     // Now wipe the rollups so every session looks "missing", and run the
     // set-based boot backfill.
     await db.run("DELETE FROM session_analytics");
-    await db.run("DELETE FROM session_tool_analytics");
 
     const logs: string[] = [];
     await backfillSessionAnalytics(db.prisma, (m) => logs.push(m));
@@ -345,7 +336,7 @@ test("FEA-2641: $.messages with 0 human entries overrides 5 hook events → tran
   try {
     const sid = "fea2641-transcript-zero-wins";
     // $.messages exists but contains no role:"human" entries; some assistant text
-    // contains the word "human" to prove the old substring hack is gone.
+    // contains the word "human" to prove the old substring match is gone.
     await db.run(
       `INSERT INTO sessions (id, status, harness, started_at, ended_at, updated_at, metadata)
        VALUES ($1, 'completed', 'claude_code', '2026-06-20T09:00:00.000Z', '2026-06-20T09:05:00.000Z', $2, $3)`,
@@ -541,10 +532,8 @@ test("backfill spans multiple chunks: every session rolled up across chunk bound
   const { db, dir } = await openTempDb();
   try {
     await db.run("DELETE FROM session_analytics");
-    await db.run("DELETE FROM session_tool_analytics");
     await seedSessions(db);
     await db.run("DELETE FROM session_analytics");
-    await db.run("DELETE FROM session_tool_analytics");
 
     // chunkSize=2 with SESSIONS.length=4 forces ⌈4/2⌉ = 2 chunked transactions,
     // exercising the loop boundary the default 500-chunk path never hits in test.
@@ -583,7 +572,6 @@ test("FEA-3143 (D6): recomputeAnalyticsRollups byte-budgeted chunking matches pe
   const { db, dir } = await openTempDb();
   try {
     await db.run("DELETE FROM session_analytics");
-    await db.run("DELETE FROM session_tool_analytics");
     await seedSessions(db);
 
     // A session whose metadata alone exceeds the 8 MiB per-chunk byte budget, so
@@ -629,7 +617,6 @@ test("FEA-3143 (D6): recomputeAnalyticsRollups byte-budgeted chunking matches pe
     // Wipe and re-derive via the byte-budgeted chunking path. The default 8 MiB
     // budget forces the 9 MiB session into its own chunk; the rest pack together.
     await db.run("DELETE FROM session_analytics");
-    await db.run("DELETE FROM session_tool_analytics");
     await db.recomputeAnalyticsRollups(allIds);
 
     const batched = await readRollups(db);
@@ -646,7 +633,6 @@ test("FEA-2870: a headless session is marked is_human=0 even with human turns an
   const { db, dir } = await openTempDb();
   try {
     await db.run("DELETE FROM session_analytics");
-    await db.run("DELETE FROM session_tool_analytics");
 
     // A headless session (entrypoint sdk-ts) that ALSO has two user turns and
     // three "human" metadata markers — every non-headless signal points to human,
@@ -693,7 +679,6 @@ test("FEA-2870: recomputeHeadlessSessionAnalytics flips mis-marked headless rows
   const { db, dir } = await openTempDb();
   try {
     await db.run("DELETE FROM session_analytics");
-    await db.run("DELETE FROM session_tool_analytics");
 
     // A pre-fix headless session (permissionMode bypassPermissions) whose stored
     // rollup still says is_human=1, plus a genuine human session that must be
@@ -874,7 +859,6 @@ test("FEA-3485: a multi-chunk headless heal staggers updated_at per chunk (bound
   const { db, dir } = await openTempDb();
   try {
     await db.run("DELETE FROM session_analytics");
-    await db.run("DELETE FROM session_tool_analytics");
 
     // Six mis-marked headless sessions. Run with chunkSize=1 so each session is
     // its OWN chunk — the worst case for the cursor-group blow-up this guards.
@@ -1087,7 +1071,6 @@ test("FEA-3226: recomputeImportedAgentTurnAnalytics heals frozen zeros, skips ag
   const { db, dir } = await openTempDb();
   try {
     await db.run("DELETE FROM session_analytics");
-    await db.run("DELETE FROM session_tool_analytics");
 
     // A pre-fix imported session whose rollup froze agent_turns=0, an
     // already-agreeing session, and a hook-only session (no metadata blob)

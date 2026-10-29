@@ -13,6 +13,7 @@
  */
 
 import { expect, test } from "@playwright/test";
+import { APPROVAL_RISK_TIER_FALLBACK_LABEL } from "../../src/renderer/components/approvals/approvals-panel-copy";
 import { gotoNav, launchDesktopApp } from "./helpers/desktop-app";
 import { type SeedApproval, seedPendingApprovals } from "./helpers/seed";
 
@@ -60,7 +61,9 @@ test.describe("Approvals risk tier", () => {
         await expect(
           card.getByText(seed.riskTier as string, { exact: true })
         ).toBeVisible();
-        await expect(card.getByText("unknown", { exact: true })).toHaveCount(0);
+        await expect(
+          card.getByText(APPROVAL_RISK_TIER_FALLBACK_LABEL, { exact: true })
+        ).toHaveCount(0);
       }
 
       expect(pageErrors).toEqual([]);

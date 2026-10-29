@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { describe, it } from "vitest";
 import type { NormalizedSession } from "../src/main/collectors/types.js";
 import { DESKTOP_AGENT_STATUS } from "../src/main/database/db-constants.js";
 import {

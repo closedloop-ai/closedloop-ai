@@ -98,6 +98,7 @@ function spanIdFor(index: number): string {
   return deterministicHexId(`tail-sampling-verify/span/${index}`, 8);
 }
 
+/** Span id for the child span of a two-span trace. */
 function childSpanIdFor(index: number): string {
   return deterministicHexId(`tail-sampling-verify/child-span/${index}`, 8);
 }
@@ -131,10 +132,7 @@ function buildSpan(args: {
   };
 }
 
-function wrapTrace(
-  span: Record<string, unknown>,
-  ...spans: Record<string, unknown>[]
-): OtlpTracePayload {
+function wrapTrace(span: Record<string, unknown>): OtlpTracePayload {
   return {
     resourceSpans: [
       {
@@ -149,7 +147,7 @@ function wrapTrace(
         scopeSpans: [
           {
             scope: { name: "collector-tail-sampling-verification" },
-            spans: [span, ...spans],
+            spans: [span],
           },
         ],
       },
@@ -162,7 +160,9 @@ function wrapTrace(
  *
  * - error → span status ERROR (`keep-error-status`)
  * - server-error → `http.response.status_code` in [min,max] (`keep-server-errors`)
- * - slow → child IPC span with `duration_ms` above `slowLatencyThresholdMs` (`keep-slow`) exported before its cl-desktop root closes after `decision_wait`
+ * - slow → a fast child exported first, then the `cl-desktop` root that spans
+ *   `slowTraceLatencyThresholdMs`, exported when it CLOSES — the desktop
+ *   delivery order, arriving inside `decision_wait` (`keep-slow`)
  * - baseline → fast, status-unset, no 5xx; only `baseline` can retain it
  */
 export function buildScenarioTraces(
@@ -171,9 +171,12 @@ export function buildScenarioTraces(
 ): SyntheticTraffic {
   const policy = CollectorTailSamplingPolicy;
   const fastDuration = 1_000_000n; // 1ms — comfortably below the slow threshold.
-  const lateRootCloseDelayMs = (policy.decisionWaitSeconds + 1) * 1000;
-  const lateRootDurationNanos = BigInt(lateRootCloseDelayMs) * 1_000_000n;
-  const slowDurationMs = policy.slowLatencyMaxMs;
+  // A second past the threshold, so a boundary rounding difference between this
+  // builder and the collector cannot decide the scenario. `assertValidPolicy`
+  // keeps the threshold strictly below the decision window, so this close time
+  // is inside it and the root is still buffered when the vote happens.
+  const slowRootCloseDelayMs = policy.slowTraceLatencyThresholdMs + 1000;
+  const slowRootDurationNanos = BigInt(slowRootCloseDelayMs) * 1_000_000n;
   const serverErrorStatus = policy.serverErrorStatusRange.min; // e.g. 500.
 
   const payloads: OtlpTracePayload[] = [];
@@ -222,6 +225,14 @@ export function buildScenarioTraces(
     )
   );
 
+  // `keep-slow` is a `latency` policy: it reads the span of timestamps the
+  // collector has BUFFERED, not an attribute. What decides this leg is
+  // therefore delivery order, not one long span — cl-desktop exports an
+  // activity root only when it CLOSES, so the child lands at T0 and the root
+  // `slowRootCloseDelayMs` later. That ordering is the whole point of the
+  // `slowTraceLatencyThresholdMs < decisionWaitSeconds` rule: send the root
+  // instantly and the leg passes even for a threshold whose root would be voted
+  // on before it ever arrives, leaving a 1ms child as the only buffered span.
   const delayedRootPayloads: OtlpTracePayload[] = [];
   for (let i = 0; i < counts.slow; i += 1) {
     const traceIndex = index;
@@ -230,7 +241,7 @@ export function buildScenarioTraces(
       index: traceIndex,
       scenario: Scenario.Slow,
       baseTimeUnixNano: options.baseTimeUnixNano,
-      durationNanos: lateRootDurationNanos,
+      durationNanos: slowRootDurationNanos,
       statusCode: SPAN_STATUS_UNSET,
     });
     const child = {
@@ -240,12 +251,6 @@ export function buildScenarioTraces(
         baseTimeUnixNano: options.baseTimeUnixNano,
         durationNanos: fastDuration,
         statusCode: SPAN_STATUS_UNSET,
-        extraAttributes: [
-          {
-            key: policy.slowLatencyAttributeKey,
-            value: { intValue: String(slowDurationMs) },
-          },
-        ],
       }),
       spanId: childSpanIdFor(traceIndex),
       name: "ipc.list",
@@ -255,8 +260,9 @@ export function buildScenarioTraces(
     delayedRootPayloads.push(wrapTrace({ ...root, name: "cl-desktop" }));
   }
 
+  // One wait, then every root — the roots close at the same synthetic instant.
   for (const [rootIndex, rootPayload] of delayedRootPayloads.entries()) {
-    pushPayload(rootPayload, rootIndex === 0 ? lateRootCloseDelayMs : 0);
+    pushPayload(rootPayload, rootIndex === 0 ? slowRootCloseDelayMs : 0);
   }
 
   push(counts.baseline, (i) =>

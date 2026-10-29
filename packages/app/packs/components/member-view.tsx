@@ -110,7 +110,7 @@ const YourPacksEmpty = () => (
   <EmptyState
     description="Your org hasn't required any packs, and you haven't installed any yet. Browse the catalog below to add one."
     icon={BlocksIcon}
-    title="No packs yet"
+    title={YOUR_PACKS_EMPTY_TITLE}
   />
 );
 
@@ -274,3 +274,5 @@ export const MemberView = ({
     </div>
   );
 };
+
+export const YOUR_PACKS_EMPTY_TITLE = "No packs yet";

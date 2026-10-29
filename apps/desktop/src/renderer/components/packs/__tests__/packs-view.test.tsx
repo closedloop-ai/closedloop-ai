@@ -1,5 +1,4 @@
 /**
- * @file packs-view.test.tsx
  * @description Unit test for the desktop Packs view (FEA-4087 Slice 1, member
  * slot realized in FEA-4166).
  *

@@ -1,38 +1,38 @@
 /**
  * @file claude-agent-tool-input-bound.test.ts
- * @description ISS-6480 — a delegated agent's tool input larger than
- * `MAX_STRINGIFIED_CHARS` is DROPPED ENTIRELY, not truncated.
+ * @description ISS-6480 — a delegated agent's tool input is kept WHOLE, however
+ * large. This file used to pin the opposite, on purpose.
  *
- * ⚠️ THIS PINS KNOWN-WRONG BEHAVIOUR ON PURPOSE. Do not "fix" the production
- * code to make a golden test pass without amending the oracle under
- * `packages/golden-sessions/AGENTS.md` — see ISS-6480 for the argument and the
- * open question that gates it.
+ * BEHAVIOR CHANGE, not a weakened assertion. Until ISS-6480 the assertion below
+ * read `assert.equal(over.input, undefined)` and this header carried a
+ * KNOWN-WRONG banner, because the scanner stored every input through
+ * `stringifyBounded` (1000 JSON chars) and the readers re-parsed it: past the
+ * slice landed mid-token, `JSON.parse` threw, and the input was discarded
+ * entirely. The bound never yielded a 1000-character preview — it yielded
+ * nothing, so the 1 KB it kept bought no information at all.
  *
- * The mechanism: `agentToolUses` round-trips each input through
- * `stringifyBounded` (1000 JSON chars) and then `parseJsonValue`. For an input
- * whose serialization exceeds the bound, the slice lands MID-TOKEN, `JSON.parse`
- * throws, and `parseJsonValue` returns `undefined`. So the bound does not yield a
- * 1000-character preview — it yields nothing. Measured across the golden corpus:
- * 84 of 1,886 agent tool calls, every one of them over the bound and every one
- * under it intact.
+ * That old assertion named the exact condition for changing it — "if this now
+ * holds a value, the bound was removed, which needs a golden oracle amendment
+ * first" — and that is what happened: the amendment restored `input` on 84 tool
+ * calls across 6 dossiers, authorized by the maintainer under
+ * `packages/golden-sessions/AGENTS.md`, and `DATA_REVISION` 83 re-derives
+ * already-imported sessions.
  *
- * Why this file exists: before it, the ONLY thing that noticed a change here was
- * a golden Layer-1 deep-equal, whose failure message names no ticket and reads as
- * an oracle that needs re-blessing. That is precisely the shape that gets
- * answered with an oracle amendment instead of a conversation. A named red is
- * cheaper than a silent re-bless.
+ * The paired control is the load-bearing half and is unchanged in spirit: the
+ * same tool and the same code path with an input that FITS proves the surviving
+ * value is not an artifact of `Write` inputs being handled specially.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
-import { MAX_STRINGIFIED_CHARS } from "../src/main/collectors/parsing/subagent-scanner.js";
+import { MAX_STRINGIFIED_CHARS } from "../src/main/collectors/parsing/subagent-tool-serialization.js";
 import { writeClaudeTranscript } from "./normalized-session-test-utils.js";
 import {
   assistantLine,
   DELEGATING_ONLY_PARENT,
 } from "./sidecar-diff-stats-fixtures.js";
 
-/** A `Write` block whose serialized input comfortably exceeds the bound. */
+/** A `Write` block whose serialized input comfortably exceeds the old bound. */
 function oversizedWriteBlock(id: string) {
   return {
     type: "tool_use",
@@ -45,7 +45,7 @@ function oversizedWriteBlock(id: string) {
   };
 }
 
-/** The same tool with an input that fits well inside the bound. */
+/** The same tool with an input that fits well inside the old bound. */
 function smallWriteBlock(id: string) {
   return {
     type: "tool_use",
@@ -55,7 +55,7 @@ function smallWriteBlock(id: string) {
   };
 }
 
-test("ISS-6480: an agent tool input over the bound is dropped whole, and one under it survives", async () => {
+test("ISS-6480: an agent tool input over the old bound survives whole", async () => {
   const sessionId = "sess-input-bound";
   const filePath = writeClaudeTranscript(sessionId, DELEGATING_ONLY_PARENT, {
     subagents: {
@@ -78,21 +78,23 @@ test("ISS-6480: an agent tool input over the bound is dropped whole, and one und
     (t) => t.id === "toolu_under_bound"
   );
 
-  // Both calls are RECORDED — the bound costs the input, not the tool use. If
-  // this half fails, the change is worse than ISS-6480 describes.
   assert.ok(over, "the over-bound tool use must still be recorded");
   assert.ok(under, "the under-bound tool use must still be recorded");
 
-  // The defect itself. `undefined`, not a truncated prefix, not a partial object.
-  assert.equal(
+  // The fix. Deep-equal against the ORIGINAL block input, so a truncated prefix
+  // or a re-serialized approximation fails here just as `undefined` would —
+  // "whole" is the claim, not merely "non-empty".
+  assert.deepEqual(
     over.input,
-    undefined,
-    "KNOWN-WRONG (ISS-6480): an over-bound input is discarded entirely rather than truncated — if this now holds a value, the bound was removed, which needs a golden oracle amendment first"
+    oversizedWriteBlock("toolu_over_bound").input,
+    "an input over the old bound must now be kept verbatim, not dropped"
+  );
+  assert.ok(
+    JSON.stringify(over.input).length > MAX_STRINGIFIED_CHARS,
+    "the fixture must still exceed the bound, or this test proves nothing"
   );
 
-  // The paired control that makes the assertion above meaningful: the same tool,
-  // the same code path, an input that fits — proving the drop is caused by the
-  // bound and not by `Write` inputs being dropped generally.
+  // The paired control: same tool, same path, an input that always fit.
   assert.deepEqual(
     under.input,
     { file_path: "/repo/src/small.ts", content: "ok" },

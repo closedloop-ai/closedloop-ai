@@ -5,9 +5,9 @@ import type { Meta, StoryObj } from "@storybook/react";
  * A control that allows the user to toggle between checked and not checked.
  */
 const meta: Meta<typeof Switch> = {
-  title: "Design System/Primitives/Switch",
+  title: "Primitives v1.0/Inputs/Switch",
   component: Switch,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
   parameters: {
     layout: "centered",

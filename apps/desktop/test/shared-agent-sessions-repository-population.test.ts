@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import {
   type SessionCursorRow,
   SessionListCursorSortKey,
 } from "../src/main/agent-sync/agent-session-read-model.js";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
+import { SESSION_HYDRATION_WINDOW } from "../src/main/session/session-hydration-window.js";
 import {
   getSharedAgentSessions,
   getSharedAgentSessionUsage,
-  MAX_WORKING_SET_SESSIONS,
 } from "../src/main/session/shared-agent-sessions-api.js";
 import {
   createFakeSource,
@@ -21,7 +21,7 @@ import {
  * ISS-4558: the Repository facet advertises a per-repo session count drawn from
  * the uncapped SQL aggregate over the WHOLE corpus, while selecting that repo
  * falls to the hydrated path whose matched id set is capped at
- * MAX_WORKING_SET_SESSIONS. ISS-4535 already fixed the empty-table half (the
+ * SESSION_HYDRATION_WINDOW. ISS-4535 already fixed the empty-table half (the
  * predicate now runs pre-hydration, so an older-than-the-window repo resolves),
  * but a repo with MORE than the ceiling's worth of sessions still advertises a
  * count the filtered list cannot reach.
@@ -129,7 +129,7 @@ describe("Sessions Repository facet ↔ filter population", () => {
 
   test("the production request shape — bounded window + lastActivity sort — reaches the same population the facet counts (ISS-4558)", async () => {
     const targetRepo = "closedloop-ai/over-cap";
-    const inWindow = MAX_WORKING_SET_SESSIONS + 50;
+    const inWindow = SESSION_HYDRATION_WINDOW + 50;
     const beforeWindow = 25;
     const source = createOverCapRepoSource(targetRepo, inWindow, beforeWindow);
 
@@ -237,33 +237,43 @@ describe("Sessions Repository facet ↔ filter population", () => {
   // tamsinb (cid 3754019307): with the paging branch now reachable, an
   // assertion that only runs there stops covering the FALLBACK's cap. What
   // still forces the fallback is a repo filter combined with a predicate that
-  // needs the hydrated row — `harness` here — and THAT path must still stop at
-  // the ceiling. Note the request shape tamsinb suggested for this (repo +
-  // dates + sortBy) is precisely the one that now PAGES, which is the point of
-  // this PR, so the fallback is forced the way it is actually still reached.
-  test("a repo filter that falls back still hydrates at most the cap (FEA-4286)", async () => {
+  // needs the hydrated row — `harness` here — and THAT path must still bound its
+  // residency. Note the request shape tamsinb suggested for this (repo + dates
+  // + sortBy) is precisely the one that PAGES, so the fallback is forced the way
+  // it is actually still reached.
+  //
+  // ISS-6895 changes what "bounded" means here. It used to mean the fallback
+  // hydrated ONE call of exactly the ceiling and discarded the remaining 50
+  // matches, which is why the summary disagreed with the list. It now means the
+  // fallback hydrates the matched set in successive ceiling-sized WINDOWS: no
+  // single call exceeds the ceiling (the FEA-4286 protection, intact), and no
+  // matched id is dropped (the ISS-6895 invariant).
+  test("a repo filter that falls back hydrates the matched set in bounded windows (ISS-6895)", async () => {
     const targetRepo = "closedloop-ai/over-cap";
-    const source = createOverCapRepoSource(
-      targetRepo,
-      MAX_WORKING_SET_SESSIONS + 50,
-      0
-    );
+    const matchedSessions = SESSION_HYDRATION_WINDOW + 50;
+    const source = createOverCapRepoSource(targetRepo, matchedSessions, 0);
 
     await getSharedAgentSessions(source, {
       ...sessionsViewListRequest([targetRepo]),
       // Not SQL-expressible, so `canPageBeforeLoading` refuses the read and the
-      // capped full-corpus hydration answers it.
+      // windowed hydration answers it.
       harness: "claude",
     });
 
     const loadCalls = source.calls.filter(
       (call) => call.kind === "loadSyncedSessions"
     );
-    assert.equal(loadCalls.length, 1, "expected a single hydration call");
+    for (const call of loadCalls) {
+      assert.ok(
+        (call.ids?.length ?? 0) <= SESSION_HYDRATION_WINDOW,
+        `a hydration call carried ${call.ids?.length} ids, above the ${SESSION_HYDRATION_WINDOW} residency ceiling`
+      );
+    }
+    const hydratedIds = loadCalls.flatMap((call) => call.ids ?? []);
     assert.equal(
-      loadCalls[0]?.ids?.length,
-      MAX_WORKING_SET_SESSIONS,
-      "the fallback must hydrate the matched set truncated at the ceiling"
+      new Set(hydratedIds).size,
+      matchedSessions,
+      "every matched session must be hydrated across the windows — a dropped tail is the ISS-6895 defect"
     );
   });
 
@@ -274,7 +284,7 @@ describe("Sessions Repository facet ↔ filter population", () => {
     const targetRepo = "closedloop-ai/over-cap";
     const source = createOverCapRepoSource(
       targetRepo,
-      MAX_WORKING_SET_SESSIONS + 50,
+      SESSION_HYDRATION_WINDOW + 50,
       25
     );
 
@@ -285,8 +295,8 @@ describe("Sessions Repository facet ↔ filter population", () => {
         continue;
       }
       assert.ok(
-        (call.ids?.length ?? 0) <= MAX_WORKING_SET_SESSIONS,
-        `repo-filtered hydration loaded ${call.ids?.length} sessions, above the ${MAX_WORKING_SET_SESSIONS} ceiling`
+        (call.ids?.length ?? 0) <= SESSION_HYDRATION_WINDOW,
+        `repo-filtered hydration loaded ${call.ids?.length} sessions, above the ${SESSION_HYDRATION_WINDOW} ceiling`
       );
     }
   });

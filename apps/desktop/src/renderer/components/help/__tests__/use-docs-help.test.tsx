@@ -180,17 +180,29 @@ describe("useDocsHelp — bundle readiness", () => {
     expect(result.current.selectedPath).toBeNull();
   });
 
-  it("treats an available-but-empty snapshot as unavailable, not an idle prompt", async () => {
-    // A bundle that claims available yet exposes no navigable page is broken:
-    // there is nothing to select, so the reader must get the "view online"
-    // escape hatch rather than a prompt the user can never satisfy.
+  /**
+   * whitlockk review. This used to answer `unavailable` for an available snapshot
+   * with nothing navigable — the SAME answer a snapshot that never arrived
+   * gets — which spent the corrupt-vs-empty distinction one line after the
+   * guard established it, before any body could render it.
+   *
+   * The hook now reports what the snapshot said and leaves the reading to the
+   * body: `HelpSurfaceV2` draws "Nothing to browse" with the refusal notice
+   * above it, and `HelpLegacyBody` keeps its pre-ISS-10005 unavailable screen by
+   * making that call for itself. Nothing lands on an idle prompt either way,
+   * which was the concern behind the old shape.
+   */
+  it("reports an available-but-unbrowsable snapshot as ready, and selects nothing", async () => {
     installDocsHelp({ nav: vi.fn(async () => ({ groups: [] })) });
 
     const { result } = renderHook(() => useDocsHelp());
     await flush();
 
-    expect(result.current.bundleState).toBe("unavailable");
+    expect(result.current.bundleState).toBe("ready");
     expect(result.current.selectedPath).toBeNull();
+    // The pair that keeps this from being a blanket "always ready": a snapshot
+    // that reports itself unavailable still is.
+    expect(result.current.navGroups).toEqual([]);
   });
 
   it("degrades to unavailable when the status read rejects", async () => {
@@ -218,10 +230,13 @@ describe("useDocsHelp — the reader", () => {
     const { result } = renderHook(() => useDocsHelp());
     await flush();
 
+    // ISS-10044's positive sibling: a RESOLVED "missing" is a real answer about
+    // the bundle's contents and keeps its own state, so the rejection below
+    // cannot be satisfied by a hook that simply stopped producing `missing`.
     expect(result.current.pageState).toEqual({ kind: "missing" });
   });
 
-  it("reports missing when the page read rejects", async () => {
+  it("reports a page read that rejected as an error, not as a missing page (ISS-10044)", async () => {
     installDocsHelp({
       getPage: vi.fn(() => Promise.reject(new Error("ipc down"))),
     });
@@ -229,7 +244,29 @@ describe("useDocsHelp — the reader", () => {
     const { result } = renderHook(() => useDocsHelp());
     await flush();
 
-    expect(result.current.pageState).toEqual({ kind: "missing" });
+    // `missing` renders "This page isn't in the bundled docs snapshot" — a
+    // claim about what the snapshot HOLDS, manufactured from a request that
+    // never returned. This used to assert exactly that.
+    expect(result.current.pageState).toEqual({ kind: "error" });
+  });
+
+  it("reports an unknown getPage kind as an error, not as a missing page (ISS-10044)", async () => {
+    installDocsHelp({
+      // A main process one version ahead of this renderer, answering with a
+      // kind `DocsHelpGetPageResult` does not carry. The union is compile-time
+      // only, so nothing stops this arriving — and the `else` that used to
+      // catch it published `missing`, a claim about the snapshot's contents
+      // that an unreadable answer cannot support (whitlockk review).
+      getPage: vi.fn(
+        async () =>
+          ({ kind: "unavailable" }) as unknown as DocsHelpGetPageResult
+      ),
+    });
+
+    const { result } = renderHook(() => useDocsHelp());
+    await flush();
+
+    expect(result.current.pageState).toEqual({ kind: "error" });
   });
 
   it("serves a revisited page from cache instead of crossing IPC again", async () => {
@@ -451,5 +488,79 @@ describe("useDocsHelp — search", () => {
 
     expect(result.current.searchHits).toEqual([]);
     expect(result.current.isSearching).toBe(false);
+    // ISS-10044. Without this the pane reads `hits: []` on a settled search as
+    // "this query matched nothing" — against an index nothing consulted.
+    expect(result.current.searchFailed).toBe(true);
+  });
+
+  it("does not flag a search that ran and genuinely matched nothing (ISS-10044)", async () => {
+    installDocsHelp({
+      search: vi.fn(async (query: string) => ({ query, hits: [] })),
+    });
+    const { result } = renderHook(() => useDocsHelp());
+    await flush();
+
+    act(() => {
+      result.current.setSearchQuery("kubernetes");
+    });
+    await flush(150);
+
+    // The positive sibling for the flag: an empty ANSWER and an absent answer
+    // are both zero hits, and only this pins that the hook tells them apart.
+    expect(result.current.searchHits).toEqual([]);
+    expect(result.current.searchFailed).toBe(false);
+  });
+
+  it("flags a resolved reply whose hits could not be read (ISS-10044)", async () => {
+    installDocsHelp({
+      // RESOLVED, not rejected: a skewed main process whose `hits` is not a
+      // list. The guard drops it to `[]`, which is the same value a search
+      // that matched nothing produces — so without asking the guard WHY it is
+      // empty, the pane renders `No results for "…"` about a corpus nothing
+      // read (whitlockk review).
+      search: vi.fn(
+        async (query: string) =>
+          ({
+            query,
+            hits: { 0: "not-a-list" },
+          }) as unknown as DocsHelpSearchResult
+      ),
+    });
+    const { result } = renderHook(() => useDocsHelp());
+    await flush();
+
+    act(() => {
+      result.current.setSearchQuery("sett");
+    });
+    await flush(150);
+
+    expect(result.current.searchHits).toEqual([]);
+    expect(result.current.isSearching).toBe(false);
+    expect(result.current.searchFailed).toBe(true);
+  });
+
+  it("clears a past failure as the next query goes out (ISS-10044)", async () => {
+    const search = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("index unreadable"))
+      .mockImplementation(async (query: string) => ({ query, hits: [] }));
+    installDocsHelp({ search });
+    const { result } = renderHook(() => useDocsHelp());
+    await flush();
+
+    act(() => {
+      result.current.setSearchQuery("sett");
+    });
+    await flush(150);
+    expect(result.current.searchFailed).toBe(true);
+
+    act(() => {
+      result.current.setSearchQuery("kubernetes");
+    });
+    await flush(150);
+
+    // A failure that outlived its own query would put the failure sentence over
+    // the next query's results — the same lie, pointed the other way.
+    expect(result.current.searchFailed).toBe(false);
   });
 });

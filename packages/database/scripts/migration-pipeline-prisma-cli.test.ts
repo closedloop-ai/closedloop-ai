@@ -6,13 +6,13 @@ const spawnMock = vi.hoisted(() => vi.fn());
 const recoverMigrateDeployFailureMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", () => ({ spawn: spawnMock }));
-vi.mock("./migrate-deploy-recovery", () => ({
+vi.mock("./migrate-deploy-recovery", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./migrate-deploy-recovery")>()),
   recoverMigrateDeployFailure: recoverMigrateDeployFailureMock,
 }));
 
-const { PRISMA_CLI_ENTRY_ENV, runMigrateWithRetry } = await import(
-  "./migration-pipeline"
-);
+const { runMigrateWithRetry } = await import("./migration-pipeline");
+const { PRISMA_CLI_ENTRY_ENV } = await import("./prisma-cli");
 
 /*
  * The two `prisma` CLI wrappers inside migration-pipeline.ts -- the migrate

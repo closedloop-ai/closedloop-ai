@@ -4,16 +4,16 @@
       {
         "key": "merged",
         "label": "Captured PRs",
-        "value": 1,
+        "value": null,
         "format": "number",
         "sub": "PRs found in local sessions",
         "deltaPct": null,
-        "deltaBasis": "computed"
+        "deltaBasis": "not_computed"
       },
       {
         "key": "mergedCount",
         "label": "Merged PRs",
-        "value": 0,
+        "value": null,
         "format": "number",
         "sub": "PRs merged in range",
         "deltaPct": null,
@@ -35,6 +35,15 @@
         "value": null,
         "format": "number",
         "sub": "thousands of lines changed in captured PRs \u00b7 sized 0 of 1 captured PRs scanned",
+        "deltaPct": null,
+        "deltaBasis": "computed"
+      },
+      {
+        "key": "loc",
+        "label": "Captured LOC",
+        "value": null,
+        "format": "number",
+        "sub": "lines changed in captured PRs \u00b7 sized 0 of 1 captured PRs scanned",
         "deltaPct": null,
         "deltaBasis": "computed"
       },
@@ -69,6 +78,16 @@
         "internal": true
       },
       {
+        "key": "mergedLoc",
+        "label": "Merged LOC",
+        "value": null,
+        "format": "number",
+        "sub": "lines landed",
+        "deltaPct": null,
+        "deltaBasis": "not_computed",
+        "internal": true
+      },
+      {
         "key": "cost",
         "label": "Cost",
         "value": 0.04918,
@@ -88,7 +107,7 @@
       },
       {
         "key": "pr-size",
-        "label": "Median PR size",
+        "label": "Median captured PR size",
         "value": null,
         "format": "number",
         "sub": "median lines changed per captured PR \u00b7 sized 0 of 1 captured PRs scanned",
@@ -100,6 +119,10 @@
       "kpi:merged": "available",
       "kpi:ttm": "available",
       "kpi:merge-rate": "unavailable",
+      "chart:prByRepo": "unavailable",
+      "chart:prByRepo:donut": "unavailable",
+      "chart:prByState": "unavailable",
+      "chart:prByState:donut": "unavailable",
       "chart:branchesWithoutPr": "available",
       "chart:branchesWithoutPr:donut": "available",
       "chart:checkStatus": "unavailable",
@@ -118,14 +141,6 @@
           }
         ],
         "points": [
-          {
-            "date": "2026-03-22",
-            "values": {
-              "agent": 0,
-              "manual": 0,
-              "merged": 0
-            }
-          },
           {
             "date": "2026-03-23",
             "values": {
@@ -963,12 +978,6 @@
         ],
         "points": [
           {
-            "date": "2026-03-22",
-            "values": {
-              "sessions": 0
-            }
-          },
-          {
             "date": "2026-03-23",
             "values": {
               "sessions": 0
@@ -1519,12 +1528,6 @@
         ],
         "points": [
           {
-            "date": "2026-03-22",
-            "values": {
-              "events": 0
-            }
-          },
-          {
             "date": "2026-03-23",
             "values": {
               "events": 0
@@ -2068,7 +2071,6 @@
       },
       "activityHeatmap": {
         "days": [
-          "2026-03-22",
           "2026-03-23",
           "2026-03-24",
           "2026-03-25",
@@ -2185,12 +2187,20 @@
         {
           "key": "Stop",
           "label": "Stop",
-          "value": 8
+          "value": 8,
+          "population": {
+            "total": 12,
+            "categories": 2
+          }
         },
         {
           "key": "PostToolUse",
           "label": "PostToolUse",
-          "value": 4
+          "value": 4,
+          "population": {
+            "total": 12,
+            "categories": 2
+          }
         }
       ],
       "sessionsByStatus": [
@@ -2273,10 +2283,6 @@
           }
         ],
         "points": [
-          {
-            "date": "2026-03-22",
-            "values": {}
-          },
           {
             "date": "2026-03-23",
             "values": {}
@@ -2658,10 +2664,6 @@
         ],
         "points": [
           {
-            "date": "2026-03-22",
-            "values": {}
-          },
-          {
             "date": "2026-03-23",
             "values": {}
           },
@@ -3037,12 +3039,6 @@
           }
         ],
         "points": [
-          {
-            "date": "2026-03-22",
-            "values": {
-              "autonomy": null
-            }
-          },
           {
             "date": "2026-03-23",
             "values": {
@@ -3623,34 +3619,31 @@
         {
           "key": "Read",
           "label": "Read",
-          "value": 2
+          "value": 2,
+          "population": {
+            "total": 4,
+            "categories": 3
+          }
         },
         {
           "key": "Bash",
           "label": "Bash",
-          "value": 1
+          "value": 1,
+          "population": {
+            "total": 4,
+            "categories": 3
+          }
         },
         {
           "key": "Edit",
           "label": "Edit",
-          "value": 1
+          "value": 1,
+          "population": {
+            "total": 4,
+            "categories": 3
+          }
         }
       ],
-      "agentPipeline": {
-        "nodes": [
-          {
-            "subagentType": "main",
-            "total": 3,
-            "completed": 3,
-            "errors": 0,
-            "sessions": 3,
-            "successRate": 100,
-            "avgDuration": 1660,
-            "trend": []
-          }
-        ],
-        "edges": []
-      },
       "agentsByStatus": [
         {
           "key": "completed",
@@ -3673,12 +3666,6 @@
           }
         ],
         "points": [
-          {
-            "date": "2026-03-22",
-            "values": {
-              "tool-runs": 0
-            }
-          },
           {
             "date": "2026-03-23",
             "values": {
@@ -4220,6 +4207,21 @@
             }
           }
         ]
+      },
+      "agentPipeline": {
+        "nodes": [
+          {
+            "subagentType": "main",
+            "total": 3,
+            "completed": 3,
+            "errors": 0,
+            "sessions": 3,
+            "successRate": 100,
+            "avgDuration": 1660,
+            "trend": []
+          }
+        ],
+        "edges": []
       },
       "spendByOutcome": [
         {

@@ -1,3 +1,4 @@
+import type { TraceComment } from "@repo/api/src/types/comment";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   markCreatedIds,
@@ -199,5 +200,99 @@ describe("removeTraceCommentOrReply", () => {
     const remaining = removeTraceCommentOrReply([comment], "reply-1");
     expect(remaining).toHaveLength(1);
     expect(remaining[0]?.replies).toHaveLength(0);
+  });
+});
+
+function withoutReplies(comment: TraceComment): TraceComment {
+  const { replies: _replies, ...rest } = comment;
+  return rest;
+}
+
+describe("merge helpers over payloads that omit replies", () => {
+  it("re-attaches a marked reply onto a fresher winner that carries no replies", () => {
+    const cached = makeTraceComment("thread", {
+      replies: [makeTraceCommentReply("reply-new", "just replied")],
+    });
+    const incoming = withoutReplies(
+      makeTraceComment("thread edited", {
+        createdAt: "2026-08-04T11:00:00.000Z",
+      })
+    );
+    const markers = new Map([
+      ["reply-new", Date.now() + TRACE_COMMENT_CREATE_MARKER_TTL_MS],
+    ]);
+
+    const merged = mergeTraceCommentList([cached], [incoming], markers);
+
+    expect(merged[0]?.body).toBe("thread edited");
+    expect(merged[0]?.replies?.map((reply) => reply.id)).toStrictEqual([
+      "reply-new",
+    ]);
+  });
+
+  it("appends a marked reply after the winner's own replies", () => {
+    const cached = makeTraceComment("thread", {
+      replies: [makeTraceCommentReply("reply-new", "just replied")],
+    });
+    const incoming = makeTraceComment("thread", {
+      createdAt: "2026-08-04T11:00:00.000Z",
+      replies: [makeTraceCommentReply("reply-old", "server reply")],
+    });
+    const markers = new Map([
+      ["reply-new", Date.now() + TRACE_COMMENT_CREATE_MARKER_TTL_MS],
+    ]);
+
+    const merged = mergeTraceCommentList([cached], [incoming], markers);
+
+    expect(merged[0]?.replies?.map((reply) => reply.id)).toStrictEqual([
+      "reply-old",
+      "reply-new",
+    ]);
+  });
+
+  it("keeps the incoming winner unchanged when the cached copy has no replies", () => {
+    const cached = withoutReplies(makeTraceComment("old"));
+    const incoming = makeTraceComment("new", {
+      createdAt: "2026-08-04T11:00:00.000Z",
+    });
+    const merged = mergeTraceCommentList([cached], [incoming], new Map());
+    expect(merged[0]).toBe(incoming);
+  });
+
+  it("keeps the existing root when its newer root outweighs an older reply", () => {
+    const existing = makeTraceComment("existing", {
+      createdAt: "2026-08-04T11:00:00.000Z",
+      replies: [makeTraceCommentReply("reply-1", "older reply")],
+    });
+    const incoming = makeTraceComment("incoming", {
+      createdAt: "2026-08-04T10:00:00.000Z",
+    });
+    expect(mergeTraceComments([existing], incoming)[0]?.body).toBe("existing");
+  });
+
+  it("prunes, reconciles, and removes over comments that omit replies", () => {
+    const bare = withoutReplies(makeTraceComment("bare", { id: "comment-1" }));
+    const tombstones = new Map([["other", Date.now() + 5000]]);
+    expect(
+      pruneTombstonedComments([bare], tombstones)[0]?.replies
+    ).toStrictEqual([]);
+
+    reconcileDeleteTombstones([bare], tombstones);
+    expect(tombstones.has("other")).toBe(false);
+
+    const markers = new Map([["comment-1", Date.now() + 5000]]);
+    reconcileCreateMarkers([bare], markers);
+    expect(markers.has("comment-1")).toBe(false);
+
+    expect(removeTraceCommentOrReply([bare], "nope")[0]?.replies).toStrictEqual(
+      []
+    );
+  });
+
+  it("returns an independent copy when there are no tombstones", () => {
+    const list = [makeTraceComment("a")];
+    const result = pruneTombstonedComments(list, new Map());
+    expect(result).toStrictEqual(list);
+    expect(result).not.toBe(list);
   });
 });

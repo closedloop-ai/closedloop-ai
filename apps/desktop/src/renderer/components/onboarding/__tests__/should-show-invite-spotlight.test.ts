@@ -32,11 +32,9 @@ function eligible(
   overrides: Partial<Parameters<typeof shouldShowInviteSpotlight>[0]> = {}
 ) {
   return {
-    answeredThisRun: false,
     authStatus: DesktopAuthStatus.Authenticated,
     dismissal: { dismissed: false, organizationId: ORG_ID },
-    flagEnabled: true,
-    flagsResolved: true,
+    guidedOnboardingOpen: false,
     organizationId: ORG_ID,
     record: CONSENTED,
     recordResolved: true,
@@ -47,20 +45,6 @@ function eligible(
 describe("shouldShowInviteSpotlight", () => {
   it("shows for an authenticated org member who has consented and not answered", () => {
     expect(shouldShowInviteSpotlight(eligible())).toBe(true);
-  });
-
-  it("withholds while the flag is off", () => {
-    expect(shouldShowInviteSpotlight(eligible({ flagEnabled: false }))).toBe(
-      false
-    );
-  });
-
-  it("withholds while the flag snapshot is unresolved", () => {
-    // ISS-5037: an unresolved snapshot reads every flag as its default, so a
-    // `true` here is not yet an answer about what the user turned on.
-    expect(shouldShowInviteSpotlight(eligible({ flagsResolved: false }))).toBe(
-      false
-    );
   });
 
   it("withholds on a signed-out device", () => {
@@ -112,32 +96,17 @@ describe("shouldShowInviteSpotlight", () => {
     ).toBe(false);
   });
 
-  it("fires on the run the takeover was answered, before the record re-reads", () => {
-    // The arrival run is the one this nudge is named after, and it is exactly
-    // the run whose `record` is stale: `useSyncConsentRecord` holds per-call-site
-    // state and re-reads only on a user change, so the takeover's `refresh()`
-    // never reaches this consumer. Without the arrival signal the nudge waited
-    // for a relaunch.
+  it("withholds while the guided onboarding takeover is on screen", () => {
+    // ISS-11315 Defect 5, and the arm this suite had no case for. The wizard's
+    // own Continue on the sync step is what records consent, so every other
+    // condition here is satisfied at the exact moment the takeover advances to
+    // its next step — the nudge opened UNDERNEATH it. Not cosmetic: Radix
+    // closes a popover on a focus-outside and the wizard takes focus on every
+    // step change, and that auto-close runs `answer()`, which is the same sink
+    // as a deliberate "Maybe later". One frame under the dialog PERMANENTLY
+    // spends the arrival nudge for that org.
     expect(
-      shouldShowInviteSpotlight(
-        eligible({
-          answeredThisRun: true,
-          record: { bound: false, organizationId: null, tier: null },
-        })
-      )
-    ).toBe(true);
-  });
-
-  it("does not let an arrival override an answer already given", () => {
-    // `answeredThisRun` says the takeover is shut, not that the nudge is
-    // unanswered. A user who already said Maybe later stays unasked.
-    expect(
-      shouldShowInviteSpotlight(
-        eligible({
-          answeredThisRun: true,
-          dismissal: { dismissed: true, organizationId: ORG_ID },
-        })
-      )
+      shouldShowInviteSpotlight(eligible({ guidedOnboardingOpen: true }))
     ).toBe(false);
   });
 

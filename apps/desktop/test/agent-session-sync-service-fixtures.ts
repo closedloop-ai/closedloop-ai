@@ -4,6 +4,11 @@
 // such a file smaller. Mirrors the existing `fake-sync-source.ts` /
 // `agent-session-sync-component-test-utils.ts` split; behavior is unchanged.
 import { MAX_SYNCED_ACTIVITY_SEGMENTS } from "@repo/api/src/types/agent-session";
+import {
+  MAX_CONSECUTIVE_TRANSPORT_ERRORS,
+  MAX_CONSECUTIVE_TRANSPORT_TIMEOUTS,
+  MAX_CONSECUTIVE_VALIDATION_FAILED,
+} from "../src/main/agent-sync/agent-session-sync-backoff-policy.js";
 import type {
   AgentSessionSyncTransportPayload,
   SyncedAgentSession,
@@ -13,6 +18,7 @@ import type { AgentSessionSyncServiceOptions } from "../src/main/agent-sync/agen
 import type { AgentSessionSyncSource } from "../src/main/agent-sync/agent-session-sync-source.js";
 import type { DesktopAgentSessionsAck } from "../src/main/cloud/cloud-protocol.js";
 import type { DesktopSyncBatchEventInput } from "../src/main/telemetry/app-otel-runtime.js";
+import { LANE_STALL_MAX_RETRY_MS } from "../src/shared/lane-stall-clock.js";
 import { FakeSyncSource, makeSyncedSession } from "./fake-sync-source.js";
 
 /**
@@ -24,10 +30,18 @@ import { FakeSyncSource, makeSyncedSession } from "./fake-sync-source.js";
  * cleanup keeps the global mutation from leaking across tests on failure.
  */
 export async function runWithMockedNow(
-  body: (clock: { advance: (ms: number) => void }) => Promise<void>
+  body: (clock: { advance: (ms: number) => void }) => Promise<void>,
+  /**
+   * ISS-7496: pin the virtual clock's ORIGIN, not just its motion. A suite that
+   * asserts a duration computed against `Date.now()` needs a hand-written
+   * expected value, and it cannot have one while the origin is whatever the wall
+   * clock said. Defaults to the real clock so every existing caller is
+   * unaffected.
+   */
+  startMs?: number
 ): Promise<void> {
   const realNow = Date.now;
-  let virtualNow = realNow();
+  let virtualNow = startMs ?? realNow();
   Date.now = () => virtualNow;
   try {
     await body({
@@ -110,12 +124,19 @@ export function makeServiceWithIdentity(
    * (`ack_clear_failed`, `ack_omitted`) could not be asserted by any suite that
    * needed a durable, identity-keyed outbox.
    */
-  capture?: { sync: DesktopSyncBatchEventInput[] }
+  capture?: { sync: DesktopSyncBatchEventInput[] },
+  /**
+   * ISS-6031 follow-up: the signed-in account. Omitted by default so every
+   * existing suite keeps the pre-adoption behavior (a null identity skips the
+   * retired-target sweep outright).
+   */
+  identity?: { organizationId: string; userId: string }
 ) {
   return new AgentSessionSyncService({
     isHttpReady: () => true,
     getSource: () => source,
     getSyncComputeTargetId: () => computeTargetId,
+    ...(identity ? { getSyncIdentity: () => identity } : {}),
     sendBatch,
     ...(capture
       ? {
@@ -317,6 +338,41 @@ const SYNC_TELEMETRY_ALLOWED_KEYS = new Set([
   "latencyMs",
   // FEA-3426: the closed failure/dead-letter reason enum (never ids/content).
   "reason",
+  // ISS-8589: the closed five-member lane enum, the same class as `reason`. It
+  // reached this guard only once the session lane's failure seam started naming
+  // its own lane instead of leaving the composition to re-stamp it downstream —
+  // a lane id is never interpolated from a variable, so it can carry no id and
+  // no content. A SESSION ID still trips this guard.
+  "lane",
+  // ISS-7248 widened what a FAILED attempt reports, and only by things of the
+  // same class this guard exists to permit: `batchId` is the client-generated
+  // UUID the request body already carries (the server-join key), `sessionCount`
+  // and `attempt` are counts, and `payloadShaping` is a closed enum. A SESSION
+  // ID still trips this guard, which is the leak it was written to catch.
+  "batchId",
+  "sessionCount",
+  "attempt",
+  "payloadShaping",
+  // ISS-7265 added one more of that same class: how many sessions in the failed
+  // batch shipped without their activity tiling. A count floored at 0 by
+  // `safeCount` and omitted entirely when absent — it names no session and
+  // carries no transcript text, so permitting it does not widen what this guard
+  // rejects. A SESSION ID still trips it.
+  "tilingStrippedSessionCount",
+  // ISS-7496: a DURATION, the same class again — whole milliseconds between the
+  // freshest confirmed session's `updatedAt` and the ack that confirmed it. It
+  // is derived from a timestamp and never carries one: the absolute time, the
+  // session it came from, and its id are all unrecoverable from the difference.
+  // A SESSION ID still trips this guard.
+  "freshestSessionLagMs",
+  // ISS-7401: a COUNT of the outbox ids one ack asked to drop — the same class
+  // again, and the safest member of it: `buildSyncBatchAttributes` projects an
+  // explicit key list, so unlike every entry above this one never becomes a
+  // `sync.*` span attribute at all. It rides `SessionSyncBatchEvent` only to
+  // reach the ISS-5387 burn-down tee. It names no session, carries no
+  // transcript text, and is derived from `ackedIds.length` rather than from the
+  // ids. A SESSION ID still trips this guard.
+  "durablyClearedRows",
 ]);
 
 /**
@@ -331,3 +387,90 @@ export function leakedSyncTelemetryKeys(
     .flatMap((event) => Object.keys(event))
     .filter((key) => !SYNC_TELEMETRY_ALLOWED_KEYS.has(key));
 }
+
+/** ms a bounded event wait allows before it reports the event never arrived. */
+const EVENT_WAIT_TIMEOUT_MS = 5000;
+
+/**
+ * Await a fixture event with an EXPLICIT bound, so a missing event fails with
+ * what was being waited for instead of riding the runner's whole-test timeout.
+ */
+export async function awaitEvent(
+  promise: Promise<void>,
+  what: string
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`timed out waiting for ${what}`)),
+          EVENT_WAIT_TIMEOUT_MS
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
+ * Settle a STALE continuation — one whose pass is no longer the published
+ * `sessionSyncPromise`, so `whenSessionSyncSettled()` cannot see it.
+ *
+ * Two steps, and neither is a turn count. First a real fixture event proving the
+ * parked read actually resumed. Then ONE macrotask boundary, which is a barrier
+ * rather than a guess: from that resume to the durable write under test, every
+ * step is a microtask (the fake source is synchronous throughout), and a
+ * `setImmediate` callback runs only after the microtask queue has fully drained.
+ * A second boundary would add nothing, which is the test that tells a barrier
+ * apart from a guess.
+ */
+export async function awaitStaleContinuation(
+  resumed: Promise<void>,
+  what: string
+): Promise<void> {
+  await awaitEvent(resumed, what);
+  await flushAgentSessionSync();
+}
+
+/**
+ * How many rounds put a retry FAR past every per-reason dead-letter budget, so a
+ * rejection class that burned ANY counter would strand the row mid-loop: a
+ * dead-lettered id defers for `DEAD_LETTER_RETRY_AFTER_MS` (24h), far beyond the
+ * 30s advances these suites make, and the attempt count would stop short.
+ *
+ * Shared, not copied: `agent-session-sync-service.test.ts` pins the fold from
+ * the ack side and `session-sync-composed-offline-post.test.ts` from the
+ * composed-lane side, and two hand-maintained sums of the same budgets drift —
+ * whoever edits one has no reason to look at the other, and the stale copy stays
+ * green while no longer meaning "past every budget".
+ *
+ * ISS-7730 dropped the `ingestion_failed` term and ISS-8605 dropped the
+ * `ack_timeout` and `rate_limited` terms: none of those classes HAS a
+ * consecutive-failure budget any more, so summing one in would be inventing a
+ * number. What remains is every surviving per-row budget on this lane.
+ */
+export const ROUNDS_PAST_EVERY_FAILURE_BUDGET =
+  MAX_CONSECUTIVE_TRANSPORT_TIMEOUTS +
+  MAX_CONSECUTIVE_TRANSPORT_ERRORS +
+  MAX_CONSECUTIVE_VALIDATION_FAILED;
+
+/**
+ * ISS-8610: how far a test must advance the virtual clock to clear ONE rung of
+ * the session lane's environmental ladder, whichever rung it is on.
+ *
+ * The 401/403/no-target defers used to be a flat 30s, so a test advanced by that
+ * constant. They now stage off the run's own age, and the rung a given round
+ * lands on is a function of how long the run has been open — so a test that
+ * wants "one more attempt" advances past the ladder's per-delay CAP rather than
+ * re-deriving the schedule, which would make it a second implementation of the
+ * thing under test.
+ *
+ * Well inside the 24h give-up for any realistic round count: 13 rounds (the
+ * value above) is ~13 hours.
+ */
+export const PAST_ANY_LANE_ENVIRONMENTAL_RUNG_MS = LANE_STALL_MAX_RETRY_MS + 1;

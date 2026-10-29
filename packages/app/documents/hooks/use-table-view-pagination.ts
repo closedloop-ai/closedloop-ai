@@ -1,22 +1,27 @@
 "use client";
 
 import type { ProjectTreeResponse } from "@repo/api/src/types/project-tree";
+import { resolveTotalPages } from "@repo/api/src/utils/math";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
 import type { FilterCategory } from "@repo/app/documents/components/table/filter-category";
 import {
   SORT_KEYS,
   SortKey,
 } from "@repo/app/documents/components/table/sort-keys";
+import { useTableViewOrdering } from "@repo/app/documents/hooks/use-table-view-ordering";
 import type { DocumentRowData } from "@repo/app/documents/lib/artifact-row-adapter";
 import type { GroupByMode } from "@repo/app/documents/lib/group-by";
 import {
+  buildTableViewPagePlan,
   countTableViewRows,
   pageTableView,
   type TableViewPage,
+  type TableViewPagePlan,
+  type TableViewPlanPage,
 } from "@repo/app/documents/lib/table-view-pagination";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { useSortParams } from "@repo/app/shared/hooks/use-sort-params";
-import { STACK_RANK_PROJECT_PAGE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import { GROUPED_SECTION_PAGING_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { DEFAULT_TABLE_PAGE_SIZE } from "@repo/design-system/components/ui/table-page-size-select";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -36,7 +41,11 @@ export type UseTableViewPaginationInput = {
    */
   groupBy: GroupByMode;
   /** Sort persistence key `DocumentsView` reads, so paging order matches. */
-  sortPersistenceKey: string;
+  /**
+   * ISS-9726: `null` (the active organization has not resolved) takes the same
+   * memory-only branch an omitted key does.
+   */
+  sortPersistenceKey: string | null;
   pageSize?: number;
   /**
    * ISS-5307: when `false`, the surface is not paged and this hook does no
@@ -77,6 +86,21 @@ export type UseTableViewPaginationResult = {
   /** The `documents` + `treeData` subset to feed `DocumentsView` for this page. */
   pagedDocuments: DocumentRowData[];
   pagedTreeData: ProjectTreeResponse | null | undefined;
+  /**
+   * ISS-4704 — each group section's size over the FULL unpaged list, by
+   * `GroupSectionDescriptor.key`.
+   *
+   * `undefined` means no section-aware plan was built (ungrouped board, hook
+   * disabled, or the gate off), so the renderer holds only this page's subset
+   * and must NOT print it as the section's population. A key ABSENT from a
+   * present map is the same statement about that one section.
+   */
+  sectionTotalsByKey?: ReadonlyMap<string, number>;
+  /**
+   * Section keys on THIS page whose rows began on an earlier page — only a
+   * section larger than one page can appear here.
+   */
+  continuedSectionKeys?: ReadonlySet<string>;
 };
 
 /**
@@ -110,15 +134,12 @@ export function useTableViewPagination(
 
   // Read the same sort state `DocumentsView` renders with (URL + persistence),
   // so the paged slice is ordered identically to the rendered rows. The default
-  // column MUST match DocumentsView: with `stack-rank-project-page` on it
-  // defaults to StackRank, so resolving `null` here would slice page membership
-  // in input order and then let each page re-sort independently — a divergence.
-  const isStackRankEnabled = useFeatureFlagEnabled(
-    STACK_RANK_PROJECT_PAGE_FEATURE_FLAG_KEY
-  );
+  // column MUST match DocumentsView's StackRank default, so resolving `null`
+  // here would slice page membership in input order and then let each page
+  // re-sort independently — a divergence.
   const { sortBy, sortDir } = useSortParams<SortKey>({
     validColumns: SORT_KEYS,
-    defaultColumn: isStackRankEnabled ? SortKey.StackRank : null,
+    defaultColumn: SortKey.StackRank,
     defaultDirection: "asc",
     persistenceKey: input.sortPersistenceKey,
   });
@@ -126,6 +147,11 @@ export function useTableViewPagination(
   const applyProjectFilters = input.isFilterActive
     ? input.applyProjectFilters
     : undefined;
+
+  // ISS-9437: the ordering this paginator slices membership with, read HERE for
+  // itself. `DocumentsView` calls the same hook, so the order it renders and the
+  // order membership is sliced in cannot disagree across a page boundary.
+  const ordering = useTableViewOrdering();
 
   const countInput = useMemo(
     () => ({
@@ -137,6 +163,7 @@ export function useTableViewPagination(
       sortBy,
       sortDir,
       groupBy: input.groupBy,
+      ordering,
     }),
     [
       input.documents,
@@ -147,6 +174,7 @@ export function useTableViewPagination(
       sortBy,
       sortDir,
       input.groupBy,
+      ordering,
     ]
   );
 
@@ -155,7 +183,23 @@ export function useTableViewPagination(
     () => (isEnabled ? countTableViewRows(countInput) : 0),
     [countInput, isEnabled]
   );
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  // ISS-4704: with the gate on, a GROUPED board pages by whole sections rather
+  // than by a fixed row window, and the plan carries each section's true size.
+  // A `null` plan is the ungrouped/disabled/gate-off shape and restores the
+  // ISS-4466 fixed-`pageSize` slice below, branch for branch.
+  const isSectionAwarePagingEnabled = useFeatureFlagEnabled(
+    GROUPED_SECTION_PAGING_FEATURE_FLAG_KEY
+  );
+  const plan = useMemo(
+    () =>
+      isEnabled && isSectionAwarePagingEnabled
+        ? buildTableViewPagePlan(countInput, pageSize)
+        : null,
+    [countInput, pageSize, isEnabled, isSectionAwarePagingEnabled]
+  );
+
+  const totalPages = resolvePagedTotalPages(plan, total, pageSize);
 
   // Reset to page 0 whenever the filter inputs change so a narrowing never
   // strands the viewer on a now-out-of-range page (mirrors the intrinsic reset
@@ -169,6 +213,10 @@ export function useTableViewPagination(
       sortBy,
       sortDir,
       groupBy: input.groupBy,
+      // A flag flip reorders the whole corpus, so it reseats page membership
+      // exactly as a sort change does — reset rather than strand the viewer on
+      // a page that now holds different rows.
+      ordering,
     }),
     [
       input.filterCategory,
@@ -177,6 +225,7 @@ export function useTableViewPagination(
       sortBy,
       sortDir,
       input.groupBy,
+      ordering,
     ]
   );
   const prevFilterIdentity = useRef(filterIdentity);
@@ -187,20 +236,25 @@ export function useTableViewPagination(
     }
   }
 
-  // Clamp the requested page to the available range: the corpus can shrink
-  // WITHOUT a filter change (a list refetch dropping rows), which would strand
-  // the viewer on a now-empty later page.
-  const page = Math.min(pageInput, totalPages - 1);
+  // Clamp the requested page to the available range at BOTH ends: the corpus
+  // can shrink WITHOUT a filter change (a list refetch dropping rows), which
+  // would strand the viewer on a now-empty later page, and a caller passing a
+  // negative page would otherwise slice from the tail of the list.
+  const page = Math.max(0, Math.min(pageInput, totalPages - 1));
   useEffect(() => {
-    if (pageInput > page) {
+    if (pageInput !== page) {
       setPage(page);
     }
   }, [pageInput, page]);
 
+  const planPage = plan?.pages[page];
+  // Stable identity for the out-of-range case, so the memo below is not
+  // invalidated by a fresh `[]` on every render.
+  const planPageIds = plan ? (planPage?.ids ?? NO_PLAN_PAGE_IDS) : undefined;
   const { pagedDocuments, pagedTreeData }: TableViewPage = useMemo(
     () =>
       isEnabled
-        ? pageTableView({ ...countInput, page, pageSize })
+        ? pageTableView({ ...countInput, page, pageSize, pageIds: planPageIds })
         : // Disabled: hand the inputs straight back, unsliced. Skipping
           // `pageTableView` is the point — see `enabled` above.
           {
@@ -208,11 +262,16 @@ export function useTableViewPagination(
             pagedTreeData: countInput.treeData,
             total: 0,
           },
-    [countInput, page, pageSize, isEnabled]
+    [countInput, page, pageSize, isEnabled, planPageIds]
   );
 
-  const from = total === 0 ? 0 : page * pageSize + 1;
-  const to = Math.min((page + 1) * pageSize, total);
+  // A planned board has variable-height pages, so the range readout counts the
+  // rows the earlier pages actually held rather than assuming `page * pageSize`.
+  const pageOffset = plan
+    ? countPlannedRowsBefore(plan, page)
+    : page * pageSize;
+  const from = total === 0 ? 0 : pageOffset + 1;
+  const to = resolvePagedRangeEnd(plan, planPage, pageOffset, pageSize, total);
 
   return {
     page,
@@ -223,5 +282,49 @@ export function useTableViewPagination(
     to,
     pagedDocuments,
     pagedTreeData,
+    sectionTotalsByKey: plan?.sectionTotals,
+    continuedSectionKeys: planPage?.continuedSectionKeys,
   };
 }
+
+/**
+ * Pages in the plan, or the fixed-`pageSize` count when there is none. Floors
+ * at 1 so an empty board still has one (empty) page to render, matching
+ * {@link resolveTotalPages}.
+ */
+function resolvePagedTotalPages(
+  plan: TableViewPagePlan | null,
+  total: number,
+  pageSize: number
+): number {
+  if (plan === null) {
+    return resolveTotalPages(total, pageSize);
+  }
+  return Math.max(1, plan.pages.length);
+}
+
+/** Rows on every page before `page` — the 0-based offset of its first row. */
+function countPlannedRowsBefore(plan: TableViewPagePlan, page: number): number {
+  let offset = 0;
+  for (let index = 0; index < page; index++) {
+    offset += plan.pages[index]?.ids.length ?? 0;
+  }
+  return offset;
+}
+
+/** 1-based index of the last visible row (0 when the corpus is empty). */
+function resolvePagedRangeEnd(
+  plan: TableViewPagePlan | null,
+  planPage: TableViewPlanPage | undefined,
+  pageOffset: number,
+  pageSize: number,
+  total: number
+): number {
+  if (plan === null) {
+    return Math.min(pageOffset + pageSize, total);
+  }
+  return Math.min(pageOffset + (planPage?.ids.length ?? 0), total);
+}
+
+/** A planned page that does not exist (page out of range) holds no rows. */
+const NO_PLAN_PAGE_IDS: readonly string[] = [];

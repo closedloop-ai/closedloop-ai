@@ -1,29 +1,35 @@
+import { encodeSessionEventCursor } from "@repo/api/src/types/agent-session-event-cursor";
+import type { AgentSessionEventsPage } from "@repo/api/src/types/agent-session-events-page";
 import type {
   TranscriptAccessResponse,
   TranscriptAvailabilitySummary,
   TranscriptFileDescriptor,
 } from "@repo/api/src/types/desktop-transcripts";
-import {
-  TranscriptAvailability,
-  TranscriptSkipReason,
-} from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptAvailability } from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
 import {
   createNormalizedSession,
   type NormalizedSession,
 } from "@repo/lib/harness/types";
 import type { Decorator, Meta, StoryObj } from "@storybook/react";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
+import {
+  SESSION_TRANSCRIPT_LOAD_MORE_EVENTS_FEATURE_FLAG_KEY,
+  SESSION_TRANSCRIPT_NEVER_EXPECTED_FEATURE_FLAG_KEY,
+} from "../../../shared/lib/feature-flags";
 import { TRACE_END_OF_READ_NOTE } from "../../../shared/lib/trace-truncation-copy";
 import type { TranscriptBytesTransport } from "../../data-source/transcript-bytes-transport";
 import { TranscriptBytesTransportProvider } from "../../data-source/transcript-bytes-transport";
-import { agentSessionKeys } from "../../hooks/use-agent-sessions";
+import { agentSessionKeys } from "../../hooks/agent-session-keys";
 import { TranscriptFetchError } from "../../lib/parse-transcript";
+import { buildTurnItemsFromEventUnion } from "../../lib/session-event-union-turn-items";
 import { MAIN_TRANSCRIPT_FILE_KEY } from "../../lib/session-transcript-href";
 import {
   createAgentSessionDetailFixture,
   truncatedEventsAgentSessionDetailFixture,
 } from "./agent-session-detail-fixtures";
 import { SessionTranscriptPanel } from "./session-transcript-panel";
+import { LOAD_MORE_EVENTS_LABEL } from "./transcript-load-more-copy";
 
 const SESSION_ID = "session-detail-1";
 const TRANSCRIPT_ROUTE = `/agent-sessions/${SESSION_ID}/transcript`;
@@ -171,7 +177,13 @@ function accessParameters(
   return {
     appCore: {
       queryData: [
-        [agentSessionKeys.transcriptAccess(SESSION_ID), response] as const,
+        [
+          agentSessionKeys.transcriptAccess(
+            SESSION_ID,
+            MAIN_TRANSCRIPT_FILE_KEY
+          ),
+          response,
+        ] as const,
       ],
       apiRoutes: [
         {
@@ -185,6 +197,19 @@ function accessParameters(
       ],
     },
   };
+}
+
+/**
+ * Turn a story's `appCore` parameters flag-ON without restating the descriptor
+ * wiring. Spreading `accessParameters(...)` inline would drop its `appCore`
+ * block on the floor — the two keys collide — which is a silent way to ship a
+ * story that renders the flag-off path under a flag-on name.
+ */
+function withEnabledFlags(
+  parameters: ReturnType<typeof accessParameters>,
+  enabledFlags: readonly string[]
+) {
+  return { appCore: { ...parameters.appCore, enabledFlags } };
 }
 
 /**
@@ -227,9 +252,9 @@ function parsedTranscriptParameters(availability: TranscriptAvailability) {
  * touches the network.
  */
 const meta = {
-  title: "App Core/Agents/Session Transcript Panel",
+  title: "Surfaces v1.0/Sessions/Session Transcript Panel",
   component: SessionTranscriptPanel,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     session: cloudSessionFixture(),
@@ -398,6 +423,51 @@ export const NeverSynced: Story = {
 };
 
 /**
+ * ISS-7516 — the SETTLED absence. The machine that produced this session is on a
+ * data-sync level that keeps transcripts local, so nothing was ever queued and
+ * nothing is on its way.
+ *
+ * Read it against {@link NeverSynced} directly above, which is the same
+ * `missing` descriptor with the verdict withheld. Those two are the pair this
+ * ticket exists to separate, and the separation has to survive a greyscale
+ * screenshot: both use `CloudOffIcon`/`CloudUploadIcon` in muted foreground and
+ * carry no colour of their own, so the whole distinction is in the words.
+ */
+export const NeverExpectedBySyncLevel: Story = {
+  args: { transcriptNeverExpected: true },
+  parameters: withEnabledFlags(
+    accessParameters([
+      transcriptDescriptor({ availability: TranscriptAvailability.Missing }),
+    ]),
+    [SESSION_TRANSCRIPT_NEVER_EXPECTED_FEATURE_FLAG_KEY]
+  ),
+  play: ({ canvasElement }) => {
+    expect(canvasElement.textContent).toContain(
+      "Transcript stays on this machine"
+    );
+    expect(canvasElement.textContent).not.toContain("No Claude transcript");
+  },
+};
+
+/**
+ * The same verdict with the flag OFF (ISS-4779 closed-by-default), so the
+ * shipped default is a story rather than an assumption: the panel is
+ * byte-identical to {@link NeverSynced}.
+ */
+export const NeverExpectedGateClosed: Story = {
+  args: { transcriptNeverExpected: true },
+  parameters: accessParameters([
+    transcriptDescriptor({ availability: TranscriptAvailability.Missing }),
+  ]),
+  play: ({ canvasElement }) => {
+    expect(canvasElement.textContent).toContain("No Claude transcript");
+    expect(canvasElement.textContent).not.toContain(
+      "Transcript stays on this machine"
+    );
+  },
+};
+
+/**
  * An archived transcript exists, but no in-browser parser handles this harness
  * yet. Stated as a renderer gap rather than a missing transcript, because the
  * file is there and we just cannot draw it. Those are different problems for
@@ -552,5 +622,119 @@ export const DesktopLocalCopy: Story = {
       "showing the last recorded trace"
     );
     expect(canvasElement.querySelector(".st-msg")).not.toBeNull();
+  },
+};
+
+/** ISS-9857: the tool name the page past the prefix renders. */
+const LOADED_PAGE_TOOL = "loaded-page-tool";
+
+/**
+ * The truncated fixture with `turnItems` produced by the SAME projector the
+ * producers run. The fixture's hand-written rows are fine to paint, but once a
+ * page lands the panel re-projects prefix + page, and a hand-written prefix
+ * would visibly change shape on the click — which is fixture drift, not what a
+ * reader of a real session sees.
+ */
+const truncatedProjectorSession = (() => {
+  const base = {
+    ...truncatedEventsAgentSessionDetailFixture,
+    metadata: {
+      messages: [
+        {
+          role: "human",
+          timestamp: "2026-06-10T12:01:00.000Z",
+          text: "Please inspect the shared session detail screen.",
+        },
+      ],
+    },
+  };
+  return {
+    ...base,
+    turnItems: buildTurnItemsFromEventUnion({
+      session: base,
+      pageEvents: [],
+      context: {
+        harness: base.harness,
+        primaryModel: base.primaryModel ?? base.model,
+        humanActor: { name: "Ada Lovelace", color: "hsl(210 65% 45%)" },
+      },
+      eventsTruncated: true,
+    }),
+  };
+})();
+
+/**
+ * Two pages past `truncatedEventsAgentSessionDetailFixture`'s prefix: the first
+ * offers a continuation, the second does not. Keyed off the cursor the panel
+ * mints from the prefix's last event, so a panel that minted the wrong cursor
+ * gets the exhausted page and the play function fails on the missing note.
+ */
+function loadMorePageRoute() {
+  const last = truncatedEventsAgentSessionDetailFixture.events.at(-1);
+  const firstCursor = last
+    ? encodeSessionEventCursor({
+        createdAt: last.createdAt,
+        externalEventId: last.externalEventId,
+      })
+    : null;
+  const pageOneAt = Date.parse(last?.createdAt ?? "2026-06-10T12:17:00.000Z");
+  const pageOne: AgentSessionEventsPage = {
+    events: [
+      {
+        externalEventId: "loaded-1",
+        agentExternalId: "agent-main",
+        eventType: "tool_use",
+        toolName: LOADED_PAGE_TOOL,
+        createdAt: new Date(pageOneAt + 60_000).toISOString(),
+      },
+    ],
+    nextCursor: "page-two",
+  };
+  const pageTwo: AgentSessionEventsPage = { events: [] };
+  return {
+    method: "GET",
+    path: `/agent-sessions/${truncatedEventsAgentSessionDetailFixture.id}/events`,
+    respond: ({ searchParams }: { searchParams: URLSearchParams }) =>
+      searchParams.get("cursor") === firstCursor ? pageOne : pageTwo,
+  };
+}
+
+/**
+ * ISS-9857: the same truncated projection as {@link LocalProjectionTruncated},
+ * with the flag on and a source that can page. The end-of-read note now sits
+ * beside a control; one click extends the rows and keeps the note (the first
+ * page still offers more), a second reaches the end and the note goes with it —
+ * the rows on screen are the whole stream, so nothing claims they stop early.
+ */
+export const TruncatedWithLoadMore: Story = {
+  args: {
+    session: truncatedProjectorSession,
+    fallbackItems: truncatedProjectorSession.turnItems,
+  },
+  parameters: {
+    appCore: {
+      enabledFlags: [SESSION_TRANSCRIPT_LOAD_MORE_EVENTS_FEATURE_FLAG_KEY],
+      apiRoutes: [loadMorePageRoute()],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    expect(canvasElement.textContent).toContain(TRACE_END_OF_READ_NOTE);
+    await userEvent.click(
+      canvas.getByRole("button", { name: LOAD_MORE_EVENTS_LABEL })
+    );
+    await waitFor(() =>
+      expect(canvasElement.textContent).toContain(LOADED_PAGE_TOOL)
+    );
+    expect(canvasElement.textContent).toContain(TRACE_END_OF_READ_NOTE);
+    await userEvent.click(
+      canvas.getByRole("button", { name: LOAD_MORE_EVENTS_LABEL })
+    );
+    await waitFor(() =>
+      expect(canvasElement.textContent).not.toContain(TRACE_END_OF_READ_NOTE)
+    );
+    expect(
+      canvas.queryByRole("button", { name: LOAD_MORE_EVENTS_LABEL })
+    ).toBeNull();
   },
 };

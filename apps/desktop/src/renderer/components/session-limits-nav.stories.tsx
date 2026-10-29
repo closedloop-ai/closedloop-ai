@@ -23,7 +23,8 @@ import type { ReactNode } from "react";
  * page width can still wrap its reset line in the only place it actually ships.
  */
 const meta = {
-  title: "Desktop/Shell/Session Limits Nav",
+  title: "Composites v1.0/Desktop Shell/Session Limits Nav",
+  tags: ["deprecated"],
   component: SessionLimitsNav,
   parameters: {
     layout: "centered",

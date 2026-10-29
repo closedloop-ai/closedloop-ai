@@ -5,6 +5,7 @@ import {
   orgSlugSchema,
   RESERVED_ORG_SLUGS,
 } from "./reserved-slugs";
+import { findIssue } from "./zod-issue.test-helpers";
 
 describe("RESERVED_ORG_SLUGS", () => {
   it("contains all non-org-scoped top-level routes", () => {
@@ -15,6 +16,7 @@ describe("RESERVED_ORG_SLUGS", () => {
       "api",
       "d",
       "rum-validation",
+      "health",
       "auth",
       "sso",
       "oauth",
@@ -79,19 +81,58 @@ describe("orgSlugSchema", () => {
     expect(orgSlugSchema.safeParse("a1").success).toBe(true);
   });
 
-  it("rejects reserved slugs", () => {
+  it("rejects a reserved slug for the reserved-list reason alone", () => {
+    // "api" is a well-formed slug, so the reserved refine is the only rule that
+    // can reject it — pinning the sole issue proves the reserved list, not the
+    // charset or length rule, is what rejected it.
     const result = orgSlugSchema.safeParse("api");
     expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toHaveLength(1);
+      const issue = findIssue(result.error.issues, []);
+      expect(issue?.code).toBe(RESERVED_REASON_CODE);
+      expect(issue?.message).toBe(RESERVED_REASON_MESSAGE);
+    }
   });
 
-  it("rejects slugs that are too short", () => {
+  it("rejects every reserved slug for the reserved-list reason, including the two that also break the slug shape", () => {
+    // The list exists to stop an org slug shadowing a static top-level route, so
+    // every entry must reject for THAT reason and not merely happen to be an
+    // invalid slug. Two entries are both: "d" is under the min length and
+    // "_next" fails the charset rule. Zod collects every failing check instead
+    // of stopping at the first, so the reserved reason is still raised for those
+    // two — but it is not their FIRST issue, which is why this asserts over the
+    // whole issue set rather than the first match at the root path.
+    for (const slug of RESERVED_ORG_SLUGS) {
+      const result = orgSlugSchema.safeParse(slug);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const reservedIssues = result.error.issues.filter(
+          (issue) => issue.code === RESERVED_REASON_CODE
+        );
+        expect(reservedIssues).toHaveLength(1);
+        expect(reservedIssues[0]?.message).toBe(RESERVED_REASON_MESSAGE);
+        expect(reservedIssues[0]?.path).toEqual([]);
+      }
+    }
+  });
+
+  it("rejects slugs that are too short for the length reason", () => {
     const result = orgSlugSchema.safeParse("a");
     expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toHaveLength(1);
+      expect(findIssue(result.error.issues, [])?.code).toBe("too_small");
+    }
   });
 
-  it("rejects slugs that are too long", () => {
+  it("rejects slugs that are too long for the length reason", () => {
     const result = orgSlugSchema.safeParse("a".repeat(65));
     expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toHaveLength(1);
+      expect(findIssue(result.error.issues, [])?.code).toBe("too_big");
+    }
   });
 
   it("accepts slugs at boundary lengths", () => {
@@ -99,30 +140,38 @@ describe("orgSlugSchema", () => {
     expect(orgSlugSchema.safeParse("a".repeat(64)).success).toBe(true);
   });
 
-  it("rejects slugs with uppercase letters", () => {
-    const result = orgSlugSchema.safeParse("MyOrg");
+  it.each([
+    ["uppercase letters", "MyOrg"],
+    ["a space", "my org"],
+    ["an underscore", "my_org"],
+    ["a dot", "my.org"],
+    ["an at sign", "my@org"],
+    ["a leading hyphen", "-myorg"],
+    ["a trailing hyphen", "myorg-"],
+    ["both a leading and a trailing hyphen", "-myorg-"],
+  ])("rejects a slug with %s for the charset reason", (_label, slug) => {
+    const result = orgSlugSchema.safeParse(slug);
     expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toHaveLength(1);
+      expect(findIssue(result.error.issues, [])?.code).toBe(
+        CHARSET_REASON_CODE
+      );
+    }
   });
 
-  it("rejects slugs with spaces", () => {
-    const result = orgSlugSchema.safeParse("my org");
+  it("rejects an empty string for both the length and the charset reason", () => {
+    // "" breaks two rules at once and is not reserved, so the full issue set is
+    // the assertion — a single-issue check here would be reading only half of
+    // what the schema reported.
+    const result = orgSlugSchema.safeParse("");
     expect(result.success).toBe(false);
-  });
-
-  it("rejects slugs with special characters", () => {
-    expect(orgSlugSchema.safeParse("my_org").success).toBe(false);
-    expect(orgSlugSchema.safeParse("my.org").success).toBe(false);
-    expect(orgSlugSchema.safeParse("my@org").success).toBe(false);
-  });
-
-  it("rejects slugs starting or ending with hyphens", () => {
-    expect(orgSlugSchema.safeParse("-myorg").success).toBe(false);
-    expect(orgSlugSchema.safeParse("myorg-").success).toBe(false);
-    expect(orgSlugSchema.safeParse("-myorg-").success).toBe(false);
-  });
-
-  it("rejects empty strings", () => {
-    expect(orgSlugSchema.safeParse("").success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.map((issue) => issue.code)).toEqual([
+        "too_small",
+        CHARSET_REASON_CODE,
+      ]);
+    }
   });
 });
 
@@ -138,7 +187,17 @@ describe("isPathSafeSlug", () => {
     // case) as the slug when Clerk has no slug; these must still forward, not
     // 404, so a redirect gate cannot use the kebab-only orgSlugSchema.
     const legacyClerkSlug = "org_2abcDEF0123456789";
-    expect(orgSlugSchema.safeParse(legacyClerkSlug).success).toBe(false);
+    const orgSlugResult = orgSlugSchema.safeParse(legacyClerkSlug);
+    expect(orgSlugResult.success).toBe(false);
+    if (!orgSlugResult.success) {
+      // The contrast is the point of this test, so name WHY orgSlugSchema turns
+      // this away: the underscores and uppercase break the kebab-only charset
+      // rule. A bare failure here would still read as proven if orgSlugSchema
+      // ever started rejecting the value for an unrelated reason.
+      expect(findIssue(orgSlugResult.error.issues, [])?.code).toBe(
+        CHARSET_REASON_CODE
+      );
+    }
     expect(isPathSafeSlug(legacyClerkSlug)).toBe(true);
     expect(isPathSafeSlug("org_legacy_clerk_id")).toBe(true);
   });
@@ -162,8 +221,8 @@ describe("isPathSafeSlug", () => {
   it("rejects query/fragment separators that would reshape the redirect target", () => {
     // Each caller interpolates this value RAW into `redirect('/${orgSlug}/…')`,
     // so a "?" or "#" splices a query string / fragment onto the destination.
-    expect(isPathSafeSlug("foo?next=/evil")).toBe(false);
-    expect(isPathSafeSlug("foo#/evil")).toBe(false);
+    expect(isPathSafeSlug("foo?next=evil")).toBe(false);
+    expect(isPathSafeSlug("foo#evil")).toBe(false);
     // Next decodes an encoded "%3F"/"%23" before it reaches this gate, so it
     // arrives as a literal "?"/"#" and is caught by the same rule.
   });
@@ -199,3 +258,13 @@ describe("isPathSafeSlug", () => {
     expect(isPathSafeSlug("a b")).toBe(true);
   });
 });
+
+/**
+ * The rejection reasons `orgSlugSchema` raises, asserted as literals rather than
+ * imported from `reserved-slugs.ts` on purpose: a test that reads its expected
+ * message out of the module under test cannot fail when that message changes,
+ * which is the vacuity this suite exists to remove.
+ */
+const RESERVED_REASON_CODE = "custom";
+const RESERVED_REASON_MESSAGE = "This slug is reserved and cannot be used";
+const CHARSET_REASON_CODE = "invalid_format";

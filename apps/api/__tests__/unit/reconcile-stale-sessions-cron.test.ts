@@ -3,10 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const { mockRunStaleSessionSweep, mockNotifySlack, mockBuildCorrelationId } =
   vi.hoisted(() => ({
     mockRunStaleSessionSweep: vi.fn(),
-    mockNotifySlack: vi.fn().mockResolvedValue(undefined),
-    mockBuildCorrelationId: vi
-      .fn()
-      .mockReturnValue("ts=2026-07-24T18:00:00.000Z"),
+    mockNotifySlack: vi.fn(async () => undefined),
+    mockBuildCorrelationId: vi.fn(() => "ts=2026-07-24T18:00:00.000Z"),
   }));
 
 vi.mock("@repo/observability/log", () => ({
@@ -14,7 +12,7 @@ vi.mock("@repo/observability/log", () => ({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
-    flush: vi.fn().mockResolvedValue(undefined),
+    flush: vi.fn(async () => undefined),
   },
 }));
 

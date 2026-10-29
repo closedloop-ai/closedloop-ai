@@ -1,4 +1,4 @@
-import type { SessionTraceItem } from "../session-trace";
+import type { SessionTraceItem } from "../session-trace-groups";
 
 /**
  * Shared fixtures/DOM helpers for the SessionTrace test suite. Extracted so the

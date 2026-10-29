@@ -7,7 +7,11 @@ import {
   AgentMetricMode,
   LEGACY_AGENT_METRIC_MODES,
 } from "@repo/api/src/types/agent-component";
-import { LOC_PER_DOLLAR_LABEL } from "@repo/api/src/utils/loc-per-dollar";
+import { GridPreferenceGridKey } from "@repo/api/src/types/grid-preferences";
+import {
+  LOC_METRIC_DEFINITION,
+  LocMetricDefinitionId,
+} from "@repo/api/src/types/loc-metric-definitions";
 import { AGENT_COMPONENT_AUTHORS_LABEL } from "@repo/app/agents/lib/agent-component-authors";
 import { useCallback } from "react";
 import { z } from "zod";
@@ -16,7 +20,25 @@ import {
   type RestoredTableView,
   usePersistedTableViewState,
 } from "../../shared/hooks/use-persisted-table-view-state";
-import { AGENTS_DEFAULT_SORT_USAGE_FEATURE_FLAG_KEY } from "../../shared/lib/feature-flags";
+import {
+  AGENTS_DEFAULT_SORT_USAGE_FEATURE_FLAG_KEY,
+  AGENTS_SURFACE_HONESTY_FEATURE_FLAG_KEY,
+} from "../../shared/lib/feature-flags";
+import {
+  advanceViewStateVersions,
+  legacyViewStateVersions,
+  PERSISTED_COLUMN_WIDTHS_SCHEMA,
+  PERSISTED_STRING_ARRAY_SCHEMA,
+  PERSISTED_VERSION_MARKER_SCHEMA,
+  PERSISTED_VIEW_STATE_VERSIONS_SCHEMA,
+  persistedEnumValues,
+  resolveViewStateVersions,
+  VIEW_STATE_AXIS_UNUSED,
+  ViewStateAxis,
+  type ViewStateLegacyMirrors,
+  type ViewStateVersions,
+  viewStateVersionOf,
+} from "../../shared/lib/view-state-axes";
 import {
   AGENTS_SAVED_VIEW_UNVERSIONED,
   AGENTS_SAVED_VIEW_VERSION,
@@ -60,7 +82,11 @@ export const AGENT_COMPONENT_TOGGLEABLE_COLUMNS = [
   // make the menu disagree with the table it toggles. Order carries no other
   // meaning: the ids feed a validity `Set` and the derived `AgentComponentColumnId`
   // union, neither of which is position-sensitive.
-  { id: "metric", label: LOC_PER_DOLLAR_LABEL },
+  {
+    id: "metric",
+    label:
+      LOC_METRIC_DEFINITION[LocMetricDefinitionId.ComponentLinesChanged].label,
+  },
   { id: "invocations", label: "Invocations" },
   { id: "sessions", label: "Sessions" },
 ] as const;
@@ -72,26 +98,20 @@ export type AgentComponentColumnId =
 const AGENT_COMPONENT_COLUMN_IDS: readonly AgentComponentColumnId[] =
   AGENT_COMPONENT_TOGGLEABLE_COLUMNS.map((column) => column.id);
 
-// ---------------------------------------------------------------------------
-// Zod schema for persisted view — same approach as use-sessions-view-state.ts.
-// ---------------------------------------------------------------------------
+// ISS-5528: the two default-hidden sets, at module scope because the shared
+// hook's restore effect takes this array as a dependency and a fresh literal
+// every render would re-run the restore on every paint.
+const SOURCE_COLUMN_HIDDEN_BY_DEFAULT: readonly AgentComponentColumnId[] = [
+  "source",
+];
+const NO_COLUMNS_HIDDEN_BY_DEFAULT: readonly AgentComponentColumnId[] = [];
 
-const SORT_KEYS = Object.values(AgentComponentSortKey) as [
-  AgentComponentSortKey,
-  ...AgentComponentSortKey[],
-];
-const SORT_DIRS = Object.values(AgentComponentSortDir) as [
-  AgentComponentSortDir,
-  ...AgentComponentSortDir[],
-];
-const GROUP_BY_VALUES = Object.values(AgentComponentGroupBy) as [
-  AgentComponentGroupBy,
-  ...AgentComponentGroupBy[],
-];
-const METRIC_MODES = Object.values(AgentMetricMode) as [
-  AgentMetricMode,
-  ...AgentMetricMode[],
-];
+// Zod schema for persisted view — same approach as use-sessions-view-state.ts.
+
+const SORT_KEYS = persistedEnumValues(AgentComponentSortKey);
+const SORT_DIRS = persistedEnumValues(AgentComponentSortDir);
+const GROUP_BY_VALUES = persistedEnumValues(AgentComponentGroupBy);
+const METRIC_MODES = persistedEnumValues(AgentMetricMode);
 
 const savedViewSchema = z.object({
   // ISS-5005: a view missing either sort field decodes to the LEGACY default
@@ -115,40 +135,31 @@ const savedViewSchema = z.object({
       z.enum(METRIC_MODES)
     )
     .default(AgentMetricMode.LocPerDollar),
-  hiddenColumns: z
-    .preprocess(
-      (value) =>
-        Array.isArray(value)
-          ? value.filter((item) => typeof item === "string")
-          : [],
-      z.array(z.string())
-    )
-    .default([]),
+  hiddenColumns: PERSISTED_STRING_ARRAY_SCHEMA,
   // FEA-4021: persisted data-column order (ids). Same data-cleaning preprocess
   // as `hiddenColumns` — keep only the string entries; a missing/non-array
   // value degrades to the table's natural order.
-  columnOrder: z
-    .preprocess(
-      (value) =>
-        Array.isArray(value)
-          ? value.filter((item) => typeof item === "string")
-          : [],
-      z.array(z.string())
-    )
-    .default([]),
+  columnOrder: PERSISTED_STRING_ARRAY_SCHEMA,
+  // ISS-9447 M2: declared even though the catalog offers no column resizing, so
+  // a width map a NEWER build persisted survives this build's mount. The shared
+  // hook rewrites the whole record on restore, so an undeclared field is
+  // stripped by this `z.object` and written back as `{}` — a whole axis lost to
+  // a reader who only opened the page.
+  columnWidths: PERSISTED_COLUMN_WIDTHS_SCHEMA,
   // ISS-5005: which one-time saved-view migrations have already been applied to
   // THIS stored view. Absent (every view written before ISS-5005) or malformed
   // degrades to `AGENTS_SAVED_VIEW_UNVERSIONED`, which is exactly the "never
   // migrated" state — so an older or corrupt marker is safe rather than skipping
   // a repair. A version from a NEWER build is preserved verbatim (see
   // `migrateSavedSort`) instead of being rolled back.
-  savedViewVersion: z.preprocess(
-    (value) =>
-      typeof value === "number" && Number.isInteger(value) && value >= 0
-        ? value
-        : AGENTS_SAVED_VIEW_UNVERSIONED,
-    z.number()
-  ),
+  //
+  // ISS-9447 M2: this is now the LEGACY MIRROR of `viewStateVersions` below,
+  // still read and still written so a build without the envelope keeps working.
+  // Note it names the SORT axis here and the COLUMN-ORDER axis on Sessions — the
+  // reason the legacy names are mapped per surface and never in one table.
+  savedViewVersion: PERSISTED_VERSION_MARKER_SCHEMA,
+  // ISS-9447 M2: the canonical per-axis envelope, laid over the legacy marker.
+  viewStateVersions: PERSISTED_VIEW_STATE_VERSIONS_SCHEMA,
 });
 
 // Feature-specific "extra" dimensions persisted alongside sort + columns.
@@ -160,8 +171,39 @@ const savedViewSchema = z.object({
 type AgentComponentsExtras = {
   groupBy: AgentComponentGroupBy;
   metricMode: AgentMetricMode;
+  /**
+   * ISS-9447 M2: the canonical per-axis stamps. `savedViewVersion` below is its
+   * LEGACY MIRROR, derived from it by `advanceViewStateVersions` where the view
+   * is assembled so the two cannot drift — and required rather than optional,
+   * for the reason `AGENTS_VIEW_STATE_MIRRORS` gives.
+   */
+  viewStateVersions: ViewStateVersions;
   savedViewVersion: number;
 };
+
+/**
+ * ISS-9447: which extras field mirrors each axis, and the reason the mirror is
+ * mandatory rather than a courtesy.
+ *
+ * A build deployed before the envelope existed parses this view with a plain
+ * `z.object`, which strips `viewStateVersions`, and re-serializes a fixed field
+ * set that never names it — so the envelope is DELETED by any round trip
+ * through such a build, and nothing we do here can change that. The loose
+ * mirror is the only channel that survives it. `ViewStateLegacyMirrors` makes
+ * that structural: it is exhaustive over `ViewStateAxis`, so a new axis fails
+ * `tsc` here until it names a real `AgentComponentsExtras` field, and
+ * `advanceViewStateVersions` will not stamp an axis this table leaves unused.
+ * An envelope-only axis therefore cannot ship — it would come back reading as
+ * never-migrated and re-run every step, which on this surface means dragging a
+ * reader off the sort they chose and back onto the migrated default.
+ */
+const AGENTS_VIEW_STATE_MIRRORS = {
+  // The catalog persists no column-order or hidden-column migration, so it has
+  // no marker to mirror for either.
+  [ViewStateAxis.ColumnOrder]: VIEW_STATE_AXIS_UNUSED,
+  [ViewStateAxis.HiddenColumns]: VIEW_STATE_AXIS_UNUSED,
+  [ViewStateAxis.Sort]: "savedViewVersion",
+} as const satisfies ViewStateLegacyMirrors<AgentComponentsExtras>;
 
 // Stable module-level references so the shared hook's restore effect (which
 // takes `defaultExtras` as a dependency) does not see a fresh object every
@@ -179,13 +221,13 @@ type AgentComponentsExtras = {
 const DEFAULT_EXTRAS_UNVERSIONED: AgentComponentsExtras = {
   groupBy: AgentComponentGroupBy.None,
   metricMode: AgentMetricMode.LocPerDollar,
-  savedViewVersion: AGENTS_SAVED_VIEW_UNVERSIONED,
+  ...defaultAgentsVersionState(AGENTS_SAVED_VIEW_UNVERSIONED),
 };
 
 const DEFAULT_EXTRAS_MIGRATED: AgentComponentsExtras = {
   groupBy: AgentComponentGroupBy.None,
   metricMode: AgentMetricMode.LocPerDollar,
-  savedViewVersion: AGENTS_SAVED_VIEW_VERSION,
+  ...defaultAgentsVersionState(AGENTS_SAVED_VIEW_VERSION),
 };
 
 function parseSavedView(
@@ -234,10 +276,20 @@ function parseSavedViewInternal(
     sortDir,
     hiddenColumns,
     columnOrder,
+    columnWidths,
     groupBy,
     metricMode,
     savedViewVersion,
+    viewStateVersions,
   } = result.data;
+  // ISS-9447 M2: the legacy marker is mapped to THIS surface's axis by its own
+  // table. `savedViewVersion` is the SORT stamp on the catalog and the
+  // COLUMN-ORDER stamp on Sessions, so the mapping cannot live in the shared
+  // module.
+  const storedVersions = resolveViewStateVersions(
+    legacyViewStateVersions(AGENTS_VIEW_STATE_MIRRORS, { savedViewVersion }),
+    viewStateVersions
+  );
   // Flag OFF: the stored sort and its version are returned untouched, so the
   // next load still sees an unmigrated view.
   //
@@ -248,21 +300,37 @@ function parseSavedViewInternal(
   // never-migrated state, so it changes no behavior and leaves the view fully
   // migratable if the flag is later turned on. No sort, column, order, grouping,
   // or metric-mode dimension is altered while the flag is off.
+  const storedSortVersion = viewStateVersionOf(
+    storedVersions,
+    ViewStateAxis.Sort
+  );
   const migrated = applyMigrations
-    ? migrateSavedSort({ sortDir, sortKey }, savedViewVersion)
-    : { sort: { sortDir, sortKey }, version: savedViewVersion };
+    ? migrateSavedSort({ sortDir, sortKey }, storedSortVersion)
+    : { sort: { sortDir, sortKey }, version: storedSortVersion };
+  // Every stamp the record arrived with — including one for an axis only a
+  // NEWER build names — with the sort axis this build just ran laid over it,
+  // plus the legacy mirror derived from the same value so the two cannot drift.
+  const advanced = advanceViewStateVersions(
+    AGENTS_VIEW_STATE_MIRRORS,
+    storedVersions,
+    { [ViewStateAxis.Sort]: migrated.version }
+  );
   return {
     sortKey: migrated.sort.sortKey,
     sortDir: migrated.sort.sortDir,
     hiddenColumns,
     columnOrder,
-    extras: { groupBy, metricMode, savedViewVersion: migrated.version },
+    columnWidths,
+    extras: {
+      groupBy,
+      metricMode,
+      ...advanced.mirrors,
+      viewStateVersions: advanced.versions,
+    },
   };
 }
 
-// ---------------------------------------------------------------------------
 // Hook
-// ---------------------------------------------------------------------------
 
 /**
  * View state for the Agents workspace inventory table (T-2.3): sort key +
@@ -302,6 +370,16 @@ export function useAgentComponentsViewState(persistKey?: string) {
   const defaultSort = usageDefaultSortEnabled
     ? USAGE_AGENTS_DEFAULT_SORT
     : LEGACY_AGENTS_DEFAULT_SORT;
+  // ISS-5528 (ISS-4779 closed-by-default): Source is a verbatim echo of the
+  // Component name until the ISS-5009 provenance projection graduates — the same
+  // string, 196px away, in a different face and colour, and both truncated — so
+  // it spends a fixed 196px of a horizontal budget that is already
+  // over-subscribed to say nothing new. It stays in the View menu's Show/Hide
+  // list, so a reader who wants it is one click away and a stored view that
+  // already shows it is untouched; only the DEFAULT changes.
+  const sourceColumnOptIn = useFeatureFlagEnabledOptional(
+    AGENTS_SURFACE_HONESTY_FEATURE_FLAG_KEY
+  );
   const {
     sortKey,
     sortDir,
@@ -314,6 +392,7 @@ export function useAgentComponentsViewState(persistKey?: string) {
     toggleSortDir,
     toggleColumn,
     resetColumns,
+    isViewReady,
   } = usePersistedTableViewState<
     AgentComponentSortKey,
     AgentComponentSortDir,
@@ -322,7 +401,13 @@ export function useAgentComponentsViewState(persistKey?: string) {
   >({
     persistKey,
     keyPrefix: "agents:saved-view:",
+    // ISS-9450: the account-level copy of this record. Inert until the
+    // closed-by-default gate inside `useGridPreferenceRemote` opens.
+    gridKey: GridPreferenceGridKey.Agents,
     columnIds: AGENT_COMPONENT_COLUMN_IDS,
+    defaultHiddenColumns: sourceColumnOptIn
+      ? SOURCE_COLUMN_HIDDEN_BY_DEFAULT
+      : NO_COLUMNS_HIDDEN_BY_DEFAULT,
     defaultSortKey: defaultSort.sortKey,
     defaultSortDir: defaultSort.sortDir,
     sortDirs: [AgentComponentSortDir.Asc, AgentComponentSortDir.Desc],
@@ -360,5 +445,26 @@ export function useAgentComponentsViewState(persistKey?: string) {
     resetColumns,
     setGroupBy,
     setMetricMode,
+    // ISS-6141: the ISS-4655 restore gate, surfaced so the surface can hold its
+    // page-data read until the saved sort has landed. `sortKey`/`sortDir` are
+    // in that request's query key, so a read issued before the restore is a
+    // read of the DEFAULT view that the restore then repeats — and this read
+    // costs up to three full org population builds at the producer.
+    isViewReady,
   };
+}
+
+/** The envelope and its legacy mirror for a never-saved view, from one value. */
+function defaultAgentsVersionState(version: number): {
+  savedViewVersion: number;
+  viewStateVersions: ViewStateVersions;
+} {
+  const state = advanceViewStateVersions(
+    AGENTS_VIEW_STATE_MIRRORS,
+    {},
+    {
+      [ViewStateAxis.Sort]: version,
+    }
+  );
+  return { ...state.mirrors, viewStateVersions: state.versions };
 }

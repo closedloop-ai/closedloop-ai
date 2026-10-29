@@ -1,7 +1,14 @@
 "use client";
 
 import { Button } from "@repo/design-system/components/ui/button";
-import { Github, Loader2, ShieldCheck } from "lucide-react";
+import { cn } from "@repo/design-system/lib/utils";
+import { Loader2, ShieldCheck } from "lucide-react";
+import {
+  GitHubConnectAction,
+  type GitHubConnectPromptAction,
+} from "../../github/lib/github-connect-action";
+import { GITHUB_CONNECT_PROMPT_COPY } from "../../github/lib/github-connect-copy";
+import { GitHubLogo } from "../../shared/feature-flags/github-logo";
 
 const DEFAULT_GRANTS = [
   "Read pull requests, commits and files you can already reach",
@@ -10,10 +17,29 @@ const DEFAULT_GRANTS = [
 ] as const;
 
 type ConnectGitHubPromptProps = {
+  /**
+   * Which connect this prompt is performing (ISS-5958 D2). Defaults to a
+   * first-time connect; a host that knows the user's grant expired or was
+   * revoked passes `Reconnect`, which is worded distinctly so the two controls
+   * cannot collapse into one.
+   */
+  action?: GitHubConnectPromptAction;
   /** Runs the real GitHub authorize flow (host-wired). */
   onConnect: () => void;
   /** Controlled in-flight state (host-owned): drives the spinner + disables. */
   connecting?: boolean;
+  /**
+   * Why the last connect handoff could not be opened, or `null`. Host-owned and
+   * host-worded — this component classifies nothing.
+   *
+   * Set, it renders below the CTA in the destructive tone with the CTA standing
+   * as the retry, the same contract `GatedMetricIndicator` states for its own
+   * `error`. Without it a rejected handoff leaves this screen byte-identical to
+   * before the click: the spinner goes on, comes back off, and nothing says the
+   * flow never opened (ISS-10990). The Settings panel already rendered that
+   * failure beside this prompt; this is the slot that lets every host do it.
+   */
+  error?: string | null;
   /** What authorizing grants Closedloop, acting as this user. */
   grants?: readonly string[];
   /**
@@ -29,16 +55,14 @@ type ConnectGitHubPromptProps = {
  * required "grant GitHub access" prompt.
  *
  * WHAT THIS ACTUALLY STARTS, because the copy has now been wrong twice in
- * opposite directions and the flow is the only thing that settles it. Both
- * production consumers (`desktop-account-tab.tsx`, and `desktop-onboarding-flow.tsx`
- * via `AccountSetupFlow`) wire `onConnect` to `useDesktopGitHubConnect` WITHOUT
- * the optional `resolveInstall` pre-flight, so `openGitHubConnect` is called
- * with no `install` flag. `apps/app/app/api/integrations/github/route.ts` then
- * computes `useInstallFlow = forceInstall ? !!appSlug : !clientId && !!appSlug`
- * — and `GITHUB_APP_CLIENT_ID` is required (`packages/github/keys.ts`), so
- * `clientId` is truthy and `useInstallFlow` is FALSE. The user is sent to
- * `https://github.com/login/oauth/authorize`: a per-user authorization of the
- * GitHub App.
+ * opposite directions and the flow is the only thing that settles it. Its one
+ * production consumer (`guided-onboarding-github-step.tsx`) wires `onConnect`
+ * through to `useDesktopGitHubConnect` on desktop, which calls
+ * `openGitHubConnect` with no `install` flag — ISS-5958 removed install
+ * mode from the connect path entirely, so no caller can opt into it. Since
+ * PLN-1742 M5 the desktop opener sends that to the web Clerk linking page
+ * (`/connect/github/link`), which attaches GitHub to the user's Closedloop
+ * sign-in account: a per-user authorization, not an installation.
  *
  * So this screen must NOT promise an installation. It needs no org admin, and
  * it presents no repository picker — the two things the previous revision told
@@ -55,38 +79,51 @@ type ConnectGitHubPromptProps = {
  * becomes mandatory at that point, because an install genuinely can strand a
  * non-admin. It cannot today.
  *
+ * The old "never by driving your local gh or git" claim was removed here
+ * (not gated): it was already false — the desktop gateway's local `gh` and
+ * ambient `git` credential mechanisms remain by design (ISS-6983).
+ *
+ * The words themselves now live in `GITHUB_CONNECT_PROMPT_COPY` (ISS-5958), one
+ * entry per action, so the Reconnect variant cannot acquire a second spelling
+ * and the Connect wording above stays the single thing to protect.
+ *
  * Surface-agnostic: the host wires `onConnect` to the platform connect route and
  * owns the in-flight state. Connect once — the resulting `GitHubUserConnection`
  * is org+user-scoped and live across desktop, web, and multiplayer, so there is
  * no separate per-surface GitHub integration to repeat.
  */
 export function ConnectGitHubPrompt({
+  action = GitHubConnectAction.Connect,
   onConnect,
   connecting = false,
+  error = null,
   grants = DEFAULT_GRANTS,
   headingId,
 }: ConnectGitHubPromptProps) {
+  const copy = GITHUB_CONNECT_PROMPT_COPY[action];
   return (
     <div className="mx-auto flex w-full max-w-md flex-col items-center text-center">
       {/* Plain mark, no bordered chip: two stops earlier in this same flow the
           transition panel renders a bare size-6 GitHub mark, and an icon boxed
           in its own container is the template look we keep pulling out of
           screens. One treatment for one mark, across the whole flow. */}
-      <Github className="size-6" />
-      <p className="mt-4 font-semibold text-primary text-xs uppercase tracking-wider">
-        One more step · Required
-      </p>
+      <GitHubLogo className="size-6" />
+      {copy.eyebrow ? (
+        <p className="mt-4 font-semibold text-primary text-xs uppercase tracking-wider">
+          {copy.eyebrow}
+        </p>
+      ) : null}
       <h1
-        className="mt-1.5 font-semibold text-2xl tracking-tight"
+        className={cn(
+          "font-semibold text-2xl tracking-tight",
+          copy.eyebrow ? "mt-1.5" : "mt-4"
+        )}
         id={headingId}
       >
-        Connect GitHub to finish setup
+        {copy.heading}
       </h1>
       <p className="mx-auto mt-2 max-w-sm text-pretty text-muted-foreground text-sm leading-relaxed">
-        Authorize Closedloop on GitHub so we read your PR and repo activity
-        through the GitHub API, never by driving your local gh or git under your
-        personal credentials. Closedloop acts as you, and only reaches what you
-        can already reach.
+        {copy.body}
       </p>
 
       <div className="mt-5 w-full rounded-xl border border-border bg-card p-4 text-left">
@@ -111,12 +148,31 @@ export function ConnectGitHubPrompt({
         size="lg"
         type="button"
       >
-        {connecting ? <Loader2 className="animate-spin" /> : <Github />}
-        Continue with GitHub
+        {connecting ? <Loader2 className="animate-spin" /> : <GitHubLogo />}
+        {copy.ctaLabel}
       </Button>
-      <p className="mt-3 text-muted-foreground text-xs">
-        A per-user grant, no admin rights needed. Revocable anytime in GitHub.
-      </p>
+      <ConnectGitHubError error={error} />
+      <p className="mt-3 text-muted-foreground text-xs">{copy.footnote}</p>
     </div>
+  );
+}
+
+/**
+ * One connect-handoff failure line, announced, or nothing.
+ *
+ * Its own component because two renders in this flow have to show it and they
+ * must not spell it twice: the prompt above, and the step's "checking your
+ * connection" state, which a reader reaches the instant they come back from the
+ * browser — the one moment a failure message matters most, and the one where a
+ * status re-read that folds to `null` would otherwise swallow it (ISS-10990).
+ */
+export function ConnectGitHubError({ error }: { error: string | null }) {
+  if (!error) {
+    return null;
+  }
+  return (
+    <p className="mt-3 text-destructive text-xs" role="alert">
+      {error}
+    </p>
   );
 }

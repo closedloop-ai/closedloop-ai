@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Pending audit emissions that the drain-audit-outbox cron moves into AuditEntry; no screen reads it."
+}

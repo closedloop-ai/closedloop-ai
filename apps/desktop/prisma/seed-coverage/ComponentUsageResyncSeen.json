@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Marker that a session was re-queued for paginated component-usage sync (ISS-6998); read only by the boot heal."
+}

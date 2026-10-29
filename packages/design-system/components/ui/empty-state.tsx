@@ -62,6 +62,7 @@ export function EmptyState({
         size === "compact" ? "gap-4 py-6 md:p-6" : "py-12",
         className
       )}
+      data-slot="empty-state"
     >
       <EmptyHeader>
         <EmptyMedia variant="icon">

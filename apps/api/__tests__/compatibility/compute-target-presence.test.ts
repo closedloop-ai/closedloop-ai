@@ -14,7 +14,12 @@ vi.mock("@/app/compute-targets/service", async (importOriginal) => {
     ...original,
     computeTargetsService: {
       ...original.computeTargetsService,
+      // ISS-8895/ISS-8897 moved the relay presence write off `heartbeat` and
+      // onto its own writer, so `presenceAt` and `lastSeenAt` stopped sharing a
+      // column. Mocking `heartbeat` alone stopped intercepting anything: the
+      // handler reached the real `withDb` and the frame answered 500.
       heartbeat: vi.fn().mockResolvedValue(true),
+      recordRelayPresence: vi.fn().mockResolvedValue(true),
     },
   };
 });
@@ -26,7 +31,6 @@ vi.mock("@/lib/relay-event-bus", async (importOriginal) => {
     ...original,
     relayEventBus: {
       ...original.relayEventBus,
-      publishResult: vi.fn(),
     },
   };
 });
@@ -37,11 +41,11 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(computeTargetsService.heartbeat).mockResolvedValue(true);
+  vi.mocked(computeTargetsService.recordRelayPresence).mockResolvedValue(true);
 });
 
 describe("POST /internal/relay/socket-event — desktop.presence", () => {
-  it("returns 200, calls heartbeat with correct args, and emits nothing", async () => {
+  it("returns 200, records relay presence with correct args, and emits nothing", async () => {
     const request = makeSocketEventRequest(
       "desktop.presence",
       {},
@@ -54,11 +58,13 @@ describe("POST /internal/relay/socket-event — desktop.presence", () => {
     const result = await response.json();
     expect(result.emit).toEqual([]);
 
-    expect(vi.mocked(computeTargetsService.heartbeat)).toHaveBeenCalledWith(
-      "target-1",
-      "org-1",
-      "user-1"
-    );
+    expect(
+      vi.mocked(computeTargetsService.recordRelayPresence)
+    ).toHaveBeenCalledWith("target-1", "org-1", "user-1");
+    // The narrower clock is the point of the split: a presence frame is the one
+    // check-in the idle drain may read as "the presence trigger owns this
+    // target's backlog", so this path must not fall back to the generic one.
+    expect(vi.mocked(computeTargetsService.heartbeat)).not.toHaveBeenCalled();
   });
 
   it("returns 400 when auth field is missing", async () => {

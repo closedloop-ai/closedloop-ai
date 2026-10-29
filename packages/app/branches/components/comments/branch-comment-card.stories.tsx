@@ -1,5 +1,5 @@
 import { BranchPrCommentKind } from "@repo/api/src/types/branch";
-import { TraceCommentTargetType } from "@repo/api/src/types/comment";
+import { CommentTargetType } from "@repo/api/src/types/comment";
 import type { Meta, StoryObj } from "@storybook/react";
 import {
   BranchCommentCard,
@@ -10,7 +10,19 @@ import {
   BranchCommentsTab,
   type BranchCommentThread,
 } from "./branch-comments-model";
+import { BRANCH_COMMENTS_MIN_WIDTH } from "./branch-comments-rail";
 
+const COMMENT_PHOTO_URL =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Ccircle cx='20' cy='20' r='20' fill='%23ddd6fe'/%3E%3Ccircle cx='20' cy='15' r='8' fill='%235b21b6'/%3E%3Cpath d='M5 40c2-10 8-15 15-15s13 5 15 15' fill='%235b21b6'/%3E%3C/svg%3E";
+const FAILED_PHOTO_URL = "data:image/png;base64,broken";
+
+/**
+ * One comment thread card: a platform-authored root with inline reply/edit
+ * composers, or a read-only provider (GitHub) thread with its own reply
+ * metadata. `mode` selects which composer, if any, is open for the root.
+ * No controls: each story is a complete thread fixture whose nested author,
+ * permission and composer state must stay coherent.
+ */
 const meta = {
   component: BranchCommentCard,
   decorators: [
@@ -20,7 +32,8 @@ const meta = {
       </div>
     ),
   ],
-  title: "App Core/Branches/Comment Card",
+  title: "Composites v1.0/Branches/Branch Comment Card",
+  tags: ["deprecated", "autodocs"],
   args: {
     canEditRoot: true,
     canReply: true,
@@ -68,6 +81,14 @@ export const PlatformMidReply: Story = {
   },
 };
 
+export const PlatformPhoto: Story = {
+  args: { thread: withAuthorAvatar(makePlatformThread(), COMMENT_PHOTO_URL) },
+};
+
+export const PlatformFailedPhoto: Story = {
+  args: { thread: withAuthorAvatar(makePlatformThread(), FAILED_PHOTO_URL) },
+};
+
 export const ProviderWithGitHubLink: Story = {
   args: {
     canEditRoot: false,
@@ -84,6 +105,53 @@ export const ThreadWithoutAnchor: Story = {
     thread: {
       ...makePlatformThread(),
       anchor: null,
+    },
+  },
+};
+
+/*
+ * ISS-10383: the two states the dead-letter affordance adds to the metadata
+ * row, which sits beside the timestamp and is therefore the line that crowds
+ * first. The suites around this card pin STRINGS; `packages/app/AGENTS.md` is
+ * explicit that narrow-width crowding and tone pairing are pinned here instead,
+ * and the Sessions rail never got a story either, so this is the shared
+ * component's only rendered-state coverage on either surface (marisolashgrove
+ * review).
+ */
+export const SyncAbandonedWithRetry: Story = {
+  args: {
+    thread: {
+      ...makePlatformThread(),
+      canRetrySync: true,
+      syncAbandoned: true,
+    },
+  },
+};
+
+/*
+ * The honest render for a row nothing can move — a provider thread, whose
+ * source never exposes `retrySync`. Badge, no door. Rendered at the rail's real
+ * floor rather than the default `max-w-md`, because that is the width at which
+ * the badge, the button and the timestamp have to share one line.
+ */
+export const SyncAbandonedWithoutRetryAtMinWidth: Story = {
+  decorators: [
+    (Story) => (
+      <div
+        className="bg-background p-6"
+        style={{ width: BRANCH_COMMENTS_MIN_WIDTH }}
+      >
+        <Story />
+      </div>
+    ),
+  ],
+  args: {
+    canEditRoot: false,
+    canReply: false,
+    thread: {
+      ...makeProviderThread(),
+      canRetrySync: false,
+      syncAbandoned: true,
     },
   },
 };
@@ -109,7 +177,7 @@ function makePlatformThread(): BranchCommentThread {
     ],
     source: BranchCommentSource.Platform,
     tab: BranchCommentsTab.Details,
-    target: { id: "branch-1", type: TraceCommentTargetType.Branch },
+    target: { id: "branch-1", type: CommentTargetType.Branch },
   };
 }
 
@@ -162,7 +230,7 @@ function makeProviderThread(): BranchCommentThread {
     ],
     source: BranchCommentSource.Provider,
     tab: BranchCommentsTab.Details,
-    target: { id: "branch-1", type: TraceCommentTargetType.Branch },
+    target: { id: "branch-1", type: CommentTargetType.Branch },
   };
 }
 
@@ -181,5 +249,15 @@ function makeStoryAnchor() {
       traceId: "trace-1",
       turnId: "turn-1",
     },
+  };
+}
+
+function withAuthorAvatar(
+  thread: BranchCommentThread,
+  avatarUrl: string
+): BranchCommentThread {
+  return {
+    ...thread,
+    author: { ...thread.author, avatarUrl },
   };
 }

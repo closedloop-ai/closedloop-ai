@@ -12,9 +12,9 @@ import {
 } from "./branch-story-metric-fixtures";
 
 const meta = {
-  title: "App Core/Branches/Branch Cost to Merge",
+  title: "Composites v1.0/Branches/Branch Cost To Merge",
   component: BranchCostToMerge,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof BranchCostToMerge>;
 
@@ -73,6 +73,9 @@ export const ZeroSpend: Story = {
   },
 };
 
+// ISS-6949: the TOTAL is the branch's canonical attributed cost and is never
+// Partial at a positive value, so this story shows what the kernel can actually
+// emit — a settled total over rows whose phase split is incomplete.
 function partialMetrics() {
   return {
     ...completeMetrics(),
@@ -81,7 +84,7 @@ function partialMetrics() {
       [BranchVisibleLifecyclePhase.Review]: partialMetric(1),
       [BranchVisibleLifecyclePhase.Rework]: partialMetric(1),
     },
-    totalCostUsd: partialMetric(4),
+    totalCostUsd: completeMetric(4),
   };
 }
 

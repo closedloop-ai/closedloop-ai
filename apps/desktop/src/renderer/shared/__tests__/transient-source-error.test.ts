@@ -16,9 +16,12 @@ describe("isTransientDbHostError", () => {
     "db-host is closed (op: pageData)",
     // Case-insensitive + wrapped by the Electron IPC prefix.
     "Error invoking remote method 'x': Error: DB-HOST EXITED (code: 11)",
-  ])("classifies the db-host lifecycle signature %s as transient", (message) => {
-    expect(isTransientDbHostError(new Error(message))).toBe(true);
-  });
+  ])(
+    "classifies the db-host lifecycle signature %s as transient",
+    (message) => {
+      expect(isTransientDbHostError(new Error(message))).toBe(true);
+    }
+  );
 
   it.each([
     "SQLITE_CORRUPT: database disk image is malformed",

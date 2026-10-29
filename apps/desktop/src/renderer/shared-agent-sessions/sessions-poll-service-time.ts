@@ -1,5 +1,4 @@
 /**
- * @file sessions-poll-service-time.ts
  * @description Hold the desktop Sessions fallback poll's duty cycle flat at ~50%
  * by deriving its interval from the observed service time, so a growing corpus
  * cannot push the poll toward saturating the bounded read lane.

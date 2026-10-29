@@ -8,8 +8,7 @@
  * Claude render, but nothing read it back. This poller reads that file on a
  * low-frequency cadence (matching the renderer's ~5-minute refresh and the
  * store's staleness window), maps it into a {@link SessionLimitsSnapshot}, and
- * records it — so the resolver prefers this RICH continuous sample over the
- * COARSE `rate_limit_event` one.
+ * records it.
  *
  * FAIL-CLOSED: a missing, empty, corrupt, or stale file must NEVER throw or
  * record bogus data. The snapshot's `fetchedAtMs` is derived from the file's own
@@ -127,11 +126,10 @@ export function createStatuslineReader(
       // FEA-3523: a valid-JSON file that lacks usable `rate_limits` (an older
       // Claude Code/statusline payload, or malformed stdin the capture script
       // still turns into `fiveHour: null`/`sevenDay: null`) maps to an all-null
-      // snapshot. Recording it would win reconciliation — the resolver always
-      // prefers a fresh RICH statusline sample over the COARSE rate_limit_event —
-      // yet the renderer hides all-null snapshots, so a single empty render would
-      // suppress a valid coarse rejected-event bar until the staleness window
-      // expires. Skip empty snapshots so the coarse source stays visible.
+      // snapshot. Recording it would replace the last valid statusline sample
+      // (the store keeps only the freshest per source), yet the renderer hides
+      // all-null snapshots, so a single empty render would hide the bars until
+      // the next valid one. Skip empty snapshots.
       if (!hasRenderableSessionLimit(limits)) {
         return;
       }

@@ -20,12 +20,13 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import {
   BOOT_ADMISSION_DEADLINE_MS,
   scheduleAfterBootAdmission,
   whenBootAdmissionAllowed,
 } from "../src/main/lifecycle/boot-admission-deadline.js";
+import { gatewayLog } from "../src/main/logging/gateway-logger.js";
 import { nodeTestTimers } from "./support/node-test-fake-timers.js";
 
 /** The failure a caller-supplied `onDeadline` is driven with. */
@@ -301,6 +302,7 @@ describe("ISS-5990 scheduleAfterBootAdmission", () => {
     const settled = new Promise<void>((resolve) => {
       resolveSettled = resolve;
     });
+    const before = gatewayLog.getEntries().length;
 
     scheduleAfterBootAdmission(
       () => Promise.resolve(),
@@ -312,5 +314,17 @@ describe("ISS-5990 scheduleAfterBootAdmission", () => {
 
     await settled;
     await flushMicrotasks();
+
+    const reported = gatewayLog
+      .getEntries()
+      .slice(before)
+      .filter(
+        (entry) =>
+          entry.level === "warn" &&
+          entry.message.includes(
+            "Post-window boot task scheduling failed: capture blew up"
+          )
+      );
+    assert.equal(reported.length, 1);
   });
 });

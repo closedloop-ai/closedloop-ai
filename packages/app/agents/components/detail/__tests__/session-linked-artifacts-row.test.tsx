@@ -6,7 +6,10 @@
 // agent-session-detail-view.test.tsx.
 
 import type { SessionLinkedArtifact } from "@repo/api/src/types/agent-session";
-import { DocumentType } from "@repo/api/src/types/document";
+import {
+  DOCUMENT_ROUTE_PREFIX,
+  DocumentType,
+} from "@repo/api/src/types/document";
 import {
   getDocumentTypeRoute,
   withOrgSlug,
@@ -144,27 +147,38 @@ describe("SessionLinkedArtifactsRow link resolution (ISS-4793)", () => {
   }
 
   // The four navigable document types, through the real prefix map. ISS- and FEA-
-  // are both FEATURE documents and both route under /issues/ (FEA-4137).
+  // are both FEATURE documents (FEA-4137); every type routes under /documents/.
   it.each([
-    ["ISS-4544", DocumentType.Feature, "/acme/issues/ISS-4544"],
-    ["FEA-4375", DocumentType.Feature, "/acme/issues/FEA-4375"],
-    ["PRD-538", DocumentType.Prd, "/acme/prds/PRD-538"],
+    [
+      "ISS-4544",
+      DocumentType.Feature,
+      `/acme/${DOCUMENT_ROUTE_PREFIX}/ISS-4544`,
+    ],
+    [
+      "FEA-4375",
+      DocumentType.Feature,
+      `/acme/${DOCUMENT_ROUTE_PREFIX}/FEA-4375`,
+    ],
+    ["PRD-538", DocumentType.Prd, `/acme/${DOCUMENT_ROUTE_PREFIX}/PRD-538`],
     [
       "PLN-988",
       DocumentType.ImplementationPlan,
-      "/acme/implementation-plans/PLN-988",
+      `/acme/${DOCUMENT_ROUTE_PREFIX}/PLN-988`,
     ],
-    ["DOC-1", DocumentType.Doc, "/acme/documents/DOC-1"],
-  ])("renders %s (%s) as a real <a href> to %s", (slug, documentType, expectedHref) => {
-    const { container } = renderRow([artifact(slug, documentType)], true);
+    ["DOC-1", DocumentType.Doc, `/acme/${DOCUMENT_ROUTE_PREFIX}/DOC-1`],
+  ])(
+    "renders %s (%s) as a real <a href> to %s",
+    (slug, documentType, expectedHref) => {
+      const { container } = renderRow([artifact(slug, documentType)], true);
 
-    const pill = container.querySelector("a.sd3-result-pr");
-    expect(pill).not.toBeNull();
-    expect(pill).toHaveAttribute("href", expectedHref);
-    // A real anchor with an href is natively keyboard-focusable and honors
-    // cmd/middle-click — the acceptance criteria's "not a bare label".
-    expect(pill?.tagName).toBe("A");
-  });
+      const pill = container.querySelector("a.sd3-result-pr");
+      expect(pill).not.toBeNull();
+      expect(pill).toHaveAttribute("href", expectedHref);
+      // A real anchor with an href is natively keyboard-focusable and honors
+      // cmd/middle-click — the acceptance criteria's "not a bare label".
+      expect(pill?.tagName).toBe("A");
+    }
+  );
 
   it("keeps an unresolvable artifact a non-link span rather than a dead link", async () => {
     // No documentType -> no route. Rendering it as an <a> would be a UI that

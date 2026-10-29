@@ -8,8 +8,14 @@ import {
 import { z } from "zod";
 import {
   BranchActivityPersistStatus,
+  type BranchActivityPushEvidence,
+  branchActivityPushEvidence,
   persistBranchActivityAtom,
 } from "@/app/branches/branch-activity-evidence";
+import {
+  PullRequestLifecycleOccurrence,
+  pullRequestLifecycleActivityAtom,
+} from "@/app/branches/pull-request-lifecycle-activity";
 import { isRecord } from "@/lib/type-guards";
 
 /** GitHub webhook event names considered by the Branch activity producer. */
@@ -66,10 +72,12 @@ export const GitHubBranchActivityNoWriteReason = {
   MissingAttribution: "missing_attribution",
   MissingAuthoritativeTimestamp: "missing_authoritative_timestamp",
   MissingDeliveryIdentity: "missing_delivery_identity",
+  MissingPushRange: "missing_push_range",
   PersistenceConflict: "persistence_conflict",
   PersistenceInvalid: "persistence_invalid",
   PersistenceInvalidAttribution: "persistence_invalid_attribution",
   PersistenceNotFound: "persistence_not_found",
+  PersistenceFutureTimestamp: "persistence_future_timestamp",
   UnsupportedAction: "unsupported_action",
   UnsupportedEvent: "unsupported_event",
 } as const;
@@ -82,6 +90,21 @@ export type GitHubBranchActivityProducerInput = {
   deliveryId: unknown;
   payload: unknown;
   attribution: unknown;
+  /**
+   * ISS-10009: the push's own line delta, resolved by the caller against the
+   * provider compare. Absent or unparseable means UNKNOWN and is written as
+   * null — this mapper never derives a count from the payload, because the push
+   * payload carries none.
+   */
+  pushLineDelta?: unknown;
+  /**
+   * ISS-10009: the immutable base the delta above was measured against, when
+   * the caller read one. It WINS over the payload's `before`, which names the
+   * branch's previous tip rather than the compared range: on a branch create it
+   * is the all-zero sha, and on a force-push it is a tip the diff never saw.
+   * Absent means no compare was read, and the payload's `before` stands.
+   */
+  pushBaseSha?: unknown;
 };
 
 /** Typed fail-closed outcome for an unmappable or rejected delivery. */
@@ -96,6 +119,8 @@ export type GitHubBranchActivityMapped = {
   organizationId: string;
   branchArtifactId: string;
   atom: BranchActivityAtom;
+  /** Set only for push deliveries; written to the atom's additive columns. */
+  pushEvidence?: BranchActivityPushEvidence;
 };
 
 /** Pure mapping result before any database access occurs. */
@@ -132,7 +157,10 @@ export function mapGitHubBranchActivity(
   if (!eventName) {
     return noWrite(GitHubBranchActivityNoWriteReason.UnsupportedEvent);
   }
-  const selection = selectActivity(eventName, input.payload);
+  const selection = selectActivity(eventName, input.payload, {
+    baseSha: input.pushBaseSha,
+    lineDelta: input.pushLineDelta,
+  });
   if (selection.status === GitHubBranchActivityMappingStatus.NoWrite) {
     return selection;
   }
@@ -143,25 +171,55 @@ export function mapGitHubBranchActivity(
   if (!attribution.ok) {
     return noWrite(attribution.reason);
   }
-  const atomAttribution = buildAtomAttribution(
-    selection.attributionKind,
-    attribution.pullRequestDetailId
-  );
-  if (!atomAttribution) {
-    return noWrite(GitHubBranchActivityNoWriteReason.MissingAttribution);
-  }
   return {
     status: GitHubBranchActivityMappingStatus.Mapped,
     organizationId: attribution.organizationId,
     branchArtifactId: attribution.branchArtifactId,
-    atom: {
-      version: BranchActivityAtomVersion.V1,
-      source: selection.source,
-      sourceEventId: delivery.deliveryId,
-      occurredAt: selection.occurredAt,
-      attribution: atomAttribution,
-      completeness: BranchActivityEvidenceCompleteness.Partial,
-    },
+    atom: mappedAtom(delivery.deliveryId, selection, attribution),
+    ...(selection.pushEvidence ? { pushEvidence: selection.pushEvidence } : {}),
+  };
+}
+
+/**
+ * Build the atom for one mapped delivery.
+ *
+ * PR lifecycle deliveries are keyed by the occurrence they report rather than
+ * by the delivery that carried it, so the same opened/merged/closed event
+ * observed again — by a redelivery, or by the non-webhook backfill and
+ * settlement writers — replays the one immutable row instead of adding a
+ * second copy under a second identity space. Every other lane keeps the
+ * delivery identity, which is the only occurrence key those events have.
+ *
+ * This lane deliberately does not run the batch writer's legacy `:closed`
+ * reconciliation. That reconciliation exists for rows keyed without the close
+ * time, a form that never reached `main` — the timestamped key and the
+ * reconciliation landed in the same commit (ISS-6421) — and a close webhook
+ * only ever reports a close happening now, so it cannot carry an occurrence
+ * old enough to have one.
+ */
+function mappedAtom(
+  deliveryId: string,
+  selection: ActivitySelection,
+  attribution: Extract<AttributionParseResult, { ok: true }>
+): BranchActivityAtom {
+  if (
+    selection.occurrence &&
+    attribution.atomAttribution.kind ===
+      BranchActivityAttributionKind.PullRequest
+  ) {
+    return pullRequestLifecycleActivityAtom({
+      pullRequestDetailId: attribution.atomAttribution.pullRequestId,
+      occurrence: selection.occurrence,
+      occurredAt: new Date(selection.occurredAt),
+    });
+  }
+  return {
+    version: BranchActivityAtomVersion.V1,
+    source: selection.source,
+    sourceEventId: deliveryId,
+    occurredAt: selection.occurredAt,
+    attribution: attribution.atomAttribution,
+    completeness: BranchActivityEvidenceCompleteness.Partial,
   };
 }
 
@@ -188,6 +246,7 @@ async function persistMappedActivity(
     organizationId: mapped.organizationId,
     branchArtifactId: mapped.branchArtifactId,
     atom: mapped.atom,
+    pushEvidence: mapped.pushEvidence,
   });
   if (
     result.status === BranchActivityPersistStatus.Inserted ||
@@ -203,7 +262,8 @@ async function persistMappedActivity(
 
 function selectActivity(
   eventName: GitHubBranchActivityEventName,
-  payload: unknown
+  payload: unknown,
+  pushCompare: RawPushCompare
 ): ActivitySelectionResult {
   const root = recordValue(payload);
   const action = stringValue(root?.action);
@@ -223,9 +283,7 @@ function selectActivity(
     case GitHubBranchActivityEventName.PullRequestReviewThread:
       return selectReviewThreadActivity(action);
     case GitHubBranchActivityEventName.Push:
-      return noWrite(
-        GitHubBranchActivityNoWriteReason.MissingAuthoritativeTimestamp
-      );
+      return selectPushActivity(root, pushCompare);
     default:
       return exhaustiveEvent(eventName);
   }
@@ -237,9 +295,8 @@ function selectPullRequestActivity(
 ): ActivitySelectionResult {
   const pullRequest = recordValue(root?.pull_request);
   if (action === GitHubBranchActivityAction.Opened) {
-    return activitySelection(
-      BranchActivitySource.PullRequestLifecycle,
-      BranchActivityAttributionKind.PullRequest,
+    return lifecycleSelection(
+      PullRequestLifecycleOccurrence.Opened,
       pullRequest?.created_at
     );
   }
@@ -250,13 +307,31 @@ function selectPullRequestActivity(
         GitHubBranchActivityNoWriteReason.MissingAuthoritativeTimestamp
       );
     }
-    return activitySelection(
-      BranchActivitySource.PullRequestLifecycle,
-      BranchActivityAttributionKind.PullRequest,
-      merged ? pullRequest?.merged_at : pullRequest?.closed_at
-    );
+    return merged
+      ? lifecycleSelection(
+          PullRequestLifecycleOccurrence.Merged,
+          pullRequest?.merged_at
+        )
+      : lifecycleSelection(
+          PullRequestLifecycleOccurrence.Closed,
+          pullRequest?.closed_at
+        );
   }
   return noWrite(GitHubBranchActivityNoWriteReason.UnsupportedAction);
+}
+
+function lifecycleSelection(
+  occurrence: PullRequestLifecycleOccurrence,
+  timestamp: unknown
+): ActivitySelectionResult {
+  const selection = activitySelection(
+    BranchActivitySource.PullRequestLifecycle,
+    BranchActivityAttributionKind.PullRequest,
+    timestamp
+  );
+  return selection.status === GitHubBranchActivityMappingStatus.Mapped
+    ? { ...selection, occurrence }
+    : selection;
 }
 
 function selectPullRequestReviewActivity(
@@ -443,7 +518,10 @@ function parseAttribution(
       ok: true,
       organizationId: attribution.organizationId,
       branchArtifactId: attribution.branchArtifactId,
-      pullRequestDetailId: attribution.pullRequestDetailId,
+      atomAttribution: {
+        kind: BranchActivityAttributionKind.PullRequest,
+        pullRequestId: attribution.pullRequestDetailId,
+      },
     };
   }
   if (attribution.pullRequestDetailId) {
@@ -452,22 +530,12 @@ function parseAttribution(
       reason: GitHubBranchActivityNoWriteReason.InvalidAttribution,
     };
   }
-  return { ok: true, ...attribution, pullRequestDetailId: undefined };
-}
-
-function buildAtomAttribution(
-  kind: BranchActivityAttributionKind,
-  pullRequestDetailId: string | undefined
-): BranchActivityAtom["attribution"] | null {
-  if (kind === BranchActivityAttributionKind.Branch) {
-    return { kind: BranchActivityAttributionKind.Branch };
-  }
-  return pullRequestDetailId
-    ? {
-        kind: BranchActivityAttributionKind.PullRequest,
-        pullRequestId: pullRequestDetailId,
-      }
-    : null;
+  return {
+    ok: true,
+    organizationId: attribution.organizationId,
+    branchArtifactId: attribution.branchArtifactId,
+    atomAttribution: { kind: BranchActivityAttributionKind.Branch },
+  };
 }
 
 function parseEventName(value: unknown): GitHubBranchActivityEventName | null {
@@ -495,6 +563,8 @@ function persistenceNoWriteReason(
       return GitHubBranchActivityNoWriteReason.PersistenceNotFound;
     case BranchActivityPersistStatus.InvalidAttribution:
       return GitHubBranchActivityNoWriteReason.PersistenceInvalidAttribution;
+    case BranchActivityPersistStatus.FutureTimestamp:
+      return GitHubBranchActivityNoWriteReason.PersistenceFutureTimestamp;
     default:
       return exhaustivePersistenceStatus(status);
   }
@@ -527,16 +597,24 @@ type UnknownRecord = Record<string, unknown>;
 type ActivitySource =
   | typeof BranchActivitySource.PullRequestLifecycle
   | typeof BranchActivitySource.PullRequestReview
-  | typeof BranchActivitySource.GitHubWebhook;
+  | typeof BranchActivitySource.GitHubWebhook
+  | typeof BranchActivitySource.PushLoc;
 
 type ActivitySelection = {
   status: typeof GitHubBranchActivityMappingStatus.Mapped;
   source: ActivitySource;
   attributionKind: BranchActivityAttributionKind;
   occurredAt: string;
+  /** Set only for PR lifecycle events, which key by occurrence not delivery. */
+  occurrence?: PullRequestLifecycleOccurrence;
+  /** Set only for push deliveries (ISS-10009). */
+  pushEvidence?: BranchActivityPushEvidence;
 };
 
 type ActivitySelectionResult = ActivitySelection | GitHubBranchActivityNoWrite;
+
+/** The caller's push compare, still unknown-at-runtime (ISS-10009). */
+type RawPushCompare = { baseSha: unknown; lineDelta: unknown };
 
 type DeliveryParseResult =
   | { ok: true; deliveryId: string }
@@ -546,12 +624,18 @@ type TimestampParseResult =
   | { ok: true; value: string }
   | { ok: false; reason: GitHubBranchActivityNoWriteReason };
 
+/**
+ * The success arm carries the atom attribution already built, because this is
+ * the only place `pullRequestDetailId` is narrowed to a string for the
+ * PullRequest kind. Returning the raw id instead would hand the caller an
+ * invariant the compiler could not check.
+ */
 type AttributionParseResult =
   | {
       ok: true;
       organizationId: string;
       branchArtifactId: string;
-      pullRequestDetailId: string | undefined;
+      atomAttribution: BranchActivityAtom["attribution"];
     }
   | { ok: false; reason: GitHubBranchActivityNoWriteReason };
 
@@ -568,3 +652,92 @@ const attributionSchema = z
 const eventNames = new Set<string>(
   Object.values(GitHubBranchActivityEventName)
 );
+
+/**
+ * Select the per-push atom (ISS-10009, operator ruling 1).
+ *
+ * `occurredAt` is the NEWEST `commits[].timestamp`, the only occurrence time a
+ * push has. A ZERO-COMMIT push — a branch delete, or a force-push to an already
+ * existing sha — carries none, so it writes no row rather than adopting receipt
+ * time. That rule is enforced HERE and not left to the timestamp fold: the fold
+ * also reads `head_commit`, which a zero-commit delivery still populates with
+ * the branch's prior tip, so folding first would time a row by a commit this
+ * push did not carry. The lane is `push_loc`, excluded from
+ * `canonicalBranchActivitySources` so it cannot reach the Last-active aggregate
+ * the Branches list sorts on.
+ */
+function selectPushActivity(
+  root: UnknownRecord | undefined,
+  pushCompare: RawPushCompare
+): ActivitySelectionResult {
+  const pushEvidence = branchActivityPushEvidence({
+    beforeSha: stringValue(pushCompare.baseSha) ?? root?.before,
+    afterSha: root?.after,
+    lineDelta: pushCompare.lineDelta,
+  });
+  if (!pushEvidence) {
+    return noWrite(GitHubBranchActivityNoWriteReason.MissingPushRange);
+  }
+  const commits = root?.commits;
+  if (!(Array.isArray(commits) && commits.length > 0)) {
+    return noWrite(
+      GitHubBranchActivityNoWriteReason.MissingAuthoritativeTimestamp
+    );
+  }
+  const occurredAt = newestCommitTimestamp(commits, root?.head_commit);
+  if (!occurredAt.ok) {
+    return noWrite(occurredAt.reason);
+  }
+  return {
+    status: GitHubBranchActivityMappingStatus.Mapped,
+    source: BranchActivitySource.PushLoc,
+    attributionKind: BranchActivityAttributionKind.Branch,
+    occurredAt: occurredAt.value,
+    pushEvidence,
+  };
+}
+
+/**
+ * The newest parseable commit timestamp in the payload, normalized to UTC.
+ *
+ * Commits arrive in push order, which is NOT timestamp order — a rebase, a
+ * cherry-pick, or a skewed client clock reorders them — so the newest is
+ * computed, never taken positionally. `head_commit` is folded in beside the
+ * array because `commits[]` is TRUNCATED: `webhook-body-caps.test.ts` records a
+ * 400-commit push arriving with 20 entries plus a separate `head_commit`, so
+ * reading the array alone would compute a confident time from a capped set.
+ * A payload carrying no timestamp at all is a different failure from one whose
+ * every timestamp is unparseable, and the two reasons are kept apart so the
+ * second is visibly a provider defect.
+ */
+function newestCommitTimestamp(
+  commits: readonly unknown[],
+  headCommit: unknown
+): TimestampParseResult {
+  const present = [...commits, headCommit]
+    .map((entry) => recordValue(entry)?.timestamp)
+    .filter((raw) => raw !== null && raw !== undefined && raw !== "");
+  if (present.length === 0) {
+    return {
+      ok: false,
+      reason: GitHubBranchActivityNoWriteReason.MissingAuthoritativeTimestamp,
+    };
+  }
+  const epochMs = present
+    .flatMap((raw) => {
+      const parsed = pushCommitTimestampSchema.safeParse(raw);
+      return parsed.success ? [Date.parse(parsed.data)] : [];
+    })
+    .filter((ms) => Number.isFinite(ms));
+  if (epochMs.length === 0) {
+    return {
+      ok: false,
+      reason: GitHubBranchActivityNoWriteReason.InvalidAuthoritativeTimestamp,
+    };
+  }
+  const newest = epochMs.reduce((left, right) => (right > left ? right : left));
+  return { ok: true, value: new Date(newest).toISOString() };
+}
+
+/** Push commit times carry a local offset; every other lane's time is UTC. */
+const pushCommitTimestampSchema = z.iso.datetime({ offset: true });

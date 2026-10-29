@@ -21,7 +21,8 @@
  * and the sqlite import test.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { ACTIVITY_PHASE } from "@repo/api/src/types/activity-phase";
+import { test } from "vitest";
 import { EvidenceLayer } from "../src/main/collectors/evidence/evidence-model.js";
 import {
   ACTIVITY_CLASSIFIER_VERSION,
@@ -30,7 +31,6 @@ import {
   deriveSessionBoundsMs,
   segmentIndexForMs,
 } from "../src/main/collectors/parsing/activity-segment-classifier.js";
-import { ACTIVITY_PHASE } from "../src/main/collectors/parsing/activity-taxonomy.js";
 import { CARRIED_CONFIDENCE } from "../src/main/collectors/parsing/phase-carry.js";
 import {
   applySubagentPurposeAttribution,

@@ -38,13 +38,13 @@ vi.mock("@repo/database", () => ({
 }));
 
 import { DocumentType } from "@repo/api/src/types/document";
+import { judgesAnalyticsService } from "@/app/judges-analytics/service";
 import {
   computeBimodalityCoefficient,
   computeCertaintyFraction,
   computeMean,
   computeStdDev,
-  judgesAnalyticsService,
-} from "@/app/judges-analytics/service";
+} from "@/app/judges-analytics/service/score-statistics";
 
 // Power sums for a known score population (the DB would compute these).
 function powerSums(scores: number[]) {

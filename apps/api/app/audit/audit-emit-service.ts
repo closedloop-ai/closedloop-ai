@@ -3,6 +3,7 @@ import { AuditActorType } from "@repo/api/src/types/audit";
 import { type Prisma, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
+import { reportAuditOutboxEnqueueFailure } from "@/lib/observability/audit-outbox-enqueue-telemetry";
 import { auditLedgerService } from "./audit-ledger-service";
 
 /**
@@ -34,6 +35,13 @@ import { auditLedgerService } from "./audit-ledger-service";
  * for Phase 1 (historical actions are not back-signed; the ledger starts at
  * genesis) and is the correct side to err on: we never fail a real action to
  * record it.
+ *
+ * {@link enqueueAuditEvent} is the ONE sanctioned exception, and it inverts
+ * both halves: it joins the caller's transaction and it throws. It exists for
+ * a write that destroys the very record the entry describes — a hard document
+ * delete (ISS-10029) — where "lose the emission, keep the action" is not the
+ * lesser harm, because the action leaves nothing behind to reconcile against
+ * later. Everything else on this module's contract is unchanged.
  */
 
 /**
@@ -92,12 +100,14 @@ export async function emitAuditEvent(input: AuditEmitInput): Promise<void> {
     );
   } catch (error) {
     // Failure isolation: a failed enqueue must not surface to the user's
-    // action. We drop this one emission and log it for operators.
-    log.error("[audit-emit] failed to enqueue audit event", {
+    // action. We drop this one emission — and REPORT it on a monitored event
+    // name rather than a prose sentence (#7225 review, whitlockk), because a
+    // dropped enqueue leaves nothing behind: no outbox row, no drain retry, no
+    // record that an event was ever owed.
+    reportAuditOutboxEnqueueFailure({
       organizationId: input.organizationId,
       action: input.action,
-      objectType: input.objectType,
-      error: error instanceof Error ? error.message : String(error),
+      error,
     });
   }
 }
@@ -106,12 +116,13 @@ export async function emitAuditEvent(input: AuditEmitInput): Promise<void> {
  * Fire-and-forget audit emission for response-path callers. Enqueues the event
  * onto the outbox via `waitUntil` so the insert settles after the response is
  * sent and never adds latency to the user's request (mirrors
- * `dispatchAssignmentNotification`). `emitAuditEvent` is already non-throwing,
- * so this can never surface an error. Returns `void`: the caller must not
- * `await` audit emission on the hot path.
+ * `dispatchAssignmentNotification`). The same deferred promise flushes the
+ * failure diagnostic before its serverless lifetime ends. `emitAuditEvent` is
+ * already non-throwing, so this can never surface an error. Returns `void`:
+ * the caller must not `await` audit emission on the hot path.
  */
 export function dispatchAuditEvent(input: AuditEmitInput): void {
-  waitUntil(emitAuditEvent(input));
+  waitUntil(emitAuditEventAndFlush(input));
 }
 
 /**
@@ -144,21 +155,24 @@ export async function emitAuditEvents(
       })
     );
   } catch (error) {
-    log.error("[audit-emit] failed to enqueue audit event batch", {
-      count: inputs.length,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    // One failed insert loses every input. Preserve each action's weight so the
+    // action-grouped monitor names the entries that were actually dropped.
+    for (const group of groupFailedAuditInputs(inputs)) {
+      reportAuditOutboxEnqueueFailure({ ...group, error });
+    }
   }
 }
 
 /**
  * Fire-and-forget bulk audit emission for response-path callers. Wraps
  * {@link emitAuditEvents} in `waitUntil` so the single bulk insert settles after
- * the response is sent and never adds latency to the user's request. Returns
- * `void`: the caller must not `await` audit emission on the hot path.
+ * the response is sent and never adds latency to the user's request. The same
+ * deferred promise flushes any failure diagnostic before its serverless
+ * lifetime ends. Returns `void`: the caller must not `await` audit emission on
+ * the hot path.
  */
 export function dispatchAuditEvents(inputs: readonly AuditEmitInput[]): void {
-  waitUntil(emitAuditEvents(inputs));
+  waitUntil(emitAuditEventsAndFlush(inputs));
 }
 
 /** Summary of one drain pass, returned by the cron for observability. */
@@ -389,4 +403,126 @@ async function recordDrainFailure(id: string, message: string): Promise<void> {
           : String(updateError),
     });
   }
+}
+
+/**
+ * Enqueue an audit event onto the durable outbox, THROWING if the insert fails.
+ *
+ * The throw is the point, and it is the deliberate opposite of every other emit
+ * in this module. Called inside a `withDb.tx`, the insert joins that
+ * transaction through `withDb`'s AsyncLocalStorage, so the outbox row commits
+ * with the caller's domain write or neither lands: an action whose audit record
+ * cannot be written does not happen.
+ *
+ * Reserved for write paths that DESTROY the record the ledger would otherwise
+ * describe, so they get no second chance — a hard document delete (ISS-10029),
+ * where a lost emission means the document leaves no trace in the product at
+ * all. Every other path keeps the non-blocking contract above, where dropping
+ * one emission is the right trade against failing a real user action.
+ *
+ * Only the ENQUEUE is transactional; the ledger append still happens later, in
+ * the drain. Appending inline would take the per-org advisory lock that
+ * `auditLedgerService.append` can hold for its full 30s transaction timeout, so
+ * a delete unlucky enough to land while the cron held that lock would block
+ * behind it and abort. The committed outbox row is the durable record either
+ * way — the drain moves it onto the chain.
+ */
+export async function enqueueAuditEvent(input: AuditEmitInput): Promise<void> {
+  await withDb((db) =>
+    db.auditOutbox.create({
+      data: {
+        organizationId: input.organizationId,
+        action: input.action,
+        actorType: input.actor.actorType,
+        actorId: input.actor.actorId,
+        objectType: input.objectType,
+        objectId: input.objectId,
+        detail: input.detail ?? {},
+      },
+      select: { id: true },
+    })
+  );
+}
+
+/**
+ * Enqueue MANY audit events in a SINGLE bulk outbox insert, THROWING if the
+ * insert fails. The bulk counterpart of {@link enqueueAuditEvent}, and it
+ * inherits both of that function's inversions: called inside a `withDb.tx` it
+ * joins that transaction through `withDb`'s AsyncLocalStorage, so every row
+ * commits with the caller's domain write or none of them do.
+ *
+ * `createMany`, not a per-event loop: a batch delete enqueues one event per
+ * document, and one bulk insert is a single statement on the transaction's
+ * pinned connection regardless of batch size (see `apps/api/AGENTS.md` —
+ * Bounded fan-out, and its note that inside a transaction the cost is serial
+ * time against the interactive-transaction timeout).
+ *
+ * A no-op for an empty array, which is the "nothing matched" batch — there is
+ * no event to record when no row was destroyed.
+ */
+export async function enqueueAuditEvents(
+  inputs: readonly AuditEmitInput[]
+): Promise<void> {
+  if (inputs.length === 0) {
+    return;
+  }
+  await withDb((db) =>
+    db.auditOutbox.createMany({
+      data: inputs.map((input) => ({
+        organizationId: input.organizationId,
+        action: input.action,
+        actorType: input.actor.actorType,
+        actorId: input.actor.actorId,
+        objectType: input.objectType,
+        objectId: input.objectId,
+        detail: input.detail ?? {},
+      })),
+    })
+  );
+}
+
+type FailedAuditInputGroup = {
+  organizationId: string;
+  action: AuditAction;
+  count: number;
+};
+
+/** Keep deferred audit work and the log drain in one serverless lifetime. */
+async function emitAuditEventAndFlush(input: AuditEmitInput): Promise<void> {
+  await emitAuditEvent(input);
+  await log.flush();
+}
+
+/** Keep deferred bulk audit work and the log drain in one serverless lifetime. */
+async function emitAuditEventsAndFlush(
+  inputs: readonly AuditEmitInput[]
+): Promise<void> {
+  await emitAuditEvents(inputs);
+  await log.flush();
+}
+
+/** Count the entries lost by each monitor grouping without splitting the DB write. */
+function groupFailedAuditInputs(
+  inputs: readonly AuditEmitInput[]
+): FailedAuditInputGroup[] {
+  const countsByOrganization = new Map<string, Map<AuditAction, number>>();
+  for (const input of inputs) {
+    let countsByAction = countsByOrganization.get(input.organizationId);
+    if (!countsByAction) {
+      countsByAction = new Map<AuditAction, number>();
+      countsByOrganization.set(input.organizationId, countsByAction);
+    }
+    countsByAction.set(
+      input.action,
+      (countsByAction.get(input.action) ?? 0) + 1
+    );
+  }
+
+  const groups: FailedAuditInputGroup[] = [];
+  for (const [organizationId, countsByAction] of countsByOrganization) {
+    for (const [action, count] of countsByAction) {
+      groups.push({ organizationId, action, count });
+    }
+  }
+  return groups;
 }

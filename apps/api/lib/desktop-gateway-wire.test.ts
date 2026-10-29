@@ -8,8 +8,13 @@
  * PATH, not from the caller-supplied id (the browser sends a random UUID).
  */
 
-import { describe, expect, it } from "vitest";
+import { log } from "@repo/observability/log";
+import type { Socket } from "socket.io";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { APPROVAL_REASON_MAX_LENGTH } from "./compute-target-field-limits";
+import { PROTOCOL_VERSION } from "./desktop-gateway-types";
 import {
+  handleRelayOperationForSocket,
   isTerminalEventData,
   normalizeMethod,
   parseCommandAckPayload,
@@ -21,7 +26,15 @@ import {
   toWireCommandFromStore,
 } from "./desktop-gateway-wire";
 
-const LAUNCH = "/api/gateway/symphony/launch";
+vi.mock("@repo/observability/log", () => ({
+  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
+const REPOS = "/api/gateway/repos";
+// Both throw `TypeError: Invalid URL` from `new URL(..., base)` — the input that
+// used to escape the declared `WireCommandPayload | null` contract (ISS-7558).
+const MALFORMED_PATHS = ["//[", "http://["];
+const TARGET_ID = "target-wire-1";
 
 function relayOperation(
   params: Record<string, unknown>,
@@ -40,7 +53,7 @@ function relayOperation(
 }
 
 const request = (over: Record<string, unknown> = {}) => ({
-  path: LAUNCH,
+  path: REPOS,
   method: "POST",
   ...over,
 });
@@ -74,44 +87,47 @@ describe("normalizeMethod / toStringRecord", () => {
 
 describe("splitPathAndQuery", () => {
   it("omits query entirely when there is none", () => {
-    expect(splitPathAndQuery(LAUNCH)).toEqual({ path: LAUNCH });
+    expect(splitPathAndQuery(REPOS)).toEqual({ path: REPOS });
   });
 
   it("returns a single-valued param as a string", () => {
-    expect(splitPathAndQuery(`${LAUNCH}?a=1`)).toEqual({
-      path: LAUNCH,
+    expect(splitPathAndQuery(`${REPOS}?a=1`)).toEqual({
+      path: REPOS,
       query: { a: "1" },
     });
   });
 
   it("groups a repeated param into an array rather than keeping the last", () => {
     // Dropping repeats would silently lose a filter dimension.
-    expect(splitPathAndQuery(`${LAUNCH}?id=a&id=b&other=c`)).toEqual({
-      path: LAUNCH,
+    expect(splitPathAndQuery(`${REPOS}?id=a&id=b&other=c`)).toEqual({
+      path: REPOS,
       query: { id: ["a", "b"], other: "c" },
     });
+  });
+
+  it("returns null instead of throwing on a malformed path", () => {
+    for (const malformed of MALFORMED_PATHS) {
+      expect(() => splitPathAndQuery(malformed)).not.toThrow();
+      expect(splitPathAndQuery(malformed)).toBeNull();
+    }
   });
 });
 
 describe("resolveOperationId", () => {
   it("resolves an exact path", () => {
-    expect(resolveOperationId(LAUNCH)).toBe("symphony_launch");
+    expect(resolveOperationId(REPOS)).toBe("repos_config");
     expect(resolveOperationId("/api/gateway/health-check")).toBe(
       "health_check"
     );
   });
 
   it("resolves a prefix path", () => {
-    expect(resolveOperationId("/api/gateway/symphony/logs/abc123")).toBe(
-      "symphony_logs"
-    );
+    expect(resolveOperationId("/api/gateway/git/pr/123")).toBe("git_pr");
   });
 
   it("prefers the exact match over a prefix that also matches", () => {
-    // `/symphony/status` is exact; `/symphony/status/` is a prefix entry.
-    expect(resolveOperationId("/api/gateway/symphony/status")).toBe(
-      "symphony_status"
-    );
+    // `/git/user` is exact; `/git/` is a prefix entry that also matches it.
+    expect(resolveOperationId("/api/gateway/git/user")).toBe("git_pr");
   });
 
   it("returns null for a gateway path with no mapping", () => {
@@ -120,7 +136,7 @@ describe("resolveOperationId", () => {
 
   it("returns null for a path outside the gateway namespace", () => {
     expect(resolveOperationId("/api/documents/1")).toBeNull();
-    expect(resolveOperationId("/symphony/launch")).toBeNull();
+    expect(resolveOperationId("/repos")).toBeNull();
   });
 });
 
@@ -157,12 +173,12 @@ describe("toWireCommandFromStore", () => {
     commandId: "c1",
     operationId: "stored-uuid",
     method: "POST" as const,
-    path: LAUNCH,
+    path: REPOS,
     createdAt: "2026-08-07T00:00:00.000Z",
   };
 
   it("overrides the stored operationId with the one resolved from the path", () => {
-    expect(toWireCommandFromStore(base).operationId).toBe("symphony_launch");
+    expect(toWireCommandFromStore(base).operationId).toBe("repos_config");
   });
 
   it("falls back to the stored operationId when the path resolves to nothing", () => {
@@ -184,6 +200,47 @@ describe("toWireCommandFromStore", () => {
       toWireCommandFromStore({ ...base, streaming: false }).streaming
     ).toBeUndefined();
     expect(toWireCommandFromStore(base).streaming).toBeUndefined();
+  });
+
+  // The three producers bound `approvalReason` on the way in, so only a row
+  // written BEFORE them can be malformed — and reconnect replays every stored
+  // row through here. Without the sanitizer the desktop's `Headers.set` throws
+  // on the value and loses the command on every replay, forever.
+  it("drops a legacy stored approvalReason the desktop cannot put in a header", () => {
+    expect(
+      toWireCommandFromStore({ ...base, approvalReason: "承認が必要です" })
+        .approvalReason
+    ).toBeUndefined();
+    expect(
+      toWireCommandFromStore({ ...base, approvalReason: "ok\r\nx-evil: 1" })
+        .approvalReason
+    ).toBeUndefined();
+    expect(
+      toWireCommandFromStore({
+        ...base,
+        approvalReason: "r".repeat(APPROVAL_REASON_MAX_LENGTH + 1),
+      }).approvalReason
+    ).toBeUndefined();
+    expect(log.warn).toHaveBeenCalledWith(
+      "toWireCommandFromStore: malformed stored approvalReason",
+      expect.objectContaining({ commandId: base.commandId })
+    );
+  });
+
+  it("replays a header-safe stored approvalReason byte-identically", () => {
+    const atBound = "r".repeat(APPROVAL_REASON_MAX_LENGTH);
+
+    expect(
+      toWireCommandFromStore({ ...base, approvalReason: atBound })
+        .approvalReason
+    ).toBe(atBound);
+    expect(
+      toWireCommandFromStore({
+        ...base,
+        approvalReason: "Genehmigung für Größe\t(dringend)",
+      }).approvalReason
+    ).toBe("Genehmigung für Größe\t(dringend)");
+    expect(toWireCommandFromStore(base).approvalReason).toBeUndefined();
   });
 });
 
@@ -238,6 +295,19 @@ describe("toWireCommandFromRelayOperation — rejections", () => {
       toWireCommandFromRelayOperation(relayOperation("not-an-object" as never))
     ).toBeNull();
   });
+
+  it("rejects a malformed path by returning null, never by throwing", () => {
+    // The malformed path is parsed BEFORE the namespace guard, so before ISS-7558
+    // this was the one input that broke the declared `| null` contract.
+    for (const malformed of MALFORMED_PATHS) {
+      const operation = relayOperation({
+        commandId: "c1",
+        request: request({ path: malformed }),
+      });
+      expect(() => toWireCommandFromRelayOperation(operation)).not.toThrow();
+      expect(toWireCommandFromRelayOperation(operation)).toBeNull();
+    }
+  });
 });
 
 describe("toWireCommandFromRelayOperation — mapping", () => {
@@ -246,7 +316,7 @@ describe("toWireCommandFromRelayOperation — mapping", () => {
       relayOperation({ commandId: "c1", request: request() })
     );
 
-    expect(wire?.operationId).toBe("symphony_launch");
+    expect(wire?.operationId).toBe("repos_config");
     expect(wire?.commandId).toBe("c1");
   });
 
@@ -268,11 +338,11 @@ describe("toWireCommandFromRelayOperation — mapping", () => {
     const wire = toWireCommandFromRelayOperation(
       relayOperation({
         commandId: "c1",
-        request: request({ path: `${LAUNCH}?tag=a&tag=b` }),
+        request: request({ path: `${REPOS}?tag=a&tag=b` }),
       })
     );
 
-    expect(wire?.path).toBe(LAUNCH);
+    expect(wire?.path).toBe(REPOS);
     expect(wire?.query).toEqual({ tag: ["a", "b"] });
   });
 
@@ -282,6 +352,30 @@ describe("toWireCommandFromRelayOperation — mapping", () => {
     );
 
     expect(wire?.body).toBeNull();
+  });
+
+  it("falls back to null for a non-JSON-serializable body", () => {
+    const wire = toWireCommandFromRelayOperation(
+      relayOperation({
+        commandId: "c1",
+        request: request({ body: Symbol("not-json") }),
+      })
+    );
+
+    expect(wire).not.toBeNull();
+    expect(wire?.body).toBeNull();
+  });
+
+  it("rejects a non-JSON-serializable value outside the request body", () => {
+    const wire = toWireCommandFromRelayOperation(
+      relayOperation({
+        commandId: "c1",
+        request: request(),
+        timeoutMs: Number.POSITIVE_INFINITY,
+      })
+    );
+
+    expect(wire).toBeNull();
   });
 
   it("drops optional params whose type is wrong instead of forwarding them", () => {
@@ -309,10 +403,11 @@ describe("toWireCommandFromRelayOperation — mapping", () => {
   });
 
   it("forwards well-typed optional params, including the signature triple", () => {
+    const body = { repo: "acme/web", force: true };
     const wire = toWireCommandFromRelayOperation(
       relayOperation({
         commandId: "c1",
-        request: request({ headers: { "x-a": "1" } }),
+        request: request({ body, headers: { "x-a": "1" } }),
         timeoutMs: 5000,
         lockKey: "repo:acme/web",
         requiresApproval: true,
@@ -333,6 +428,7 @@ describe("toWireCommandFromRelayOperation — mapping", () => {
       publicKeyFingerprint: "fp",
       headers: { "x-a": "1" },
     });
+    expect(wire?.body).toEqual(body);
   });
 
   it("emits streaming only when the operation says exactly true", () => {
@@ -351,5 +447,100 @@ describe("toWireCommandFromRelayOperation — mapping", () => {
 
     expect(withStreaming?.streaming).toBe(true);
     expect(withoutStreaming?.streaming).toBeUndefined();
+  });
+});
+
+describe("handleRelayOperationForSocket", () => {
+  // `apps/api` has no global mock reset, so the log spies carry across cases.
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function fakeSocket() {
+    return { id: "socket-1", emit: vi.fn() } as unknown as Socket;
+  }
+
+  it("emits and reports acceptance for a convertible operation", () => {
+    const socket = fakeSocket();
+
+    const accepted = handleRelayOperationForSocket(
+      socket,
+      relayOperation({ commandId: "c1", request: request() }) as never,
+      TARGET_ID
+    );
+
+    expect(accepted).toBe(true);
+    expect(socket.emit).toHaveBeenCalledWith(
+      "desktop.command",
+      expect.objectContaining({ commandId: "c1", path: REPOS })
+    );
+    expect(socket.emit).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        protocolVersion: PROTOCOL_VERSION,
+        messageId: expect.any(String),
+        timestamp: expect.any(String),
+      })
+    );
+  });
+
+  it("reports rejection and emits nothing for a malformed path", () => {
+    // The `false` is what stops `publishOperation` reporting a delivery that did
+    // not happen; a bare `return` here is the ISS-7558 bug.
+    for (const malformed of MALFORMED_PATHS) {
+      const socket = fakeSocket();
+
+      const accepted = handleRelayOperationForSocket(
+        socket,
+        relayOperation({
+          commandId: "c1",
+          request: request({ path: malformed }),
+        }) as never,
+        TARGET_ID
+      );
+
+      expect(accepted).toBe(false);
+      expect(socket.emit).not.toHaveBeenCalled();
+    }
+  });
+
+  it("logs a rejection at warn, never at error", () => {
+    // Any authenticated caller can drive this branch once per request, so an
+    // `error` here is a client-controlled alert channel, not a signal.
+    const socket = fakeSocket();
+
+    handleRelayOperationForSocket(
+      socket,
+      relayOperation({
+        commandId: "c1",
+        request: request({ path: MALFORMED_PATHS[0] }),
+      }) as never,
+      TARGET_ID
+    );
+
+    expect(log.warn).toHaveBeenCalledWith(
+      "Failed to convert relay operation to wire command",
+      expect.objectContaining({
+        computeTargetId: TARGET_ID,
+        targetId: TARGET_ID,
+      })
+    );
+    expect(log.error).not.toHaveBeenCalled();
+  });
+
+  it("reports rejection for a path outside the gateway namespace", () => {
+    const socket = fakeSocket();
+
+    const accepted = handleRelayOperationForSocket(
+      socket,
+      relayOperation({
+        commandId: "c1",
+        request: request({ path: "/api/documents/1" }),
+      }) as never,
+      TARGET_ID
+    );
+
+    expect(accepted).toBe(false);
+    expect(socket.emit).not.toHaveBeenCalled();
   });
 });

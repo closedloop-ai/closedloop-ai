@@ -21,7 +21,8 @@ import { resolveHarnessLabel } from "../../lib/harness-labels";
 
 /**
  * ISS-6005 — the Harness / Model / Autonomy column treatments, per the Sessions
- * prototype (`apps/prototypes/app/p/sessions/components/session-cells.tsx`, the
+ * promoted prototype contract (preserved for Web Master at
+ * `packages/app/agents/components/sessions/web-master-legacy-preview/components/session-cells.tsx`, the
  * SoT for these cells; Marisol confirmed the pills directly).
  *
  * ## Standing-rule note, so nobody strips these
@@ -39,7 +40,7 @@ import { resolveHarnessLabel } from "../../lib/harness-labels";
  * only the CONTENT from the prototype — a native `title` is not
  * keyboard-reachable, so regressing to it would trade a11y for nothing.
  *
- * Null handling stays in `sessions-table.tsx`: the table returns the shared
+ * Null handling stays in `session-detail-table.tsx`: the table returns the shared
  * `GridEmptyValue` sentinel BEFORE reaching these components, because
  * `isEmptyCellValue` identifies an empty cell by element TYPE and a wrapper
  * hides it (the `SessionCostCell` lesson).
@@ -56,7 +57,7 @@ import { resolveHarnessLabel } from "../../lib/harness-labels";
  * with no ellipsis to say it had been cut. No tooltip: this pill is not
  * interactive in the prototype and a name-only chip has nothing to explain.
  */
-export function SessionHarnessChip({ harness }: { harness: string }) {
+export function HarnessChip({ harness }: { harness: string }) {
   return (
     <Chip
       className="min-w-0"
@@ -74,15 +75,9 @@ export function SessionHarnessChip({ harness }: { harness: string }) {
  * color-alone (WCAG 1.4.1). Tooltip content per the prototype:
  * `<provider> · <model>`.
  */
-export function SessionModelChip({ model }: { model: string }) {
-  const attributed = providerOf(model);
-  const provider =
-    attributed === OTHER_MODEL_PROVIDER
-      ? SESSION_UNKNOWN_PROVIDER_TOOLTIP_LABEL
-      : attributed;
-  const dotClass =
-    SESSION_MODEL_PROVIDER_DOT_CLASS[attributed] ??
-    SESSION_MODEL_PROVIDER_DOT_FALLBACK_CLASS;
+export function ModelChip({ model }: { model: string }) {
+  const { indicatorClassName, providerLabel } =
+    resolveSessionModelCellPresentation(model);
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -97,14 +92,14 @@ export function SessionModelChip({ model }: { model: string }) {
             aria-hidden
             className={cn(
               "size-1.5 shrink-0 rounded-full bg-current",
-              dotClass
+              indicatorClassName
             )}
           />
           <span className="truncate">{model}</span>
         </Chip>
       </TooltipTrigger>
       <TooltipContent className="max-w-xs break-words">
-        {`${provider} · ${model}`}
+        {`${providerLabel} · ${model}`}
       </TooltipContent>
     </Tooltip>
   );
@@ -127,7 +122,7 @@ export function SessionModelChip({ model }: { model: string }) {
  * prototype's TREATMENT (colored pill, score tooltip-only) is taken verbatim;
  * the tier vocabulary stays the product's one SSOT.
  */
-export function SessionAutonomyChip({ autonomy }: { autonomy: number }) {
+export function AutonomyChip({ autonomy }: { autonomy: number }) {
   const tier = getAutonomyTier(autonomy);
   return (
     <Tooltip>
@@ -219,6 +214,22 @@ const SESSION_AUTONOMY_TIER_LABEL_CLASS: Readonly<
   guided: "",
   unknown: "",
 };
+
+export function resolveSessionModelCellPresentation(model: string): {
+  indicatorClassName: string;
+  providerLabel: string;
+} {
+  const attributed = providerOf(model);
+  return {
+    indicatorClassName:
+      SESSION_MODEL_PROVIDER_DOT_CLASS[attributed] ??
+      SESSION_MODEL_PROVIDER_DOT_FALLBACK_CLASS,
+    providerLabel:
+      attributed === OTHER_MODEL_PROVIDER
+        ? SESSION_UNKNOWN_PROVIDER_TOOLTIP_LABEL
+        : attributed,
+  };
+}
 
 /** Stable hooks for the treatment regression coverage. */
 export const SESSION_HARNESS_CHIP_TEST_ID = "session-harness-chip";

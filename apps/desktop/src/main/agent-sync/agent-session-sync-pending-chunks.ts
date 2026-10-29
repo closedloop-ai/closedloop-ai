@@ -1,21 +1,22 @@
 import { randomUUID } from "node:crypto";
-import {
-  type AgentSessionSyncMode,
-  SyncPayloadEncoding,
-} from "@repo/api/src/types/agent-session";
+import type { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
+import type { DataSyncLevel } from "@repo/api/src/types/data-sync-level";
 import {
   type SyncPayloadSizer,
   syncPayloadSizerFor,
 } from "./agent-session-sync-compression.js";
 import {
-  AGENT_SESSION_SYNC_SCHEMA_VERSION,
   type AgentSessionSyncBatch,
+  buildAgentSessionSyncBatch,
   type SyncedAgentSession,
 } from "./agent-session-sync-contract.js";
+import { SESSION_PAYLOAD_BYTE_CAP } from "./agent-session-sync-limits.js";
 import {
   estimateAgentSessionSyncBatchBytes,
   type PreparedAgentSessionPayload,
+  type UnsendableComponentUnits,
 } from "./agent-session-sync-payload.js";
+import { formatBytes } from "./agent-session-sync-service-helpers.js";
 
 /**
  * FEA-4138/FEA-4152: the in-flight tail of an oversized session that was split
@@ -49,12 +50,64 @@ export type PendingChunks = {
   chunks: SyncedAgentSession[];
   compress: boolean;
   activityChunked: boolean;
+  /**
+   * ISS-9859: whether the pinned chunks split `prRefs` or `prs` ACROSS parts.
+   * Same hazard as `activityChunked`: a marked continuation part sent to a
+   * server that no longer merges it would have that server REPLACE the
+   * session's PR links or `pullRequests` blob with one slice. Optional so every existing caller and fixture compiles unchanged.
+   */
+  prRefChunked?: boolean;
   monitoredActivityIncluded?: boolean;
+  /**
+   * ISS-12552: the chunks carry token-event owners. A server that no longer
+   * accepts them rejects the part whole, so the tail is discarded on that
+   * downgrade and the session re-prepares without them.
+   */
+  tokenEventOwnerIncluded?: boolean;
+  /**
+   * ISS-7516 (review cid 3840055932) — the data-sync level captured when this
+   * tail was sequestered, pinned for the same reason `compress` is: a tail is
+   * drained across LATER ticks, and every fact the wire batch needs must travel
+   * with it rather than be re-derived at drain time.
+   *
+   * Without it the tail batches carry no level while chunk 0 carried one. That
+   * is not merely a cosmetic gap during a deploy skew — the server's write is
+   * omit-if-absent, so whether `session_detail.data_sync_level` ends up set
+   * depends on which chunk happened to land last. Re-reading the live setting
+   * per tick would be worse still: a user changing the level mid-drain would
+   * stamp one session's chunks with two different answers.
+   */
+  dataSyncLevel?: DataSyncLevel;
+  /**
+   * ISS-6999 (whitlockk, cid 3846110703): the component-usage rows this session's
+   * partition leaves behind, pinned for the same reason `dataSyncLevel` is —
+   * a tail drains across LATER ticks, and the report is owed on the FINAL chunk,
+   * by which point the prepare that measured it is long gone.
+   *
+   * Pinning it here is also what makes the report exactly-once. A tail discarded
+   * mid-sequence never reaches its last chunk, so the tally dies with it and the
+   * re-prepare that follows measures and reports its own.
+   *
+   */
+  unsendableComponentUnits?: UnsendableComponentUnits;
 };
 
 export type PendingChunkTransition =
   | { kind: "none" }
   | { kind: "discard-downgrade"; sessionId: string; chunkCount: number }
+  | {
+      /**
+       * ISS-8710: the next tail chunk's BUILT batch does not fit the request
+       * cap, so posting it can only draw a 413. The caller drops the tail and
+       * folds the part through the SAME `validation_failed` path that 413
+       * produced — see {@link applyPendingChunkDiscard} for why it is not a
+       * terminal oversize dead-letter.
+       */
+      kind: "reject-oversized";
+      sessionId: string;
+      syncMode: AgentSessionSyncMode;
+      chunkBytes: number;
+    }
   | {
       kind: "send";
       sessionId: string;
@@ -64,6 +117,12 @@ export type PendingChunkTransition =
       compress: boolean;
       remainingChunks: number;
       isLast: boolean;
+      /**
+       * ISS-6999: present ONLY on the final chunk of a sequence that skipped
+       * something — the drain has nothing to report until the session's last
+       * bytes are the ones being acked.
+       */
+      unsendableComponentUnits?: UnsendableComponentUnits;
     };
 
 /**
@@ -73,10 +132,15 @@ export type PendingChunkTransition =
  * - `discard-downgrade` — the pinned gzip chunks can no longer ship because the
  *   server no longer advertises decompression; the caller must clear the tail and
  *   skip sending so the session re-prepares under identity on the next tick.
+ * - `reject-oversized` — ISS-8710: the next chunk's BUILT batch exceeds
+ *   `maxBatchBytes`, so the caller must clear the tail and fold the part as the
+ *   `validation_failed` the route would have answered with, rather than post a
+ *   request it can only reject.
  * - `send` — the next chunk (shifted off the front of the tail) is ready as a
  *   single-session batch. `isLast` marks the final chunk; the caller clears the
  *   tail when it acks. Draining shifts the tail array in place, so the caller's
- *   reference sees the shortened remainder.
+ *   reference sees the shortened remainder. Only a `send` shifts; the refusal
+ *   above leaves the tail intact for the caller to drop whole.
  */
 export function resolvePendingChunkTransition(
   pending: PendingChunks | null,
@@ -86,7 +150,24 @@ export function resolvePendingChunkTransition(
   // discarded on downgrade to avoid a partial cloud tiling. Defaulted true so
   // existing callers/tests that don't pin an activity-chunked tail are unaffected.
   activityChunkingSupported = true,
-  monitoredActivitySupported = true
+  monitoredActivitySupported = true,
+  // ISS-7775 (review: codex P1): the machine's data-sync level RIGHT NOW.
+  // `undefined` means the caller wires no level and the pinned value is not
+  // re-checked, which keeps every existing caller and test unaffected.
+  currentDataSyncLevel?: DataSyncLevel,
+  // ISS-8710: the request cap the ROUTE judges this batch against. Defaulted to
+  // the real cap so no drain lane can opt out of the check by omitting it; the
+  // parameter exists so a test can drive the refusal on a small fixture instead
+  // of one pinned within a handful of bytes of 256 KiB, which zlib's block
+  // boundaries make fragile.
+  maxBatchBytes: number = SESSION_PAYLOAD_BYTE_CAP,
+  // ISS-9859: does the (possibly reconnected) server still merge a marked
+  // `prRefs` part? Appended AFTER `maxBatchBytes` so existing positional callers
+  // are untouched, and defaulted TRUE for the same reason `activityChunkingSupported`
+  // is: a lane that does not wire the flag must not discard a tail it has no
+  // reason to distrust.
+  prRefChunkingSupported = true,
+  tokenEventOwnerSupported = true
 ): PendingChunkTransition {
   if (!pending || pending.chunks.length === 0) {
     return { kind: "none" };
@@ -94,7 +175,26 @@ export function resolvePendingChunkTransition(
   if (
     (pending.compress && !compressionSupported) ||
     (pending.activityChunked && !activityChunkingSupported) ||
-    (pending.monitoredActivityIncluded && !monitoredActivitySupported)
+    // ISS-9859: the tail's marked parts merge only on a server that advertised
+    // the capability. Shipping them to one that did not would REPLACE the
+    // session's PR links with a single slice — the exact loss this ticket
+    // removes — so the tail is discarded and the session re-chunks whole.
+    (pending.prRefChunked === true && !prRefChunkingSupported) ||
+    (pending.monitoredActivityIncluded && !monitoredActivitySupported) ||
+    (pending.tokenEventOwnerIncluded === true && !tokenEventOwnerSupported) ||
+    // ISS-7775: the pinned tail's CONTENT was sanitized under the level captured
+    // when it was sequestered. A tail chunked at `full` and drained after the
+    // user picked Metadata would keep posting turn text under a consent card
+    // that says it stays local — the tail outlives the setting change because
+    // `applyDataSyncLevel` refreshes rather than cancelling an active sequence.
+    //
+    // Discarding is the remedy the other three already use, and it is the one
+    // that keeps ISS-7516's pin intact: the still-queued session re-hydrates and
+    // re-chunks WHOLE under the new level, so its chunks still carry one answer
+    // between them rather than the two a per-tick re-read would stamp.
+    (currentDataSyncLevel !== undefined &&
+      pending.dataSyncLevel !== undefined &&
+      pending.dataSyncLevel !== currentDataSyncLevel)
   ) {
     return {
       kind: "discard-downgrade",
@@ -103,34 +203,46 @@ export function resolvePendingChunkTransition(
     };
   }
 
-  const { sessionId, syncMode, chunks, compress } = pending;
-  const chunk = chunks.shift()!;
-  const isLast = chunks.length === 0;
-  const batch: AgentSessionSyncBatch = {
-    schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
+  const {
+    sessionId,
+    syncMode,
+    chunks,
+    compress,
+    dataSyncLevel,
+    unsendableComponentUnits,
+  } = pending;
+  const batch = buildAgentSessionSyncBatch({
     batchId: randomUUID(),
     syncMode,
-    sessionCount: 1,
-    sessions: [chunk],
-    ...(compress ? { encoding: SyncPayloadEncoding.Gzip } : {}),
-    // Goal stage 2 (codex-connector review, PR #4862): request the per-row ack
-    // echo on EVERY chunk, exactly as the fresh-drain `buildBatch` does. The
-    // echo is REQUEST-GATED server-side (`desktop-agent-sessions-handler.ts`
-    // gates on `wantsAcceptedSessionIds === true`), so omitting it here made the
-    // server answer a legacy `{ synced: true }` for the whole tail — and the
-    // client reads an absent echo as the legacy whole-batch ack and durably
-    // clears the outbox row. That is precisely the accept-without-persist hole
-    // stage 2 exists to close, and it was open on the path where the server's
-    // skip is MOST reachable: `persisted: false` is returned only for
-    // `isForeignChunk`, which (outside a stale revision) is a chunked-payload
-    // condition. Additive in both skew directions — an old server strips the
-    // flag and answers whole-batch, which is today's behaviour.
-    wantsAcceptedSessionIds: true,
-  };
+    sessions: [chunks[0]!],
+    compress,
+    dataSyncLevel,
+  });
+  // ISS-8710: measure the BUILT batch with the encoding this tail was packed
+  // for, which is the quantity the route judges — `gzip(batch)` under gzip,
+  // raw JSON bytes under identity. The chunker packs SESSIONS against
+  // `SESSION_PAYLOAD_CONTENT_BYTE_CAP`, a RAW-byte budget (the cap minus the
+  // raw envelope width), and under gzip the wrapped batch is not the session
+  // plus that width — `gzip(batch) - gzip(session)` is content-dependent. So
+  // the budget bounds the wrong quantity on the compressed path and only the
+  // built batch settles it.
   const accumulatedBytes = estimateAgentSessionSyncBatchBytes(
     batch,
     syncPayloadSizerFor(compress)
   );
+  if (accumulatedBytes > maxBatchBytes) {
+    // The pinned `unsendableComponentUnits` tally dies with the tail, exactly as
+    // it does on every other discard: the session stays queued and the
+    // re-prepare that follows measures and reports its own.
+    return {
+      kind: "reject-oversized",
+      sessionId,
+      syncMode,
+      chunkBytes: accumulatedBytes,
+    };
+  }
+  chunks.shift();
+  const isLast = chunks.length === 0;
   return {
     kind: "send",
     sessionId,
@@ -140,6 +252,60 @@ export function resolvePendingChunkTransition(
     compress,
     remainingChunks: chunks.length,
     isLast,
+    // ISS-6999: hand the pinned tally over only when this chunk is the last one
+    // the session owes. A non-final chunk has dequeued nothing, so a report on
+    // it would describe a delivery that is still in flight.
+    ...(isLast && unsendableComponentUnits ? { unsendableComponentUnits } : {}),
+  };
+}
+
+/** A transition that clears the pinned tail without sending it. */
+export type PendingChunkDiscard = Exclude<
+  PendingChunkTransition,
+  { kind: "none" | "send" }
+>;
+
+/**
+ * Whether this tick's transition drops the tail. Written as a guard rather than
+ * inlined at the call site so a THIRD non-sending kind is covered by widening
+ * `PendingChunkDiscard` alone, instead of by remembering to extend a condition
+ * in the grandfathered service.
+ */
+export function isPendingChunkDiscard(
+  transition: PendingChunkTransition
+): transition is PendingChunkDiscard {
+  return transition.kind !== "none" && transition.kind !== "send";
+}
+
+/**
+ * The wire-batch state a `send` transition hands this tick, unpacked in one
+ * place. Pure destructuring of the transition, hoisted here (with
+ * {@link formatChunkDrainLine}) so the grandfathered sync-service file keeps
+ * shrinking — the same FEA-4152 split reason the accumulator below states.
+ */
+export type PendingChunkSendState = {
+  sendCompress: boolean;
+  batch: AgentSessionSyncBatch;
+  accumulatedBytes: number;
+  syncMode: AgentSessionSyncMode;
+  syncIds: string[];
+  /** The operator-facing line for this drained chunk. */
+  logLine: string;
+};
+
+export function pendingChunkSendState(
+  transition: Extract<PendingChunkTransition, { kind: "send" }>
+): PendingChunkSendState {
+  return {
+    sendCompress: transition.compress,
+    batch: transition.batch,
+    accumulatedBytes: transition.accumulatedBytes,
+    syncMode: transition.syncMode,
+    syncIds: [transition.sessionId],
+    logLine:
+      `sending chunked session ${transition.sessionId} ` +
+      `(~${formatBytes(transition.accumulatedBytes)}); ` +
+      `${transition.remainingChunks} chunk(s) remaining`,
   };
 }
 
@@ -156,6 +322,17 @@ export type PreparedPayloadAccumulator = {
   syncIds: string[];
   accumulatedBytes: number;
   pendingChunks: PendingChunks | null;
+  /**
+   * ISS-6999: the skip owed by a chunked payload this fold took WHOLE — one that
+   * needed splitting but had no remainder, so the batch carries its last bytes.
+   * A payload with a remainder pins its tally on `pendingChunks` instead, and an
+   * unchunked or dead-lettered one has none. At most one per batch: a chunked
+   * candidate claims the whole batch.
+   *
+   * Reported by the caller only once the ack accepts it — see
+   * `accumulateChunkedPayload`.
+   */
+  unsendableComponentUnits?: UnsendableComponentUnits;
 };
 
 export type AccumulatePreparedPayloadsDeps = {
@@ -166,7 +343,16 @@ export type AccumulatePreparedPayloadsDeps = {
   // sequestered chunk tail so a mid-drain capability downgrade discards it rather
   // than shipping a partial tiling to an old REPLACE-ALL server.
   activityChunked: boolean;
+  // ISS-9859: whether this drain paginated `prRefs` across parts (server
+  // advertised `agentSessionSyncPrRefChunking`). Pinned on any sequestered tail
+  // for the same reason as the tiling flag — a mid-drain downgrade must discard
+  // it rather than ship a marked continuation part to a server that would
+  // REPLACE the session's PR links with that one slice.
+  prRefChunked?: boolean;
   monitoredActivityIncluded?: boolean;
+  tokenEventOwnerIncluded?: boolean;
+  /** ISS-7516: pinned onto a sequestered tail so later ticks stamp it too. */
+  dataSyncLevel?: DataSyncLevel;
   sizer: SyncPayloadSizer;
   byteCap: number;
   buildBatch: (batchSessions: SyncedAgentSession[]) => AgentSessionSyncBatch;
@@ -232,7 +418,15 @@ function accumulateChunkedPayload(
       chunks: item.remainingChunks,
       compress: deps.sendCompress,
       activityChunked: deps.activityChunked,
+      prRefChunked: deps.prRefChunked ?? false,
       monitoredActivityIncluded: deps.monitoredActivityIncluded ?? false,
+      tokenEventOwnerIncluded: deps.tokenEventOwnerIncluded ?? false,
+      ...(deps.dataSyncLevel === undefined
+        ? {}
+        : { dataSyncLevel: deps.dataSyncLevel }),
+      ...(item.unsendableComponentUnits
+        ? { unsendableComponentUnits: item.unsendableComponentUnits }
+        : {}),
     };
   }
   const chunkBytes = estimateAgentSessionSyncBatchBytes(
@@ -248,6 +442,16 @@ function accumulateChunkedPayload(
   acc.syncIds.push(item.sessionId);
   acc.accumulatedBytes = chunkBytes;
   deps.logChunking(item.sessionId, item.payloadBytes, item.chunkCount);
+  // ISS-6999 (whitlockk, cid 3846110703): DO NOT report here. Folding a payload into
+  // the batch is in-memory only — a capability downgrade, a stale source, an
+  // empty batch, or a throwing send all still sit between this line and the
+  // wire, and each leaves the outbox queued for a re-prepare that would report
+  // these same rows again. The tally instead rides the delivery: pinned onto the
+  // tail above when this session owes more chunks, and handed to the ack below
+  // when this chunk is the whole payload.
+  if (item.remainingChunks.length === 0 && item.unsendableComponentUnits) {
+    acc.unsendableComponentUnits = item.unsendableComponentUnits;
+  }
   return "continue";
 }
 

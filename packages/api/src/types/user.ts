@@ -1,3 +1,5 @@
+import type { DocumentType } from "./document.js";
+
 export const ApproverRole = {
   Pm: "PM",
   Designer: "DESIGNER",
@@ -67,8 +69,6 @@ export type UpdateUserProfileFromClerkInput = {
   phoneNumber?: string | null;
 };
 
-import type { DocumentType } from "./document.js";
-
 /** Contribution count for a single day in the heatmap. */
 export type ContributionDay = {
   date: string;
@@ -91,10 +91,6 @@ export type DocumentsByType = {
  * (`UserContributionHeatmap`) so the toggle never re-issues the trailing-year
  * heatmap SQL, and so a slow/failing heatmap read can never fail the ranged
  * headline response (widget independence per `packages/app/AGENTS.md`).
- *
- * Avg loop concurrency stays here (not with the heatmap) because a merged
- * correctness fix made it respect the selected window — it is a range-scoped
- * headline number, so it belongs with the headline and re-runs on toggle.
  */
 export type UserProfileHeadline = {
   /** Total documents created by this user (in the selected window). */
@@ -105,15 +101,11 @@ export type UserProfileHeadline = {
   totalComments: number;
   /** Total PRs landed (merged in the selected window). */
   totalPRsLanded: number;
-  /** Total loops initiated (in the selected window). */
+  // Kept for version skew with bundles older than ISS-12435; always 0 after the Loops data step, not rendered.
   totalLoops: number;
-  /** Average concurrent running loops over the selected window. */
   avgConcurrency: number;
-  /** Total input tokens consumed by this user's loops (in the window). */
   totalTokensInput: number;
-  /** Total output tokens consumed by this user's loops (in the window). */
   totalTokensOutput: number;
-  /** Total estimated cost of this user's loops in the window (USD). */
   totalEstimatedCost: number;
 };
 
@@ -149,7 +141,6 @@ export type UserProfileStats = UserProfileHeadline & UserContributionHeatmap;
 export const MilestoneKind = {
   PrsLanded: "prs-landed",
   DocumentsCreated: "documents-created",
-  TokensUsed: "tokens-used",
 } as const;
 export type MilestoneKind = (typeof MilestoneKind)[keyof typeof MilestoneKind];
 

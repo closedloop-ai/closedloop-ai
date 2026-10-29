@@ -1,8 +1,9 @@
-// Generic primitives stay in design-system; domain types come from the new
-// App Core domain home (see session-types.ts migration note).
+// gardener-support: test and story data, not shipped
+// Generic primitives stay in design-system; domain types use App Core (see session-types.ts).
 import type {
   FilterField,
   Metric,
+  PaginationState,
   TabItem,
 } from "@repo/design-system/components/ui/types";
 import {
@@ -18,7 +19,6 @@ import type {
   ActivityItem,
   AlwaysAllowRule,
   Approval,
-  CliTool,
   DashboardSeriesPoint,
   Job,
   LogEntry,
@@ -28,6 +28,7 @@ import type {
   Plan,
   PullRequest,
   SavedConfig,
+  SessionControls,
   SessionOverviewStats,
   SessionRow,
   Skill,
@@ -114,7 +115,7 @@ export const sessions: SessionRow[] = [
   {
     id: "sess-1",
     name: "Design-system extraction",
-    repo: "/workspace/example-repo",
+    repo: "/workspace/closedloop-ai",
     model: "gpt-5.5",
     harness: "codex",
     status: "active",
@@ -184,8 +185,8 @@ export const sessionControls = {
   directoryOptions: [
     { value: "", label: "All directories" },
     {
-      value: "/workspace/example-repo",
-      label: "example-repo",
+      value: "/workspace/closedloop-ai",
+      label: "closedloop-ai",
     },
     {
       value: "/workspace/closedloop-electron",
@@ -222,14 +223,14 @@ export const sessionControls = {
   ],
   sortDescending: true,
   refreshLabel: "Refresh",
-} satisfies import("./session-types").SessionControls;
+} satisfies SessionControls;
 
 export const sessionsPagination = {
   page: 0,
   pageSize: 10,
   total: 48,
   totalPages: 5,
-} satisfies import("@repo/design-system/components/ui/types").PaginationState;
+} satisfies PaginationState;
 
 export const activities: ActivityItem[] = [
   {
@@ -271,228 +272,6 @@ export const activities: ActivityItem[] = [
   },
 ];
 
-export const runSessionRecord = {
-  handle: {
-    id: "run-42",
-    title: "Run design-system extraction",
-    promptPreview:
-      "Port the remaining upstream Run and CcConfig surfaces into shared DS composites.",
-    status: "running",
-    mode: "conversation",
-    cwd: "/workspace/example-repo",
-    model: "gpt-5.5",
-    permissionMode: "acceptEdits",
-    startedAt: "2026-05-28T16:20:00.000Z",
-    sessionId: "sess-1",
-  },
-  transcript: {
-    id: "run-transcript-main",
-    label: "Main run",
-    agentLabel: "Main agent",
-    status: "working",
-    totalMessages: 7,
-    hasMoreHistory: true,
-    newMessagesAvailable: true,
-    messages: [
-      {
-        id: "run-message-1",
-        role: "user",
-        author: "You",
-        createdAt: "2026-05-28T16:20:00.000Z",
-        content:
-          "Port the remaining upstream Run and CcConfig surfaces into shared DS composites without duplicating primitives.",
-      },
-      {
-        id: "run-message-2",
-        role: "assistant",
-        author: "Codex",
-        createdAt: "2026-05-28T16:20:12.000Z",
-        content:
-          "I’m decomposing the remaining upstream surfaces into shared UI layers now. I’ll start with the Run workspace because most of its stream rendering can be rebuilt from the message, code, and tool-call primitives already in the design system.",
-        blocks: [
-          {
-            type: "text",
-            text: "I’m decomposing the remaining upstream surfaces into shared UI layers now. I’ll start with the Run workspace because most of its stream rendering can be rebuilt from the message, code, and tool-call primitives already in the design system.",
-          },
-          {
-            type: "tool_use",
-            id: "tool-run-1",
-            name: "exec_command",
-            input: {
-              command: 'rg -n "RunSession|ConfigCard|StatusPill" Run.tsx',
-            },
-          },
-          {
-            type: "tool_result",
-            id: "tool-run-1",
-            output:
-              "Located RunSession, ConfigCard, StatusPill, TokenMeter, and the active-runs/history surfaces in the upstream page.",
-          },
-        ],
-      },
-      {
-        id: "run-message-3",
-        role: "assistant",
-        author: "Codex",
-        createdAt: "2026-05-28T16:22:11.000Z",
-        content:
-          "The next DS-owned workspace will combine run configuration, active runs, and transcript output into one canonical composition.",
-        blocks: [
-          {
-            type: "thinking",
-            text: "The correct merge boundary is the workspace plus the run-summary list items, not another embedded page wrapper.",
-          },
-          {
-            type: "text",
-            text: "The next DS-owned workspace will combine run configuration, active runs, and transcript output into one canonical composition.",
-          },
-        ],
-      },
-    ],
-    envelopes: [
-      {
-        id: "run-system-1",
-        type: "system",
-        createdAt: "2026-05-28T16:20:00.000Z",
-        model: "gpt-5.5",
-        cwd: "/workspace/example-repo",
-        permissionMode: "acceptEdits",
-        sessionId: "sess-1",
-      },
-      {
-        id: "run-message-1",
-        type: "user",
-        author: "You",
-        createdAt: "2026-05-28T16:20:00.000Z",
-        content: [
-          {
-            type: "text",
-            text: "Port the remaining upstream Run and CcConfig surfaces into shared DS composites without duplicating primitives.",
-          },
-        ],
-      },
-      {
-        id: "run-message-2",
-        type: "assistant",
-        author: "Codex",
-        createdAt: "2026-05-28T16:20:12.000Z",
-        content: [
-          {
-            type: "text",
-            text: "I’m decomposing the remaining upstream surfaces into shared UI layers now. I’ll start with the Run workspace because most of its stream rendering can be rebuilt from the message, code, and tool-call primitives already in the design system.",
-          },
-          {
-            type: "tool_use",
-            id: "tool-run-1",
-            name: "exec_command",
-            input: {
-              command: 'rg -n "RunSession|ConfigCard|StatusPill" Run.tsx',
-            },
-          },
-        ],
-        usage: {
-          outputTokens: 312,
-        },
-      },
-      {
-        id: "run-tool-result-1",
-        type: "user",
-        author: "System",
-        createdAt: "2026-05-28T16:20:13.000Z",
-        content: [
-          {
-            type: "tool_result",
-            id: "tool-run-1",
-            output:
-              "Located RunSession, ConfigCard, StatusPill, TokenMeter, and the active-runs/history surfaces in the upstream page.",
-          },
-        ],
-      },
-      {
-        id: "run-message-3",
-        type: "assistant",
-        author: "Codex",
-        createdAt: "2026-05-28T16:22:11.000Z",
-        streaming: true,
-        content: [
-          {
-            type: "thinking",
-            text: "The correct merge boundary is the workspace plus the run-summary list items, not another embedded page wrapper.",
-          },
-          {
-            type: "text",
-            text: "The next DS-owned workspace will combine run configuration, active runs, and transcript output into one canonical composition.",
-          },
-        ],
-        usage: {
-          inputTokens: 604,
-          outputTokens: 198,
-        },
-      },
-      {
-        id: "run-result-1",
-        type: "result",
-        createdAt: "2026-05-28T16:34:00.000Z",
-        durationMs: 840_000,
-        turns: 7,
-        costUsd: 3.82,
-        result:
-          "Next slice: promote the live envelope renderer into the session conversation panel and activity drill-ins.",
-      },
-    ],
-  },
-  followUp:
-    "Favor shared chips, buttons, and list items over one-off wrappers.",
-  tokenUsage: {
-    inputTokens: 18_600,
-    outputTokens: 9800,
-    cacheReadTokens: 7200,
-    cacheCreationTokens: 0,
-    contextWindow: 200_000,
-  },
-  result: {
-    durationLabel: "14m",
-    turns: 7,
-    costUsd: 3.82,
-  },
-} satisfies import("./session-types").RunSessionRecord;
-
-export const cliTools: CliTool[] = [
-  {
-    id: "claude",
-    name: "Claude",
-    description: "Used for Claude Code session ingestion and hook wiring.",
-    path: "/Applications/Claude.app/Contents/MacOS/Claude",
-    hint: "Detected from the installed desktop app bundle.",
-    state: "detected",
-  },
-  {
-    id: "codex",
-    name: "Codex",
-    description: "Used for Codex session capture and approval prompts.",
-    path: "/usr/local/bin/codex",
-    hint: "Custom override saved for this machine.",
-    state: "custom",
-  },
-  {
-    id: "python3",
-    name: "Python 3",
-    description: "Required by importers and pack install tooling.",
-    path: "/tmp/venv/bin/python3",
-    hint: "This path does not exist or is not executable.",
-    state: "invalid",
-  },
-  {
-    id: "git",
-    name: "Git",
-    description:
-      "Required for PR extraction, diff inspection, and repo metadata.",
-    path: "",
-    hint: "Reset to auto-detect or provide a valid executable path.",
-    state: "missing",
-  },
-];
-
 export const jobs: Job[] = [
   {
     id: "job-1",
@@ -500,7 +279,7 @@ export const jobs: Job[] = [
     label: "branch/view-scoped-sync",
     status: "RUNNING",
     startedAt: "2026-05-28T15:02:00.000Z",
-    repoPath: "/workspace/example-repo",
+    repoPath: "/workspace/closedloop-ai",
     phase: "Waiting for preview environment health check",
   },
   {
@@ -510,7 +289,7 @@ export const jobs: Job[] = [
     status: "FAILED",
     startedAt: "2026-05-28T13:10:00.000Z",
     updatedAt: "2026-05-28T13:19:00.000Z",
-    repoPath: "/workspace/example-repo",
+    repoPath: "/workspace/closedloop-ai",
     phase: "Build step timed out while warming lambda assets",
   },
 ];
@@ -522,7 +301,7 @@ export const approvals: Approval[] = [
     risk: "medium",
     status: "pending",
     reason: "Pushes a feature branch to GitHub for PR creation.",
-    scope: "closedloop-ai/example-repo",
+    scope: "closedloop-ai/closedloop-ai",
     createdAt: "2026-05-28T15:16:00.000Z",
   },
   {
@@ -634,7 +413,7 @@ export const skills: Skill[] = [
         sessionName: "Deploy incident rehearsal",
         harness: "claude",
         model: "claude-opus-4.1",
-        cwd: "/workspace/example-repo",
+        cwd: "/workspace/closedloop-ai",
         createdAt: "2026-05-28T12:14:00.000Z",
       },
     ],
@@ -652,7 +431,7 @@ export const skills: Skill[] = [
         sessionName: "Preview schema registry fix",
         harness: "codex",
         model: "gpt-5.5",
-        cwd: "/workspace/example-repo",
+        cwd: "/workspace/closedloop-ai",
         createdAt: "2026-05-28T09:42:00.000Z",
       },
     ],
@@ -662,10 +441,10 @@ export const skills: Skill[] = [
 export const pullRequests: PullRequest[] = [
   {
     id: "pr-1",
-    repo: "closedloop-ai/example-repo",
+    repo: "closedloop-ai/closedloop-ai",
     number: 1328,
     title: "Port monitor surfaces into design-system primitives",
-    url: "https://github.com/closedloop-ai/example-repo/pull/1328",
+    url: "https://github.com/closedloop-ai/closedloop-ai/pull/1328",
     branch: "codex/design-system-port",
     harness: "codex",
     state: "open",
@@ -686,10 +465,10 @@ export const pullRequests: PullRequest[] = [
   },
   {
     id: "pr-3",
-    repo: "closedloop-ai/example-repo",
+    repo: "closedloop-ai/closedloop-ai",
     number: 1331,
     title: "Normalize shared PR compositions for engineering and desktop",
-    url: "https://github.com/closedloop-ai/example-repo/pull/1331",
+    url: "https://github.com/closedloop-ai/closedloop-ai/pull/1331",
     branch: "codex/pr-composition-unification",
     harness: "codex",
     state: "open",
@@ -847,7 +626,7 @@ export const alwaysAllowRules: AlwaysAllowRule[] = [
     operationId: "git_action",
     method: "POST",
     path: "/api/gateway/git/status",
-    scopePath: "/workspace/example-repo",
+    scopePath: "/workspace/closedloop-ai",
     expiresAt: "2026-06-02T12:00:00.000Z",
   },
   {
@@ -873,8 +652,11 @@ export const packInstallRun: PackInstallRun = {
     "Running ./setup --host codex",
     "Install completed successfully",
   ],
-  projectOptions: ["/workspace/example-repo", "/workspace/closedloop-electron"],
-  selectedProject: "/workspace/example-repo",
+  projectOptions: [
+    "/workspace/closedloop-ai",
+    "/workspace/closedloop-electron",
+  ],
+  selectedProject: "/workspace/closedloop-ai",
   postInstall: {
     title: "Next steps",
     body: "Run the verification command in your terminal to ensure the helper scripts were added to both harnesses.",

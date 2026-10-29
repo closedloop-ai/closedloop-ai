@@ -23,11 +23,16 @@ import {
 // members" row so the spotlight can measure it.
 export const INVITE_ANCHOR = "invite-checklist-item";
 
-// Direct download of the latest universal .dmg. The desktop-latest tag is a
-// rolling tag and this asset name is unversioned, so the URL always resolves to
-// the newest build.
-const DESKTOP_LATEST_DMG_URL =
-  "https://github.com/closedloop-ai/example-repo/releases/download/desktop-latest/Closedloop-universal.dmg";
+// The desktop-latest channel's release PAGE on the PUBLIC mirror. The row is
+// rendered where the reader's platform is not knowable, so it must name no
+// artifact — the page lists whatever assets the channel actually carries, which
+// is correct for every reader. The mirror rather than the private
+// `closedloop-ai` repo, where the same page 404s for a brand-new user. The
+// channel tag is rolling, so this always resolves to the newest build.
+// Hand-spelled because a prototype is a presentational sandbox; production
+// builds the same URL with `buildDesktopReleaseChannelPageUrl`.
+const DESKTOP_LATEST_RELEASE_PAGE_URL =
+  "https://github.com/closedloop-ai/closedloop-ai/releases/tag/desktop-latest";
 
 // Live completion, keyed by item id, overriding the mock's baked defaults so a
 // step the user actually finishes (connect GitHub, add key, invite) ticks off
@@ -141,13 +146,13 @@ const ChecklistRow = ({
     </>
   );
 
-  // The whole desktop-download row opens the desktop-latest release page (where
-  // the .dmg lives) in a new tab rather than deep-linking into Settings.
+  // The whole desktop-download row opens the desktop-latest release page in a
+  // new tab rather than deep-linking into Settings.
   if (!completed && item.id === ChecklistItemId.DownloadDesktop) {
     return (
       <a
         className={cn(rowClass, "hover:bg-muted/50")}
-        href={DESKTOP_LATEST_DMG_URL}
+        href={DESKTOP_LATEST_RELEASE_PAGE_URL}
         onClick={onDownloadDesktop}
         rel="noreferrer"
         target="_blank"

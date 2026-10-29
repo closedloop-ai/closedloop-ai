@@ -1,0 +1,29 @@
+-- ISS-9618: give the cross-org settle sweep an index it can seek.
+--
+-- WHAT ASKS FOR IT. `listUnsettledCloudRuns`
+-- (apps/api/app/routines/cloud-execution-service.ts) reads, every five minutes,
+-- the run rows still in a NON-TERMINAL status (`PENDING`/`RUNNING`) that carry a
+-- `loop_id`, oldest first and capped by a LIMIT, so it can read each one's Loop
+-- and write the terminal outcome back.
+--
+-- WHY THE EXISTING INDEXES DO NOT SETTLE IT. `(routine_id, started_at)` needs a
+-- routine and `(organization_id, started_at)` needs an org; the settle sweep
+-- supplies neither. Run history is retained per routine but never sheds a
+-- routine, so the table grows with the whole fleet's history while the live
+-- non-terminal set stays tiny — exactly the shape where a sequential scan gets
+-- steadily more expensive to find steadily fewer rows.
+--
+-- WHY THIS SHAPE. `status` leads so the scan starts inside the non-terminal
+-- rows; `started_at` trailing satisfies the oldest-first ordering, so no sort is
+-- planned and the LIMIT stops the scan early. `loop_id IS NOT NULL` is left to
+-- the recheck rather than made a partial predicate, so the index stays
+-- expressible in `schema.prisma` and cannot drift from it.
+--
+-- WHY CONCURRENTLY. A plain CREATE INDEX holds a lock on `routine_runs` for the
+-- whole build, which would block the desktop routine sync lane's run ingest.
+-- `IF NOT EXISTS` is deliberately absent: with CONCURRENTLY a failed build
+-- leaves a same-named INVALID index behind, and the guard in
+-- `scripts/lint/destructive-migrations/index-ddl.ts` requires the retry to fail
+-- closed on it rather than silently mark the migration applied.
+CREATE INDEX CONCURRENTLY "routine_runs_status_started_at_idx"
+  ON "routine_runs" ("status", "started_at");

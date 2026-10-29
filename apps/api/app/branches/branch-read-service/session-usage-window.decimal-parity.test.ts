@@ -45,6 +45,7 @@ describe("branch session-usage Decimal→number parity", () => {
 
     expect(windowedCost).toBe(lifetimeCost);
     expect(windowedCost).toBe(1.234_567);
+    expect(windowed.get(sessionId)?.hasPricedCost).toBe(true);
   });
 
   it("sums multiple in-window events to the same total the lifetime helper yields", () => {
@@ -69,6 +70,7 @@ describe("branch session-usage Decimal→number parity", () => {
 
     expect(windowedTotal).toBe(lifetimeTotal);
     expect(windowedTotal).toBe(4.5);
+    expect(windowed.get(sessionId)?.hasPricedCost).toBe(true);
   });
 
   it("converts a numeric estimatedCost without a toString round-trip", () => {
@@ -77,5 +79,22 @@ describe("branch session-usage Decimal→number parity", () => {
 
   it("lets an unknown nullable token-event cost contribute nothing", () => {
     expect(numberFromDecimal(null)).toBe(0);
+  });
+
+  it("does not mark a nullable token-event cost as priced", () => {
+    const event: SessionSpendEvent = {
+      agentSessionId: sessionId,
+      eventCreatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      inputTokens: 1,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      estimatedCost: null,
+    };
+
+    const windowed = windowedSpendBySession([event], undefined);
+
+    expect(windowed.get(sessionId)?.estimatedCostUsd).toBe(0);
+    expect(windowed.get(sessionId)?.hasPricedCost).toBe(false);
   });
 });

@@ -45,6 +45,20 @@ describe("memberInstallDispatchCopy", () => {
     expect(copy.message).toContain("couldn't confirm");
   });
 
+  it("keeps target_not_connected on the same unconfirmed pending copy", () => {
+    // The API may log a finer relay diagnostic for this coarse reason, but the
+    // member-facing contract stays the same: unconfirmed, no retry.
+    const copy = memberInstallDispatchCopy(
+      MemberPackInstallDispatchState.Pending,
+      MACHINE,
+      MemberPackInstallDispatchReason.TargetNotConnected
+    );
+
+    expect(copy.retryable).toBe(false);
+    expect(copy.tone).toBe(MemberInstallDispatchTone.Pending);
+    expect(copy.message).toContain("couldn't confirm");
+  });
+
   it("says nothing was installed when the target was offline, and allows a retry", () => {
     const copy = memberInstallDispatchCopy(
       MemberPackInstallDispatchState.TargetOffline,

@@ -29,9 +29,8 @@ const MUTED_TONE = "text-[var(--muted-foreground)]";
  * The field is optional: an empty value means "inherit the global sandbox"
  * (shown as the placeholder), so it never scolds a profile that predates it.
  *
- * Split into its own module (rather than living in the already-oversized
- * SettingsPanel.tsx) so that grandfathered file trends smaller, per the repo
- * file-size discipline.
+ * Split into its own module rather than living in SettingsPanel.tsx, so that
+ * file trends smaller per the repo file-size discipline.
  */
 export function ProfileSandboxField({
   value,

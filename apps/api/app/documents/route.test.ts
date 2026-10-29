@@ -8,6 +8,9 @@ import {
 import { Priority } from "@repo/api/src/types/common";
 import {
   CreateDocumentErrorCode,
+  type CreateDocumentInlineImageInput,
+  type CreateDocumentRequestBody,
+  DOCUMENT_LIST_MAX_OFFSET,
   DOCUMENT_LIST_MAX_RECENCY_DAYS,
   type Document,
   DocumentListRecency,
@@ -31,7 +34,22 @@ const mockCreate = vi.hoisted(() => vi.fn());
 const mockCreateWithInlineImages = vi.hoisted(() => vi.fn());
 const mockFindAllWithCustomFields = vi.hoisted(() => vi.fn());
 const mockFindPageWithCustomFields = vi.hoisted(() => vi.fn());
+const mockFindArrayWithContinuation = vi.hoisted(() => vi.fn());
+const mockSourceLinkedPlanCreateOrReuse = vi.hoisted(() => vi.fn());
 const mockWithAnyAuthOptions = vi.hoisted(() => [] as unknown[]);
+
+// ISS-8643: the real `captureArtifactCreation` schedules an UN-AWAITED
+// `waitUntil(recordChanges(...))` that opens a pg pool against the unit lane's
+// placeholder DATABASE_URL. That work outlives the test body, so its pool
+// telemetry / failure logging lands while no test task is active — and when it
+// lands during worker teardown vitest fails the whole run on
+// `Closing rpc while "onUserConsoleLog" was pending`, with zero failed
+// assertions. The seam's own wiring is pinned by
+// `create-artifact-activity-capture.test.ts`; here it is replaced purely for
+// isolation.
+vi.mock("@/lib/artifact-activity-capture", () => ({
+  captureArtifactCreation: vi.fn(),
+}));
 
 vi.mock("@/app/documents/attachment-upload-feature", () => ({
   isMcpAttachmentUploadEnabled: vi.fn(),
@@ -48,11 +66,21 @@ vi.mock("@/app/documents/document-service", () => ({
 vi.mock("@/app/documents/document-list-service", () => ({
   documentListService: {
     findPageWithCustomFields: mockFindPageWithCustomFields,
+    findArrayWithContinuation: mockFindArrayWithContinuation,
+  },
+}));
+
+vi.mock("@/app/documents/source-linked-plan-service", () => ({
+  sourceLinkedPlanService: {
+    createOrReuse: mockSourceLinkedPlanCreateOrReuse,
   },
 }));
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any, options?: unknown) => {
+  withAnyAuth: (
+    handler: (...args: unknown[]) => Promise<Response>,
+    options?: unknown
+  ) => {
     mockWithAnyAuthOptions.push(options);
     return (request: Request) => {
       const requiredScopes = (
@@ -99,6 +127,42 @@ describe("GET /documents", () => {
     mockAuthContext = createTestAuthContext();
     vi.mocked(resolveProjectId).mockImplementation(async (id: string) => id);
     mockFindAllWithCustomFields.mockResolvedValue([]);
+    // ISS-6941 moved the bare-array arm behind `findArrayWithContinuation`,
+    // which in the real service delegates to `documentService
+    // .findAllWithCustomFields` and adds the continuation. The default
+    // implementation here delegates the same way, so every case that asserts
+    // the FILTER reaching the document service keeps asserting exactly that;
+    // cases about the continuation override the return value instead.
+    mockFindArrayWithContinuation.mockImplementation(
+      async (options: unknown) => {
+        const items = await mockFindAllWithCustomFields(options);
+        return {
+          items,
+          continuation: {
+            total: items.length,
+            offset: 0,
+            pageCount: items.length,
+            hasMore: false,
+          },
+        };
+      }
+    );
+  });
+
+  it("keeps every subtype on the paged combined document read", async () => {
+    const types = [
+      DocumentType.Prd,
+      DocumentType.ImplementationPlan,
+      DocumentType.Doc,
+    ];
+    const query = types.map((type) => `types=${type}`).join("&");
+    const response = await getDocuments(
+      `http://localhost:3002/documents?${query}&limit=25&includeTotal=true`
+    );
+    expect(response.status).toBe(200);
+    expect(mockFindPageWithCustomFields).toHaveBeenCalledWith(
+      expect.objectContaining({ types })
+    );
   });
 
   it("passes the org-level project-less DOC filter through to the service (FEA-4140)", async () => {
@@ -167,6 +231,80 @@ describe("GET /documents", () => {
     expect(documentService.findAllWithCustomFields).not.toHaveBeenCalled();
   });
 
+  it("forwards a repeated status set to the service as an array (ISS-6778)", async () => {
+    // The wiring assertion: the parameter has to survive the route's two
+    // destructurings and reach the options the predicate is built from, or the
+    // predicate below it is unreachable in production.
+    const response = await getDocuments(
+      `http://localhost:3002/documents?status=${IssueStatus.Todo}&status=${IssueStatus.InProgress}`
+    );
+
+    expect(response.status).toBe(200);
+    expect(documentService.findAllWithCustomFields).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: [IssueStatus.Todo, IssueStatus.InProgress],
+      })
+    );
+  });
+
+  it("rejects a comma-joined status set with 400 (ISS-6778)", async () => {
+    // The repeated form is the only accepted spelling. A caller arriving with
+    // `/search`-shaped habits inverted gets a 400 naming the value, not a
+    // silently unnarrowed list.
+    const response = await getDocuments(
+      `http://localhost:3002/documents?status=${IssueStatus.Todo},${IssueStatus.InProgress}`
+    );
+
+    expect(response.status).toBe(400);
+    expect(documentService.findAllWithCustomFields).not.toHaveBeenCalled();
+  });
+
+  it("rejects a blank status occurrence with 400 rather than ignoring it (ISS-6778)", async () => {
+    const response = await getDocuments(
+      "http://localhost:3002/documents?status="
+    );
+
+    expect(response.status).toBe(400);
+    expect(documentService.findAllWithCustomFields).not.toHaveBeenCalled();
+  });
+
+  it("omits status entirely from the service options when it is not requested (ISS-6778)", async () => {
+    const response = await getDocuments("http://localhost:3002/documents");
+
+    expect(response.status).toBe(200);
+    expect(
+      vi.mocked(documentService.findAllWithCustomFields).mock.calls[0]?.[0]
+    ).not.toHaveProperty("status");
+  });
+
+  it("parses EVERY repeated status value rather than keeping only the last (ISS-6778)", async () => {
+    // The route builds its validation input from `searchParams`; a shape that
+    // keeps one occurrence per key silently answers `?status=TODO&status=DONE`
+    // with DONE alone — the caller asked to see TODO and never learns it was
+    // dropped. That is the same silent no-op the empty-element rejection exists
+    // to prevent, so it is pinned at the route boundary, not only in the
+    // validator.
+    const response = await getDocuments(
+      `http://localhost:3002/documents?status=${IssueStatus.Todo}&status=${IssueStatus.Done}`
+    );
+
+    expect(response.status).toBe(200);
+    expect(documentService.findAllWithCustomFields).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: [IssueStatus.Todo, IssueStatus.Done],
+      })
+    );
+  });
+
+  it("rejects an unknown status with 400 rather than returning the whole list (ISS-6778)", async () => {
+    const response = await getDocuments(
+      "http://localhost:3002/documents?status=NOT_A_STATUS"
+    );
+
+    expect(response.status).toBe(400);
+    expect(documentService.findAllWithCustomFields).not.toHaveBeenCalled();
+  });
+
   it("rejects unsupported query params instead of silently dropping them (ISS-4505)", async () => {
     const response = await getDocuments(
       "http://localhost:3002/documents?unknownFilter=value"
@@ -210,6 +348,29 @@ describe("GET /documents", () => {
         limit: 50,
         offset: 0,
       })
+    );
+  });
+
+  it("serves a paged read past DOCUMENT_LIST_MAX_OFFSET instead of 400ing it (ISS-11161)", async () => {
+    // The MCP tool's deep page: before ISS-11161 this 400'd and the tool fell
+    // back to reading the whole corpus.
+    const offset = DOCUMENT_LIST_MAX_OFFSET + 50;
+    mockFindPageWithCustomFields.mockResolvedValue({
+      items: [],
+      total: offset + 500,
+      limit: 100,
+      offset,
+      hasMore: true,
+    });
+
+    const response = await getDocuments(
+      `http://localhost:3002/documents?limit=100&offset=${offset}&includeTotal=true`
+    );
+
+    expect(response.status).toBe(200);
+    expect(documentService.findAllWithCustomFields).not.toHaveBeenCalled();
+    expect(mockFindPageWithCustomFields).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 100, offset })
     );
   });
 
@@ -386,6 +547,7 @@ describe("POST /documents", () => {
       success: true,
     });
     expect(JSON.stringify(json)).not.toContain("inlineImages");
+    expect(json.data.sourceLinkedPlanResult).toBeUndefined();
     expect(isMcpAttachmentUploadEnabled).not.toHaveBeenCalled();
     expect(documentService.create).toHaveBeenCalledWith(
       mockAuthContext.user.organizationId,
@@ -396,7 +558,8 @@ describe("POST /documents", () => {
         sourceId: undefined,
         title: "Created document",
         type: DocumentType.Feature,
-      }
+      },
+      expect.any(Function)
     );
     expect(documentService.createWithInlineImages).not.toHaveBeenCalled();
   });
@@ -430,7 +593,8 @@ describe("POST /documents", () => {
         sourceId: undefined,
         title: "Team Handbook",
         type: DocumentType.Doc,
-      }
+      },
+      expect.any(Function)
     );
     expect(documentService.createWithInlineImages).not.toHaveBeenCalled();
   });
@@ -453,7 +617,8 @@ describe("POST /documents", () => {
     expect(documentService.create).toHaveBeenCalledWith(
       mockAuthContext.user.organizationId,
       mockAuthContext.user.id,
-      expect.objectContaining({ content })
+      expect.objectContaining({ content }),
+      expect.any(Function)
     );
     expect(documentService.createWithInlineImages).not.toHaveBeenCalled();
   });
@@ -476,7 +641,8 @@ describe("POST /documents", () => {
     expect(documentService.create).toHaveBeenCalledWith(
       mockAuthContext.user.organizationId,
       mockAuthContext.user.id,
-      expect.objectContaining({ content })
+      expect.objectContaining({ content }),
+      expect.any(Function)
     );
     expect(documentService.createWithInlineImages).not.toHaveBeenCalled();
   });
@@ -532,7 +698,8 @@ describe("POST /documents", () => {
         title: "Created document",
         type: DocumentType.Feature,
       },
-      [makeInlineImageInput()]
+      [makeInlineImageInput()],
+      expect.any(Function)
     );
     expect(documentService.create).not.toHaveBeenCalled();
   });
@@ -752,11 +919,8 @@ function getDefaultScopeForMethod(method: string): ApiKeyScope {
 }
 
 function makeCreateBody(
-  overrides: Partial<{
-    content: string;
-    inlineImages: ReturnType<typeof makeInlineImageInput>[];
-  }> = {}
-) {
+  overrides: Partial<CreateDocumentRequestBody> = {}
+): CreateDocumentRequestBody {
   return {
     content: "Plain content",
     projectId: "PRO-44",
@@ -770,7 +934,9 @@ function makeEscapedInlineImagesCreateBody(content: string): string {
   return `{"content":${JSON.stringify(content)},"projectId":"PRO-44","title":"Created document","type":"${DocumentType.Feature}","inline\\u0049mages":[${JSON.stringify(makeInlineImageInput())}]}`;
 }
 
-function makeInlineImageInput(placeholder = "[[diagram]]") {
+function makeInlineImageInput(
+  placeholder = "[[diagram]]"
+): CreateDocumentInlineImageInput {
   return {
     altText: "Diagram",
     dataBase64: "aW1hZ2U=",
@@ -799,7 +965,7 @@ function makeCreatedInlineImage() {
   };
 }
 
-function makeDocument(): Document {
+function makeDocument(overrides: Partial<Document> = {}): Document {
   return {
     approver: null,
     approverId: null,
@@ -826,5 +992,6 @@ function makeDocument(): Document {
     title: "Created document",
     type: DocumentType.Feature,
     updatedAt: new Date("2026-07-20T12:00:00.000Z"),
+    ...overrides,
   };
 }

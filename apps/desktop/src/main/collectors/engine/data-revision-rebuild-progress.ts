@@ -26,10 +26,15 @@ export type DataRevisionRebuildProgress = {
    */
   processed: number;
   /**
-   * This attempt's TERMINAL-stale population: `staleTotal` minus the
-   * non-terminal rows `groupTerminalStaleByHarness` skips into `skippedActive`.
-   * Those are never worked, so counting them in the denominator would park the
-   * bar short of its own end for the whole pass.
+   * This attempt's REBUILDABLE-stale population: `staleTotal` minus the LIVE
+   * captures `groupTerminalStaleByHarness` skips into `skippedActive`. Those are
+   * never worked, so counting them in the denominator would park the bar short of
+   * its own end for the whole pass.
+   *
+   * ISS-8601: the subtracted set is live captures only. A non-terminal row that
+   * has been silent past the staleness bound IS admitted and IS worked, so it
+   * belongs in this denominator — which it gets for free, because the number is
+   * derived from the post-grouping pending map rather than from the status.
    */
   total: number;
 };

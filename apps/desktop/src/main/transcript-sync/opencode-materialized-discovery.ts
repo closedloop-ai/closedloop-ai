@@ -14,6 +14,10 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import {
+  type DirectoryWalkSkipOptions,
+  reportReaddirSkip,
+} from "../collectors/engine/directory-walk-skip.js";
 import { opencodeMaterializedRoot } from "./opencode-materializer.js";
 
 const JSONL_EXTENSION = ".jsonl";
@@ -28,15 +32,22 @@ export type OpencodeMaterializedFile = {
 /**
  * List every `<root>/<externalSessionId>/<fileKey>.jsonl` under the materialized
  * OpenCode root. Non-`.jsonl` entries and unreadable subdirs are skipped.
+ *
+ * Skipping stays the behaviour; `onSkip` only makes it observable, so a caller
+ * measuring the corpus can report a short listing as short (ISS-8506). An
+ * absent root never reports — an unmaterialized projection is the ordinary
+ * pre-consent state and the harness probe already speaks for it.
  */
 export function listOpencodeMaterializedFiles(
-  stateDir: string
+  stateDir: string,
+  { onSkip }: DirectoryWalkSkipOptions = {}
 ): OpencodeMaterializedFile[] {
   const root = opencodeMaterializedRoot(stateDir);
   let sessionDirs: fs.Dirent[];
   try {
     sessionDirs = fs.readdirSync(root, { withFileTypes: true });
-  } catch {
+  } catch (error) {
+    reportReaddirSkip(root, error, onSkip);
     return [];
   }
   const files: OpencodeMaterializedFile[] = [];
@@ -49,7 +60,8 @@ export function listOpencodeMaterializedFiles(
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dirPath, { withFileTypes: true });
-    } catch {
+    } catch (error) {
+      reportReaddirSkip(dirPath, error, onSkip);
       continue;
     }
     for (const entry of entries) {

@@ -11,6 +11,11 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import {
+  type DirectoryWalkSkipOptions,
+  DirectoryWalkSkipReason,
+  reportReaddirSkip,
+} from "../engine/directory-walk-skip.js";
 
 // biome-ignore lint/performance/noBarrelFile: re-export shim for the extracted @repo/lib/harness module (FEA-2717); collectJsonlFiles (fs walker) stays local
 export * from "@repo/lib/harness/parser-utils";
@@ -23,12 +28,21 @@ export * from "@repo/lib/harness/parser-utils";
  * local data, so a permission or IO error on one branch must not abort
  * discovery. A missing/empty root yields `[]`.
  *
+ * That tolerance is unchanged, but it is no longer SILENT: pass `onSkip` and
+ * every branch the walk swallowed or refused to descend into is reported
+ * (ISS-8506), so a caller measuring the corpus can say its count is short
+ * instead of publishing it as a total. An absent root stays unreported — it is
+ * a real zero, not a gap.
+ *
  * Desktop-only: it reads the local filesystem, so it stays here rather than in
  * the browser-safe harness slice of `@repo/lib` (FEA-2717/FEA-2821).
  */
 export function collectJsonlFiles(
   root: string,
-  { maxDepth = 8 }: { maxDepth?: number } = {}
+  {
+    maxDepth = 8,
+    onSkip,
+  }: { maxDepth?: number } & DirectoryWalkSkipOptions = {}
 ): string[] {
   const out: string[] = [];
   if (!(root && fs.existsSync(root))) {
@@ -36,12 +50,14 @@ export function collectJsonlFiles(
   }
   const walk = (dir: string, depth: number): void => {
     if (depth > maxDepth) {
+      onSkip?.(dir, DirectoryWalkSkipReason.MaxDepth);
       return;
     }
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
+    } catch (error) {
+      reportReaddirSkip(dir, error, onSkip);
       return;
     }
     for (const e of entries) {

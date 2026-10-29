@@ -22,7 +22,7 @@
  */
 
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 
 import type { BoundedSlot } from "./support/app-module-ast.js";
 import { callPathFrom, parseModuleSource } from "./support/app-module-ast.js";
@@ -247,6 +247,152 @@ ${LANE_OWNER}
       ["whenInitialRendererMounted"]
     );
   });
+
+  test("a raw gate in a sibling argument of an UNBOUNDED wrapper", () => {
+    // The unawaited counterpart of the case above, and the hole it left: the
+    // call arm scanned only the callee, so an unknown wrapper handed a raw
+    // renderer gate in one argument and the lane start in another reported
+    // NOTHING (ISS-6619). `scheduleAfterSomethingElse` is in no slot, so the
+    // gate is not bounded by anything and the lane start sits behind it.
+    assert.deepEqual(
+      laneStartWaits(
+        `    scheduleAfterSomethingElse(
+      () => this.rendererGates.whenInitialRendererMounted(),
+      () => this.startSyncLanesAtBoot()
+    );`,
+        BOUNDED_SLOTS
+      ),
+      ["whenInitialRendererMounted"]
+    );
+  });
+
+  test("a wait in a SIBLING PROPERTY of a shared options object", () => {
+    // The object-literal counterpart of the sibling-argument case, and the hole
+    // the argument-only scan left: the wrapper takes ONE argument, so the whole
+    // options object is `child` and the sibling-argument filter discards it
+    // entirely — the `gate` property is never inspected and an object-form
+    // refactor walks straight past the guard (codex review). Position still
+    // discriminates: the walk names the sibling PROPERTY, not the one the lane
+    // start sits in.
+    assert.deepEqual(
+      laneStartWaits(
+        `    schedule({
+      gate: () => this.rendererGates.whenInitialRendererMounted(),
+      work: () => this.startSyncLanesAtBoot(),
+    });`,
+        BOUNDED_SLOTS
+      ),
+      ["whenInitialRendererMounted"],
+      "a wrapper that could await `gate` before invoking `work` defers the lane start exactly as a two-argument wrapper does; scanning only sibling ARGUMENTS reports nothing and the object form bypasses the guard"
+    );
+  });
+
+  test("an awaited NESTED wrapper names its wait exactly ONCE", () => {
+    // The duplicate the sibling scans can produce past a callback boundary. The
+    // inner call reports its own sibling argument, and then the enclosing
+    // `await` — whose arm scans the whole awaited expression, callback bodies
+    // included, because that is what the sibling-argument case needs — reaches
+    // the SAME identifier again. `awaitedAncestorScans` stands the inner scan
+    // down only when the `await` covers that call directly; one callback
+    // boundary defeats it, and a real wait was named twice (whitlockk review).
+    assert.deepEqual(
+      laneStartWaits(
+        `    await outer(() =>
+      inner(
+        this.rendererGates.whenInitialRendererMounted(),
+        () => this.startSyncLanesAtBoot()
+      )
+    );`,
+        BOUNDED_SLOTS
+      ),
+      ["whenInitialRendererMounted"],
+      "the wait is one identifier reached by two arms of the same walk; reporting it twice makes a correct single gate read as two"
+    );
+  });
+
+  test("two DISTINCT gates both survive the once-per-wait dedupe", () => {
+    // The bound on deduping. It is keyed on the identifier NODE, not its text,
+    // because two different reads are two facts — a dedupe by name would report
+    // one gate here and trade the duplicate false red for a miss.
+    assert.deepEqual(
+      laneStartWaits(
+        `    await this.rendererGates.whenInitialRendererMounted();
+    await this.desktopWindow.whenInitiallyShown();
+    this.startSyncLanesAtBoot();`,
+        BOUNDED_SLOTS
+      ),
+      ["whenInitialRendererMounted", "whenInitiallyShown"]
+    );
+  });
+
+  test("an AWAITED shared options object names its wait exactly ONCE", () => {
+    // Where the two fixes above meet. The object-literal arm names the `gate`
+    // property on the way up, and the enclosing `await` then scans the whole
+    // call — object included — and reaches the same identifier. Fixing the
+    // sibling-property miss without the node-keyed dedupe would have bought the
+    // miss back as a duplicate.
+    assert.deepEqual(
+      laneStartWaits(
+        `    await schedule({
+      gate: () => this.rendererGates.whenInitialRendererMounted(),
+      work: () => this.startSyncLanesAtBoot(),
+    });`,
+        BOUNDED_SLOTS
+      ),
+      ["whenInitialRendererMounted"]
+    );
+  });
+
+  test("an awaited sibling-arg wrapper names its wait exactly ONCE", () => {
+    // The sibling-argument scan and the enclosing `await` arm both see this
+    // call, so the sibling scan stands down when an `await` already covers it.
+    // Matching only an IMMEDIATE await parent was defeated by one node of
+    // nesting — the parentheses here, a `.then()` chain elsewhere — and the
+    // wait was named twice.
+    assert.deepEqual(
+      laneStartWaits(
+        `    await (gateOn(
+      this.rendererGates.whenInitialRendererMounted(),
+      () => this.startSyncLanesAtBoot()
+    ));`,
+        BOUNDED_SLOTS
+      ),
+      ["whenInitialRendererMounted"]
+    );
+  });
+
+  test("the SAME alias in both a bounded and an unbounded slot", () => {
+    // The false GREEN the ISS-6619 fix could have traded the false RED for.
+    // Resolving the bounded read first would consume the alias's entry in the
+    // `resolved` cycle guard and silence the unbounded one, so this shape went
+    // from reported (on the unfixed walk) to silent — strictly worse than the
+    // bug being fixed. The bounded read is skipped whole instead.
+    assert.deepEqual(
+      laneStartWaits(
+        `    const reveal = () => this.desktopWindow.whenInitiallyShown();
+    await scheduleAfterBootAdmission(reveal, () => reveal());
+    this.startSyncLanesAtBoot();`,
+        BOUNDED_SLOTS
+      ),
+      ["whenInitiallyShown"]
+    );
+  });
+
+  test("an aliased wait handed to the wrapper's UNBOUNDED slot", () => {
+    // The direction that keeps the ISS-6619 exemption honest. Resolving the
+    // alias must not bless it wholesale: `reveal` reaches argument 1, which
+    // `scheduleAfterBootAdmission` does not bound, so hoisting the lambda out
+    // does not make a smuggled wait exempt.
+    assert.deepEqual(
+      laneStartWaits(
+        `    const reveal = () => this.desktopWindow.whenInitiallyShown();
+    await scheduleAfterBootAdmission(() => this.other.tick(), reveal);
+    this.startSyncLanesAtBoot();`,
+        BOUNDED_SLOTS
+      ),
+      ["whenInitiallyShown"]
+    );
+  });
 });
 
 describe("app-module-ast: shapes the walk must NOT report", () => {
@@ -353,6 +499,25 @@ ${LANE_OWNER}
     );
   });
 
+  test("an options object handed to no call defers nothing", () => {
+    // The bound on the sibling-PROPERTY scan. Siblings defer only because some
+    // wrapper could await one before invoking the other, which needs a wrapper;
+    // a literal that reaches no call hands its properties to nobody. Without
+    // that condition, co-locating a gate and the lane start in one object would
+    // read as a gate and the guard would fire on code that defers nothing.
+    assert.deepEqual(
+      laneStartWaits(
+        `    const opts = {
+      gate: () => this.rendererGates.whenInitialRendererMounted(),
+      work: () => this.startSyncLanesAtBoot(),
+    };
+    this.register(opts);`,
+        BOUNDED_SLOTS
+      ),
+      []
+    );
+  });
+
   test("a preceding await handed to the wrapper's BOUNDED slot is exempt", () => {
     // The ISS-5990 fix itself. Without this exemption the guard would forbid
     // the very wrapper that closes the defect it guards.
@@ -362,6 +527,56 @@ ${LANE_OWNER}
       () => this.desktopWindow.whenInitiallyShown(),
       () => this.warmCaches()
     );
+    this.startSyncLanesAtBoot();`,
+        BOUNDED_SLOTS
+      ),
+      []
+    );
+  });
+
+  test("the same bounded slot reached through a hoisted lambda is exempt", () => {
+    // ISS-6619. One variable of indirection defeated the exemption: the alias
+    // resolved, but boundedness was judged from where the lambda SITS — under
+    // the `const`, never under the wrapper call — so the guard condemned code
+    // that is correct. Hoisting the reveal lambda is the likeliest next edit to
+    // `app.ts`, and a guard that fires on correct code gets deleted.
+    assert.deepEqual(
+      laneStartWaits(
+        `    const reveal = () => this.desktopWindow.whenInitiallyShown();
+    await scheduleAfterBootAdmission(reveal, () => this.warmCaches());
+    this.startSyncLanesAtBoot();`,
+        BOUNDED_SLOTS
+      ),
+      []
+    );
+  });
+
+  test("a CHAINED alias into the bounded slot is exempt", () => {
+    // Boundedness has to travel the whole alias chain, not one hop: judging
+    // each hop where it sits would lose the outer read's slot immediately.
+    assert.deepEqual(
+      laneStartWaits(
+        `    const reveal = () => this.desktopWindow.whenInitiallyShown();
+    const gate = reveal;
+    await scheduleAfterBootAdmission(gate, () => this.warmCaches());
+    this.startSyncLanesAtBoot();`,
+        BOUNDED_SLOTS
+      ),
+      []
+    );
+  });
+
+  test("a binding whose own initializer bounds the wait is exempt", () => {
+    // The read site is not the only thing that can bound a wait — the
+    // definition can too. `someWrapper` bounds nothing, so judging this from
+    // the read site ALONE would re-condemn it; both positions have to count.
+    assert.deepEqual(
+      laneStartWaits(
+        `    const reveal = () => scheduleAfterBootAdmission(
+      () => this.desktopWindow.whenInitiallyShown(),
+      () => this.warmCaches()
+    );
+    await someWrapper(reveal);
     this.startSyncLanesAtBoot();`,
         BOUNDED_SLOTS
       ),

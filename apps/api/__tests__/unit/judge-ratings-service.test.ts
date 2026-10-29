@@ -7,7 +7,11 @@
  */
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getMockWithDb, mockWithDbCall } from "../utils/db-helpers";
+import {
+  getMockWithDb,
+  mockWithDbAll,
+  mockWithDbCall,
+} from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
@@ -141,6 +145,81 @@ describe("submitJudgeRating", () => {
     // __tests__/integration/judge-ratings-unique-race.test.ts.
     expect(getMockWithDb().tx).not.toHaveBeenCalled();
     expect(getMockWithDb()).toHaveBeenCalledTimes(3);
+  });
+
+  it("writes a recorded re-rate in one transaction, skipping the duplicate insert", async () => {
+    const db = {
+      judgeScore: {
+        findFirst: vi.fn().mockResolvedValue(makeJudgeScoreRecord()),
+      },
+      judgeHumanScore: existingRatingDelegate(0.4),
+    };
+    mockWithDbAll(db);
+
+    const result = await submitJudgeRating(
+      ORG_ID,
+      USER_ID,
+      ARTIFACT_ID,
+      JUDGE_SCORE_ID,
+      0.6,
+      vi.fn().mockResolvedValue(undefined)
+    );
+
+    expect(result?.isUpdate).toBe(true);
+    expect(db.judgeHumanScore.update).toHaveBeenCalledWith({
+      where: { judgeScoreId_userId_organizationId: RATING_KEY },
+      data: { score: 0.6 },
+      select: { id: true },
+    });
+    // ISS-12552: recorded, the insert and the update share one transaction so
+    // a receipt can commit with them. The insert skips a duplicate instead of
+    // raising, so the update never follows a caught unique violation, which
+    // PostgreSQL would refuse (ISS-6320; DB-backed proof in
+    // __tests__/integration/judge-ratings-unique-race.test.ts).
+    expect(getMockWithDb().tx).toHaveBeenCalledOnce();
+    expect(db.judgeHumanScore.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skipDuplicates: true })
+    );
+  });
+
+  it("hands recordWrite the transaction, and a re-rate to the same score as unchanged", async () => {
+    const recordWrite = vi.fn().mockResolvedValue(undefined);
+    const inserted = {
+      judgeScore: {
+        findFirst: vi.fn().mockResolvedValue(makeJudgeScoreRecord()),
+      },
+      judgeHumanScore: insertedRatingDelegate(),
+    };
+    mockWithDbAll(inserted);
+    await submitJudgeRating(
+      ORG_ID,
+      USER_ID,
+      ARTIFACT_ID,
+      JUDGE_SCORE_ID,
+      0.6,
+      recordWrite
+    );
+
+    const repeated = {
+      judgeScore: {
+        findFirst: vi.fn().mockResolvedValue(makeJudgeScoreRecord()),
+      },
+      judgeHumanScore: existingRatingDelegate(0.6),
+    };
+    mockWithDbAll(repeated);
+    await submitJudgeRating(
+      ORG_ID,
+      USER_ID,
+      ARTIFACT_ID,
+      JUDGE_SCORE_ID,
+      0.6,
+      recordWrite
+    );
+
+    expect(recordWrite.mock.calls).toEqual([
+      [inserted, { changed: true }],
+      [repeated, { changed: false }],
+    ]);
   });
 
   it("accepts rating = 0 (minimum boundary)", async () => {
@@ -476,3 +555,27 @@ describe("submitJudgeRatingValidator", () => {
     expect(result.success).toBe(false);
   });
 });
+
+const RATING_KEY = {
+  judgeScoreId: JUDGE_SCORE_ID,
+  userId: USER_ID,
+  organizationId: ORG_ID,
+};
+
+/** The caller had no rating yet: the insert stores one. */
+function insertedRatingDelegate() {
+  return {
+    createMany: vi.fn().mockResolvedValue({ count: 1 }),
+    findUnique: vi.fn().mockResolvedValue(null),
+    update: vi.fn().mockResolvedValue({}),
+  };
+}
+
+/** The caller already rated this score: the insert skips the duplicate. */
+function existingRatingDelegate(previousScore: number) {
+  return {
+    createMany: vi.fn().mockResolvedValue({ count: 0 }),
+    findUnique: vi.fn().mockResolvedValue({ score: previousScore }),
+    update: vi.fn().mockResolvedValue({}),
+  };
+}

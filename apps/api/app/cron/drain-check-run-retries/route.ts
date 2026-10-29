@@ -11,7 +11,16 @@ export const GET = async (request: Request): Promise<Response> => {
   }
 
   const summary = await drainDueCheckRunRetries();
-  log.info("[drain-check-run-retries] Drained check_run retries", summary);
+  // A rescheduled claim warns but does not page: infrastructure's
+  // check-run-retry-dead-lettered monitor counts only `@deadLettered:>0`.
+  if (summary.failures.length > 0) {
+    log.warn(
+      "[drain-check-run-retries] Drained check_run retries with provider failures",
+      summary
+    );
+  } else {
+    log.info("[drain-check-run-retries] Drained check_run retries", summary);
+  }
   scheduleLogFlush();
 
   return Response.json({ ok: true, summary });

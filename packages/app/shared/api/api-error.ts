@@ -82,6 +82,20 @@ export class ApiError extends Error {
   }
 
   /**
+   * Check if the service was unable to answer (503).
+   *
+   * Deliberately distinct from {@link isForbidden} and {@link isServerError}.
+   * The API reserves 503 for the case where nothing about the caller's access
+   * was decided — `AuthErrorCode.OrgUnverifiable` is the shipped instance, and
+   * an unresolved organization role is the same shape — so a surface that
+   * renders it as a denial tells the user they lack access the server never
+   * checked. Sits beside the other status predicates so the literal lives once.
+   */
+  isServiceUnavailable(): boolean {
+    return this.status === 503;
+  }
+
+  /**
    * Check if the client gave up waiting for a response (ISS-5013).
    *
    * Deliberately distinct from {@link isServerError} and {@link isClientError}:

@@ -1,16 +1,20 @@
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
+import type { SessionTranscriptVerdict } from "@repo/api/src/types/transcript-terminal-skip-disposition";
 import { withDb } from "@repo/database";
 import {
-  deriveTranscriptDispositionsBySession,
+  deriveTranscriptVerdictsBySession,
   sessionTranscriptGroupKey,
+  sessionTranscriptIdentitiesWhere,
 } from "../transcript-availability";
 
 /**
- * PRD-536 G1 (Phase 3): load + fold the per-session transcript disposition for a
- * Sessions LIST page in one batched query. Filters `SessionTranscript` by the
- * page's exact `(computeTargetId, externalSessionId)` session identities within
- * the org — the same identity the detail enrichment reads, minus the per-session
- * round-trip — then groups + folds via `deriveTranscriptDispositionsBySession`.
+ * PRD-536 G1 (Phase 3): load + fold the per-session transcript verdict (the
+ * disposition, and — since ISS-9884 — the terminal skip reason that produced
+ * it) for a Sessions LIST page in one batched query. Filters
+ * `SessionTranscript` by the page's exact
+ * `(computeTargetId, externalSessionId)` session identities within the org —
+ * the same identity the detail enrichment reads, minus the per-session
+ * round-trip — then groups + folds via `deriveTranscriptVerdictsBySession`.
  *
  * The WHERE is a set of composite identity predicates rather than a bare
  * `externalSessionId IN (...)` so Postgres can use the
@@ -34,10 +38,10 @@ import {
  * have a transcript would need a `neverExpected` signal, which no cloud producer
  * emits today — every cloud session expects a main file.)
  */
-export async function loadListTranscriptDispositions(
+export async function loadListTranscriptVerdicts(
   organizationId: string,
   items: { computeTargetId: string; externalSessionId: string }[]
-): Promise<Map<string, TranscriptDisposition>> {
+): Promise<Map<string, SessionTranscriptVerdict>> {
   const identityByKey = new Map<
     string,
     { computeTargetId: string; externalSessionId: string }
@@ -53,13 +57,9 @@ export async function loadListTranscriptDispositions(
   }
   const rows = await withDb((db) =>
     db.sessionTranscript.findMany({
-      where: {
-        organizationId,
-        OR: [...identityByKey.values()].map((identity) => ({
-          computeTargetId: identity.computeTargetId,
-          externalSessionId: identity.externalSessionId,
-        })),
-      },
+      where: sessionTranscriptIdentitiesWhere(organizationId, [
+        ...identityByKey.values(),
+      ]),
       select: {
         fileKey: true,
         uploadStatus: true,
@@ -71,15 +71,19 @@ export async function loadListTranscriptDispositions(
       },
     })
   );
-  const dispositionByKey = deriveTranscriptDispositionsBySession(rows);
+  const verdictByKey = deriveTranscriptVerdictsBySession(rows);
   // ISS-4621 list↔detail parity: every REQUESTED identity that returned no rows
   // is synthesized as `syncing` (the detail path already does this via the
   // synthesized `missing` main), so a zero-transcript session cannot read
-  // `synced` in the list while reading `pending` on detail.
+  // `synced` in the list while reading `pending` on detail. A synthesized
+  // verdict carries NO reason: there is no terminal skip behind it.
   for (const key of identityByKey.keys()) {
-    if (!dispositionByKey.has(key)) {
-      dispositionByKey.set(key, TranscriptDisposition.Syncing);
+    if (!verdictByKey.has(key)) {
+      verdictByKey.set(key, {
+        disposition: TranscriptDisposition.Syncing,
+        reason: null,
+      });
     }
   }
-  return dispositionByKey;
+  return verdictByKey;
 }

@@ -2,6 +2,7 @@ import { analytics } from "@repo/analytics/server";
 import type { PullRequestRatingSummary } from "@repo/api/src/types/pull-request-rating";
 import { Result, Status } from "@repo/api/src/types/result";
 import { ArtifactType, withDb } from "@repo/database";
+import type { RecordWriteInTransaction } from "@/lib/record-write-in-transaction";
 
 /**
  * Service for managing branch artifact ratings through the legacy PR rating route.
@@ -52,6 +53,7 @@ export const pullRequestRatingsService = {
               organizationId,
             },
           },
+          select: RATING_SUMMARY_SELECT,
         }),
         db.artifactRating.aggregate({
           where: { artifactId: pullRequestId, organizationId },
@@ -93,7 +95,8 @@ export const pullRequestRatingsService = {
     userId: string,
     organizationId: string,
     score: number,
-    comment: string
+    comment: string,
+    recordWrite?: RecordWriteInTransaction<RatingWrite>
   ): Promise<Result<PullRequestRatingSummary>> {
     // Use transaction for atomicity: PR lookup + rating upsert + aggregate
     // recalculation must happen atomically to ensure data consistency.
@@ -121,6 +124,10 @@ export const pullRequestRatingsService = {
             organizationId,
           },
         },
+        // Not an existence check: its presence decides create-vs-update, its
+        // score is reported as `previousScore` below, and score plus comment
+        // tell the receipt whether the write changed anything (ISS-12552).
+        select: PREVIOUS_RATING_SELECT,
       });
 
       const isUpdate = !!existingRating;
@@ -141,6 +148,13 @@ export const pullRequestRatingsService = {
           score,
           comment,
         },
+      });
+
+      await recordWrite?.(tx, {
+        changed: !(
+          existingRating?.score === score &&
+          (existingRating.comment ?? "") === comment
+        ),
       });
 
       // Recalculate aggregate (same logic as getRating()).
@@ -181,3 +195,39 @@ export const pullRequestRatingsService = {
     });
   },
 };
+
+/** The columns the rating summary renders back to the requesting user. */
+type RatingSummaryRow = {
+  id: string;
+  userId: string;
+  score: number;
+  comment: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+const RATING_SUMMARY_SELECT = {
+  id: true,
+  userId: true,
+  score: true,
+  comment: true,
+  createdAt: true,
+  updatedAt: true,
+} as const satisfies Record<keyof RatingSummaryRow, true>;
+
+/**
+ * The columns the upsert reads before writing: the score it reports as the
+ * previous score, and the score and comment that decide a no-op.
+ */
+type PreviousRatingRow = {
+  score: number;
+  comment: string | null;
+};
+
+const PREVIOUS_RATING_SELECT = {
+  score: true,
+  comment: true,
+} as const satisfies Record<keyof PreviousRatingRow, true>;
+
+/** What a rating upsert wrote: whether the score or comment moved. */
+export type RatingWrite = { changed: boolean };

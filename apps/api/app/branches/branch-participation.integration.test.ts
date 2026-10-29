@@ -1,8 +1,9 @@
 /**
  * FEA-3820 real-boundary coverage: desktop branch-link sync persists the
- * participation scalar, then the cloud branch read projects that scalar while
- * keeping successful reviewed participation in the Branch detail spend total.
+ * participation scalar, then the cloud branch read excludes Reviewed from the
+ * qualifying Session/spend population while retaining its identity evidence.
  */
+
 import { randomUUID } from "node:crypto";
 import {
   AGENT_SESSION_SYNC_SCHEMA_VERSION,
@@ -20,6 +21,7 @@ import {
   BranchIdentityAvailability,
   BranchPersonProvider,
 } from "@repo/api/src/types/branch-identity";
+import { CommentBodyFormat } from "@repo/api/src/types/comment-thread-dto";
 import {
   ArtifactRefMethod,
   ArtifactRefRelation,
@@ -28,227 +30,225 @@ import {
 } from "@repo/api/src/types/session-artifact-link";
 import { ThreadSource, ThreadStatus, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { persistedGitHubRepositoryAuthority } from "@/__tests__/fixtures/repository-default-authority";
 import {
-  autoRollbackTransaction,
-  createTestOrganization,
+  createCommittedTestOrganizationTracker,
   createTestUser,
 } from "@/__tests__/utils/db-helpers";
 import { agentSessionsService } from "@/app/agent-sessions/service";
 import { branchReadService } from "@/app/branches/branch-read-service";
+
+// ISS-11767: the detail read opens its own RepeatableRead snapshot, which
+// `withDb.tx` refuses inside an ambient transaction, so the rows are committed.
+const committedOrganizations = createCommittedTestOrganizationTracker();
 
 const hasDatabase = Boolean(keys().DATABASE_URL);
 const describeIfDb = hasDatabase ? describe : describe.skip;
 const observedAt = "2026-07-03T09:13:00.000Z";
 
 describeIfDb("branch participation real boundary (FEA-3820)", () => {
-  it("persists reviewed participation and reconciles its branch spend", async () => {
-    await autoRollbackTransaction(async () => {
-      const organizationId = await createTestOrganization();
-      const user = await createTestUser(organizationId);
-      const commenter = await createTestUser(organizationId);
-      const computeTarget = await createComputeTarget(organizationId, user.id);
-      const repositoryFullName = "closedloop-ai/example-repo";
-      const branchName = "codex/fea-3820-review-boundary";
+  afterEach(() => committedOrganizations.cleanup());
 
-      await withDb((db) =>
-        db.publicRepository.create({
-          data: {
-            organizationId,
-            ...persistedGitHubRepositoryAuthority({
-              githubRepoId: "repo-example-repo",
-              fullName: repositoryFullName,
-            }),
-            owner: "closedloop-ai",
-            name: "example-repo",
-            htmlUrl: `https://github.com/${repositoryFullName}`,
-          },
-        })
-      );
+  it("persists Reviewed but excludes it from Branch membership and spend", async () => {
+    const organizationId = await committedOrganizations.create();
+    const user = await createTestUser(organizationId);
+    const commenter = await createTestUser(organizationId);
+    const computeTarget = await createComputeTarget(organizationId, user.id);
+    const repositoryFullName = "closedloop-ai/closedloop-ai";
+    const branchName = "codex/fea-3820-review-boundary";
 
-      await agentSessionsService.upsertSessions(
-        {
+    await withDb((db) =>
+      db.publicRepository.create({
+        data: {
+          organizationId,
+          ...persistedGitHubRepositoryAuthority({
+            githubRepoId: "repo-closedloop-ai",
+            fullName: repositoryFullName,
+          }),
+          owner: "closedloop-ai",
+          name: "closedloop-ai",
+          htmlUrl: `https://github.com/${repositoryFullName}`,
+        },
+      })
+    );
+
+    await agentSessionsService.upsertSessions(
+      {
+        organizationId,
+        userId: user.id,
+        computeTargetId: computeTarget.id,
+      },
+      {
+        schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
+        batchId: randomUUID(),
+        syncMode: AgentSessionSyncMode.Incremental,
+        sessionCount: 2,
+        sessions: [
+          buildReviewedBranchSession(repositoryFullName, branchName),
+          // FEA-4225: the Branches surface only includes session-DISCOVERED
+          // branches, and a reviewed-only link is not a valid linked session
+          // (it never enters `sessionIds`). Seed a second session that actually
+          // WROTE the branch so the branch is eligible. The Reviewed link
+          // remains persisted identity evidence, but is not membership or
+          // spend under the approved ISS-10816 policy.
+          buildWroteBranchSession(repositoryFullName, branchName),
+        ],
+      }
+    );
+
+    const branch = await withDb((db) =>
+      db.branchDetail.findFirstOrThrow({
+        where: {
+          organizationId,
+          repositoryFullName: normalizeRepoFullName(repositoryFullName),
+          branchName,
+        },
+        select: { artifactId: true },
+      })
+    );
+    await withDb((db) =>
+      db.branchDetail.update({
+        where: { artifactId: branch.artifactId },
+        data: {
+          firstPushedAt: new Date(observedAt),
+          pushSource: BranchPushSource.Session,
+        },
+      })
+    );
+    await withDb((db) =>
+      db.gitHubUserConnection.create({
+        data: {
           organizationId,
           userId: user.id,
-          computeTargetId: computeTarget.id,
-        },
-        {
-          schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
-          batchId: randomUUID(),
-          syncMode: AgentSessionSyncMode.Incremental,
-          sessionCount: 2,
-          sessions: [
-            buildReviewedBranchSession(repositoryFullName, branchName),
-            // FEA-4225: the Branches surface only includes session-DISCOVERED
-            // branches, and a reviewed-only link is not a valid linked session
-            // (it never enters `sessionIds`). Seed a second session that actually
-            // WROTE the branch so the branch is eligible; the FEA-3820 contract
-            // under test is then that the reviewed session projects and its
-            // successful review spend reconciles alongside the wrote session.
-            buildWroteBranchSession(repositoryFullName, branchName),
-          ],
-        }
-      );
-
-      const branch = await withDb((db) =>
-        db.branchDetail.findFirstOrThrow({
-          where: {
-            organizationId,
-            repositoryFullName: normalizeRepoFullName(repositoryFullName),
-            branchName,
-          },
-          select: { artifactId: true },
-        })
-      );
-      await withDb((db) =>
-        db.branchDetail.update({
-          where: { artifactId: branch.artifactId },
-          data: {
-            firstPushedAt: new Date(observedAt),
-            pushSource: BranchPushSource.Session,
-          },
-        })
-      );
-      await withDb((db) =>
-        db.gitHubUserConnection.create({
-          data: {
-            organizationId,
-            userId: user.id,
-            githubUserId: "branch-owner-github-id",
-            login: "branch-owner",
-            normalizedLogin: "branch-owner",
-            accessTokenEncrypted: "integration-test-token",
-          },
-        })
-      );
-
-      const reviewedLink = await withDb((db) =>
-        db.artifactLink.findFirstOrThrow({
-          where: {
-            organizationId,
-            targetId: branch.artifactId,
-            branchParticipation: BranchParticipationKind.Reviewed,
-          },
-          select: {
-            branchParticipation: true,
-            branchParticipationMethod: true,
-          },
-        })
-      );
-      expect(reviewedLink).toMatchObject({
-        branchParticipation: BranchParticipationKind.Reviewed,
-        branchParticipationMethod: ArtifactRefMethod.PrReviewFeedbackCommand,
-      });
-      // Stamp `session_branch` link-kind on every link so both are branch links.
-      await withDb((db) =>
-        db.artifactLink.updateMany({
-          where: {
-            organizationId,
-            targetId: branch.artifactId,
-          },
-          data: {
-            metadata: {
-              linkKind: "session_branch",
-              branchLinked: true,
-            },
-          },
-        })
-      );
-      const linkedSessions = await withDb((db) =>
-        db.artifactLink.findMany({
-          where: { organizationId, targetId: branch.artifactId },
-          select: { sourceId: true, branchParticipation: true },
-        })
-      );
-      const reviewedSessionId = linkedSessions.find(
-        (link) => link.branchParticipation === BranchParticipationKind.Reviewed
-      )?.sourceId;
-      if (!reviewedSessionId) {
-        throw new Error("Missing reviewed Session identity fixture");
-      }
-      await withDb((db) =>
-        db.commentThread.create({
-          data: {
-            organizationId,
-            source: ThreadSource.NATIVE,
-            artifactId: branch.artifactId,
-            status: ThreadStatus.OPEN,
-            createdById: user.id,
-            comments: {
-              create: {
-                authorId: user.id,
-                body: commentBody("Branch comment"),
-                plainText: "Branch comment",
-              },
-            },
-          },
-        })
-      );
-      await withDb((db) =>
-        db.commentThread.create({
-          data: {
-            organizationId,
-            source: ThreadSource.NATIVE,
-            artifactId: reviewedSessionId,
-            status: ThreadStatus.OPEN,
-            createdById: commenter.id,
-            comments: {
-              create: {
-                authorId: commenter.id,
-                body: commentBody("Session comment"),
-                plainText: "Session comment",
-              },
-            },
-          },
-        })
-      );
-
-      const detail = await branchReadService.getBranchDetail(
-        organizationId,
-        branch.artifactId
-      );
-
-      // Two sessions now touch the branch: the reviewer and the author. The
-      // branch is eligible (FEA-4225) because of the wrote session; the FEA-3820
-      // FEA-3991 contract includes the reviewed session and its successful
-      // review spend in the same detail total as the phase attribution.
-      expect(detail?.sessions).toHaveLength(2);
-      const reviewedSession = detail?.sessions.find(
-        (session) => session.participation === BranchParticipationKind.Reviewed
-      );
-      expect(reviewedSession).toMatchObject({
-        participation: BranchParticipationKind.Reviewed,
-        estimatedCostUsd: 1.25,
-      });
-      // The wrote session contributes 2.5 and the successful reviewed session
-      // contributes 1.25, so the Branch header reconciles to their 3.75 total.
-      expect(detail?.estimatedCostUsd).toBe(3.75);
-      expect(detail?.attributedCostUsd).toBe(3.75);
-      expect(detail?.ownerIdentity).toEqual({
-        availability: BranchIdentityAvailability.Complete,
-        person: expect.objectContaining({
-          provider: BranchPersonProvider.GitHub,
-          id: "branch-owner-github-id",
-          userId: user.id,
+          githubUserId: "branch-owner-github-id",
           login: "branch-owner",
-        }),
-      });
-      expect(detail?.collaborators).toMatchObject({
-        availability: BranchIdentityAvailability.Complete,
-        people: expect.arrayContaining([
-          expect.objectContaining({ userId: user.id }),
-          expect.objectContaining({ userId: commenter.id }),
-        ]),
-        sources: {
-          [BranchCollaboratorSource.PullRequestComments]:
-            BranchIdentityAvailability.Complete,
-          [BranchCollaboratorSource.BranchComments]:
-            BranchIdentityAvailability.Complete,
-          [BranchCollaboratorSource.SessionComments]:
-            BranchIdentityAvailability.Complete,
+          normalizedLogin: "branch-owner",
         },
-      });
+      })
+    );
+
+    const reviewedLink = await withDb((db) =>
+      db.artifactLink.findFirstOrThrow({
+        where: {
+          organizationId,
+          targetId: branch.artifactId,
+          branchParticipation: BranchParticipationKind.Reviewed,
+        },
+        select: {
+          branchParticipation: true,
+          branchParticipationMethod: true,
+        },
+      })
+    );
+    expect(reviewedLink).toMatchObject({
+      branchParticipation: BranchParticipationKind.Reviewed,
+      branchParticipationMethod: ArtifactRefMethod.PrReviewFeedbackCommand,
+    });
+    // Stamp `session_branch` link-kind on every link so both are branch links.
+    await withDb((db) =>
+      db.artifactLink.updateMany({
+        where: {
+          organizationId,
+          targetId: branch.artifactId,
+        },
+        data: {
+          metadata: {
+            linkKind: "session_branch",
+            branchLinked: true,
+          },
+        },
+      })
+    );
+    const linkedSessions = await withDb((db) =>
+      db.artifactLink.findMany({
+        where: { organizationId, targetId: branch.artifactId },
+        select: { sourceId: true, branchParticipation: true },
+      })
+    );
+    const reviewedSessionId = linkedSessions.find(
+      (link) => link.branchParticipation === BranchParticipationKind.Reviewed
+    )?.sourceId;
+    if (!reviewedSessionId) {
+      throw new Error("Missing reviewed Session identity fixture");
+    }
+    await withDb((db) =>
+      db.commentThread.create({
+        data: {
+          organizationId,
+          source: ThreadSource.NATIVE,
+          artifactId: branch.artifactId,
+          status: ThreadStatus.OPEN,
+          createdById: user.id,
+          comments: {
+            create: {
+              authorId: user.id,
+              body: commentBody("Branch comment"),
+              bodyFormat: CommentBodyFormat.RichV1,
+              plainText: "Branch comment",
+            },
+          },
+        },
+      })
+    );
+    await withDb((db) =>
+      db.commentThread.create({
+        data: {
+          organizationId,
+          source: ThreadSource.NATIVE,
+          artifactId: reviewedSessionId,
+          status: ThreadStatus.OPEN,
+          createdById: commenter.id,
+          comments: {
+            create: {
+              authorId: commenter.id,
+              body: commentBody("Session comment"),
+              bodyFormat: CommentBodyFormat.RichV1,
+              plainText: "Session comment",
+            },
+          },
+        },
+      })
+    );
+
+    const detail = await branchReadService.getBranchDetail(
+      organizationId,
+      branch.artifactId
+    );
+
+    // The author is the only qualifying member. The reviewer remains visible
+    // in collaborator identity evidence below, without entering Session cost.
+    expect(detail?.sessions).toHaveLength(1);
+    expect(detail?.sessions[0]).toMatchObject({
+      participation: BranchParticipationKind.Wrote,
+      estimatedCostUsd: 2.5,
+    });
+    expect(detail?.estimatedCostUsd).toBe(2.5);
+    expect(detail?.attributedCostUsd).toBe(2.5);
+    expect(detail?.ownerIdentity).toEqual({
+      availability: BranchIdentityAvailability.Complete,
+      person: expect.objectContaining({
+        provider: BranchPersonProvider.GitHub,
+        id: "branch-owner-github-id",
+        userId: user.id,
+        login: "branch-owner",
+      }),
+    });
+    expect(detail?.collaborators).toMatchObject({
+      // ISS-10992 / PLN-2130 v5 AC-007 retains people with incomplete push history.
+      availability: BranchIdentityAvailability.Incomplete,
+      people: expect.arrayContaining([
+        expect.objectContaining({ userId: user.id }),
+        expect.objectContaining({ userId: commenter.id }),
+      ]),
+      sources: {
+        [BranchCollaboratorSource.PullRequestComments]:
+          BranchIdentityAvailability.Complete,
+        [BranchCollaboratorSource.BranchComments]:
+          BranchIdentityAvailability.Complete,
+        [BranchCollaboratorSource.SessionComments]:
+          BranchIdentityAvailability.Complete,
+      },
     });
   });
 });

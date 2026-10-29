@@ -1,3 +1,7 @@
+import {
+  OperationKind,
+  OperationReceiptOutcome,
+} from "@repo/api/src/types/attribution-evidence";
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import {
   ProjectStatus as ProjectStatusValues,
@@ -5,6 +9,10 @@ import {
 } from "@repo/api/src/types/project";
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
 import {
   badRequestResponse,
   errorResponse,
@@ -14,7 +22,16 @@ import {
 } from "@/lib/route-utils";
 import { customFieldValuesService } from "../custom-fields/values-service";
 import { parseProjectStatuses } from "./project-route-helpers";
-import { InvalidProjectTeamsError, projectsService } from "./service";
+import {
+  InvalidProjectTeamsError,
+  InvalidProjectTeamsReason,
+  projectsService,
+} from "./service";
+import {
+  TeamRequirementVerb,
+  teamRequirementErrorResponse,
+  unresolvedTeamErrorResponse,
+} from "./team-requirement";
 import { createProjectValidator } from "./validators";
 
 /**
@@ -113,42 +130,75 @@ export const GET = withAnyAuth<ProjectWithDetails[], "/projects">(
  * POST /projects - Create a new project
  */
 export const POST = withAnyAuth<ProjectWithDetails, "/projects">(
-  async ({ user }, request) => {
-    try {
-      const { body, errorResponse: parseError } = await parseBody(
-        request,
-        createProjectValidator
-      );
-      if (parseError) {
-        return parseError;
-      }
+  withOperationReceipts(
+    OperationKind.ProjectWrite,
+    async ({ user }, request, _params, receipts) => {
+      try {
+        const {
+          body,
+          rawBody,
+          errorResponse: parseError,
+          issues,
+        } = await parseBody(request, createProjectValidator);
+        if (parseError) {
+          return (
+            (await teamRequirementErrorResponse({
+              issues,
+              rawBody,
+              organizationId: user.organizationId,
+              verb: TeamRequirementVerb.Create,
+            })) ?? parseError
+          );
+        }
 
-      const project = await projectsService.create(
-        user.organizationId,
-        user.id,
-        body
-      );
-
-      // Fetch the full project with details
-      const projectWithDetails = await projectsService.findById(
-        project.id,
-        user.organizationId
-      );
-
-      if (!projectWithDetails) {
-        return errorResponse(
-          "Project created but could not be retrieved",
-          new Error("Project not found")
+        const created = await projectsService.create(
+          user.organizationId,
+          user.id,
+          body,
+          receipts.whenRecording((tx) =>
+            receipts.record(tx, {
+              operationKind: OperationKind.ProjectWrite,
+              outcome: OperationReceiptOutcome.Committed,
+            })
+          )
         );
-      }
+        if (!created.ok) {
+          return badRequestResponse(created.error.message);
+        }
+        const project = created.value;
 
-      return successResponse(projectWithDetails);
-    } catch (error) {
-      if (error instanceof InvalidProjectTeamsError) {
-        return badRequestResponse(error.message);
+        // Fetch the full project with details
+        const projectWithDetails = await projectsService.findById(
+          project.id,
+          user.organizationId
+        );
+
+        if (!projectWithDetails) {
+          return errorResponse(
+            "Project created but could not be retrieved",
+            new Error("Project not found")
+          );
+        }
+
+        return successResponse(
+          withOperationReceipt(projectWithDetails, receipts)
+        );
+      } catch (error) {
+        if (error instanceof InvalidProjectTeamsError) {
+          // Only the unresolved reason is fixable by picking a different team;
+          // the over-cap refusal gets no roster, since more teams cannot fix it.
+          if (error.reason === InvalidProjectTeamsReason.Unresolved) {
+            return await unresolvedTeamErrorResponse({
+              message: error.message,
+              organizationId: user.organizationId,
+              verb: TeamRequirementVerb.Create,
+            });
+          }
+          return badRequestResponse(error.message);
+        }
+        return errorResponse("Failed to create project", error);
       }
-      return errorResponse("Failed to create project", error);
     }
-  },
+  ),
   { requiredScopes: ["write"] }
 );

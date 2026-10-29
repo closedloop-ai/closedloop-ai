@@ -5,6 +5,10 @@ import {
   HEALTH_CHECK_REPAIR_PATH,
 } from "@repo/api/src/types/compute-target";
 import {
+  GITHUB_RESYNC_NUDGE_OPERATION_ID,
+  GITHUB_RESYNC_NUDGE_PATH,
+} from "@repo/api/src/types/github-dirty-scope";
+import {
   MEMBER_PACK_INSTALL_OPERATION_ID,
   MEMBER_PACK_INSTALL_PATH,
 } from "@repo/api/src/types/member-pack-install";
@@ -31,24 +35,6 @@ describe("EXACT_OPERATION_IDS", () => {
     );
     expect(resolveOperationId(HEALTH_CHECK_REPAIR_PATH)).toBe(
       HEALTH_CHECK_REPAIR_OPERATION_ID
-    );
-  });
-
-  it("maps /api/gateway/symphony/launch to symphony_launch", () => {
-    expect(EXACT_OPERATION_IDS["/api/gateway/symphony/launch"]).toBe(
-      "symphony_launch"
-    );
-  });
-
-  it("maps /api/gateway/symphony/kill to symphony_kill", () => {
-    expect(EXACT_OPERATION_IDS["/api/gateway/symphony/kill"]).toBe(
-      "symphony_kill"
-    );
-  });
-
-  it("maps /api/gateway/symphony/loop to symphony_loop", () => {
-    expect(EXACT_OPERATION_IDS["/api/gateway/symphony/loop"]).toBe(
-      "symphony_loop"
     );
   });
 
@@ -86,36 +72,28 @@ describe("EXACT_OPERATION_IDS", () => {
 });
 
 describe("PREFIX_OPERATION_IDS", () => {
-  it("maps /api/gateway/symphony/status/ prefix to symphony_status", () => {
+  // ISS-8049 removed the BARE `/api/gateway/git` prefix this case used to assert.
+  // It was a defect, not a shape: "github" startsWith "git", so the bare prefix
+  // silently rewrote the GitHub resync nudge to `git_action` and every desktop
+  // rejected the nudge as unroutable. The bare path moved to EXACT_OPERATION_IDS
+  // and the prefix grew the trailing slash that makes it stop matching `github`.
+  it("maps the /api/gateway/git/ prefix to git_action without capturing github", () => {
     const entry = PREFIX_OPERATION_IDS.find(
-      ([prefix]) => prefix === "/api/gateway/symphony/status/"
-    );
-    expect(entry).toBeDefined();
-    expect(entry?.[1]).toBe("symphony_status");
-  });
-
-  it("maps /api/gateway/symphony/chat/ prefix to symphony_chat", () => {
-    const entry = PREFIX_OPERATION_IDS.find(
-      ([prefix]) => prefix === "/api/gateway/symphony/chat/"
-    );
-    expect(entry).toBeDefined();
-    expect(entry?.[1]).toBe("symphony_chat");
-  });
-
-  it("maps /api/gateway/codex/ prefix to codex_review", () => {
-    const entry = PREFIX_OPERATION_IDS.find(
-      ([prefix]) => prefix === "/api/gateway/codex/"
-    );
-    expect(entry).toBeDefined();
-    expect(entry?.[1]).toBe("codex_review");
-  });
-
-  it("maps /api/gateway/git prefix to git_action (less-specific git prefix)", () => {
-    const entry = PREFIX_OPERATION_IDS.find(
-      ([prefix]) => prefix === "/api/gateway/git"
+      ([prefix]) => prefix === "/api/gateway/git/"
     );
     expect(entry).toBeDefined();
     expect(entry?.[1]).toBe("git_action");
+
+    // The bare path still resolves — it is exact now, not a prefix.
+    expect(resolveOperationId("/api/gateway/git")).toBe("git_action");
+    expect(resolveOperationId("/api/gateway/git/status")).toBe("git_action");
+
+    // The regression itself. A desktop on either side of this fix routes on the
+    // operationId it is handed, so a nudge rewritten to `git_action` is dropped
+    // by every build; this is the assertion that keeps the trailing slash.
+    expect(resolveOperationId(GITHUB_RESYNC_NUDGE_PATH)).toBe(
+      GITHUB_RESYNC_NUDGE_OPERATION_ID
+    );
   });
 
   it("resolves Branch View local routes as exact matches", () => {
@@ -128,18 +106,6 @@ describe("PREFIX_OPERATION_IDS", () => {
     expect(
       resolveOperationId("/api/gateway/git/local-changes/commit-push")
     ).toBe("git_local_commit_push");
-  });
-
-  it("orders /api/gateway/codex/argue/ before /api/gateway/codex/ (more-specific first)", () => {
-    const argueIndex = PREFIX_OPERATION_IDS.findIndex(
-      ([prefix]) => prefix === "/api/gateway/codex/argue/"
-    );
-    const reviewIndex = PREFIX_OPERATION_IDS.findIndex(
-      ([prefix]) => prefix === "/api/gateway/codex/"
-    );
-    expect(argueIndex).toBeGreaterThanOrEqual(0);
-    expect(reviewIndex).toBeGreaterThanOrEqual(0);
-    expect(argueIndex).toBeLessThan(reviewIndex);
   });
 
   it("contains only string tuple pairs", () => {
@@ -169,12 +135,6 @@ describe("resolveOperationId", () => {
     );
   });
 
-  it("resolves exact match: /api/gateway/symphony/launch → symphony_launch", () => {
-    expect(resolveOperationId("/api/gateway/symphony/launch")).toBe(
-      "symphony_launch"
-    );
-  });
-
   it("resolves exact match: /api/gateway/repos → repos_config", () => {
     expect(resolveOperationId("/api/gateway/repos")).toBe("repos_config");
   });
@@ -188,30 +148,6 @@ describe("resolveOperationId", () => {
     );
   });
 
-  it("resolves prefix match: /api/gateway/symphony/status/<id> → symphony_status", () => {
-    expect(resolveOperationId("/api/gateway/symphony/status/run-abc-123")).toBe(
-      "symphony_status"
-    );
-  });
-
-  it("resolves prefix match: /api/gateway/symphony/chat/<id> → symphony_chat", () => {
-    expect(resolveOperationId("/api/gateway/symphony/chat/run-abc-123")).toBe(
-      "symphony_chat"
-    );
-  });
-
-  it("resolves prefix match: /api/gateway/codex/argue/<id> → codex_argue", () => {
-    expect(resolveOperationId("/api/gateway/codex/argue/some-id")).toBe(
-      "codex_argue"
-    );
-  });
-
-  it("resolves prefix match: /api/gateway/codex/<id> → codex_review (not codex_argue)", () => {
-    expect(resolveOperationId("/api/gateway/codex/some-id")).toBe(
-      "codex_review"
-    );
-  });
-
   it("resolves prefix match: /api/gateway/git/pr/123 → git_pr", () => {
     expect(resolveOperationId("/api/gateway/git/pr/123")).toBe("git_pr");
   });
@@ -220,14 +156,27 @@ describe("resolveOperationId", () => {
     expect(resolveOperationId("/api/gateway/git/commit")).toBe("git_action");
   });
 
-  it("returns null for unknown /api/gateway/ subpath", () => {
-    expect(resolveOperationId("/api/gateway/unknown-operation")).toBeNull();
+  // ISS-12435: Loops retired the Symphony launch, loop, status, chat, plan,
+  // judges, logs and sessions routes, codex review, deploy and their filesystem
+  // helpers on Desktop, so the wire table no longer names them.
+  it("resolves the retired Symphony, codex and deploy gateway paths to null", () => {
+    for (const retiredPath of [
+      "/api/gateway/symphony/launch",
+      "/api/gateway/symphony/loop",
+      "/api/gateway/symphony/loop/kill",
+      "/api/gateway/symphony/plan-loop/ticket-abc",
+      "/api/gateway/symphony/status/run-abc-123",
+      "/api/gateway/symphony/chat/run-abc-123",
+      "/api/gateway/codex/some-id",
+      "/api/gateway/deploy",
+      "/api/gateway/work-directory/ticket-abc",
+    ]) {
+      expect(resolveOperationId(retiredPath)).toBeNull();
+    }
   });
 
-  it("exact match takes precedence over prefix match for /api/gateway/symphony/loop", () => {
-    expect(resolveOperationId("/api/gateway/symphony/loop")).toBe(
-      "symphony_loop"
-    );
+  it("returns null for unknown /api/gateway/ subpath", () => {
+    expect(resolveOperationId("/api/gateway/unknown-operation")).toBeNull();
   });
 
   // Regression: these routes were served by deleted Next.js handlers and
@@ -237,46 +186,20 @@ describe("resolveOperationId", () => {
     expect(resolveOperationId("/api/gateway/version")).toBe("health_check");
   });
 
-  it("resolves /api/gateway/work-directory/<ticketId> → filesystem", () => {
-    expect(resolveOperationId("/api/gateway/work-directory/ticket-abc")).toBe(
-      "filesystem"
-    );
-  });
-
-  it("resolves /api/gateway/symphony/upload/<ticketId> → filesystem", () => {
-    expect(resolveOperationId("/api/gateway/symphony/upload/ticket-abc")).toBe(
-      "filesystem"
-    );
-  });
-
-  it("resolves /api/gateway/symphony/attachments/<ticketId>/... → filesystem", () => {
-    expect(
-      resolveOperationId("/api/gateway/symphony/attachments/ticket-abc/foo.png")
-    ).toBe("filesystem");
-  });
-
-  it("resolves /api/gateway/symphony/learnings-status/<ticketId> → learnings", () => {
-    expect(
-      resolveOperationId("/api/gateway/symphony/learnings-status/ticket-abc")
-    ).toBe("learnings");
-  });
-
-  it("resolves /api/gateway/symphony/record-learning-use → learnings", () => {
-    expect(
-      resolveOperationId("/api/gateway/symphony/record-learning-use")
-    ).toBe("learnings");
-  });
-
-  it("resolves /api/gateway/symphony/sessions/unread-count → symphony_sessions", () => {
-    expect(
-      resolveOperationId("/api/gateway/symphony/sessions/unread-count")
-    ).toBe("symphony_sessions");
-  });
-
-  it("resolves bare /api/gateway/symphony/status (without ticket id) → symphony_status", () => {
-    expect(resolveOperationId("/api/gateway/symphony/status")).toBe(
-      "symphony_status"
-    );
+  // ISS-12735: the learnings routes were deleted from Desktop, so the wire
+  // table no longer names them.
+  it("resolves the retired learnings gateway paths to null", () => {
+    for (const retiredPath of [
+      "/api/gateway/learnings",
+      "/api/gateway/symphony/extract-learnings",
+      "/api/gateway/symphony/process-learnings",
+      "/api/gateway/symphony/process-all-learnings",
+      "/api/gateway/symphony/pending-learnings",
+      "/api/gateway/symphony/learnings-status/ticket-abc",
+      "/api/gateway/symphony/record-learning-use",
+    ]) {
+      expect(resolveOperationId(retiredPath)).toBeNull();
+    }
   });
 });
 

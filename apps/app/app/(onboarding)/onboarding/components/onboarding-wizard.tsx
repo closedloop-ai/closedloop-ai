@@ -1,7 +1,11 @@
 "use client";
 
-import { OnboardingStep } from "@repo/api/src/types/onboarding";
+import {
+  ChecklistItemId,
+  OnboardingStep,
+} from "@repo/api/src/types/onboarding";
 import { useCompleteWizard } from "@repo/app/onboarding/hooks/use-onboarding";
+import { useChecklistItemCompletedCapture } from "@repo/app/onboarding/hooks/use-onboarding-checklist-analytics";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -31,6 +35,7 @@ export function OnboardingWizard() {
   });
   const navigation = useNavigation();
   const completeWizard = useCompleteWizard();
+  const { captureChecklistItemCompleted } = useChecklistItemCompletedCapture();
 
   const currentStep = clampStep(state);
 
@@ -49,14 +54,20 @@ export function OnboardingWizard() {
     }
   }, [currentStep]);
 
-  const handleTeamCreated = useCallback((teamId: string, teamName: string) => {
-    setState((prev) => ({
-      ...prev,
-      createdTeamId: teamId,
-      createdTeamName: teamName,
-      currentStep: OnboardingStep.CreateProject,
-    }));
-  }, []);
+  const handleTeamCreated = useCallback(
+    (teamId: string, teamName: string) => {
+      // PRD-736 (ISS-10500): the wizard completes this checklist item itself,
+      // on a route where the checklist card is not mounted to observe it.
+      captureChecklistItemCompleted(ChecklistItemId.CreateTeam);
+      setState((prev) => ({
+        ...prev,
+        createdTeamId: teamId,
+        createdTeamName: teamName,
+        currentStep: OnboardingStep.CreateProject,
+      }));
+    },
+    [captureChecklistItemCompleted]
+  );
 
   const handleComplete = useCallback(() => {
     clearWizardState();
@@ -86,13 +97,20 @@ export function OnboardingWizard() {
         },
         {
           onSuccess: () => {
+            captureChecklistItemCompleted(ChecklistItemId.CreateProject);
             handleComplete();
             navigation.navigate(POST_WIZARD_ROUTE);
           },
         }
       );
     },
-    [completeWizard, state.createdTeamId, handleComplete, navigation]
+    [
+      captureChecklistItemCompleted,
+      completeWizard,
+      state.createdTeamId,
+      handleComplete,
+      navigation,
+    ]
   );
 
   return (

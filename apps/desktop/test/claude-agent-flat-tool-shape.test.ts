@@ -17,7 +17,7 @@
  * `extractToolUses`; this pins that it still does.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
 import { extractToolUses } from "../src/main/collectors/parsing/subagent-scanner.js";
 import { writeClaudeTranscript } from "./normalized-session-test-utils.js";
@@ -103,14 +103,11 @@ test("the two readers of an agent file agree on which tools it holds", async () 
 
   assert.equal(imported[0]?.name, liveHook[0]?.toolName, "name");
   assert.equal(imported[0]?.id, liveHook[0]?.toolUseId, "tool use id");
-  // The live-hook lane stores both sides as bounded STRINGS; the import lane
-  // round-trips them back through `parseJsonValue`. Compare on the live-hook
-  // side's own representation so the assertion tracks content rather than shape.
-  assert.deepEqual(
-    imported[0]?.input,
-    JSON.parse(liveHook[0]?.input as string),
-    "input"
-  );
+  // ISS-6480: both lanes now read `input` off one raw scanner value, so they
+  // are directly comparable. `output` is still stored as bounded JSON, so it
+  // keeps the round-trip — compare on the live-hook side's own representation
+  // so the assertion tracks content rather than shape.
+  assert.deepEqual(imported[0]?.input, liveHook[0]?.input, "input");
   assert.deepEqual(
     imported[0]?.output,
     JSON.parse(liveHook[0]?.output as string),

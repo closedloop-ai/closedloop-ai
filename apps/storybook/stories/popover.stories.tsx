@@ -9,9 +9,9 @@ import type { Meta, StoryObj } from "@storybook/react";
  * Displays rich content in a portal, triggered by a button.
  */
 const meta: Meta<typeof Popover> = {
-  title: "Design System/Primitives/Popover",
+  title: "Primitives v1.0/Overlays/Popover",
   component: Popover,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
 
   render: (args) => (

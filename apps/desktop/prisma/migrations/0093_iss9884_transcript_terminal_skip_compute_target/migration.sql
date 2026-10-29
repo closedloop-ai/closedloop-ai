@@ -1,0 +1,31 @@
+-- ISS-9884 (PLN-1986 §5): WHICH compute target's cloud acknowledged the
+-- terminal skip that `terminal_skip_reason` records.
+--
+-- The lane give-up's recovery door returns rows paused on
+-- `environment_unavailable` to the queue, and the drain uploads a queued row
+-- under whichever compute target is active NOW. Without this column the
+-- revival could not tell whose pause it was ending: a transcript paused while
+-- one account or compute target was active would be revived, and uploaded,
+-- under whichever identity next opened a door. A skip acknowledgement is only a
+-- statement about the target that gave it, the same per-target scoping
+-- `cloud_uploaded_compute_target_id` (ISS-4815) gives an `uploaded` ack, so the
+-- revival matches on it.
+--
+-- The same column is the revived row's upload scope, and a compute-target switch
+-- alone never clears it: an observation that saw no file change leaves a paused
+-- row dead with its target intact, for that target's own door. It does not scope
+-- NEW content. A change to the file re-queues the row with this column cleared,
+-- open to whichever target drains it, and the only guard on that path is the
+-- ISS-7096 foreign-ownership gate, which withholds the file only when the
+-- session's recorded owner pair differs from a known signed-in pair: not when the
+-- signed-in identity is unknown, the session has no full owner pair, or both
+-- targets belong to the same pair.
+--
+-- NULL means not terminal, or terminal before this migration. The door never
+-- revives a NULL-target row, because nothing records which identity it belongs
+-- to; it stays exactly as dead as it was before the revival existed, and a later
+-- change to its file still re-queues it through the observe path. Purely
+-- additive: one new nullable column, no existing row rewritten.
+
+-- AlterTable
+ALTER TABLE "transcript_sync_state" ADD COLUMN "terminal_skip_compute_target_id" TEXT;

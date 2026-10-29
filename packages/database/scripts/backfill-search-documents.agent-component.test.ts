@@ -24,7 +24,6 @@ describe("runSearchDocumentBackfill — agent-component corpus (FEA-4011 Slice A
     const { client, store } = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       agentComponents: [
         agentComponent({
           id: "ac1",
@@ -62,7 +61,6 @@ describe("runSearchDocumentBackfill — agent-component corpus (FEA-4011 Slice A
     const { client, store } = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       agentComponents: [
         // name null → falls to componentKey.
         agentComponent({
@@ -95,7 +93,6 @@ describe("runSearchDocumentBackfill — agent-component corpus (FEA-4011 Slice A
     const { client, store } = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       agentComponents: [
         agentComponent({ id: "live", name: "Live" }),
         agentComponent({ id: "gone", name: "Gone", uninstalledAt: AT }),
@@ -117,7 +114,6 @@ describe("runSearchDocumentBackfill — agent-component corpus (FEA-4011 Slice A
     const fake = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       agentComponents: [
         agentComponent({ id: "shared", organizationId: ORG_A, name: "Same" }),
         agentComponent({ id: "shared", organizationId: ORG_B, name: "Same" }),
@@ -147,7 +143,6 @@ describe("runSearchDocumentBackfill — agent-component corpus (FEA-4011 Slice A
     const { client, store } = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       agentComponents: [
         agentComponent({
           id: "noIdentity",
@@ -177,7 +172,6 @@ describe("runSearchDocumentBackfill — agent-component corpus (FEA-4011 Slice A
     const fake = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       agentComponents: [record],
     });
 
@@ -207,7 +201,6 @@ describe("runSearchDocumentBackfill — agent-component corpus (FEA-4011 Slice A
     const fake = makeFakeClient({
       artifacts: [],
       projects: [],
-      loops: [],
       agentComponents: components,
     });
 

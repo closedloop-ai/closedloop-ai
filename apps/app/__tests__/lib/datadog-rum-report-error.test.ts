@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { RumErrorSource } from "@/lib/datadog-rum/error-source";
 
 const addNextjsError = vi.fn();
 
@@ -23,7 +24,7 @@ describe("reportNextjsError", () => {
     reportNextjsError(error, {
       digest: "digest-123",
       routeTemplate: "/rum-validation",
-      source: "rum-validation",
+      source: RumErrorSource.RumValidation,
     });
 
     expect(addNextjsError).toHaveBeenCalledWith(
@@ -31,7 +32,7 @@ describe("reportNextjsError", () => {
         dd_context: {
           digest: "digest-123",
           routeTemplate: "/rum-validation",
-          source: "rum-validation",
+          source: RumErrorSource.RumValidation,
         },
       })
     );
@@ -47,7 +48,7 @@ describe("reportNextjsError", () => {
       digest: "NEXT_HTTP_ERROR_FALLBACK;404",
     });
 
-    reportNextjsError(error, { source: "nextjs-error-boundary" });
+    reportNextjsError(error, { source: RumErrorSource.NextjsErrorBoundary });
 
     expect(addNextjsError).not.toHaveBeenCalled();
   });
@@ -58,7 +59,7 @@ describe("reportNextjsError", () => {
       digest: "NEXT_REDIRECT;replace;/somewhere;307;",
     });
 
-    reportNextjsError(error, { source: "nextjs-error-boundary" });
+    reportNextjsError(error, { source: RumErrorSource.NextjsErrorBoundary });
 
     expect(addNextjsError).not.toHaveBeenCalled();
   });
@@ -68,7 +69,7 @@ describe("reportNextjsError", () => {
     const error = Object.assign(new Error("boom"), { digest: "abc123" });
 
     reportNextjsError(error, {
-      source: "global-error",
+      source: RumErrorSource.GlobalError,
       routeTemplate: "/[orgSlug]/prds/[slug]",
     });
 
@@ -82,7 +83,7 @@ describe("reportNextjsError", () => {
     expect(reported.dd_context).toMatchObject({
       digest: "abc123",
       routeTemplate: "/[orgSlug]/prds/[slug]",
-      source: "global-error",
+      source: RumErrorSource.GlobalError,
     });
   });
 });

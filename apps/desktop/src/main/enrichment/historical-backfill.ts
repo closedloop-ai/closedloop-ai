@@ -1,5 +1,6 @@
+import { isTccProtectedPath } from "../../shared/sandbox-policy.js";
 import type { DesktopPrisma } from "../database/prisma-client.js";
-import { writePersistentLog } from "../logging/persistent-log.js";
+import { writePersistentLog } from "../logging/durable-log-sink.js";
 import { isInsideWorkTree } from "./git-exec.js";
 import {
   captureRepoIdentity,
@@ -37,35 +38,53 @@ export async function runHistoricalBackfill(
   batchSize: number,
   now: string
 ): Promise<number> {
-  // RAW (named blocker: cross-table anti-join on a COMPUTED value): the two
-  // `NOT EXISTS` arms exclude sessions whose cwd already maps to a worktree
-  // (`repo_worktrees.worktree_path = s.cwd`) or a repo (`repos.git_dir = s.cwd ||
-  // '/.git'`). `sessions` has no relation to either table, and the second arm
-  // joins on a string-concatenated key — neither expressible via Prisma, and
-  // pulling all three tables to anti-join in JS would be a real regression. Stays
-  // a single server-side query, now on the one client via `$queryRawUnsafe`.
-  const candidates = await prisma.client.$queryRawUnsafe<BackfillCandidate[]>(
-    `SELECT s.id AS session_id, s.cwd, s.harness, s.metadata, s.started_at
-     FROM sessions s
-     WHERE s.cwd IS NOT NULL
-       AND NOT EXISTS (
-         SELECT 1 FROM repo_worktrees rw
-         WHERE rw.worktree_path = s.cwd
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM repos r2
-         WHERE r2.git_dir = s.cwd || '/.git'
-       )
-     ORDER BY s.started_at DESC
-     LIMIT $1`,
-    batchSize
-  );
-
+  // ISS-11914: a session with a TCC-protected cwd never leaves the candidate set,
+  // because nothing captures its repo, so it does not count against
+  // `batchSize`. Otherwise the newest such sessions would fill every batch and
+  // hold older sessions back on each start. They stay candidates for later runs.
+  let budget = batchSize;
   let resolved = 0;
-  for (const c of candidates) {
-    const result = await resolveSessionRepo(gitPath, prisma, c, now);
-    if (result) {
-      resolved++;
+  for (let offset = 0; budget > 0; offset += batchSize) {
+    // RAW (named blocker: cross-table anti-join on a COMPUTED value): the two
+    // `NOT EXISTS` arms exclude sessions whose cwd already maps to a worktree
+    // (`repo_worktrees.worktree_path = s.cwd`) or a repo (`repos.git_dir = s.cwd ||
+    // '/.git'`). `sessions` has no relation to either table, and the second arm
+    // joins on a string-concatenated key — neither expressible via Prisma, and
+    // pulling all three tables to anti-join in JS would be a real regression. Stays
+    // a single server-side query, now on the one client via `$queryRawUnsafe`.
+    // ponytail: OFFSET rescans skipped rows, so a run costs O(pages²) rows; a
+    // keyset cursor on (started_at, id) if protected sessions ever number in the
+    // tens of thousands.
+    const candidates = await prisma.client.$queryRawUnsafe<BackfillCandidate[]>(
+      `SELECT s.id AS session_id, s.cwd, s.harness, s.metadata, s.started_at
+       FROM sessions s
+       WHERE s.cwd IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM repo_worktrees rw
+           WHERE rw.worktree_path = s.cwd
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM repos r2
+           WHERE r2.git_dir = s.cwd || '/.git'
+         )
+       ORDER BY s.started_at DESC, s.id
+       LIMIT $1 OFFSET $2`,
+      batchSize,
+      offset
+    );
+    for (const c of candidates) {
+      if (budget === 0) {
+        break;
+      }
+      if (!isTccProtectedPath(c.cwd)) {
+        budget--;
+      }
+      if (await resolveSessionRepo(gitPath, prisma, c, now)) {
+        resolved++;
+      }
+    }
+    if (candidates.length < batchSize) {
+      break;
     }
   }
   return resolved;
@@ -82,7 +101,9 @@ async function resolveSessionRepo(
     return null;
   }
 
-  if (await cwdExists(cwd)) {
+  // ISS-11914: `captureRepoIdentity` refuses a TCC-protected cwd, so skip it and
+  // let the transcript-mined name below attribute the session.
+  if (!isTccProtectedPath(cwd) && (await cwdExists(cwd))) {
     try {
       return await captureRepoIdentity(gitPath, cwd, prisma, now);
     } catch {
@@ -135,6 +156,12 @@ async function walkAncestors(
   cwd: string,
   now: string
 ): Promise<IdentityCaptureResult | null> {
+  // ISS-11914: a protected cwd resolves from its transcript alone. The walk
+  // cannot run `git` inside the protected folder, and above it would reach a
+  // different repo, such as a dotfiles repo at the home dir.
+  if (isTccProtectedPath(cwd)) {
+    return null;
+  }
   const parts = cwd.split("/");
   for (let i = parts.length - 1; i >= 1; i--) {
     const ancestor = parts.slice(0, i).join("/");
@@ -156,6 +183,12 @@ async function walkAncestors(
     // session cwd must not let us probe (and register) an unrelated local repo.
     if (!(await isKnownRepoPath(prisma, ancestor))) {
       continue;
+    }
+    // ISS-11914: checking a known repo inside a TCC-protected folder runs `git`
+    // there and raises a permission prompt. Stop rather than fall through to a
+    // parent ancestor, which could be a different repo.
+    if (isTccProtectedPath(ancestor)) {
+      return null;
     }
 
     let isGit: boolean;
@@ -200,6 +233,10 @@ async function trySiblingHeuristic(
   // Only run git against a sibling Desktop already tracks. A crafted/stale
   // session cwd must not let us probe (and register) an unrelated local repo.
   if (!(await isKnownRepoPath(prisma, basePath))) {
+    return null;
+  }
+  // ISS-11914: no `git` in a TCC-protected folder.
+  if (isTccProtectedPath(basePath)) {
     return null;
   }
 

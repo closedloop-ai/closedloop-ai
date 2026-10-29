@@ -14,8 +14,7 @@ utilities shared across `apps/api` and `apps/relay`.
 - [Metric-tag allowlist](#metric-tag-allowlist)
 - [db_pool_* connection-pool telemetry](#db_pool_-connection-pool-telemetry)
 - [Call-path invariant for desktop telemetry](#call-path-invariant-for-desktop-telemetry)
-- [loop.perf.* telemetry categories](#loopperf-telemetry-categories)
-- [job.* command attribution](#job-command-attribution)
+- [insights.dashboard.* section latency](#insightsdashboard-section-latency)
 - [`origin` vs `service` fields](#origin-vs-service-fields)
 - [One-shot startup warnings](#one-shot-startup-warnings)
 - [No kill switch for enrichment](#no-kill-switch-for-enrichment)
@@ -31,11 +30,30 @@ when `DD_API_KEY` + `DD_SITE` are present, batches and ships entries to the
 Datadog HTTP log intake (agentless — no Datadog agent required).
 
 Set `DD_LOGS_DISABLED=1` to force the intake sink closed even when `DD_API_KEY`
-is present. This exists because `DD_API_KEY` has a second, unrelated consumer:
-dd-trace's agentless Test Optimization reporter, which CI sets on every
-instrumented test lane (ISS-4399). Without the flag, feeding the tracer would
-also ship the code-under-test's log calls to Datadog as if they were
-production. Console output is unaffected.
+is present, for a process that holds the key for something other than logs.
+It was added because, until ISS-12354, CI set the key on every instrumented test
+lane for dd-trace's agentless Test Optimization reporter (ISS-4399), and without
+the flag that would also ship the code-under-test's log calls to Datadog as if
+they were production. Console output is unaffected.
+
+Set `DD_LOGS_FORWARDER_URL` to a loopback address (for example the realtime
+task's collector sidecar, `http://localhost:6060`) to send the same batches to a
+forwarder that adds the key itself, so the process holds no `DD_API_KEY`
+(ISS-11827). It wins over a key in the environment. A value that is not a
+loopback HTTP(S) URL without credentials closes the sink, and
+`DD_LOGS_DISABLED` closes it too. `isLogExportOpen()` reports
+whether either path is open, and `isLogExportDisabled()` whether the flag is
+set, so the realtime boot check can tell logs switched off on purpose from a
+sink closed by mistake (ISS-12799).
+
+`DD_LOGS_MIN_LEVEL` (`debug`, `info`, `warn` or `error`) drops calls below that
+level, and `DD_LOGS_SAMPLE_RATE` (0 to 1) keeps that fraction of the calls that
+remain (ISS-12265). Each call is decided once, before it reaches either sink, so
+the console line and the intake entry are kept or dropped together. Below 1,
+each kept entry carries the rate as `logSampleRate` on both sinks. Unset, every
+call is emitted. Both keys are in `keys.ts`, so an invalid value fails the env
+validation of the apps that extend it; where `keys()` cannot run, an invalid
+value is reported with `console.error` and treated as unset.
 
 ```ts
 import { log } from "@repo/observability/log";
@@ -55,6 +73,87 @@ the process may be frozen before the timer fires. Always wrap `log.flush()` with
 import { waitUntil } from "@vercel/functions";
 waitUntil(log.flush());
 ```
+
+### Bounded buffering and the `telemetry.dropped` counter (ISS-7219)
+
+The intake buffer has a hard ceiling — `MAX_BUFFER_ENTRIES` (10,000), overridable
+per deploy with `DD_LOG_BUFFER_MAX_ENTRIES` (a whole positive integer up to
+`MAX_CONFIGURABLE_BUFFER_ENTRIES` (100,000); anything else — `1oops`, `1.5`,
+`0`, a negative, an over-cap value — falls back to the default rather than being
+truncated into a ceiling nobody asked for). A stalled intake can no longer grow
+it without bound, and a retryable failure (timeout, 429, 5xx, transport) no
+longer drops the batch: it stays buffered across flush cycles, so capacity is
+the only place entries are ever shed.
+
+Storage is a **ring**, so the memory bound does not become a CPU bound: storing
+an arriving entry costs the same whether the ceiling is 10 or 100,000, where
+splicing the head of an array would have cost O(capacity) per arrival once the
+buffer filled.
+
+Everything shed is counted. Read it in-process with `log.droppedStats()`:
+
+```ts
+const { cumulativeDropped, byReason, bufferLength, cumulativeAbandonedCycles } =
+  log.droppedStats();
+```
+
+### `cumulativeDropped` is not the whole loss picture
+
+It counts entries that left the pipeline **definitively** — capacity shed, an
+intake refusal replay cannot fix, metadata nothing could serialize.
+
+It deliberately does **not** count entries still sitting in the buffer after a
+drain cycle spent its retry budget, because in a long-running process the next
+5s interval usually delivers them; counting them would overstate loss and break
+the counter's conservation. The gap that leaves is real and worth knowing:
+
+> In serverless, `waitUntil(log.flush())` resolves, Vercel freezes the function,
+> and a buffered backlog evaporates from process memory — with `cumulativeDropped`
+> reading `0` the whole way through.
+
+`cumulativeAbandonedCycles` is the signal for that window, reported on the
+`telemetry.undelivered` category:
+
+| Field | Meaning |
+|---|---|
+| `@telemetryUndelivered.cumulativeAbandonedCycles` | Drain cycles that ended with entries still buffered. Counts **cycles, not entries** — the same backlog is abandoned again on every failing cycle, so summing its size would inflate the signal for entries that were never lost. Alert on its **rate**. |
+| `@telemetryUndelivered.undeliveredEntries` | Entries buffered at that instant. A **gauge**, not a running total. |
+| `@telemetryUndelivered.cause` | The flush failure behind the give-up. |
+
+So: a non-zero `cumulativeDropped` means telemetry was definitely lost; a
+climbing `cumulativeAbandonedCycles` means telemetry is at risk of being lost
+silently, and on a freezing runtime probably was.
+
+The same figures reach Datadog on the `telemetry.dropped` category, written as a
+structured `console.error` line so it rides the **platform log drain**, not the
+HTTP intake that is failing. Query
+`service:cl-api env:prod @category:telemetry.dropped`.
+
+**Pick the field that answers your question — they are not interchangeable:**
+
+| Question | Field | Notes |
+|---|---|---|
+| How much have we lost overall? | `@telemetryDropped.cumulativeDropped` | A total across ALL reasons, present on every report. Read it **ungrouped** — grouping it by `reason` repeats the same global total inside each group, and summing the groups double-counts. |
+| How much per reason? | `@telemetryDropped.cumulativeByReason.queue_full` / `.intake_rejected` / `.unserializable` | The per-reason split. |
+| What happened in this window? | `@telemetryDropped.count` | Scoped to that row's own `reason` **and** `httpStatus`. |
+
+**Every emitted value describes the group it is labelled with.** Drops are
+coalesced per `(reason, httpStatus, cause)` and emitted as one row per group, so
+a row's `reason`, `httpStatus`, `cause`, and `count` always belong together. A
+single row summing across reasons and stamped with whichever one arrived last is
+the defect this shape exists to prevent.
+
+| Reason | Meaning |
+|---|---|
+| `queue_full` | Capacity shed. `@telemetryDropped.cause` names the flush failure that built the backlog (`timeout`, `server_error`, `client_error`, `transport_error`). Carries no HTTP status. |
+| `intake_rejected` | Datadog refused the batch with a status replay cannot fix; `@telemetryDropped.httpStatus` carries it, and a window that saw several statuses produces one row per status rather than letting one stand in for the rest. |
+| `unserializable` | The entry's metadata was circular (or otherwise `JSON.stringify`-hostile), so no intake body could be built from it. The console sink still carries it; replay cannot help. |
+
+Reports are throttled to one per `DROP_REPORT_INTERVAL_MS` (5s) because a full
+buffer sheds once per arriving entry. Coalescing loses no count — every report
+carries the cumulative totals. **Only process shutdown bypasses the throttle**;
+the automatic drain and `log.flush()` stay throttled, because a bypass there
+would emit after every flush cycle and recreate the log storm the interval caps.
 
 ---
 
@@ -112,7 +211,7 @@ fields. Use them consistently:
 
 | Field | Aggregation intent | Use for | Examples |
 |---|---|---|---|
-| `count:` | Additive (sum) | Counters — "this many things happened" | `dropped_expired_work_items`, `replay_frequency`, `command_state_transition`, `connection_churn_rate` |
+| `count:` | Additive (sum) | Counters — "this many things happened" | `dropped_expired_work_items`, `command_state_transition`, `connection_churn_rate` |
 | `value:` | Gauge (last/avg) | Snapshots — "this is the current state" | `queued_command_count`, `in_flight_command_count`, `executor_saturation`, `ack_latency`, `heartbeat_freshness` |
 
 The `count:` / `value:` distinction matters for Datadog
@@ -139,6 +238,9 @@ The whitelist of valid origins is:
 | `"desktop"` | `Origin.Desktop` |
 | `"api"` | `Origin.Api` |
 | `"relay"` | `Origin.Relay` |
+| `"mcp"` | `Origin.Mcp` |
+| `"realtime"` | `Origin.Realtime` |
+| `"doc-sync"` | `Origin.DocSync` |
 | anything else / unset | `Origin.Unknown` + one-shot `console.warn` |
 
 When `DD_SERVICE` does not match a known value, `resolveOrigin()` emits a
@@ -199,8 +301,8 @@ A consumer that registers no sink emits nothing and warns once
 
 | `metric` | Field | Emitted when |
 |---|---|---|
-| `db_pool_acquire_wait` | `value` (ms) | an acquisition waited ≥10ms — **always** at ≥1s, otherwise throttled to 1/s |
-| `db_pool_acquire_timeout` | `count: 1` | pg raised `timeout exceeded when trying to connect` |
+| `db_pool_acquire_wait` | `value` (ms) | an acquisition waited ≥10ms — **always** at ≥1s **and always when `saturated`**, otherwise throttled to 1/s |
+| `db_pool_acquire_timeout` | `count: 1` | `timeout exceeded when trying to connect` — raised by pg for a queued caller, **or by the acquisition gate for a permit wait** |
 | `db_pool_checkout_duration` | `value` (ms) | first terminal event (`release` **or** `remove`) for a client |
 | `db_pool_wait_queue_depth` | `value` | sampled at `connect` entry, every 10s |
 | `db_pool_in_use` / `db_pool_idle` / `db_pool_total` | `value` | sampled at `connect` entry, every 10s |
@@ -228,11 +330,123 @@ read from `pool.options.max` rather than assumed: the IAM branch sets 20 and the
 DATABASE_URL branch inherits pg's default of 10, so utilization is
 `in_use / poolMax`, never `in_use / 20`.
 
+### `saturated` and `permitQueued` — what did this caller wait on? (ISS-10293)
+
+`db_pool_acquire_wait` alone does not say WHICH kind of wait it measured, and
+they have different fixes. Every acquire-wait sample carries two booleans, both
+decided when the caller arrived, and they split it:
+
+| Query | What the wait was | Where to look next |
+|---|---|---|
+| `@permitQueued:true` | The caller's own unit of work had already spent its acquisition budget (`DB_ACQUISITION_BUDGET_MAX`, enforced by `gateDbAcquisitions`), so it queued for a permit before it could reach the pool. | That unit of work's fan-out — include width, concurrent reads under one scope. Not the pool, and not the event loop. |
+| `@permitQueued:false @saturated:true` | Pool contention — no idle connection and no headroom to open one, so the caller queued. | Fan-out width across requests, `poolMax`, a long-held checkout (`db_pool_checkout_duration`). |
+| `@permitQueued:false @saturated:false @idle:>0` | A connection was free when the caller arrived. Either the handover was slow — an event loop too busy to deliver it — or a sibling that arrived in the same tick took it first (below). | In-process CPU on the request path, then the request's fan-out. |
+| `@permitQueued:false @saturated:false @idle:0` | No connection free, but the pool was **below `poolMax`**, so pg opened one: connection establishment. | TCP/TLS/IAM handshake latency, DB-side connect cost. |
+
+**`saturated:false` means the pool had something to give when the caller
+arrived — not that the caller got it.** `idle` does not yet reflect siblings
+that arrived in the same tick, which is how a Prisma read fans out. At the
+ceiling (`@total` equal to `@poolMax`) a burst wider than `idle` queues anyway
+and still reads `false`; below it, pg opens a connection instead. On a
+`permitQueued` sample, `saturated` describes the pool the caller arrived at,
+not the one it reached once the permit was granted, which is not observed.
+
+Both are emitted rather than derived at query time. `saturated` is
+`idle === 0 && total >= poolMax` — a comparison between two attributes, which a
+Datadog log query cannot express — and no attribute carries the budget at all.
+`@idle:0` is the proxy an operator reaches for and is **not** the same
+predicate: a pool below its ceiling can open a new connection, so a wait there
+is not pool queueing.
+
+> ⚠️ **The arms are sampled differently, so neither counts nor percentiles
+> compare across them.** A saturated wait ALWAYS emits. An unsaturated one —
+> permit waits included — always emits at ≥1s, but below 1s only as the first
+> in each 1s window per process copy (see the emission table above). That is
+> not a uniform sample: the sub-1s bulk is undersampled and the ≥1s tail is
+> kept whole.
+>
+> - **A count over a threshold of 1s or more is complete on every arm** and
+>   compares across them: `count(@saturated:false @value:>3000)` is exact.
+> - A total count is complete on the `@saturated:true` arm only, so a share
+>   computed across arms understates the unsaturated side.
+> - **A p95 over the `@saturated:false` arm overstates it**, because the
+>   survivors over-represent its tail. It is not comparable to a p95 over the
+>   `true` arm, nor to itself across a change in request rate.
+
+Measured 2026-09-16, `service:cl-api env:prod`, 24h, before either label
+existed: 18,925 of 21,061 **emitted** waits (89.9%) arrived to a free
+connection and an empty queue (`@idle:>0 @waitingCount:0`). That is a share of
+emitted samples, and it does not convert into a share of acquisitions: the
+unsaturated arm as a whole is at least as large as emitted, since the saturated
+arm is complete, but one throttle serves every unsaturated state and does not
+record how it split them, so this subset may be over- or under-represented.
+The count over 3s needs no such qualification: **all four waits arrived with
+at most 12 of 20 connections open**, so none queued behind a full pool at
+arrival. Whether they waited on their own unit of work's budget, a sibling's new
+connection, or the event loop is what `permitQueued` and `@idle` now separate;
+the samples that measured them could not.
+
+### Querying these — the name you emit is not the name you query
+
+Three renames sit between the emit site and a dashboard, and getting any of them
+wrong returns `0`, which reads exactly like a healthy pool. This is what
+ISS-10293 was filed for: three signals reported as "never reach Datadog's index"
+were all arriving, and all three zeros were query defects.
+
+1. **In LOGS, query the attribute, never free text.** `emitTelemetryMetric`
+   ships the payload as `log.info(JSON.stringify(payload))`, so the keys become
+   attributes only via the pipeline's JSON parser on `message` — see
+   `telemetry/filter-tokens.ts`. Measured 2026-09-16 over 24h:
+   `service:cl-api @metric:db_pool_acquire_wait` → **144,511**;
+   `service:cl-api "db_pool_acquire_wait"` → **0**.
+2. **In METRICS, the generated name is not the emitted one.** The
+   `datadog_logs_metric` rules rename `db_pool_*` to `api.db.pool.*`. Querying
+   `db_pool_acquire_wait` as a metric matches nothing, silently.
+3. **In METRICS, the tag keys are renamed too.** A `group_by` maps the camelCase
+   log attribute to a snake_case metric tag, so `@permitQueued` on the log is
+   `permit_queued` on the metric (`@saturated` happens to be spelled the same).
+   `{permitQueued:true}` on a metric matches nothing, silently — the same defect
+   as 2, one level down. Only `db_pool_acquire_wait` has tags at all; see the
+   callout below.
+
+| Emitted `@metric` | Datadog metric (prod) | Datadog metric (stage) |
+|---|---|---|
+| `db_pool_acquire_wait` | `api.db.pool.acquire_wait` | `api.db.pool.stage.acquire_wait` |
+| `db_pool_acquire_timeout` | `api.db.pool.acquire_timeout` | `api.db.pool.stage.acquire_timeout` |
+| `db_pool_checkout_duration` | `api.db.pool.checkout_duration` | `api.db.pool.stage.checkout_duration` |
+| `db_pool_wait_queue_depth` | `api.db.pool.wait_queue_depth` | `api.db.pool.stage.wait_queue_depth` |
+| `db_pool_in_use` / `db_pool_idle` / `db_pool_total` | `api.db.pool.in_use` / `.idle` / `.total` | `api.db.pool.stage.*` |
+
+**Before reporting a metric absent, run the same query shape against one known
+to work** (`service:cl-api @_telemetryMetric:true` returned 1,003,457 over the
+same 24h). A zero with no positive control beside it is not evidence of absence.
+
 > ⚠️ **Emitting these does not create Datadog metrics.** Each one needs a
 > `datadog_logs_metric` rule in `example-infrastructure/_modules/datadog/pipelines/`,
 > filtered on the **attribute** (`@metric:db_pool_*`) and pinned to a single
 > ingestion path (`source:nodejs`). `service:cl-api @origin:api` alone matches
 > **both** the agentless and Vercel Log Drain copies and would double-count.
+> `saturated` and `permitQueued` are `group_by`s on the two `acquire_wait`
+> rules (`api.db.pool.tf` and its `.stage.tf` twin, ISS-10426), which is what
+> makes them metric tags rather than log attributes only. They change spelling
+> on the way: camelCase on the log (`@saturated:true`, `@permitQueued:true`),
+> snake_case on the metric
+> (`sum:api.db.pool.acquire_wait{saturated:true,permit_queued:false}`), per that
+> repo's Tag Naming Convention. The log form works whether or not the rule has
+> applied; the metric form needs the apply.
+>
+> **The metric reaches three of the four rows above, not four.** Row 1 is
+> `{permit_queued:true}`; row 2 is `{saturated:true,permit_queued:false}` —
+> **both halves, exactly as the row is written.** `{saturated:true}` alone is
+> NOT row 2. `saturated` describes the pool the caller ARRIVED at, per the
+> paragraph above, so a permit-queued caller that arrived at a full pool carries
+> both tags and the looser predicate pulls row-1 budget waits into pool
+> contention. Rows 3 and 4 both fall in the residual
+> `{saturated:false,permit_queued:false}`, because what separates them is
+> `@idle`, and `@idle` is a diagnosis attribute that is deliberately not a
+> metric tag. So a slow handover and a cold connect share one series — and that
+> series is most of the traffic (1,458 of 1,472 prod events measured 2026-09-17
+> 00:00–04:30Z). Telling those two apart stays a log query.
 
 ---
 
@@ -259,218 +473,112 @@ Path A is used by both:
 
 ---
 
-## loop.perf.* telemetry categories
+## insights.dashboard.* section latency
 
-The desktop emits `loop.perf.*` events as `perf.jsonl` records are appended
-during a running Loop (near-real-time: p95 latency from `perf.jsonl` append to
-Datadog visibility is under 5 seconds per PRD-254 FR-3a). This means dashboards
-and alerts can reflect Loop activity while Loops are still in flight, including
-long-running multi-hour Loops where batch arrival would have caused the entire
-Loop duration of lag.
+`emitInsightsSectionLatency()`
+(`apps/api/lib/observability/insights-metrics.ts`) emits
+`insights.dashboard.section_latency` for **successful** `/insights/*` section
+reads (ISS-7512). It is wired once, in the shared `createInsightsHandler`, so
+every section route is covered by construction rather than by remembering to
+instrument each one.
 
-### Category names
+**It is a sample, not a census — read it with its rollup.** `/insights/*` has
+no rate limiter in front of it (`withAnyAuth` authenticates but applies no
+abuse control), so an authenticated caller could otherwise replay a section
+route into an unbounded emit stream — the amplification vector
+`apps/api/AGENTS.md` names under "Emission and Abuse Control". Emission is
+therefore throttled at the choke point to **at most one sample per
+`(org, section, period, scope)` per 60s window**
+(`insights-section-latency-throttle.ts`), and every read that window suppressed
+is counted into a paired `insights.dashboard.section_latency_suppressed`
+rollup. The org is only ever a key in that process-local throttle; it never
+reaches a payload.
 
-| Category | Description |
-|---|---|
-| `loop.perf.run` | One record per Loop run — run ID, command, start time, repo, and branch. |
-| `loop.perf.phase` | One record per phase transition — phase name, status, iteration, start SHA. |
-| `loop.perf.iteration` | One record per iteration — duration, exit code, status. |
-| `loop.perf.pipeline_step` | One record per pipeline step — step number (may be fractional, e.g. `8.5`), step name, duration, exit code, skipped flag. |
-| `loop.perf.agent` | One record per agent invocation — agent ID, type, name, duration, token counts, model. |
-| `loop.perf.tool` | One record per tool call — tool name, agent ID, duration. `endedAt`/`durationS`/`ok` may be `null` for orphaned-tool sentinel records reconciled at end-of-loop. |
-| `loop.perf.skill` | One record per skill execution — skill name, tool name, agent ID, duration, ok flag. |
-| `loop.perf.spawn` | One record per agent spawn — parent agent ID, parent session ID, planned subagent type, phase. |
-| `loop.perf.parse_failure` | One record per JSONL parse failure in `perf.jsonl` — line number, raw bytes, and error message. Indicates a producer-version incompatibility. |
+Consequences worth stating before someone reads a panel wrong:
 
-### ddtag contract — no new tags
+- `p95(section_latency)` describes the **sampled** reads. Against a large
+  suppressed count it is a p95 over roughly one read per minute per tag tuple,
+  not over production traffic.
+- `sum(section_latency_suppressed)` next to the sample count is what says how
+  much traffic the sample stands for. A window with **no** suppressed rollup
+  was fully observed.
+- The rollup is materialised by an event, never a clock — the next read on the
+  same key, an LRU eviction, or the `drainExpired` the handler runs on every
+  section read. It is an eventual **lower bound**, so alert on a floor being
+  crossed, not on the number being exact.
+- The throttle is process-local, so a fleet emits up to one sample per tag
+  tuple per instance per window.
 
-`loop.perf.*` events do **NOT** add ddtags. The existing three-tag env contract
-is preserved: every log entry carries exactly `env`, `version`, and `git_sha` —
-sourced once at module load from env vars and applied uniformly to all events
-regardless of category. No `command`, `phase`, `agent_id`, or other loop-perf
-fields are promoted to ddtags.
-
-High-cardinality fields (`run_id`, `agent_id`, `tool_name`, `skill_name`, token
-counts, durations) live in the structured payload as standard log fields. This
-means zero Datadog tag cardinality impact from rolling out `loop.perf.*` events.
-
-### Querying with `@field:value` syntax
-
-Datadog log queries support the same filter and pivot semantics on structured
-payload fields via `@field:value` syntax as on ddtags. Structured fields in
-`loop.perf.*` events are nested under `diagnostics.loopPerf.*` in the log
-payload.
-
-**Worked examples:**
-
-Find all agent events for Phase 3 of EXECUTE Loops:
-
-```
-service:api @category:loop.perf.agent @diagnostics.loopPerf.phase:"Phase 3" @diagnostics.loopPerf.command:EXECUTE
-```
-
-Find all tool calls for a specific run:
-
-```
-service:api @category:loop.perf.tool @diagnostics.loopPerf.runId:019e0817-5638-7068-9900-01940cff49ac
-```
-
-Find orphaned tool sentinels (null endedAt):
-
-```
-service:api @category:loop.perf.tool -@diagnostics.loopPerf.endedAt:*
-```
-
-Find all events for a single Loop run across all categories:
-
-```
-service:api @category:loop.perf.* @diagnostics.loopPerf.runId:<run-id>
-```
-
-### Recommended Datadog facets
-
-Declare these structured fields as Datadog facets in the Datadog UI to enable
-click-to-filter UX. This is a one-time UI configuration, not a code change.
-
-| Field path | Description | Cardinality |
+| Field | Kind | Values |
 |---|---|---|
-| `@diagnostics.loopPerf.command` | Loop command (PLAN, EXECUTE, DECOMPOSE, …) | ~10 unique values |
-| `@diagnostics.loopPerf.event` | Event type (run, phase, iteration, …) | 9 unique values |
-| `@diagnostics.loopPerf.phase` | Phase name (Phase 0.9 through Phase 7) | ~12 unique values |
-| `@diagnostics.loopPerf.runId` | Loop run identifier | High (one per run) |
-| `@diagnostics.loopPerf.agentId` | Agent identifier | High |
-| `@diagnostics.loopPerf.toolName` | Tool name | Low–medium |
-| `@diagnostics.loopPerf.skillName` | Skill name | Low–medium |
-| `@diagnostics.loopPerf.model` | Model identifier used by an agent | Low |
-| `@diagnostics.lifecycle.command` | LoopCommand that triggered a `job.*` event (PLAN, EXECUTE, …) | ~14 unique values |
+| `value` | gauge (ms) | the section read's wall time |
+| `section` | tag | `delivery`, `utilization`, `agents`, plus the standalone session-analytics sections that share the handler |
+| `period` | tag | `7`, `30`, `90`, `all` |
+| `scope` | tag | `me`, `org`, `team` |
+| `teamScoped` | tag | boolean — a team read is identified *as* a team read, never by team id |
 
-### Producer-compatibility notes
+`insights.dashboard.section_latency_suppressed` carries the same `section`,
+`period` and `scope` tags and a `count` (occurrences — it *is* summed, unlike
+the gauge). It has no `teamScoped`, because `scope` already determines it, and
+it is emitted only when the count is positive.
 
-1. **Optional fields are absent, not null.** When a structured field is absent in
-   a `loop.perf.*` event, it is omitted from the payload entirely — it is NOT
-   sent as `null`. The one exception is `loop.perf.tool`'s `endedAt`, `durationS`,
-   and `ok` fields, which may be explicitly `null` as an in-flight sentinel for
-   orphaned tool records reconciled at end-of-loop.
+**Do not read `agent_sessions.dashboard.query_latency` as covering this.** That
+metric belongs to the Sessions usage-summary path
+(`app/agent-sessions/service/usage-summary.ts`) and never runs for
+`/insights/*`. Attributing dashboard slowness to it is the mistake ISS-7512
+exists to remove.
 
-2. **`pipeline_step.step` is fractional.** The `step` field is a `number`, not an
-   integer. The producer emits `8.5` for the synthetic `write_merged_patterns`
-   step — Datadog facet declarations for this field should use `Measure` (float),
-   not `Facet` (string).
+**Why no org/user/team id.** These reads are driven by an authenticated caller,
+so a tenant-scoped tag lets one org multiply the metric's cardinality. Every
+field above is a closed union or a boolean. The tenant correlation lives on the
+paired FAILURE log (`insights.<section>_failed`), which is where an operator
+pivoting from a latency spike to a specific org already looks.
 
-3. **Unknown `loopPerf.event` variants are forwarded with a drift warning.**
-   The relay's `loopPerf` schema is intentionally permissive (passthrough on
-   unknown `event` values) per PRD-254 §FR-6 producer-additivity. When the
-   desktop emits an event variant outside the known set (e.g. legacy
-   `post_loop_review` / `post_loop_fix` from a skewed desktop build, or any
-   future variant added before the relay catches up), the payload is
-   forwarded to Datadog as-is and a `loop.perf.unknown_event_variant`
-   warning is emitted carrying the unknown variant name plus the
-   `commandId` / `gatewaySessionId` for correlation. Catch desktop-version
-   skew with:
+**Success-only, deliberately.** A failed section has no meaningful duration to
+report — timing how long an error took to raise would drag the p50 of the
+latency panel toward a number no reader ever waited for.
 
-   ```
-   service:api @category:loop.perf.unknown_event_variant
-   ```
+### Dashboard-latency triage queries
 
----
-
-## job.* command attribution
-
-Desktop clients emit `job.*` lifecycle events (`job.started`, `job.completed`,
-`job.failed`, and related categories) when a Loop job begins and ends. Each
-event may carry `diagnostics.lifecycle.command` — a string identifying the
-`LoopCommand` that triggered the job. This field is the per-event equivalent of
-`@diagnostics.loopPerf.command` on `loop.perf.*` events: both carry the same
-command string, nested under their respective `lifecycle` / `loopPerf` namespace
-to keep attribution co-located with other fields from the same sub-system.
-
-### Rationale for the `lifecycle` sub-object
-
-`diagnostics.lifecycle` is a passthrough object (`.passthrough()` in
-`lifecycleDiagnosticsSchema`) so unknown sibling fields added by future desktop
-versions survive parsing and reach Datadog unchanged, mirroring the
-`loopPerfEventDiagnosticsSchema` pattern used for `loop.perf.*` events
-(PRD-254 FR-6 producer-additivity). `command` is `optional()` for
-back-compatibility — older desktop clients that do not emit the field continue
-to validate without modification.
-
-### Canonical LoopCommand values
-
-`KNOWN_LOOP_COMMANDS` in `schema.ts` enumerates the 14 current canonical values.
-Unknown strings are accepted and forwarded to Datadog for forward-compatibility
-(AC-002).
-
-| Value |
-|---|
-| `PLAN` |
-| `EXECUTE` |
-| `CHAT` |
-| `EXPLORE` |
-| `REQUEST_CHANGES` |
-| `REQUEST_PRD_CHANGES` |
-| `DECOMPOSE` |
-| `EVALUATE_PRD` |
-| `GENERATE_PRD` |
-| `EVALUATE_PLAN` |
-| `EVALUATE_CODE` |
-| `EVALUATE_FEATURE` |
-| `BOOTSTRAP` |
-| `MANUAL` |
-
-### Reused diagnostic fields
-
-No new fields are introduced for success rate or wall-clock duration.
-Existing fields are reused:
-
-- **`@diagnostics.exitCode`** — success is `exitCode:0`; any non-zero value is a
-  failure.
-- **`@diagnostics.elapsedMs`** — wall-clock job duration in milliseconds.
-
-### Datadog query examples
-
-Filter all started jobs for a specific command:
+Which section is slow, and for whom:
 
 ```
-service:api @category:job.started @diagnostics.lifecycle.command:EXECUTE
+@_telemetryMetric:true @metric:insights.dashboard.section_latency @origin:api
+@_telemetryMetric:true @metric:insights.dashboard.section_latency @origin:api @section:(delivery OR utilization OR agents)
+@_telemetryMetric:true @metric:insights.dashboard.section_latency @origin:api @period:all
+@_telemetryMetric:true @metric:insights.dashboard.section_latency @origin:api @scope:org
 ```
 
-Count started jobs grouped by command (use the Datadog facet panel to pivot by
-`@diagnostics.lifecycle.command`):
+How much traffic that sample stands for — always read alongside the panel
+above, never on its own:
 
 ```
-service:api @category:job.started
+@_telemetryMetric:true @metric:insights.dashboard.section_latency_suppressed @origin:api
 ```
 
-Wall-clock p95 duration for PLAN jobs (aggregate on `@diagnostics.elapsedMs`
-with group-by `@diagnostics.lifecycle.command`):
+Then corroborate against the route and pool views, which answer different
+questions — the route view includes time this metric excludes (auth, flag
+resolution, serialization), and a `db_pool_*` spike says the section is waiting
+on a connection rather than on its own SQL:
 
 ```
-service:api @category:job.completed @diagnostics.lifecycle.command:PLAN @diagnostics.elapsedMs:*
+service:api @http.url_details.path:/insights/* @http.status_code:200
+@_telemetryMetric:true @metric:db_pool_acquire_wait @origin:api
+@_telemetryMetric:true @metric:db_pool_checkout_duration @origin:api
 ```
 
-Failure rate per command — compare completed vs. failed counts or filter on
-non-zero exit code:
+A section that is slow here but flat in `db_pool_acquire_wait` is slow in its
+own SQL; profile it with the API lane in
+[`docs/runbooks/performance-profiling.md`](../../docs/runbooks/performance-profiling.md).
 
-```
-service:api @category:job.failed @diagnostics.lifecycle.command:EXECUTE
-```
-
-```
-service:api (@category:job.completed OR @category:job.failed) @diagnostics.exitCode:[1 TO *]
-```
-
-### Rollout indicator
-
-As updated desktop clients roll out, the proportion of `job.started` events
-**without** `diagnostics.lifecycle.command` will trend toward zero. Track
-rollout coverage with:
-
-```
-service:api @category:job.started -@diagnostics.lifecycle.command:*
-```
-
-A non-zero count from this query indicates desktop clients that have not yet
-been updated to emit the field (FEA-1049).
+> ⚠️ **Emitting these does not create a Datadog metric.** Each needs its own
+> `datadog_logs_metric` rule in `example-infrastructure/_modules/datadog/pipelines/`
+> — one filtered on `@metric:insights.dashboard.section_latency`, one on
+> `@metric:insights.dashboard.section_latency_suppressed` — each pinned to a
+> single ingestion path (`source:nodejs`), because `service:cl-api @origin:api`
+> alone matches both the agentless and Vercel Log Drain copies and would
+> double-count. Land them together: the latency panel without its suppressed
+> rollup is a sample with no way to tell how much it stands for.
 
 ---
 

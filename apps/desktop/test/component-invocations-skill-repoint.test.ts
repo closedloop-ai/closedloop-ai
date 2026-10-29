@@ -24,7 +24,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, test } from "node:test";
 import { ComponentResolvedState } from "@repo/api/src/types/agent-component";
 import {
   AgentComponentInvocationAnchorKind,
@@ -34,6 +33,7 @@ import {
   AgentComponentInvocationRelationship,
 } from "@repo/api/src/types/agent-component-invocation";
 import { NormalizedDefinitionKind } from "@repo/lib/harness/types";
+import { describe, test } from "vitest";
 import type { AgentComponentInvocationCandidate } from "../src/main/database/component-invocation-row-writer.js";
 import { repointSkillInvokedCommandCandidates } from "../src/main/database/component-invocation-skill-repoint.js";
 import { EVENT_INSERT_PARAM_CAP } from "../src/main/database/db-constants.js";
@@ -360,7 +360,8 @@ describe("ISS-5260 rollups reconcile with no double-count", () => {
   // a `/prune-tests` the user escaped, the skill rolls up one invocation more
   // than fired — the transcript records the two identically, so no rule can
   // separate them. That deliberate tradeoff is recorded in the revision-68 note
-  // in `data-revision.ts`; this test pins the reading the revision chose.
+  // in `docs/desktop-data-revision-history.md`; this test pins the reading
+  // the revision chose.
   test("two paired plus one unpaired slash invocation still total three", async () => {
     await withDb("aci-repoint-mixed-", async (db) => {
       await insertResolvedSkill(db, SKILL_KEY);
@@ -481,6 +482,10 @@ function slashCommandCandidates(
     anchorKind: AgentComponentInvocationAnchorKind.UserTurn,
     anchorValue: INVOKED_AT,
     attributionStatus: AgentComponentInvocationAttributionStatus.Unresolved,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    footprintTokens: null,
+    estimatedCost: null,
     childSessionId: null,
     componentKey: name,
     componentKind: Kind.Command,
@@ -492,11 +497,14 @@ function slashCommandCandidates(
     externalInvocationId: `inv-bulk-${index}`,
     externalSourceId: null,
     gitBranch: null,
+    inputTokens: null,
     invokedAt: INVOKED_AT,
     localComponentId: null,
     localComponentVersionId: null,
+    model: null,
     normalizedName: name,
     normalizerContractVersion: null,
+    outputTokens: null,
     parentAgentId: null,
     providerToolUseId: null,
     rawName: name,
@@ -506,6 +514,14 @@ function slashCommandCandidates(
     sourceOrder: index,
     succeeded: null,
     updatedAt: NOW,
+    usageMeasurement: null,
+    linesAdded: null,
+    linesRemoved: null,
+    findingsEmitted: null,
+    findingsInvalidated: null,
+    // ISS-11325: no disposition recorded on a fixture the findings ingest never reached.
+    findingsDisposition: null,
+    attributionSource: null,
   }));
 }
 

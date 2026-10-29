@@ -1,0 +1,54 @@
+diff --git a/dist/LiveblocksExtension.cjs b/dist/LiveblocksExtension.cjs
+index cd27d3591d0467880ae2e9d000aca313e3aa1b77..94bf20b1a56073c9989474daba5fea0af3aac6f2 100644
+--- a/dist/LiveblocksExtension.cjs
++++ b/dist/LiveblocksExtension.cjs
+@@ -187,7 +187,7 @@ const useLiveblocksExtension = (opts) => {
+         if (!info) {
+           return;
+         }
+-        const { user: storedUser } = this.storage.provider.awareness.getLocalState();
++        const { user: storedUser } = this.storage.provider.awareness.getLocalState() ?? {}; // ISS-9849: null once the provider awareness has been destroyed
+         if (this.storage.permanentUserData) {
+           const pud = this.storage.permanentUserData.clients.get(
+             this.storage.doc.clientID
+diff --git a/dist/LiveblocksExtension.js b/dist/LiveblocksExtension.js
+index c989cb1530d276f626407f7726e67eb26e3c85e9..6ddf4af327c3860dc434dea3cc0665cfa4e598cc 100644
+--- a/dist/LiveblocksExtension.js
++++ b/dist/LiveblocksExtension.js
+@@ -185,7 +185,7 @@ const useLiveblocksExtension = (opts) => {
+         if (!info) {
+           return;
+         }
+-        const { user: storedUser } = this.storage.provider.awareness.getLocalState();
++        const { user: storedUser } = this.storage.provider.awareness.getLocalState() ?? {}; // ISS-9849: null once the provider awareness has been destroyed
+         if (this.storage.permanentUserData) {
+           const pud = this.storage.permanentUserData.clients.get(
+             this.storage.doc.clientID
+diff --git a/dist/comments/FloatingComposer.cjs b/dist/comments/FloatingComposer.cjs
+index 663e8a5b690880a3a8ac1a96668a3da825e9f61e..c640e47a7af3f080dfaf948b7d4007f1d7fb8cbc 100644
+--- a/dist/comments/FloatingComposer.cjs
++++ b/dist/comments/FloatingComposer.cjs
+@@ -20,7 +20,8 @@ const FloatingComposer = react.forwardRef(function FloatingComposer2({ editor, o
+       if (!ctx.editor) {
+         return void 0;
+       }
+-      const hasPendingComment = ctx.editor.storage.liveblocksComments.pendingComment;
++      const hasPendingComment = ctx.editor.storage.liveblocksComments?.pendingComment; // ISS-9849: backstop. Absent whenever the editor never registered the
++      // comments extension; the mount gate in this repo is the actual fix.
+       const isEmpty = ctx.editor.state.selection.empty;
+       return hasPendingComment && !isEmpty ? ctx.editor.state.selection : void 0;
+     },
+diff --git a/dist/comments/FloatingComposer.js b/dist/comments/FloatingComposer.js
+index 3c4f6aa1e369800fdb8a0e7de63c6c6a099f3977..e60e9fa17c270a47775c94b640ec15d1131606c1 100644
+--- a/dist/comments/FloatingComposer.js
++++ b/dist/comments/FloatingComposer.js
+@@ -18,7 +18,8 @@ const FloatingComposer = forwardRef(function FloatingComposer2({ editor, onCompo
+       if (!ctx.editor) {
+         return void 0;
+       }
+-      const hasPendingComment = ctx.editor.storage.liveblocksComments.pendingComment;
++      const hasPendingComment = ctx.editor.storage.liveblocksComments?.pendingComment; // ISS-9849: backstop. Absent whenever the editor never registered the
++      // comments extension; the mount gate in this repo is the actual fix.
+       const isEmpty = ctx.editor.state.selection.empty;
+       return hasPendingComment && !isEmpty ? ctx.editor.state.selection : void 0;
+     },

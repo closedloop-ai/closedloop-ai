@@ -10,6 +10,7 @@
  * the SDK with success and lets the transport account for any drop.
  */
 
+import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
 import {
   type Attributes,
   type HrTime,
@@ -23,12 +24,17 @@ import {
   ProtobufMetricsSerializer,
   ProtobufTraceSerializer,
 } from "@opentelemetry/otlp-transformer";
-import { resourceFromAttributes } from "@opentelemetry/resources";
+import {
+  type Resource,
+  resourceFromAttributes,
+} from "@opentelemetry/resources";
 import type {
   LogRecordExporter,
   ReadableLogRecord,
 } from "@opentelemetry/sdk-logs";
 import type {
+  AggregationTemporality,
+  InstrumentType,
   PushMetricExporter,
   ResourceMetrics,
 } from "@opentelemetry/sdk-metrics";
@@ -40,6 +46,9 @@ import {
   type RendererOtelGenericBridgeRecord,
 } from "../../shared/renderer-otel-bridge-constants.js";
 import { hasSpanIdentity } from "../../shared/renderer-otel-bridge-utils.js";
+import { AUTH_FAILURE_LOGGER_NAME } from "../cloud/auth-failure-telemetry.js";
+import { ONBOARDING_DISCARD_LOGGER_NAME } from "./app-otel-runtime-onboarding-discard.js";
+import { selectDesktopMetricTemporality } from "./desktop-metric-temporality.js";
 import type {
   DesktopTelemetryTransport,
   RelayTelemetrySignal,
@@ -266,12 +275,27 @@ class RelayOtlpLogRecordExporter implements LogRecordExporter {
     resultCallback: Parameters<LogRecordExporter["export"]>[1]
   ): void {
     try {
-      if (logs.length > 0) {
-        shipSerialized(
-          this.sink,
-          KeylessTelemetrySignal.Logs,
-          ProtobufLogsSerializer.serializeRequest(logs)
-        );
+      // Auth failures and onboarding discards ship under a de-identified
+      // Resource and therefore as a SEPARATE request: the serializer groups by
+      // resource identity, so leaving them in the main batch would re-attach
+      // the shared one.
+      const deidentified: ReadableLogRecord[] = [];
+      const rest: ReadableLogRecord[] = [];
+      for (const record of logs) {
+        if (DEIDENTIFIED_LOGGER_NAMES.has(record.instrumentationScope.name)) {
+          deidentified.push(withDeidentifiedResource(record));
+        } else {
+          rest.push(record);
+        }
+      }
+      for (const batch of [rest, deidentified]) {
+        if (batch.length > 0) {
+          shipSerialized(
+            this.sink,
+            KeylessTelemetrySignal.Logs,
+            ProtobufLogsSerializer.serializeRequest(batch)
+          );
+        }
       }
     } catch {
       // See RelayOtlpSpanExporter.export — best-effort, never throw.
@@ -289,6 +313,69 @@ class RelayOtlpLogRecordExporter implements LogRecordExporter {
   }
 
   async shutdown(): Promise<void> {}
+}
+
+/**
+ * Loggers whose records ride the keyless lane without the shared Resource's
+ * install and device ids: auth failures (ISS-6334) and onboarding analytics
+ * discards (ISS-12421).
+ */
+const DEIDENTIFIED_LOGGER_NAMES: ReadonlySet<string> = new Set([
+  AUTH_FAILURE_LOGGER_NAME,
+  ONBOARDING_DISCARD_LOGGER_NAME,
+]);
+
+/**
+ * Resource attributes a de-identified export is allowed to carry (ISS-6334).
+ *
+ * An ALLOW-LIST, not a deny-list. The SDK Resource is shared by every signal and
+ * carries `app.installation.id` and `device.id`, and the protobuf serializer
+ * stamps it onto every export — so the record's own `.strict()` attribute parse
+ * constrains the LogRecord and nothing else. A deny-list would leak whichever
+ * resource attribute is added next; here an unlisted one is dropped by default,
+ * which is the only safe default on a pipe that takes no credential to write to.
+ */
+const DEIDENTIFIED_RESOURCE_ATTRIBUTES: readonly string[] = [
+  TelemetryAttribute.ServiceName,
+  TelemetryAttribute.ServiceVersion,
+  TelemetryAttribute.DeploymentEnvironmentName,
+];
+
+function deidentifyResource(resource: Resource): Resource {
+  const attributes: Attributes = {};
+  for (const key of DEIDENTIFIED_RESOURCE_ATTRIBUTES) {
+    const value = resource.attributes[key];
+    if (value !== undefined) {
+      attributes[key] = value;
+    }
+  }
+  return resourceFromAttributes(attributes);
+}
+
+/**
+ * Re-project `record` onto the de-identified resource.
+ *
+ * Field by field ON PURPOSE: `LogRecordImpl` serves `hrTime`, `eventName`,
+ * `body`, `severityNumber`, `spanContext` and `droppedAttributesCount` from
+ * PROTOTYPE getters, so an object spread would silently ship a record with no
+ * timestamp and no event name.
+ */
+function withDeidentifiedResource(
+  record: ReadableLogRecord
+): ReadableLogRecord {
+  return {
+    attributes: record.attributes,
+    body: record.body,
+    droppedAttributesCount: record.droppedAttributesCount,
+    eventName: record.eventName,
+    hrTime: record.hrTime,
+    hrTimeObserved: record.hrTimeObserved,
+    instrumentationScope: record.instrumentationScope,
+    resource: deidentifyResource(record.resource),
+    severityNumber: record.severityNumber,
+    severityText: record.severityText,
+    spanContext: record.spanContext,
+  };
 }
 
 class RelayOtlpMetricExporter implements PushMetricExporter {
@@ -317,6 +404,15 @@ class RelayOtlpMetricExporter implements PushMetricExporter {
       // See RelayOtlpSpanExporter.export — best-effort, never throw.
     }
     resultCallback(EXPORT_SUCCESS);
+  }
+
+  // ISS-9246: DELTA for gauges, so a burn-down series the device stopped
+  // measuring goes absent instead of being re-exported at its last value. See
+  // `desktop-metric-temporality.ts`.
+  selectAggregationTemporality(
+    instrumentType: InstrumentType
+  ): AggregationTemporality {
+    return selectDesktopMetricTemporality(instrumentType);
   }
 
   async forceFlush(): Promise<void> {

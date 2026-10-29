@@ -25,6 +25,10 @@ import {
   type SqlitePullRequestRow,
 } from "./dashboard-pull-request-sql.js";
 import {
+  type SqliteToolRow,
+  TOOL_SUMMARY_SQL,
+} from "./dashboard-recency-sql.js";
+import {
   SKILL_SUMMARY_SQL,
   type SqliteSkillRow,
 } from "./dashboard-skill-sql.js";
@@ -52,10 +56,11 @@ import {
   resolveNonDeliveryOnlyArtifactIds,
 } from "./non-delivery-artifacts.js";
 import type { DesktopPrisma } from "./prisma-client.js";
+import { ISO_DATE_PREFIX_GLOB_SQL } from "./session-timestamp-form.js";
 
 // Every dashboard read runs on the single `DesktopPrisma` client — typed
 // delegates where there is a clean form, raw `$queryRawUnsafe` for the
-// aggregation/window/CTE SQL that has none. `getInsights` delegates to
+// aggregation/CTE SQL that has none. `getInsights` delegates to
 // `computeLocalInsights(prisma, …)`.
 //
 // ISS-5938: every RAW read (`$queryRawUnsafe`) dispatches through `prisma.read`
@@ -70,13 +75,6 @@ import type { DesktopPrisma } from "./prisma-client.js";
 // env — so a typed aggregate moved to the pool would pass every test and zero
 // the dashboard in production. Raw SQL on the pool is the proven-safe shape
 // (the list total has always counted through it).
-
-/**
- * The `events.event_type` the two `getWorkflowData` tool reads scope to.
- * Exported so a test seeds the same value these predicates match rather than
- * repeating the literal (ISS-5493, whitlockk review).
- */
-export const TOOL_INVOCATION_EVENT_TYPE = "PreToolUse";
 
 // Single success-rate FORMULA for the orchestration dashboard, shared by the
 // headline `stats.successRate` and every per-type `effectiveness[].successRate`:
@@ -130,7 +128,22 @@ function agentStatusLikePredicate(terms: readonly string[]): string {
   return terms.map((term) => `lower(status) LIKE '%${term}%'`).join(" OR ");
 }
 
-export function createSqliteDashboardQueries(prisma: DesktopPrisma) {
+/**
+ * ISS-9279: `nowFn` is the STORE's clock — the same `openSqliteAgentDatabase({
+ * now })` seam the write, boot-maintenance and scheduler paths already run on.
+ * Before this it stopped at the writes: a store opened on a pinned clock wrote
+ * fixtures at that instant and then read them back through `new Date()`, so a
+ * date-windowed read silently disagreed with its own writer and every such
+ * assertion aged out the moment wall-clock time drifted past the window
+ * (`sqlite-agent-dashboard-database.test.ts` went red repo-wide at fixture+90d).
+ * Production passes the real clock, so nothing here changes for it; an explicit
+ * per-call `now` still wins over both.
+ */
+export function createSqliteDashboardQueries(
+  prisma: DesktopPrisma,
+  nowFn: () => string = () => new Date().toISOString()
+) {
+  const storeNow = () => new Date(nowFn());
   return {
     async getSummary(): Promise<DashboardSummary> {
       const [
@@ -213,7 +226,7 @@ export function createSqliteDashboardQueries(prisma: DesktopPrisma) {
       const windowDays = isAllTime
         ? null
         : normalizeLookbackDays(lookbackDays ?? DEFAULT_WINDOW_DAYS);
-      const ref = now ?? new Date();
+      const ref = now ?? storeNow();
       const upper = new Date(ref);
       upper.setHours(23, 59, 59, 999);
       const upperIso = upper.toISOString();
@@ -226,9 +239,7 @@ export function createSqliteDashboardQueries(prisma: DesktopPrisma) {
         cutoff.setDate(cutoff.getDate() - (windowDays - 1));
         cutoffIso = cutoff.toISOString();
       }
-      const ISO_GUARD =
-        "created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'";
-      const WINDOW_PREDICATE = `${ISO_GUARD} AND created_at >= ? AND created_at <= ?`;
+      const WINDOW_PREDICATE = `created_at GLOB ${ISO_DATE_PREFIX_GLOB_SQL} AND created_at >= ? AND created_at <= ?`;
 
       /* All three facets run inside ONE read-scoped `$transaction` so they see a
          single committed snapshot — the exact case
@@ -353,7 +364,7 @@ export function createSqliteDashboardQueries(prisma: DesktopPrisma) {
       };
     },
     getInsights(section: InsightsSection, period: InsightsPeriod, now?: Date) {
-      return computeLocalInsights(prisma, section, period, now);
+      return computeLocalInsights(prisma, section, period, now ?? storeNow());
     },
     async getAnalytics(
       now?: Date,
@@ -362,7 +373,7 @@ export function createSqliteDashboardQueries(prisma: DesktopPrisma) {
       // FEA-2430: anchor the dailyEvents window to the caller's `now` (like
       // getTokenAnalytics already does) instead of SQLite's literal 'now', so
       // tests that pass a fixed reference date stay deterministic forever.
-      const refIso = (now ?? new Date()).toISOString();
+      const refIso = (now ?? storeNow()).toISOString();
       // FEA-3722: the token facet + tool-usage window honor the caller's
       // selected date range (undefined → 30-day default, `null` → all-time), so
       // the Coding Wrap mirrors the top 7d/30d/90d/All selector. `toolWindow` is
@@ -465,12 +476,7 @@ export function createSqliteDashboardQueries(prisma: DesktopPrisma) {
         totalEvents,
       };
     },
-    async getWorkflowData(now?: Date): Promise<WorkflowQueryData> {
-      // FEA-2430/FEA-2649: anchor the tool-transition (-7d) and tool-count
-      // (-30d) windows to the caller's `now` instead of SQLite's wall clock —
-      // same contract as getTokenAnalytics/getAnalytics, so golden tests can
-      // pin the windows. Production passes nothing and keeps real time.
-      const refIso = (now ?? new Date()).toISOString();
+    async getWorkflowData(): Promise<WorkflowQueryData> {
       // Typed delegates stay on the writer client — FEA-2211 (module note).
       const totalSessions = await prisma.client.session.count();
       const totalAgents = await prisma.client.agent.count();
@@ -504,18 +510,11 @@ export function createSqliteDashboardQueries(prisma: DesktopPrisma) {
         by: ["status"],
         _count: { _all: true },
       });
-      // ISS-5938/ISS-6501: the heavy raw aggregation/window/CTE reads run on
+      // ISS-5938/ISS-6501: the heavy raw aggregation/CTE reads run on
       // the reader pool, off the writer, and are dispatched as ONE concurrent
       // batch so the pool actually has more than one statement in flight.
-      const {
-        depthRow,
-        durationRow,
-        subagentTypes,
-        edges,
-        toolTransitions,
-        toolCounts,
-        cooccurrence,
-      } = await readWorkflowRawRows(prisma, refIso);
+      const { depthRow, durationRow, subagentTypes } =
+        await readWorkflowRawRows(prisma);
       // AVG over an empty set is NULL — no sessions with agents means 0 depth.
       const avgDepth = Number(depthRow[0]?.avg ?? 0);
       const successRate = agentSuccessRate(completedAgents, errorAgents);
@@ -536,40 +535,16 @@ export function createSqliteDashboardQueries(prisma: DesktopPrisma) {
           avgDurationSec: Number(durationRow[0]?.avg ?? 0),
           totalCompactions: 0,
           avgCompactions: 0,
-          topFlow:
-            toolTransitions.length > 0
-              ? {
-                  source: toolTransitions[0].source,
-                  target: toolTransitions[0].target,
-                  count: Number(toolTransitions[0].value ?? 0),
-                }
-              : null,
         },
         orchestration: {
           sessionCount: totalSessions,
           mainCount,
           subagentTypes: mappedSubagentTypes,
-          edges: edges.map((r) => ({
-            source: r.source,
-            target: r.target,
-            weight: Number(r.weight ?? 0),
-          })),
           outcomes: outcomes.map((r) => ({
             status: r.status,
             count: r._count._all,
           })),
           compactions: { total: 0, sessions: 0 },
-        },
-        toolFlow: {
-          transitions: toolTransitions.map((r) => ({
-            source: r.source,
-            target: r.target,
-            value: Number(r.value ?? 0),
-          })),
-          toolCounts: toolCounts.map((r) => ({
-            toolName: r.tool_name,
-            count: Number(r.count ?? 0),
-          })),
         },
         effectiveness: mappedSubagentTypes.map((st) => ({
           subagentType: st.subagentType,
@@ -580,11 +555,6 @@ export function createSqliteDashboardQueries(prisma: DesktopPrisma) {
           successRate: agentSuccessRate(st.completed, st.errors),
           avgDuration: null,
           trend: [],
-        })),
-        cooccurrence: cooccurrence.map((r) => ({
-          source: r.source,
-          target: r.target,
-          weight: Number(r.weight ?? 0),
         })),
       };
     },
@@ -653,26 +623,8 @@ export function createSqliteDashboardQueries(prisma: DesktopPrisma) {
         .sort(compareLastUsedThenName);
     },
     async getTools(): Promise<DashboardToolSummary[]> {
-      // COUNT(DISTINCT session_id) + MAX(created_at) per tool — no typed groupBy
-      // form (Prisma _count is row count, not distinct); raw on the one client.
       const result = await prisma.read((reader) =>
-        reader.$queryRawUnsafe<
-          {
-            tool_name: string;
-            invocation_count: bigint;
-            session_count: bigint;
-            last_used_at: string | null;
-          }[]
-        >(`
-        SELECT tool_name,
-          COUNT(*) as invocation_count,
-          COUNT(DISTINCT session_id) as session_count,
-          MAX(created_at) as last_used_at
-        FROM events
-        WHERE ${toolInvocationPredicate("tool_name")}
-        GROUP BY tool_name
-        ORDER BY invocation_count DESC, tool_name ASC
-      `)
+        reader.$queryRawUnsafe<SqliteToolRow[]>(TOOL_SUMMARY_SQL)
       );
       return result.map((row) => ({
         toolName: row.tool_name,
@@ -894,7 +846,7 @@ export function createSqliteDashboardQueries(prisma: DesktopPrisma) {
           prNumber: number,
           repoFullName,
           branchName: row.branch_name,
-          headSha: row.head_sha,
+          headSha: null,
           title: row.title,
           harness: row.harness,
           observedAt: row.observed_at,
@@ -941,52 +893,52 @@ function buildPacksFromSkills(
 }
 
 /**
- * ISS-5938: the `getWorkflowData` RAW aggregation/window/CTE reads, extracted
- * onto the reader pool instead of the writer. Same queries, same shapes —
- * only the connection moved. The method's TYPED delegate counts/groupBy stay
- * on `prisma.client` per the FEA-2211 note at the top of this module.
+ * ISS-5938: the `getWorkflowData` RAW aggregation/CTE reads, extracted onto
+ * the reader pool instead of the writer. Same queries, same shapes — only the
+ * connection moved. The method's TYPED delegate counts/groupBy stay on
+ * `prisma.client` per the FEA-2211 note at the top of this module.
  *
- * ISS-6501: none of the seven consumes another's result, so they are issued as
+ * ISS-6501: none of the three consumes another's result, so they are issued as
  * ONE concurrent batch. That OVERLAPS their latency — it does not collapse them
  * into fewer queries. A serial `await` chain round-robined its dispatches
  * across the pool but only ever had one statement in flight, so the pool's
  * parallelism was never used.
  *
- * Seven is a fixed handful rather than a data-driven fan-out, so a plain
+ * Three is a fixed handful rather than a data-driven fan-out, so a plain
  * `Promise.all` is pool-safe and needs no limiter. It is NOT free, and the
  * costs are the `computeDelivery` ones (`local-insights-delivery.ts`) at a
  * smaller width:
  *
- * - Seven statements land on the two-slot pool (`DEFAULT_READER_POOL_SIZE`),
+ * - Three statements land on the two-slot pool (`DEFAULT_READER_POOL_SIZE`),
  *   which dispatches strict round-robin with no availability check, so a pooled
- *   read from another surface can now queue behind three or four of them —
- *   including the recursive `agent_depth` CTE and the `LEAD()` window — where
- *   the serial chain left it behind at most one. Bounded rather than
- *   open-ended: `dashboard.getWorkflowData` is a `BOUNDED_READ_OPS` member
- *   (`db-host/db-host-op-lanes.ts`) at a ceiling of 2, so at most two of these
- *   batches overlap. Both slots also stay non-idle for the batch's duration, so
- *   a `recycleIdleReaders` tick that lands inside it skips the whole pool where
- *   the serial chain always left one slot recyclable, and a concurrent reader
- *   `$transaction` that lands on a busy slot spends its `TRANSACTION_MAX_WAIT_MS`
- *   behind three or four statements instead of one.
- * - Peak heap is NOT what changes: the serial chain held all seven result sets
+ *   read from another surface can queue behind two of them — including the
+ *   recursive `agent_depth` CTE — where the serial chain left it behind at
+ *   most one. Bounded rather than open-ended: `dashboard.getWorkflowData` is a
+ *   `BOUNDED_READ_OPS` member (`db-host/db-host-op-lanes.ts`) at a ceiling of
+ *   2, so at most two of these batches overlap. Both slots also stay non-idle
+ *   for the batch's duration, so a `recycleIdleReaders` tick that lands inside
+ *   it skips the whole pool where the serial chain always left one slot
+ *   recyclable, and a concurrent reader `$transaction` that lands on a busy
+ *   slot spends its `TRANSACTION_MAX_WAIT_MS` behind two statements instead of
+ *   one.
+ * - Peak heap is NOT what changes: the serial chain held all three result sets
  *   live in its own locals until the same return, so the SUM was always the
  *   peak. What the batch adds is SQLite's per-statement working memory at two
- *   concurrent statements rather than one — bounded by the pool, not by seven.
+ *   concurrent statements rather than one — bounded by the pool, not by three.
  *   That is affordable only because every result set is small: two single-row
- *   AVGs, four `LIMIT`ed rollups, and a GROUP BY over the distinct subagent
- *   types. Do not add an unbounded read to this array.
+ *   AVGs and a GROUP BY over the distinct subagent types. Do not add an
+ *   unbounded read to this array.
  * - No short-circuit: a failing aggregate used to skip the ones after it, and
- *   now all seven run to completion — and the batch DRAINS them before it
+ *   now all three run to completion — and the batch DRAINS them before it
  *   unwinds, so the op cannot release its lane permit while sibling reads are
  *   still on the pool (see the `allSettled` note at the call site). Accepted —
  *   these are local reads whose failure means the store itself is unusable.
  *
- * The snapshot guarantee is unchanged: these were seven independent implicit
+ * The snapshot guarantee is unchanged: these were independent implicit
  * transactions before and still are, so intra-batch skew was always possible.
  */
-async function readWorkflowRawRows(prisma: DesktopPrisma, refIso: string) {
-  // The subagent/edge status predicates are derived from the same shared
+async function readWorkflowRawRows(prisma: DesktopPrisma) {
+  // The subagent status predicates are derived from the same shared
   // vocabulary as the typed counts above.
   const completedStatusPredicate = agentStatusLikePredicate(
     AGENT_SUCCESS_STATUS_TERMS
@@ -1039,110 +991,17 @@ async function readWorkflowRawRows(prisma: DesktopPrisma, refIso: string) {
     GROUP BY agents.subagent_type ORDER BY count DESC
   `)
     ),
-    // GROUP BY over COALESCE(...) join keys — raw.
-    prisma.read((reader) =>
-      reader.$queryRawUnsafe<
-        {
-          source: string;
-          target: string;
-          weight: bigint;
-        }[]
-      >(`
-    SELECT COALESCE(p.subagent_type, COALESCE(MAX(p.type), 'main')) as source,
-      COALESCE(c.subagent_type, COALESCE(MAX(c.type), 'unknown')) as target,
-      COUNT(*) as weight
-    FROM agents c JOIN agents p ON c.parent_agent_id = p.id
-    GROUP BY p.subagent_type, c.subagent_type ORDER BY weight DESC LIMIT 50
-  `)
-    ),
-    // LEAD() window over the recent-tool sequence — raw.
-    prisma.read((reader) =>
-      reader.$queryRawUnsafe<
-        {
-          source: string;
-          target: string;
-          value: bigint;
-        }[]
-      >(
-        `
-    WITH recent_tools AS (
-      SELECT tool_name, session_id, created_at, id
-      FROM events
-      WHERE ${toolInvocationPredicate("tool_name")}
-        AND event_type = $2
-        AND created_at > strftime('%Y-%m-%dT%H:%M:%fZ', $1, '-7 days')
-    ),
-    tool_seq AS (
-      SELECT tool_name,
-        LEAD(tool_name) OVER (PARTITION BY session_id ORDER BY created_at, id) as next_tool
-      FROM recent_tools
-    )
-    SELECT tool_name as source, next_tool as target, COUNT(*) as value
-    FROM tool_seq
-    WHERE next_tool IS NOT NULL
-    GROUP BY source, target ORDER BY value DESC LIMIT 30
-  `,
-        refIso,
-        TOOL_INVOCATION_EVENT_TYPE
-      )
-    ),
-    // strftime relative-date window — raw, anchored to the caller's `now`.
-    prisma.read((reader) =>
-      reader.$queryRawUnsafe<{ tool_name: string; count: bigint }[]>(
-        `SELECT tool_name, COUNT(*) as count FROM events WHERE created_at > strftime('%Y-%m-%dT%H:%M:%fZ', $1, '-30 days') AND ${toolInvocationPredicate("tool_name")} AND event_type = $2 GROUP BY tool_name ORDER BY count DESC LIMIT 20`,
-        refIso,
-        TOOL_INVOCATION_EVENT_TYPE
-      )
-    ),
-    // COUNT(DISTINCT) self-join over the per-session agent-type set — raw.
-    prisma.read((reader) =>
-      reader.$queryRawUnsafe<
-        {
-          source: string;
-          target: string;
-          weight: bigint;
-        }[]
-      >(`
-    WITH session_agent_types AS (
-      SELECT DISTINCT session_id,
-        COALESCE(subagent_type, type, 'unknown') AS agent_type
-      FROM agents
-    )
-    SELECT t1.agent_type as source, t2.agent_type as target,
-      COUNT(DISTINCT t1.session_id) as weight
-    FROM session_agent_types t1
-    JOIN session_agent_types t2
-      ON t1.session_id = t2.session_id AND t1.agent_type < t2.agent_type
-    GROUP BY t1.agent_type, t2.agent_type ORDER BY weight DESC LIMIT 30
-  `)
-    ),
   ] as const;
   // ISS-6501 (whitlockk review): DRAIN, then unwind. `Promise.all` alone rejects the
-  // instant one read fails while the other six are still queued on the reader
+  // instant one read fails while the other two are still queued on the reader
   // pool, so `getWorkflowData` returns — releasing its `BOUNDED_READ_OPS` permit
   // — with sibling work still in flight, and a retry can stack that detached
-  // work past the lane ceiling. `allSettled` holds the op open until all seven
+  // work past the lane ceiling. `allSettled` holds the op open until all three
   // settle. The `Promise.all` below then sees only settled promises, so it
   // rethrows the first rejection in array order and keeps the tuple typing.
   await Promise.allSettled(reads);
-  const [
-    depthRow,
-    durationRow,
-    subagentTypes,
-    edges,
-    toolTransitions,
-    toolCounts,
-    cooccurrence,
-  ] = await Promise.all(reads);
-  return {
-    depthRow,
-    durationRow,
-    subagentTypes,
-    edges,
-    toolTransitions,
-    toolCounts,
-    cooccurrence,
-  };
+  const [depthRow, durationRow, subagentTypes] = await Promise.all(reads);
+  return { depthRow, durationRow, subagentTypes };
 }
 
 /** ISS-4855: one extracted plan row — session identity plus the plan fields. */

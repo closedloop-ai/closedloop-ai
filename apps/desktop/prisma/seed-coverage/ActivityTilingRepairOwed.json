@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Sessions whose activity tiling still owes the cloud a re-delivery (ISS-7265); read only by the session sync lane."
+}

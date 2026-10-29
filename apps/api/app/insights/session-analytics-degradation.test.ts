@@ -50,13 +50,18 @@ vi.mock("./tokenops-waste-queries", () => ({
 const RANGE_START_OFFSET_MS = 86_400_000;
 const TREND_START_OFFSET_MS = 90 * 86_400_000;
 
-vi.mock("./service", () => ({
+vi.mock("./service/period", () => ({
   resolvePeriodRange: (_period: string, now: Date) => ({
+    elapsedEnd: now,
     end: now,
+    priorEnd: new Date(0),
     priorStart: null,
     start: new Date(now.getTime() - 86_400_000),
     trendStart: new Date(now.getTime() - 90 * 86_400_000),
   }),
+}));
+
+vi.mock("./service/scope", () => ({
   sessionScopeSql: mocks.sessionScopeSql,
 }));
 

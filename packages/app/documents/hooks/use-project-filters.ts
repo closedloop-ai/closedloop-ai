@@ -8,8 +8,6 @@ import { useTableFilters } from "@repo/app/documents/hooks/use-table-filters";
 import type { DocumentRowData } from "@repo/app/documents/lib/artifact-row-adapter";
 import { useMemo } from "react";
 
-// ---- Category helpers ----
-
 function isDocumentVisibleInCategory(
   type: DocumentType,
   category: FilterCategory
@@ -28,14 +26,18 @@ function isDocumentVisibleInCategory(
   }
 }
 
-// ---- Hook ----
-
 type UseProjectFiltersOptions = {
   documents: DocumentRowData[];
   filterCategory: FilterCategory;
   currentUserId?: string;
-  persistenceKey?: string;
+  /**
+   * ISS-9726: `null` (the active organization has not resolved) takes the same
+   * memory-only branch an omitted key does.
+   */
+  persistenceKey?: string | null;
   favoriteArtifactIds?: string[];
+  /** See `useTableFilters` — false on a surface that filters server-side. */
+  supportsUnknownStatusFacet?: boolean;
 };
 
 export function useProjectFilters({
@@ -44,6 +46,7 @@ export function useProjectFilters({
   currentUserId,
   persistenceKey,
   favoriteArtifactIds,
+  supportsUnknownStatusFacet,
 }: UseProjectFiltersOptions) {
   const rootItems = useMemo((): DocumentRowItem[] => {
     return documents
@@ -56,6 +59,7 @@ export function useProjectFilters({
     currentUserId,
     persistenceKey,
     favoriteArtifactIds,
+    supportsUnknownStatusFacet,
   });
 
   return {

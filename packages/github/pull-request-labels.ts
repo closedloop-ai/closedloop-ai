@@ -159,9 +159,16 @@ export async function reconcilePullRequestLabels(
     return emptyPullRequestLabelSyncResult(PullRequestLabelSyncStatus.Failed);
   }
 
+  const knownAlreadyApplied = knownRequestedLabelNames(
+    currentNames,
+    desiredLabels
+  );
   const additions = pullRequestLabelsToAdd(currentNames, desiredLabels);
   if (additions.length === 0) {
-    return emptyPullRequestLabelSyncResult(PullRequestLabelSyncStatus.NoOp);
+    return {
+      ...emptyPullRequestLabelSyncResult(PullRequestLabelSyncStatus.NoOp),
+      knownAppliedLabels: desiredLabels.map((label) => label.name),
+    };
   }
 
   const ensured = await ensureRepositoryLabelsExist(
@@ -170,7 +177,10 @@ export async function reconcilePullRequestLabels(
     additions
   );
   if (ensured === null) {
-    return emptyPullRequestLabelSyncResult(PullRequestLabelSyncStatus.Failed);
+    return {
+      ...emptyPullRequestLabelSyncResult(PullRequestLabelSyncStatus.Failed),
+      knownAppliedLabels: knownAlreadyApplied,
+    };
   }
 
   // A label whose non-conflict create failed is still missing from the repo.
@@ -187,6 +197,7 @@ export async function reconcilePullRequestLabels(
     // this as a failure rather than a silent no-op so callers can log/retry.
     return {
       status: PullRequestLabelSyncStatus.Failed,
+      knownAppliedLabels: knownAlreadyApplied,
       createdLabels: ensured.created,
       addedLabels: [],
       droppedLabels: [],
@@ -219,6 +230,7 @@ export async function reconcilePullRequestLabels(
       // pass recomputes additions from the PR's real labels and retries the rest.
       return {
         status: PullRequestLabelSyncStatus.Failed,
+        knownAppliedLabels: [...knownAlreadyApplied, ...added],
         createdLabels: ensured.created,
         addedLabels: added,
         droppedLabels: [],
@@ -235,10 +247,21 @@ export async function reconcilePullRequestLabels(
       : PullRequestLabelSyncStatus.Applied;
   return {
     status,
+    knownAppliedLabels: [...knownAlreadyApplied, ...added],
     createdLabels: ensured.created,
     addedLabels: added,
     droppedLabels: [],
   };
+}
+
+function knownRequestedLabelNames(
+  currentNames: readonly string[],
+  desiredLabels: readonly PullRequestLabelSpec[]
+): string[] {
+  const current = new Set(currentNames.map(normalizePullRequestLabelName));
+  return desiredLabels
+    .filter((label) => current.has(normalizePullRequestLabelName(label.name)))
+    .map((label) => label.name);
 }
 
 async function listRepositoryLabelNames(

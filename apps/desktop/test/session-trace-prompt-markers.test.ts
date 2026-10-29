@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { buildSessionTraceSyncFields } from "../src/main/database/session-trace.js";
+import { test } from "vitest";
+import {
+  buildSessionTraceSyncFields,
+  buildTraceTimelineRows,
+} from "../src/main/database/session-trace.js";
 import { baseSessionTraceInput as baseInput } from "./session-trace-test-utils.js";
 
 // FEA-3671: a session whose ONLY user input is a local meta command (`/login`,
@@ -210,5 +213,91 @@ test("FEA-3594: /exit human turn is NOT rendered as a prompt marker", () => {
     prompts.length,
     1,
     "only the real kickoff prompt should be a marker, not /exit"
+  );
+});
+
+// ISS-8659: a Claude `/fork` child keeps its parent's prompts in
+// `metadata.messages` so the inherited conversation still renders — that is the
+// capability the ticket chose "exclude from tallies" over "skip the record" to
+// preserve. But `transcriptHumanTurnsSql` now counts only the fork's OWN turns,
+// so without an exclusion here the same session renders one prompt marker per
+// replayed parent prompt beside a stored `human_turns` of 1 — the very
+// timeline-vs-humanTurns contradiction the cases above exist to forbid, arriving
+// through a different door.
+function forkMetadata(stamped: boolean) {
+  const replayed = stamped ? { isForkReplayed: true } : {};
+  return {
+    messages: [
+      {
+        role: "human",
+        timestamp: "2026-08-31T19:59:53.393Z",
+        text: "the parent's first prompt",
+        ...replayed,
+      },
+      {
+        role: "human",
+        timestamp: "2026-08-31T20:10:00.000Z",
+        text: "the parent's second prompt",
+        ...replayed,
+      },
+      {
+        role: "human",
+        timestamp: "2026-08-31T20:33:14.913Z",
+        text: "the fork's own prompt",
+      },
+    ],
+  };
+}
+
+/**
+ * The production chain, not a shortcut: `sync-source.ts` builds the timeline
+ * rows from `metadata` with `buildTraceTimelineRows` and hands THOSE to
+ * `buildSessionTraceSyncFields`. Driving both halves is what proves the flag
+ * survives the row build as well as being honored by the marker rule.
+ */
+function forkPromptMarkers(stamped: boolean) {
+  const timelineRows = buildTraceTimelineRows(forkMetadata(stamped), []);
+  return {
+    timelineRows,
+    markers: promptMarkers(
+      buildSessionTraceSyncFields(
+        baseInput({
+          startedAt: "2026-08-31T19:59:53.393Z",
+          endedAt: "2026-08-31T20:34:47.267Z",
+          updatedAt: "2026-08-31T20:34:47.267Z",
+          metadata: forkMetadata(stamped),
+          timelineRows,
+        })
+      )
+    ),
+  };
+}
+
+test("a fork's replayed parent prompts render, but earn no prompt marker", () => {
+  const { timelineRows, markers } = forkPromptMarkers(true);
+
+  // Still RENDERED — dropping them would delete the inherited conversation,
+  // which is the capability option (b) was chosen to keep.
+  assert.equal(
+    timelineRows.filter((row) => row.eventType === "UserMessage").length,
+    3,
+    "all three human turns stay on the timeline"
+  );
+  assert.equal(
+    markers.length,
+    1,
+    "only the fork's own prompt is this session's steering; the other two are the parent's"
+  );
+});
+
+test("unstamped, the very same three rows are all prompt markers", () => {
+  // The control arm: the exclusion must key on the stamp and nothing else.
+  const { timelineRows, markers } = forkPromptMarkers(false);
+
+  assert.equal(timelineRows.length, 3);
+  assert.equal(
+    markers.length,
+    3,
+    "with no fork stamp every human row is this session's own prompt"
   );
 });

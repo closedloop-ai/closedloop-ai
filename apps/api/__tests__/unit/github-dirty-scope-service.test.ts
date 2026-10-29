@@ -4,11 +4,29 @@ import {
   GitHubDirtyScopeKind,
   GitHubDirtyTrigger,
 } from "@repo/api/src/types/github-dirty-scope";
+import {
+  RelayDispatchDiagnosticReason,
+  RelayDispatchReason,
+} from "@repo/api/src/types/relay-dispatch";
+import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type {
+  DirtyScopeRow,
+  DirtyScopeTarget,
+  MockDb,
+} from "@/__tests__/support/integrations/github/dirty-scope-service.test-mocks";
+import {
+  createMockDb,
+  makeDirtyScopeRow,
+  makeTarget,
+} from "@/__tests__/support/integrations/github/dirty-scope-service.test-mocks";
 import { dispatchRelayCommandToRelay } from "@/app/compute-targets/relay-command-helpers";
 import {
   GITHUB_DIRTY_SCOPE_DEBOUNCE_MS,
+  GITHUB_DIRTY_SCOPE_DESKTOP_RATE_LIMIT_MS,
+  GITHUB_DIRTY_SCOPE_RETRY_BACKOFF_MS,
+  GITHUB_DIRTY_SCOPE_UPSERT_CHUNK_SIZE,
   githubDirtyScopeService,
 } from "@/app/integrations/github/dirty-scope-service";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
@@ -16,8 +34,29 @@ import { desktopCommandStore } from "@/lib/desktop-command-store";
 const mockState = vi.hoisted(() => ({
   rows: [] as DirtyScopeRow[],
   targets: [] as DirtyScopeTarget[],
-  lockTail: Promise.resolve(),
-  releaseLock: null as (() => void) | null,
+  // Keyed by the advisory-lock argument, so the mock only serializes writers
+  // that ask for the SAME key — a lock key that stopped covering the row set
+  // would show up as lost merges, and one that over-serializes would show up as
+  // unrelated repositories queueing behind each other (ISS-7276).
+  lockTails: new Map<string, Promise<void>>(),
+  // Every key asked for, in acquisition order: the rollout-compatible key
+  // shape is only observable here (ISS-7276).
+  lockKeys: [] as string[],
+  // Counted across every mock client (one is built per `withDb` call), so a
+  // fan-out's total round trips are observable — not just one call's (ISS-7276).
+  counts: {
+    targetReads: 0,
+    expirySweeps: 0,
+    writeTransactions: 0,
+    // Every statement against the nudge table, so a drain page's cost is
+    // measured rather than inferred from the shape of the code (ISS-8973).
+    nudgeStatements: 0,
+    // Locks HELD, not transactions open: a writer blocked on the advisory lock
+    // is already inside its transaction, so only this distinguishes a lock key
+    // that scopes to the row set from one that over-serializes.
+    heldLocks: 0,
+    peakHeldLocks: 0,
+  },
 }));
 
 vi.mock("@repo/database", () => ({
@@ -28,14 +67,25 @@ vi.mock("@repo/database", () => ({
     }),
   },
   withDb: Object.assign(
-    async (callback: (db: MockDb) => unknown) => callback(createMockDb()),
+    async (callback: (db: MockDb) => unknown) =>
+      callback(createMockDb(mockState, [])),
     {
       tx: async (callback: (tx: MockDb) => unknown) => {
-        const db = createMockDb();
+        const heldLocks: Array<() => void> = [];
+        const db = createMockDb(mockState, heldLocks);
+        mockState.counts.writeTransactions += 1;
+        const snapshot = mockState.rows.map((row) => ({ ...row }));
         try {
           return await callback(db);
+        } catch (error) {
+          // A constraint violation aborts the whole transaction, so nothing the
+          // chunk wrote before it survives.
+          mockState.rows.splice(0, mockState.rows.length, ...snapshot);
+          throw error;
         } finally {
-          releaseAdvisoryLock();
+          for (const release of heldLocks.splice(0)) {
+            release();
+          }
         }
       },
     }
@@ -50,6 +100,10 @@ vi.mock("@/lib/desktop-command-store", () => ({
   desktopCommandStore: {
     createCommand: vi.fn(),
   },
+}));
+
+vi.mock("@repo/observability/log", () => ({
+  log: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
 vi.mock(
@@ -72,8 +126,16 @@ describe("githubDirtyScopeService", () => {
     vi.clearAllMocks();
     mockState.rows.length = 0;
     mockState.targets = [makeTarget("target-1")];
-    mockState.lockTail = Promise.resolve();
-    mockState.releaseLock = null;
+    mockState.lockTails.clear();
+    mockState.lockKeys.length = 0;
+    mockState.counts = {
+      targetReads: 0,
+      expirySweeps: 0,
+      writeTransactions: 0,
+      nudgeStatements: 0,
+      heldLocks: 0,
+      peakHeldLocks: 0,
+    };
     vi.mocked(desktopCommandStore.createCommand).mockImplementation(
       async (computeTargetId, input) => ({
         command: {
@@ -110,12 +172,12 @@ describe("githubDirtyScopeService", () => {
     const firstResult = await githubDirtyScopeService.publish({
       organizationId: "org-1",
       repositoryId: "repo-1",
-      repositoryFullName: "closedloop-ai/example-repo",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       scopes: [
         {
           kind: GitHubDirtyScopeKind.Branch,
           repositoryId: "repo-1",
-          repositoryFullName: "closedloop-ai/example-repo",
+          repositoryFullName: "closedloop-ai/closedloop-ai",
           branchName: "feat/one",
         },
       ],
@@ -134,12 +196,12 @@ describe("githubDirtyScopeService", () => {
     await githubDirtyScopeService.publish({
       organizationId: "org-1",
       repositoryId: "repo-1",
-      repositoryFullName: "closedloop-ai/example-repo",
+      repositoryFullName: "closedloop-ai/closedloop-ai",
       scopes: [
         {
           kind: GitHubDirtyScopeKind.PullRequest,
           repositoryId: "repo-1",
-          repositoryFullName: "closedloop-ai/example-repo",
+          repositoryFullName: "closedloop-ai/closedloop-ai",
           branchName: "feat/one",
           pullRequestNumber: 42,
         },
@@ -165,19 +227,18 @@ describe("githubDirtyScopeService", () => {
             {
               kind: GitHubDirtyScopeKind.Branch,
               repositoryId: "repo-1",
-              repositoryFullName: "closedloop-ai/example-repo",
+              repositoryFullName: "closedloop-ai/closedloop-ai",
               branchName: "feat/one",
             },
             {
               kind: GitHubDirtyScopeKind.PullRequest,
               repositoryId: "repo-1",
-              repositoryFullName: "closedloop-ai/example-repo",
+              repositoryFullName: "closedloop-ai/closedloop-ai",
               branchName: "feat/one",
               pullRequestNumber: 42,
             },
           ],
           computeTargetId: "target-1",
-          gatewayId: "target-1-gateway",
         },
         idempotencyKey: expect.stringContaining("github-resync:org-1:repo-1:"),
       })
@@ -205,6 +266,52 @@ describe("githubDirtyScopeService", () => {
 
     expect(result.pendingRows).toBe(1);
     expect(mockState.rows).toHaveLength(1);
+  });
+
+  test("persists relay diagnostics with dirty-scope dispatch results", async () => {
+    const now = new Date("2026-07-06T09:00:40.000Z");
+    // The drain's claim lease is anchored on the `now` it is handed, and spent
+    // against the wall clock. A fixture `now` with the clock left at real time
+    // is a lease years overdue, so the page releases before its first row —
+    // pin them together in every drain case below.
+    vi.setSystemTime(now);
+    mockState.rows.push(
+      makeDirtyScopeRow({
+        id: "row-diagnostic",
+        scheduledDispatchAt: now,
+        expiresAt: new Date(now.getTime() + 60_000),
+      })
+    );
+    vi.mocked(dispatchRelayCommandToRelay).mockResolvedValue({
+      delivered: false,
+      reason: RelayDispatchReason.TargetNotConnected,
+      diagnosticReason: RelayDispatchDiagnosticReason.PeerHttpNotOk,
+      peerStatusCode: 503,
+      peerErrorCode: "ECONNRESET",
+    });
+
+    const dispatched = await githubDirtyScopeService.dispatchDue({ now });
+
+    expect(dispatched).toBe(1);
+    expect(mockState.rows[0]?.deliveryResult).toEqual({
+      delivered: false,
+      reason: RelayDispatchReason.TargetNotConnected,
+      diagnosticReason: RelayDispatchDiagnosticReason.PeerHttpNotOk,
+      peerStatusCode: 503,
+      peerErrorCode: "ECONNRESET",
+      commandId: "command-1",
+    });
+    expect(log.info).toHaveBeenCalledWith(
+      "[githubDirtyScopeService] GitHub resync nudge not delivered",
+      expect.objectContaining({
+        commandId: "command-1",
+        computeTargetId: "target-1",
+        diagnosticReason: RelayDispatchDiagnosticReason.PeerHttpNotOk,
+        peerErrorCode: "ECONNRESET",
+        peerStatusCode: 503,
+        reason: RelayDispatchReason.TargetNotConnected,
+      })
+    );
   });
 
   test("keeps generic dirty scope terminal when later specific scopes arrive", async () => {
@@ -322,7 +429,6 @@ describe("githubDirtyScopeService", () => {
     ).toEqual({
       scopes: [{ kind: GitHubDirtyScopeKind.Generic }],
       computeTargetId: "target-2",
-      gatewayId: "target-2-gateway",
     });
   });
 
@@ -374,6 +480,7 @@ describe("githubDirtyScopeService", () => {
 
   test("claims due rows before dispatch so concurrent drains send one command", async () => {
     const now = new Date("2026-07-06T09:04:00.000Z");
+    vi.setSystemTime(now);
     mockState.rows.push(
       makeDirtyScopeRow({
         id: "row-due",
@@ -396,13 +503,24 @@ describe("githubDirtyScopeService", () => {
     });
   });
 
-  test("releases a dispatch claim when command creation fails before retrying", async () => {
+  test("releases a dispatch claim when command creation fails, and retries it a backoff later", async () => {
+    // The claim is released so the row stays due, but its next attempt is
+    // deferred by `GITHUB_DIRTY_SCOPE_RETRY_BACKOFF_MS` rather than landing on
+    // the very next drain (ISS-10050): a row that was attempted and failed must
+    // fall behind the peers it ties with on `createdAt` instead of re-filling
+    // the page ahead of them. Both halves are pinned below — the drain inside
+    // the backoff must NOT retry it, and the drain after it must.
     const now = new Date("2026-07-06T09:04:30.000Z");
+    vi.setSystemTime(now);
     mockState.rows.push(
       makeDirtyScopeRow({
         id: "row-retry",
         scheduledDispatchAt: now,
-        expiresAt: new Date(now.getTime() + 60_000),
+        // Outlives the backoff, so the retry below is a real retry rather than
+        // an expiry the sweep would have taken anyway.
+        expiresAt: new Date(
+          now.getTime() + GITHUB_DIRTY_SCOPE_RETRY_BACKOFF_MS + 60_000
+        ),
       })
     );
     vi.mocked(desktopCommandStore.createCommand)
@@ -436,8 +554,19 @@ describe("githubDirtyScopeService", () => {
       },
     });
 
-    const retriedDispatch = await githubDirtyScopeService.dispatchDue({
+    // Deferred: still due eventually, but not on a drain one second later.
+    expect(mockState.rows[0]?.scheduledDispatchAt).toEqual(
+      new Date(now.getTime() + GITHUB_DIRTY_SCOPE_RETRY_BACKOFF_MS)
+    );
+    const insideBackoff = await githubDirtyScopeService.dispatchDue({
       now: new Date(now.getTime() + 1000),
+    });
+
+    expect(insideBackoff).toBe(0);
+    expect(desktopCommandStore.createCommand).toHaveBeenCalledTimes(1);
+
+    const retriedDispatch = await githubDirtyScopeService.dispatchDue({
+      now: new Date(now.getTime() + GITHUB_DIRTY_SCOPE_RETRY_BACKOFF_MS + 1000),
     });
 
     expect(retriedDispatch).toBe(1);
@@ -447,52 +576,6 @@ describe("githubDirtyScopeService", () => {
       reason: "no_subscriber",
       commandId: "command-2",
     });
-  });
-
-  test("continues draining after the first due-row page", async () => {
-    const now = new Date("2026-07-06T09:05:00.000Z");
-    for (let index = 0; index < 101; index += 1) {
-      mockState.rows.push(
-        makeDirtyScopeRow({
-          id: `row-${index}`,
-          computeTargetId: `target-${index}`,
-          scheduledDispatchAt: now,
-          expiresAt: new Date(now.getTime() + 60_000),
-        })
-      );
-      mockState.targets.push(makeTarget(`target-${index}`));
-    }
-
-    const dispatched = await githubDirtyScopeService.dispatchDue({ now });
-
-    expect(dispatched).toBe(101);
-    expect(desktopCommandStore.createCommand).toHaveBeenCalledTimes(101);
-  });
-
-  test("stops draining when a full due-row page makes no forward progress", async () => {
-    const now = new Date("2026-07-06T09:05:30.000Z");
-    for (let index = 0; index < 100; index += 1) {
-      mockState.rows.push(
-        makeDirtyScopeRow({
-          id: `row-failed-${index}`,
-          computeTargetId: `target-${index}`,
-          scheduledDispatchAt: now,
-          expiresAt: new Date(now.getTime() + 60_000),
-        })
-      );
-      mockState.targets.push(makeTarget(`target-${index}`));
-    }
-    vi.mocked(desktopCommandStore.createCommand).mockRejectedValue(
-      new Error("dispatch failed")
-    );
-
-    const dispatched = await githubDirtyScopeService.dispatchDue({ now });
-
-    expect(dispatched).toBe(0);
-    expect(desktopCommandStore.createCommand).toHaveBeenCalledTimes(100);
-    expect(mockState.rows.every((row) => row.dispatchClaimedAt === null)).toBe(
-      true
-    );
   });
 
   test("cleans up expired dispatched and undispatched rows", async () => {
@@ -531,331 +614,334 @@ describe("githubDirtyScopeService", () => {
     );
     expect(mockState.rows.map((row) => row.id)).toContain("fresh-dispatched");
   });
-});
 
-function createMockDb(): MockDb {
-  const db: MockDb = {
-    $executeRaw: vi.fn(async () => {
-      await acquireAdvisoryLock();
-      return 1;
-    }),
-    computeTarget: {
-      findMany: vi.fn(({ where }: ComputeTargetFindManyArgs) =>
-        Promise.resolve(
-          mockState.targets.filter(
-            (target) =>
-              target.isOnline === where.isOnline &&
-              (!Object.hasOwn(where, "isSharedWithOrg") ||
-                target.isSharedWithOrg === where.isSharedWithOrg)
-          )
-        )
-      ),
-    },
-    gitHubDirtyScopeNudge: {
-      deleteMany: vi.fn(({ where }: DeleteManyArgs) => {
-        const before = mockState.rows.length;
-        const retained = mockState.rows.filter(
-          (row) => !(where.expiresAt && row.expiresAt < where.expiresAt.lt)
-        );
-        mockState.rows.splice(0, mockState.rows.length, ...retained);
-        return { count: before - retained.length };
-      }),
-      findUnique: vi.fn(
-        async ({ where }: FindUniqueArgs) =>
-          mockState.rows.find((row) => rowMatchesUnique(row, where)) ?? null
-      ),
-      upsert: vi.fn(({ create, update, where }: UpsertArgs) => {
-        const existing = mockState.rows.find((row) =>
-          rowMatchesUnique(row, where)
-        );
-        if (existing) {
-          Object.assign(existing, update);
-          return existing;
-        }
-        const row: DirtyScopeRow = {
-          id: `row-${mockState.rows.length + 1}`,
-          organizationId: create.organizationId,
-          githubInstallationRepositoryId: create.githubInstallationRepositoryId,
-          computeTargetId: create.computeTargetId,
-          windowStartedAt: create.windowStartedAt,
-          dirtyScopes: create.dirtyScopes,
-          genericRefresh: create.genericRefresh,
-          scheduledDispatchAt: create.scheduledDispatchAt,
-          dispatchClaimedAt: null,
-          dispatchedAt: null,
-          expiresAt: create.expiresAt,
-          deliveryResult: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-        mockState.rows.push(row);
-        return row;
-      }),
-      findMany: vi.fn(async ({ where }: FindManyArgs) =>
-        mockState.rows
-          .filter(
-            (row) =>
-              row.dispatchedAt === null &&
-              isUnclaimedOrStale(row, where.OR) &&
-              row.scheduledDispatchAt <= where.scheduledDispatchAt.lte &&
-              row.expiresAt > where.expiresAt.gt &&
-              (!where.computeTargetId ||
-                row.computeTargetId === where.computeTargetId) &&
-              (!where.organizationId ||
-                row.organizationId === where.organizationId) &&
-              (!where.githubInstallationRepositoryId ||
-                row.githubInstallationRepositoryId ===
-                  where.githubInstallationRepositoryId)
-          )
-          .slice(0, 100)
-          .map((row) => ({
-            ...row,
-            computeTarget: {
-              gatewayId:
-                mockState.targets.find(
-                  (target) => target.id === row.computeTargetId
-                )?.gatewayId ?? null,
-            },
-          }))
-      ),
-      updateMany: vi.fn(({ where, data }: UpdateManyArgs) => {
-        let count = 0;
-        for (const row of mockState.rows) {
-          if (!rowMatchesWhere(row, where)) {
-            continue;
-          }
-          Object.assign(row, data);
-          count += 1;
-        }
-        return { count };
-      }),
-      update: vi.fn(({ where, data }: UpdateArgs) => {
-        const row = mockState.rows.find(
-          (candidate) => candidate.id === where.id
-        );
-        if (!row) {
-          throw new Error("row not found");
-        }
-        Object.assign(row, data);
-        return row;
-      }),
-    },
-  };
-  return db;
-}
+  test("writes every eligible target's pending row in one transaction", async () => {
+    mockState.targets = [
+      makeTarget("target-1"),
+      makeTarget("target-2"),
+      makeTarget("target-3"),
+    ];
+    vi.setSystemTime(new Date("2026-07-06T09:07:00.000Z"));
 
-function makeTarget(
-  id: string,
-  overrides: Partial<DirtyScopeTarget> = {}
-): DirtyScopeTarget {
-  return {
-    id,
-    gatewayId: `${id}-gateway`,
-    isOnline: true,
-    isSharedWithOrg: true,
-    supportedOperations: [GITHUB_RESYNC_NUDGE_OPERATION_ID],
-    ...overrides,
-  };
-}
+    const result = await githubDirtyScopeService.publish({
+      organizationId: "org-1",
+      repositoryId: "repo-1",
+      scopes: [
+        { kind: GitHubDirtyScopeKind.Repository, repositoryId: "repo-1" },
+      ],
+    });
 
-function rowMatchesUnique(row: DirtyScopeRow, where: UniqueWhere): boolean {
-  const key =
-    where.organizationId_githubInstallationRepositoryId_computeTargetId_windowStartedAt;
-  return (
-    row.organizationId === key.organizationId &&
-    row.githubInstallationRepositoryId === key.githubInstallationRepositoryId &&
-    row.computeTargetId === key.computeTargetId &&
-    row.windowStartedAt.getTime() === key.windowStartedAt.getTime()
-  );
-}
+    expect(result.pendingRows).toBe(3);
+    expect(mockState.rows).toHaveLength(3);
+    // One set-based upsert, not one transaction per target (ISS-7276).
+    expect(mockState.counts.writeTransactions).toBe(1);
+  });
 
-function rowMatchesWhere(row: DirtyScopeRow, where: UpdateManyWhere): boolean {
-  if (where.id && row.id !== where.id) {
-    return false;
-  }
-  if (
-    Object.hasOwn(where, "dispatchedAt") &&
-    row.dispatchedAt !== where.dispatchedAt
-  ) {
-    return false;
-  }
-  if (where.OR && !isUnclaimedOrStale(row, where.OR)) {
-    return false;
-  }
-  if (
-    where.scheduledDispatchAt &&
-    row.scheduledDispatchAt > where.scheduledDispatchAt.lte
-  ) {
-    return false;
-  }
-  if (where.expiresAt && row.expiresAt <= where.expiresAt.gt) {
-    return false;
-  }
-  return true;
-}
+  test("merges into existing rows without re-opening a transaction per target", async () => {
+    mockState.targets = [makeTarget("target-1"), makeTarget("target-2")];
+    vi.setSystemTime(new Date("2026-07-06T09:07:15.000Z"));
 
-function isUnclaimedOrStale(
-  row: DirtyScopeRow,
-  clauses: DirtyScopeClaimWhere[] | undefined
-): boolean {
-  if (!clauses) {
-    return true;
-  }
-  return clauses.some((clause) => {
-    if (
-      Object.hasOwn(clause, "dispatchClaimedAt") &&
-      clause.dispatchClaimedAt === null
-    ) {
-      return row.dispatchClaimedAt === null;
+    await githubDirtyScopeService.publish({
+      organizationId: "org-1",
+      repositoryId: "repo-1",
+      scopes: [
+        {
+          kind: GitHubDirtyScopeKind.Branch,
+          repositoryId: "repo-1",
+          branchName: "feat/one",
+        },
+      ],
+    });
+    mockState.counts.writeTransactions = 0;
+
+    await githubDirtyScopeService.publish({
+      organizationId: "org-1",
+      repositoryId: "repo-1",
+      scopes: [
+        {
+          kind: GitHubDirtyScopeKind.Branch,
+          repositoryId: "repo-1",
+          branchName: "feat/two",
+        },
+      ],
+    });
+
+    expect(mockState.counts.writeTransactions).toBe(1);
+    expect(mockState.rows).toHaveLength(2);
+    for (const row of mockState.rows) {
+      expect(row.dirtyScopes).toEqual([
+        {
+          kind: GitHubDirtyScopeKind.Branch,
+          repositoryId: "repo-1",
+          branchName: "feat/one",
+        },
+        {
+          kind: GitHubDirtyScopeKind.Branch,
+          repositoryId: "repo-1",
+          branchName: "feat/two",
+        },
+      ]);
     }
-    return Boolean(
-      clause.dispatchClaimedAt?.lt &&
-        row.dispatchClaimedAt &&
-        row.dispatchClaimedAt < clause.dispatchClaimedAt.lt
+  });
+
+  test("reuses a prepared batch so a fan-out reads targets and sweeps expiry once", async () => {
+    mockState.targets = [makeTarget("target-1"), makeTarget("target-2")];
+    vi.setSystemTime(new Date("2026-07-06T09:07:30.000Z"));
+
+    const batch = await githubDirtyScopeService.prepareBatch("org-1");
+
+    expect(mockState.counts.targetReads).toBe(1);
+    expect(mockState.counts.expirySweeps).toBe(1);
+
+    for (const repositoryId of ["repo-1", "repo-2", "repo-3"]) {
+      await githubDirtyScopeService.publish(
+        {
+          organizationId: "org-1",
+          repositoryId,
+          scopes: [{ kind: GitHubDirtyScopeKind.Repository, repositoryId }],
+        },
+        batch
+      );
+    }
+
+    // Still once, not once per repository — the whole point of the batch.
+    expect(mockState.counts.targetReads).toBe(1);
+    expect(mockState.counts.expirySweeps).toBe(1);
+    expect(mockState.rows).toHaveLength(6);
+  });
+
+  test("does not serialize publishes that touch different repositories", async () => {
+    // Sibling of the same-window serialization test above: the advisory lock
+    // must cover the (org, repo, window) row set and no more. A key that
+    // over-serialized — one constant per org, say — would still merge correctly
+    // and so would pass that test, while queueing every repository of an
+    // installation_repositories fan-out behind one lock.
+    vi.setSystemTime(new Date("2026-07-06T09:07:45.000Z"));
+
+    await Promise.all([
+      githubDirtyScopeService.publish({
+        organizationId: "org-1",
+        repositoryId: "repo-1",
+        scopes: [
+          { kind: GitHubDirtyScopeKind.Repository, repositoryId: "repo-1" },
+        ],
+      }),
+      githubDirtyScopeService.publish({
+        organizationId: "org-1",
+        repositoryId: "repo-2",
+        scopes: [
+          { kind: GitHubDirtyScopeKind.Repository, repositoryId: "repo-2" },
+        ],
+      }),
+    ]);
+
+    expect(mockState.counts.peakHeldLocks).toBe(2);
+    expect(mockState.rows).toHaveLength(2);
+  });
+
+  test("writes every target when the eligible set spans more than one chunk", async () => {
+    // Sized off the bound, not hardcoded: the chunk split only runs when the
+    // eligible set exceeds it, which is the "hundreds of desktops" case.
+    const targetCount = GITHUB_DIRTY_SCOPE_UPSERT_CHUNK_SIZE + 1;
+    mockState.targets = Array.from({ length: targetCount }, (_, index) =>
+      makeTarget(`target-${index}`)
+    );
+    vi.setSystemTime(new Date("2026-07-06T09:07:55.000Z"));
+
+    const result = await githubDirtyScopeService.publish({
+      organizationId: "org-1",
+      repositoryId: "repo-1",
+      scopes: [
+        { kind: GitHubDirtyScopeKind.Repository, repositoryId: "repo-1" },
+      ],
+    });
+
+    expect(result.pendingRows).toBe(targetCount);
+    expect(mockState.counts.writeTransactions).toBe(2);
+    expect(new Set(mockState.rows.map((row) => row.computeTargetId)).size).toBe(
+      targetCount
     );
   });
-}
 
-function makeDirtyScopeRow(
-  overrides: Partial<DirtyScopeRow> = {}
-): DirtyScopeRow {
-  const now = new Date("2026-07-06T09:00:00.000Z");
-  return {
-    id: "row-manual",
-    organizationId: "org-1",
-    githubInstallationRepositoryId: "repo-1",
-    computeTargetId: "target-1",
-    windowStartedAt: now,
-    dirtyScopes: [
-      { kind: GitHubDirtyScopeKind.Repository, repositoryId: "repo-1" },
-    ],
-    genericRefresh: false,
-    scheduledDispatchAt: now,
-    dispatchClaimedAt: null,
-    dispatchedAt: null,
-    expiresAt: new Date(now.getTime() + 60_000),
-    deliveryResult: null,
-    createdAt: now,
-    updatedAt: now,
-    ...overrides,
-  };
-}
+  test("ignores a batch prepared for another organization", async () => {
+    mockState.targets = [makeTarget("target-1")];
+    vi.setSystemTime(new Date("2026-07-06T09:08:00.000Z"));
 
-async function acquireAdvisoryLock(): Promise<void> {
-  const previous = mockState.lockTail;
-  let releaseNext: () => void = () => {};
-  mockState.lockTail = new Promise<void>((resolve) => {
-    releaseNext = resolve;
+    const batch = await githubDirtyScopeService.prepareBatch("org-2");
+    mockState.counts.targetReads = 0;
+
+    const result = await githubDirtyScopeService.publish(
+      {
+        organizationId: "org-1",
+        repositoryId: "repo-1",
+        scopes: [
+          { kind: GitHubDirtyScopeKind.Repository, repositoryId: "repo-1" },
+        ],
+      },
+      batch
+    );
+
+    expect(mockState.counts.targetReads).toBe(1);
+    expect(result.pendingRows).toBe(1);
+    expect(mockState.rows).toHaveLength(1);
+    expect(mockState.rows[0]?.organizationId).toBe("org-1");
   });
-  await previous;
-  mockState.releaseLock = releaseNext;
+
+  test("locks every target on the pre-batch per-target lock key", async () => {
+    // The set-based write still has to exclude a pre-deploy instance that locks
+    // per (org, repo, target, window): a window-wide key would not overlap it,
+    // so across a rollout both writers would read the row as absent and one of
+    // the two merges would be lost. Sorted, so overlapping chunks cannot
+    // deadlock.
+    mockState.targets = [makeTarget("target-2"), makeTarget("target-1")];
+    vi.setSystemTime(new Date("2026-07-06T09:08:15.000Z"));
+
+    await githubDirtyScopeService.publish({
+      organizationId: "org-1",
+      repositoryId: "repo-1",
+      scopes: [
+        { kind: GitHubDirtyScopeKind.Repository, repositoryId: "repo-1" },
+      ],
+    });
+
+    expect(
+      mockState.lockKeys.map((key) => key.split(":").slice(0, 4).join(":"))
+    ).toEqual([
+      "github-dirty-scope:org-1:repo-1:target-1",
+      "github-dirty-scope:org-1:repo-1:target-2",
+    ]);
+    expect(
+      mockState.lockKeys.every((key) => key.endsWith(windowSuffix()))
+    ).toBe(true);
+  });
+
+  test("keeps nudging live desktops when a batched target was deleted mid-fan-out", async () => {
+    // A batch snapshot outlives its desktops. Without the reload-and-retry the
+    // foreign key aborts the chunk, so this repository — and, through the shared
+    // batch, every later one in the fan-out — loses its still-live targets'
+    // nudges too.
+    mockState.targets = [
+      makeTarget("target-1"),
+      makeTarget("target-2"),
+      makeTarget("target-3"),
+    ];
+    vi.setSystemTime(new Date("2026-07-06T09:08:30.000Z"));
+
+    const batch = await githubDirtyScopeService.prepareBatch("org-1");
+    mockState.targets = mockState.targets.filter(
+      (target) => target.id !== "target-2"
+    );
+
+    const first = await githubDirtyScopeService.publish(
+      {
+        organizationId: "org-1",
+        repositoryId: "repo-1",
+        scopes: [
+          { kind: GitHubDirtyScopeKind.Repository, repositoryId: "repo-1" },
+        ],
+      },
+      batch
+    );
+
+    expect(first.pendingRows).toBe(2);
+    expect(
+      mockState.rows
+        .filter((row) => row.githubInstallationRepositoryId === "repo-1")
+        .map((row) => row.computeTargetId)
+    ).toEqual(["target-1", "target-3"]);
+
+    // The deleted desktop is dropped from the shared snapshot, so the next
+    // repository of the fan-out does not re-trip the same foreign key.
+    mockState.counts.writeTransactions = 0;
+    const second = await githubDirtyScopeService.publish(
+      {
+        organizationId: "org-1",
+        repositoryId: "repo-2",
+        scopes: [
+          { kind: GitHubDirtyScopeKind.Repository, repositoryId: "repo-2" },
+        ],
+      },
+      batch
+    );
+
+    expect(second.pendingRows).toBe(2);
+    expect(mockState.counts.writeTransactions).toBe(1);
+  });
+
+  test("does not deliver a pending nudge to a desktop reassigned to another org", async () => {
+    // The eligible-target read decides org membership once — per fan-out when a
+    // batch is threaded — and the row then waits out the debounce window before
+    // dispatch. Without the recheck at delivery, org-1's repository id reaches a
+    // desktop that now belongs to org-2 (@davetho, #6441).
+    const startedAt = new Date("2026-07-06T09:09:30.000Z");
+    vi.setSystemTime(startedAt);
+
+    await githubDirtyScopeService.publish({
+      organizationId: "org-1",
+      repositoryId: "repo-1",
+      scopes: [
+        { kind: GitHubDirtyScopeKind.Repository, repositoryId: "repo-1" },
+      ],
+    });
+    expect(mockState.rows).toHaveLength(1);
+
+    mockState.targets = [makeTarget("target-1", { organizationId: "org-2" })];
+
+    const dispatched = await githubDirtyScopeService.dispatchDue({
+      organizationId: "org-1",
+      now: new Date(startedAt.getTime() + GITHUB_DIRTY_SCOPE_DEBOUNCE_MS),
+    });
+
+    expect(dispatched).toBe(0);
+    expect(desktopCommandStore.createCommand).not.toHaveBeenCalled();
+    // Settled, not skipped: a claimed row left unsettled is re-read and
+    // re-claimed on every pass until its TTL expires.
+    expect(mockState.rows[0]?.dispatchedAt).toBeInstanceOf(Date);
+    expect(mockState.rows[0]?.deliveryResult).toEqual({
+      delivered: false,
+      reason: "target_reassigned",
+    });
+  });
+
+  test("does not deliver a pending nudge to a desktop that dropped the nudge operation", async () => {
+    // `supportedOperations` is rewritten on every desktop re-registration, so a
+    // reconnect during the debounce window can revoke the capability the
+    // eligible-target read checked.
+    const startedAt = new Date("2026-07-06T09:10:30.000Z");
+    vi.setSystemTime(startedAt);
+
+    await githubDirtyScopeService.publish({
+      organizationId: "org-1",
+      repositoryId: "repo-1",
+      scopes: [
+        { kind: GitHubDirtyScopeKind.Repository, repositoryId: "repo-1" },
+      ],
+    });
+    expect(mockState.rows).toHaveLength(1);
+
+    mockState.targets = [
+      makeTarget("target-1", { supportedOperations: ["some.other.operation"] }),
+    ];
+
+    const dispatched = await githubDirtyScopeService.dispatchDue({
+      organizationId: "org-1",
+      now: new Date(startedAt.getTime() + GITHUB_DIRTY_SCOPE_DEBOUNCE_MS),
+    });
+
+    expect(dispatched).toBe(0);
+    expect(desktopCommandStore.createCommand).not.toHaveBeenCalled();
+    expect(mockState.rows[0]?.deliveryResult).toEqual({
+      delivered: false,
+      reason: "operation_unsupported",
+    });
+  });
+});
+
+/** The window segment every lock key for the current fake time ends with. */
+function windowSuffix(): string {
+  const windowStartedAt = new Date(
+    Math.floor(Date.now() / GITHUB_DIRTY_SCOPE_DESKTOP_RATE_LIMIT_MS) *
+      GITHUB_DIRTY_SCOPE_DESKTOP_RATE_LIMIT_MS
+  );
+  return `:${windowStartedAt.toISOString()}`;
 }
-
-function releaseAdvisoryLock(): void {
-  const release = mockState.releaseLock;
-  mockState.releaseLock = null;
-  release?.();
-}
-
-type DirtyScopeTarget = {
-  id: string;
-  gatewayId: string | null;
-  isOnline: boolean;
-  isSharedWithOrg: boolean;
-  supportedOperations: unknown;
-};
-
-type DirtyScopeRow = {
-  id: string;
-  organizationId: string;
-  githubInstallationRepositoryId: string;
-  computeTargetId: string;
-  windowStartedAt: Date;
-  dirtyScopes: unknown;
-  genericRefresh: boolean;
-  scheduledDispatchAt: Date;
-  dispatchClaimedAt: Date | null;
-  dispatchedAt: Date | null;
-  expiresAt: Date;
-  deliveryResult: unknown;
-  createdAt: Date;
-  updatedAt: Date;
-};
-
-type UniqueWhere = {
-  organizationId_githubInstallationRepositoryId_computeTargetId_windowStartedAt: {
-    organizationId: string;
-    githubInstallationRepositoryId: string;
-    computeTargetId: string;
-    windowStartedAt: Date;
-  };
-};
-
-type FindUniqueArgs = { where: UniqueWhere };
-type UpsertArgs = {
-  where: UniqueWhere;
-  create: Omit<
-    DirtyScopeRow,
-    | "id"
-    | "dispatchClaimedAt"
-    | "dispatchedAt"
-    | "deliveryResult"
-    | "createdAt"
-    | "updatedAt"
-  >;
-  update: Partial<DirtyScopeRow>;
-};
-type FindManyArgs = {
-  where: {
-    computeTargetId?: string;
-    organizationId?: string;
-    githubInstallationRepositoryId?: string;
-    OR?: DirtyScopeClaimWhere[];
-    scheduledDispatchAt: { lte: Date };
-    expiresAt: { gt: Date };
-  };
-};
-type ComputeTargetFindManyArgs = {
-  where: {
-    isOnline: boolean;
-    isSharedWithOrg?: boolean;
-    organizationId: string;
-  };
-};
-type DeleteManyArgs = {
-  where: {
-    expiresAt?: { lt: Date };
-  };
-};
-type UpdateManyWhere = {
-  id?: string;
-  dispatchedAt?: Date | null;
-  OR?: DirtyScopeClaimWhere[];
-  scheduledDispatchAt?: { lte: Date };
-  expiresAt?: { gt: Date };
-};
-type DirtyScopeClaimWhere = {
-  dispatchClaimedAt: null | { lt: Date };
-};
-type UpdateManyArgs = {
-  where: UpdateManyWhere;
-  data: Partial<DirtyScopeRow>;
-};
-type UpdateArgs = {
-  where: { id: string };
-  data: Partial<DirtyScopeRow>;
-};
-type MockDb = {
-  $executeRaw: ReturnType<typeof vi.fn>;
-  computeTarget: {
-    findMany: ReturnType<typeof vi.fn>;
-  };
-  gitHubDirtyScopeNudge: {
-    deleteMany: ReturnType<typeof vi.fn>;
-    findUnique: ReturnType<typeof vi.fn>;
-    upsert: ReturnType<typeof vi.fn>;
-    findMany: ReturnType<typeof vi.fn>;
-    updateMany: ReturnType<typeof vi.fn>;
-    update: ReturnType<typeof vi.fn>;
-  };
-};

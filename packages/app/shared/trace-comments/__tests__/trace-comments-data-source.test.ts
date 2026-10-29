@@ -1,9 +1,12 @@
 import {
+  CommentSurface,
+  CommentTargetType,
   ThreadStatus,
+  TRACE_COMMENT_INCLUDE_THREAD_PARAM,
   type TraceComment,
   TraceCommentKind,
-  TraceCommentSurface,
-  TraceCommentTargetType,
+  traceCommentRetrySyncPath,
+  traceCommentSyncAbandonedPath,
 } from "@repo/api/src/types/comment";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -18,10 +21,10 @@ import {
 
 const BRANCH_TARGET = {
   id: "branch-1",
-  type: TraceCommentTargetType.Branch,
+  type: CommentTargetType.Branch,
 } as const;
 const TIMELINE_QUERY = {
-  surface: TraceCommentSurface.BranchTimeline,
+  surface: CommentSurface.BranchTimeline,
 } as const;
 
 describe("trace-comments collection boundary", () => {
@@ -31,11 +34,11 @@ describe("trace-comments collection boundary", () => {
         makeComment(),
         makeComment({
           id: "wrong-surface",
-          surface: TraceCommentSurface.BranchDetail,
+          surface: CommentSurface.BranchDetail,
         }),
         makeComment({
           id: "wrong-target",
-          target: { id: "branch-2", type: TraceCommentTargetType.Branch },
+          target: { id: "branch-2", type: CommentTargetType.Branch },
         }),
       ]),
     });
@@ -81,7 +84,7 @@ describe("trace-comments collection boundary", () => {
 
     expect(() =>
       assertTraceCommentMutationResult(
-        makeComment({ surface: TraceCommentSurface.BranchDetail }),
+        makeComment({ surface: CommentSurface.BranchDetail }),
         BRANCH_TARGET,
         TIMELINE_QUERY
       )
@@ -228,10 +231,191 @@ function makeComment(overrides: Partial<TraceComment> = {}): TraceComment {
     resolvedById: null,
     resolvedByName: null,
     status: ThreadStatus.Open,
-    surface: TraceCommentSurface.BranchTimeline,
+    surface: CommentSurface.BranchTimeline,
     target: BRANCH_TARGET,
     threadId: "thread-1",
     updatedAt: "2026-08-07T12:00:00.000Z",
     ...overrides,
   };
 }
+
+describe("the HTTP source's recovery door (ISS-10382)", () => {
+  const SESSION_TARGET = {
+    id: "session-1",
+    type: CommentTargetType.Session,
+  } as const;
+
+  it("pins the producer path against the route directory that serves it", () => {
+    // `traceCommentSyncAbandonedPath` has no caller yet — the desktop producer
+    // is ISS-10827 — so nothing else would notice this string drifting away from
+    // `apps/api/app/agent-sessions/[id]/trace-comments/[commentId]/sync-abandoned/`.
+    // Spelled out rather than rebuilt from the helper, for the same reason the
+    // retry path below is.
+    expect(traceCommentSyncAbandonedPath(SESSION_TARGET, "comment-1")).toBe(
+      "/agent-sessions/session-1/trace-comments/comment-1/sync-abandoned"
+    );
+    expect(traceCommentRetrySyncPath(SESSION_TARGET, "comment-1")).toBe(
+      "/agent-sessions/session-1/trace-comments/comment-1/retry-sync"
+    );
+  });
+
+  it("POSTs the comment's retry-sync path and returns the refreshed list", async () => {
+    // The path is spelled out rather than imported from the helper that builds
+    // it: a constant shared with the source would follow the source if the route
+    // silently moved, and the API route directory is the other half of this
+    // contract.
+    const post = vi.fn().mockResolvedValue([makeComment()]);
+    const source = createHttpTraceCommentsDataSource({
+      delete: vi.fn(),
+      get: vi.fn(),
+      patch: vi.fn(),
+      post,
+    });
+
+    const refreshed = await source.retrySync?.(SESSION_TARGET, "comment-1");
+
+    expect(post).toHaveBeenCalledWith(
+      "/agent-sessions/session-1/trace-comments/comment-1/retry-sync",
+      {}
+    );
+    expect(refreshed?.map((comment) => comment.id)).toEqual(["comment-1"]);
+  });
+
+  it("normalizes kind on the retry response exactly as list does", async () => {
+    // A caller must not get an un-normalized `kind` only on this path; an
+    // unknown/absent value degrades to Comment through the same SSOT.
+    const unknownKind = makeComment();
+    Reflect.set(unknownKind, "kind", "future_kind_this_client_predates");
+    const source = createHttpTraceCommentsDataSource({
+      delete: vi.fn(),
+      get: vi.fn(),
+      patch: vi.fn(),
+      post: vi.fn().mockResolvedValue([unknownKind]),
+    });
+
+    const refreshed = await source.retrySync?.(SESSION_TARGET, "comment-1");
+
+    expect(refreshed?.[0]?.kind).toBe(TraceCommentKind.Comment);
+  });
+
+  it("carries the collection query so a Branch-timeline retry stays on its surface", async () => {
+    const post = vi.fn().mockResolvedValue([makeComment()]);
+    const source = createHttpTraceCommentsDataSource({
+      delete: vi.fn(),
+      get: vi.fn(),
+      patch: vi.fn(),
+      post,
+    });
+
+    await source.retrySync?.(BRANCH_TARGET, "comment-1", TIMELINE_QUERY);
+
+    expect(post).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "/branches/branch-1/trace-comments/comment-1/retry-sync"
+      ),
+      {}
+    );
+    expect(post.mock.calls[0]?.[0]).toContain(
+      `surface=${CommentSurface.BranchTimeline}`
+    );
+  });
+});
+
+/**
+ * ISS-11004: an Activity link names one thread, and the read asks for it by
+ * name so a thread past the collection cap still reaches the rail.
+ */
+describe("the HTTP source's addressed-thread read", () => {
+  const THREAD_ID = "00000000-0000-7000-8000-0000000000aa";
+
+  function sourceWithGet() {
+    const get = vi.fn().mockResolvedValue([]);
+    const source = createHttpTraceCommentsDataSource({
+      delete: vi.fn(),
+      get,
+      patch: vi.fn(),
+      post: vi.fn(),
+    });
+    return { get, source };
+  }
+
+  it("names the addressed thread on a Session read", async () => {
+    const { get, source } = sourceWithGet();
+
+    await source.list(
+      { type: CommentTargetType.Session, id: "session-1" },
+      undefined,
+      { includeThreadId: THREAD_ID, timeoutMs: 1000 }
+    );
+
+    expect(get).toHaveBeenCalledWith(
+      `/agent-sessions/session-1/trace-comments?${TRACE_COMMENT_INCLUDE_THREAD_PARAM}=${THREAD_ID}`,
+      { cache: "no-store", timeoutMs: 1000 }
+    );
+  });
+
+  it("keeps the Branch collection's surface beside the addressed thread", async () => {
+    const { get, source } = sourceWithGet();
+
+    await source.list(BRANCH_TARGET, TIMELINE_QUERY, {
+      includeThreadId: THREAD_ID,
+    });
+
+    expect(get.mock.calls[0]?.[0]).toBe(
+      `/branches/branch-1/trace-comments?surface=${CommentSurface.BranchTimeline}&${TRACE_COMMENT_INCLUDE_THREAD_PARAM}=${THREAD_ID}`
+    );
+  });
+});
+
+describe("ISS-12282 branch Session batch transport", () => {
+  it("uses one branch request and preserves anchors, replies and optional fields", async () => {
+    const comment = makeComment({ syncAbandoned: true });
+    const get = vi.fn().mockResolvedValue([comment]);
+    const source = createHttpTraceCommentsDataSource({
+      get,
+      post: vi.fn(),
+      patch: vi.fn(),
+      delete: vi.fn(),
+    });
+    const controller = new AbortController();
+    const result = await source.listBranchSessions?.(BRANCH_TARGET.id, {
+      signal: controller.signal,
+      timeoutMs: 5000,
+    });
+    expect(get).toHaveBeenCalledExactlyOnceWith(
+      "/branches/branch-1/trace-comments?surface=branch_timeline&includeSessions=true",
+      { cache: "no-store", signal: controller.signal, timeoutMs: 5000 }
+    );
+    expect(result).toEqual([comment]);
+  });
+
+  it("signals unsupported on an older API's unknown-parameter response", async () => {
+    const get = vi.fn().mockRejectedValue({ status: 400 });
+    const source = createHttpTraceCommentsDataSource({
+      get,
+      post: vi.fn(),
+      patch: vi.fn(),
+      delete: vi.fn(),
+    });
+    await expect(
+      source.listBranchSessions?.(BRANCH_TARGET.id)
+    ).resolves.toBeNull();
+  });
+
+  it("does not turn a failed or malformed batch into an empty collection", async () => {
+    const get = vi.fn().mockRejectedValue({ status: 503 });
+    const source = createHttpTraceCommentsDataSource({
+      get,
+      post: vi.fn(),
+      patch: vi.fn(),
+      delete: vi.fn(),
+    });
+    await expect(source.listBranchSessions?.(BRANCH_TARGET.id)).rejects.toEqual(
+      { status: 503 }
+    );
+    get.mockResolvedValue([{ target: BRANCH_TARGET }]);
+    await expect(
+      source.listBranchSessions?.(BRANCH_TARGET.id)
+    ).rejects.toThrow();
+  });
+});

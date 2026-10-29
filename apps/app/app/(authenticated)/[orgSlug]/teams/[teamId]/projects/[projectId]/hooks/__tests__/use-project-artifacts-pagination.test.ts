@@ -1,7 +1,9 @@
+import { DocumentStatus } from "@repo/api/src/types/document";
 import type { ProjectTreeDetailsResponse } from "@repo/api/src/types/project-tree";
 import { TreeTruncationReason } from "@repo/api/src/types/project-tree";
 import type { DocumentRowData } from "@repo/app/documents/lib/artifact-row-adapter";
 import { GroupByMode } from "@repo/app/documents/lib/group-by";
+import { GROUPED_SECTION_PAGING_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { DEFAULT_TABLE_PAGE_SIZE } from "@repo/design-system/components/ui/table-page-size-select";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +15,17 @@ const sortParamsMock = vi.fn();
 
 vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   useFeatureFlagEnabled: (key: string) => featureFlagEnabledMock(key),
+  useFeatureFlagEnabledOptional: (key: string) => featureFlagEnabledMock(key),
+  // ISS-9692 (whitlockk review): the page size reads the ladder flag through the
+  // GATE, which reports resolution as well as value. Routed to the same mock so
+  // a case can turn the extended ladder on; `isReady` is true here because this
+  // tab pages client-side over rows already in hand — it issues no request the
+  // size could be wrong for. The readiness contract itself is asserted where it
+  // bites, in `use-table-page-size-options.test.tsx` and at the two list hosts.
+  useFeatureFlagGateOptional: (key: string) => ({
+    enabled: featureFlagEnabledMock(key),
+    isReady: true,
+  }),
 }));
 vi.mock("@repo/app/shared/hooks/use-sort-params", () => ({
   useSortParams: () => sortParamsMock(),
@@ -23,6 +36,13 @@ import { useProjectArtifactsPagination } from "../use-project-artifacts-paginati
 const PROJECT_ID = "project-1";
 /** More rows than one default page, so a page can be a strict subset. */
 const TOTAL_DOCS = 60;
+
+// ISS-9726: the page-size and sort keys are resolved by the page and threaded
+// in, so a test names the key it wants rather than the project it used to be
+// derived from. Same shape the page produces.
+function pageSizeKeyFor(projectId: string): string {
+  return `table:page-size:project-artifacts:${projectId}`;
+}
 
 function docFixture(id: string): DocumentRowData {
   return {
@@ -58,8 +78,9 @@ function baseInput(overrides: Partial<HookInput> = {}): HookInput {
     isEnabled: true,
     isFilterActive: false,
     isOverview: false,
-    projectId: PROJECT_ID,
+    pageSizeStorageKey: pageSizeKeyFor(PROJECT_ID),
     scrollContainer: null,
+    sortPersistenceKey: `table:sort:project-artifacts:${PROJECT_ID}`,
     treeData: undefined,
     ...overrides,
   };
@@ -404,5 +425,245 @@ describe("useProjectArtifactsPagination — the caveat survives a zero-row tab",
     );
 
     expect(result.current.emptyStateTruncationNote).toBeNull();
+  });
+});
+
+/**
+ * A grouped tab whose sections straddle the 25-row default page: 20 Draft, 20
+ * In Review, 20 Approved. Sizes are literals, independent of
+ * DEFAULT_TABLE_PAGE_SIZE, so a change to the default cannot re-satisfy them.
+ */
+function statusDocs(status: string, prefix: string, count: number) {
+  return Array.from(
+    { length: count },
+    (_unused, i) =>
+      ({
+        ...docFixture(`${prefix}-${String(i).padStart(3, "0")}`),
+        status,
+      }) as DocumentRowData
+  );
+}
+
+function groupedStatusInput(): HookInput {
+  return baseInput({
+    documents: [
+      ...statusDocs(DocumentStatus.Draft, "draft", 20),
+      ...statusDocs(DocumentStatus.InReview, "review", 20),
+      ...statusDocs(DocumentStatus.Approved, "approved", 20),
+    ],
+    groupBy: GroupByMode.Status,
+  });
+}
+
+describe("useProjectArtifactsPagination — grouped section-aware paging (ISS-4704)", () => {
+  beforeEach(() => {
+    featureFlagEnabledMock.mockImplementation(
+      (key: string) => key === GROUPED_SECTION_PAGING_FEATURE_FLAG_KEY
+    );
+  });
+
+  it("hands DocumentsView the true section populations and this page's continuations", () => {
+    const { result } = renderHook(() =>
+      useProjectArtifactsPagination(groupedStatusInput())
+    );
+
+    expect(result.current.sectionTotalsByKey?.get(DocumentStatus.Draft)).toBe(
+      20
+    );
+    expect(
+      result.current.sectionTotalsByKey?.get(DocumentStatus.InReview)
+    ).toBe(20);
+    // Page 0 opens on Draft alone, which began here — nothing is continuing.
+    expect([...(result.current.continuedSectionKeys ?? [])]).toEqual([]);
+    expect(result.current.pagedDocuments).toHaveLength(20);
+  });
+
+  it("states the range the page actually holds, not the page * pageSize stride", () => {
+    const { result } = renderHook(() =>
+      useProjectArtifactsPagination(groupedStatusInput())
+    );
+
+    act(() => {
+      result.current.onPageChange(1);
+    });
+
+    // Page 0 held 20 rows (Draft), so page 1 resumes at 21 — the stride
+    // derivation would have said "26-50 of 60" over rows 21-40.
+    expect(result.current.readout).toBe("21–40 of 60 PRDs");
+  });
+
+  it("keeps the fixed-stride readout and publishes no populations with the gate off", () => {
+    featureFlagEnabledMock.mockReturnValue(false);
+    const { result } = renderHook(() =>
+      useProjectArtifactsPagination(groupedStatusInput())
+    );
+
+    act(() => {
+      result.current.onPageChange(1);
+    });
+
+    expect(result.current.readout).toBe("26–50 of 60 PRDs");
+    expect(result.current.sectionTotalsByKey).toBeUndefined();
+    expect(result.current.continuedSectionKeys).toBeUndefined();
+  });
+});
+/**
+ * ISS-9692 — the project-artifacts tab offers the large rungs, fills them, and
+ * remembers the choice per project.
+ */
+describe("useProjectArtifactsPagination — rows-per-page (ISS-9692)", () => {
+  const LARGE_PAGE_SIZE = 250;
+  const STORAGE_KEY = `table:page-size:project-artifacts:${PROJECT_ID}`;
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("offers only the shipped ladder with the flag off", () => {
+    const { result } = renderHook(() =>
+      useProjectArtifactsPagination(baseInput())
+    );
+
+    expect(result.current.pageSizeOptions).not.toContain(LARGE_PAGE_SIZE);
+    expect(result.current.pageSizeOptions).not.toContain(500);
+  });
+
+  it("offers 250 and 500 with the flag on", () => {
+    featureFlagEnabledMock.mockReturnValue(true);
+
+    const { result } = renderHook(() =>
+      useProjectArtifactsPagination(baseInput())
+    );
+
+    expect(result.current.pageSizeOptions).toContain(LARGE_PAGE_SIZE);
+    expect(result.current.pageSizeOptions).toContain(500);
+  });
+
+  it("fills a large page when the tab has the rows for it", () => {
+    featureFlagEnabledMock.mockReturnValue(true);
+
+    const { result } = renderHook(() =>
+      useProjectArtifactsPagination(
+        baseInput({ documents: docs(LARGE_PAGE_SIZE + 10) })
+      )
+    );
+
+    act(() => result.current.onPageSizeChange(LARGE_PAGE_SIZE));
+
+    expect(result.current.pageSize).toBe(LARGE_PAGE_SIZE);
+    expect(result.current.pagedDocuments).toHaveLength(LARGE_PAGE_SIZE);
+    expect(result.current.totalPages).toBe(2);
+  });
+
+  it("restores the choice on a later visit to the same project", () => {
+    featureFlagEnabledMock.mockReturnValue(true);
+
+    const first = renderHook(() =>
+      useProjectArtifactsPagination(
+        baseInput({ documents: docs(LARGE_PAGE_SIZE + 10) })
+      )
+    );
+    act(() => first.result.current.onPageSizeChange(LARGE_PAGE_SIZE));
+    first.unmount();
+
+    // A fresh mount reading what the first one wrote, which is what a reload
+    // and a navigate-away-and-back both are.
+    const second = renderHook(() =>
+      useProjectArtifactsPagination(
+        baseInput({ documents: docs(LARGE_PAGE_SIZE + 10) })
+      )
+    );
+
+    expect(second.result.current.pageSize).toBe(LARGE_PAGE_SIZE);
+    expect(second.result.current.pagedDocuments).toHaveLength(LARGE_PAGE_SIZE);
+  });
+
+  it("does not leak one project's choice onto another", () => {
+    featureFlagEnabledMock.mockReturnValue(true);
+
+    const first = renderHook(() =>
+      useProjectArtifactsPagination(
+        baseInput({ documents: docs(LARGE_PAGE_SIZE + 10) })
+      )
+    );
+    act(() => first.result.current.onPageSizeChange(LARGE_PAGE_SIZE));
+    first.unmount();
+
+    const other = renderHook(() =>
+      useProjectArtifactsPagination(
+        baseInput({ pageSizeStorageKey: pageSizeKeyFor("project-2") })
+      )
+    );
+
+    expect(other.result.current.pageSize).toBe(DEFAULT_TABLE_PAGE_SIZE);
+  });
+
+  /**
+   * ISS-9692 (davetho review) — the expectation here CHANGED, deliberately.
+   *
+   * It used to assert that a stored 500 read back as 25 with the gate closed,
+   * which was the behaviour of a hook that switched its persistence key to
+   * `null` and therefore never saw the stored value at all. That is not the
+   * documented stale-value contract: `useTablePageSizeOptions` promises the
+   * NEAREST STILL-LEGAL rung, so a reader who chose "as many as possible" lands
+   * on 100 rather than being reset to the smallest page on the ladder — and,
+   * critically, their stored 500 survives to be honoured again when the gate
+   * reopens. The old expectation described the defect.
+   */
+  it("degrades a stored size to the largest still-offered rung while the gate is closed", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ data: 500, savedAt: Date.now() })
+    );
+    featureFlagEnabledMock.mockReturnValue(false);
+
+    const { result } = renderHook(() =>
+      useProjectArtifactsPagination(baseInput())
+    );
+
+    expect(result.current.pageSize).toBe(100);
+    expect(result.current.pageSizeOptions).toContain(result.current.pageSize);
+    expect(result.current.pageSizeOptions).not.toContain(500);
+  });
+
+  it("still holds the stored size on disk through a gated-off visit", () => {
+    // The half a "no error thrown" assertion would miss. A gated-off session
+    // that read 25 and then wrote 25 would have DESTROYED the 500 — the reader
+    // turns the flag back on and their choice is gone, with nothing to show
+    // that anything was lost.
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ data: 500, savedAt: Date.now() })
+    );
+    featureFlagEnabledMock.mockReturnValue(false);
+
+    const gatedOff = renderHook(() =>
+      useProjectArtifactsPagination(baseInput())
+    );
+    act(() => gatedOff.result.current.onPageSizeChange(50));
+    gatedOff.unmount();
+
+    featureFlagEnabledMock.mockReturnValue(true);
+    const gatedOn = renderHook(() =>
+      useProjectArtifactsPagination(
+        baseInput({ documents: docs(LARGE_PAGE_SIZE + 10) })
+      )
+    );
+
+    expect(gatedOn.result.current.pageSize).toBe(500);
+  });
+
+  it("keeps the choice out of storage while the ladder gate is closed", () => {
+    featureFlagEnabledMock.mockReturnValue(false);
+
+    const { result } = renderHook(() =>
+      useProjectArtifactsPagination(baseInput())
+    );
+    act(() => result.current.onPageSizeChange(100));
+
+    // The control still moves for this visit — withholding the feature must not
+    // break the control that shipped.
+    expect(result.current.pageSize).toBe(100);
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
   });
 });

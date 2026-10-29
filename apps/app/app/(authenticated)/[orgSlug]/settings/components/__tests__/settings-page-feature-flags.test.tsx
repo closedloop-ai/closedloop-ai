@@ -8,16 +8,21 @@
  *
  * Gates covered:
  *   "artifact-tags"  — Tags tab trigger + Tags tab content
- *   "the-one-flag"   — CloudComputeModeCard in Integrations tab
- *   "google-drive"   — GoogleIntegrationCard in Integrations tab
+ *   "google-drive"   — GoogleDriveCard in Integrations tab
+ *   "pensero-integration" — PenseroCredentialCard in Integrations tab
  */
 
 import { FEATURE_FLAG_SETTLE_TIMEOUT_MS } from "@repo/app/shared/components/feature-flag-pending";
+import {
+  ARTIFACT_TAGS_FEATURE_FLAG_KEY,
+  PENSERO_INTEGRATION_FEATURE_FLAG_KEY,
+} from "@repo/app/shared/lib/feature-flags";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { WebFeatureFlagProvider } from "@/__tests__/helpers/web-feature-flag-provider";
 import { SETTINGS_TAB_PARAM, SettingsTab } from "../../settings-tabs";
 import { SettingsPage, TAGS_PENDING_LABEL } from "../settings-page";
 
@@ -33,7 +38,8 @@ const mockEnabledFlags = new Set<string>();
 // already-resolved flag and the bug is unreachable.
 const mockUnresolvedFlags = new Set<string>();
 
-const ARTIFACT_TAGS_FLAG = "artifact-tags";
+const ARTIFACT_TAGS_FLAG = ARTIFACT_TAGS_FEATURE_FLAG_KEY;
+const TAGS_TAB_NAME = "Tags";
 
 // The identify handshake, as PostHog actually exposes it. Flags bootstrap
 // against the ANONYMOUS cookie distinct id, and only once `identify()` lands
@@ -54,7 +60,7 @@ let mockDistinctId: string | undefined = CLERK_USER_ID;
 // Library's effect flush produces anyway.
 let mockFeatureFlaggedMounted = true;
 
-vi.mock("@repo/analytics/components/feature-flagged", () => ({
+vi.mock("@repo/app/shared/feature-flags/feature-flagged", () => ({
   FeatureFlagged: ({
     flag,
     children,
@@ -145,33 +151,24 @@ vi.mock("@repo/app/users/hooks/use-users", () => ({
   useUpdateUser: () => ({ mutate: vi.fn() }),
 }));
 
-vi.mock("../anthropic-api-key-card", () => ({
-  AnthropicApiKeyCard: () => null,
-}));
-
 vi.mock("../api-keys-settings-panel", () => ({
   ApiKeysSettingsPanel: () => null,
-}));
-
-vi.mock("../cloud-compute-mode-card", () => ({
-  CloudComputeModeCard: () => <div data-testid="cloud-compute-mode-card" />,
 }));
 
 vi.mock("../github-integration-card", () => ({
   GitHubIntegrationCard: () => null,
 }));
 
-vi.mock("../google-integration-card", () => ({
-  GoogleIntegrationCard: () => <div data-testid="google-integration-card" />,
+vi.mock("@repo/app/settings/v2/panels/plugins/google-drive-card", () => ({
+  GoogleDriveCard: () => <div data-testid="google-integration-card" />,
 }));
 
-vi.mock("../linear-integration-card", () => ({
-  LinearIntegrationCard: () => null,
-}));
-
-vi.mock("../local-compute-targets-card", () => ({
-  LocalComputeTargetsCard: () => null,
-}));
+vi.mock(
+  "@repo/app/settings/v2/panels/api-keys/pensero-credential-card",
+  () => ({
+    PenseroCredentialCard: () => <div data-testid="pensero-integration-card" />,
+  })
+);
 
 vi.mock("../organization-slug-settings", () => ({
   OrganizationSlugSettings: () => null,
@@ -183,10 +180,6 @@ vi.mock("../session-frustration-card", () => ({
 
 vi.mock("../transcript-search-card", () => ({
   TranscriptSearchCard: () => null,
-}));
-
-vi.mock("../session-sync-policy-card", () => ({
-  SessionSyncPolicyCard: () => null,
 }));
 
 vi.mock("@repo/app/tags/components/tags-settings-tab", () => ({
@@ -211,7 +204,9 @@ function renderSettings(initialTab: string, isAdmin: boolean) {
       <SettingsPage initialTab={tab} isAdmin={isAdmin} />
     </QueryClientProvider>
   );
-  const view = render(renderTree(initialTab));
+  const view = render(renderTree(initialTab), {
+    wrapper: WebFeatureFlagProvider,
+  });
 
   return {
     ...view,
@@ -247,14 +242,18 @@ describe("SettingsPage artifact-tags flag gate", () => {
   it("hides the Tags tab trigger when artifact-tags is OFF", () => {
     // Flag is NOT in the set — opposite branch must fail this assertion.
     renderSettings(SettingsTab.Profile, true);
-    expect(screen.queryByRole("tab", { name: "Tags" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: TAGS_TAB_NAME })
+    ).not.toBeInTheDocument();
   });
 
   it("shows the Tags tab trigger when artifact-tags is ON", () => {
     // The mock would NOT produce this result if the flag were off.
     mockEnabledFlags.add(ARTIFACT_TAGS_FLAG);
     renderSettings(SettingsTab.Profile, true);
-    expect(screen.getByRole("tab", { name: "Tags" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: TAGS_TAB_NAME })
+    ).toBeInTheDocument();
   });
 
   it("renders the TagsSettingsTab content when artifact-tags is ON and the Tags tab is active", () => {
@@ -275,7 +274,9 @@ describe("SettingsPage artifact-tags flag gate", () => {
     // falls back to Profile, whose panel content is visible.
     renderSettings(SettingsTab.Tags, true);
     // Tags is unavailable: neither its trigger nor its content render.
-    expect(screen.queryByRole("tab", { name: "Tags" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: TAGS_TAB_NAME })
+    ).not.toBeInTheDocument();
     expect(screen.queryByTestId("tags-settings-tab")).not.toBeInTheDocument();
     // The Profile tab is the active fallback.
     expect(screen.getByRole("tab", { name: "Profile" })).toHaveAttribute(
@@ -294,7 +295,7 @@ describe("SettingsPage artifact-tags flag gate", () => {
     mockEnabledFlags.add(ARTIFACT_TAGS_FLAG);
     renderSettings(SettingsTab.Tags, true);
     expect(screen.getByTestId("tags-settings-tab")).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Tags" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: TAGS_TAB_NAME })).toHaveAttribute(
       "aria-selected",
       "true"
     );
@@ -335,11 +336,13 @@ describe("SettingsPage — artifact-tags unresolved on first render (ISS-4566)",
     expect(screen.queryByTestId("tags-settings-tab")).not.toBeInTheDocument();
     // The strip holds on Tags with the panel. Without a trigger no tab reads as
     // selected at all, and the open panel's `aria-labelledby` dangles.
-    expect(screen.getByRole("tab", { name: "Tags" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: TAGS_TAB_NAME })).toHaveAttribute(
       "aria-selected",
       "true"
     );
-    expect(screen.getByRole("tabpanel", { name: "Tags" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("tabpanel", { name: TAGS_TAB_NAME })
+    ).toBeInTheDocument();
   });
 
   it("commits to the failed-read surface when the flag NEVER resolves", () => {
@@ -438,7 +441,7 @@ describe("SettingsPage — artifact-tags unresolved on first render (ISS-4566)",
     mockEnabledFlags.add(ARTIFACT_TAGS_FLAG);
     rerenderInPlace();
 
-    expect(screen.getByRole("tab", { name: "Tags" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: TAGS_TAB_NAME })).toHaveAttribute(
       "aria-selected",
       "true"
     );
@@ -491,7 +494,7 @@ describe("SettingsPage — artifact-tags unresolved on first render (ISS-4566)",
       "true"
     );
     // The trigger is back, but the user is not on it.
-    expect(screen.getByRole("tab", { name: "Tags" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: TAGS_TAB_NAME })).toHaveAttribute(
       "aria-selected",
       "false"
     );
@@ -536,11 +539,13 @@ describe("SettingsPage — artifact-tags unresolved on first render (ISS-4566)",
 
     renderSettings(SettingsTab.Tags, true);
 
-    expect(screen.getByRole("tab", { name: "Tags" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: TAGS_TAB_NAME })).toHaveAttribute(
       "aria-selected",
       "true"
     );
-    expect(screen.getByRole("tabpanel", { name: "Tags" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("tabpanel", { name: TAGS_TAB_NAME })
+    ).toBeInTheDocument();
   });
 });
 
@@ -594,7 +599,7 @@ describe("SettingsPage — artifact-tags resolved OFF on a ?tab=tags deep link",
       "aria-selected",
       "true"
     );
-    expect(screen.getByRole("tab", { name: "Tags" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: TAGS_TAB_NAME })).toHaveAttribute(
       "aria-selected",
       "false"
     );
@@ -619,7 +624,9 @@ describe("SettingsPage — artifact-tags resolved OFF on a ?tab=tags deep link",
     expect(
       screen.queryByRole("status", { name: TAGS_PENDING_LABEL })
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: "Tags" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: TAGS_TAB_NAME })
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -650,7 +657,7 @@ describe("SettingsPage — artifact-tags FALSE before identify() lands (ISS-4566
     const { rerenderInPlace } = renderSettings(SettingsTab.Tags, true);
 
     // Withheld, not committed: still on Tags, behind the pending panel.
-    expect(screen.getByRole("tab", { name: "Tags" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: TAGS_TAB_NAME })).toHaveAttribute(
       "aria-selected",
       "true"
     );
@@ -674,7 +681,7 @@ describe("SettingsPage — artifact-tags FALSE before identify() lands (ISS-4566
     rerenderInPlace();
 
     expect(screen.getByTestId("tags-settings-tab")).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Tags" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: TAGS_TAB_NAME })).toHaveAttribute(
       "aria-selected",
       "true"
     );
@@ -709,7 +716,7 @@ describe("SettingsPage — artifact-tags FALSE before identify() lands (ISS-4566
       });
 
       // Still the user's tab, and still the user's URL.
-      expect(screen.getByRole("tab", { name: "Tags" })).toHaveAttribute(
+      expect(screen.getByRole("tab", { name: TAGS_TAB_NAME })).toHaveAttribute(
         "aria-selected",
         "true"
       );
@@ -748,7 +755,7 @@ describe("SettingsPage — artifact-tags FALSE before identify() lands (ISS-4566
       mockDistinctId = ANONYMOUS_DISTINCT_ID;
       rerenderInPlace();
 
-      expect(screen.getByRole("tab", { name: "Tags" })).toHaveAttribute(
+      expect(screen.getByRole("tab", { name: TAGS_TAB_NAME })).toHaveAttribute(
         "aria-selected",
         "true"
       );
@@ -771,7 +778,7 @@ describe("SettingsPage — artifact-tags flips after the user selected Tags", ()
     mockEnabledFlags.add(ARTIFACT_TAGS_FLAG);
     const { rerenderInPlace } = renderSettings(SettingsTab.Profile, true);
 
-    await userEvent.click(screen.getByRole("tab", { name: "Tags" }));
+    await userEvent.click(screen.getByRole("tab", { name: TAGS_TAB_NAME }));
     expect(screen.getByTestId("tags-settings-tab")).toBeInTheDocument();
 
     mockEnabledFlags.delete(ARTIFACT_TAGS_FLAG);
@@ -782,14 +789,16 @@ describe("SettingsPage — artifact-tags flips after the user selected Tags", ()
       "true"
     );
     expect(screen.getByTestId("clerk-user-profile")).toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: "Tags" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: TAGS_TAB_NAME })
+    ).not.toBeInTheDocument();
   });
 
   it("shows the pending panel when the flag reloads to UNRESOLVED", async () => {
     mockEnabledFlags.add(ARTIFACT_TAGS_FLAG);
     const { rerenderInPlace } = renderSettings(SettingsTab.Profile, true);
 
-    await userEvent.click(screen.getByRole("tab", { name: "Tags" }));
+    await userEvent.click(screen.getByRole("tab", { name: TAGS_TAB_NAME }));
     expect(screen.getByTestId("tags-settings-tab")).toBeInTheDocument();
 
     mockEnabledFlags.delete(ARTIFACT_TAGS_FLAG);
@@ -805,32 +814,44 @@ describe("SettingsPage — artifact-tags flips after the user selected Tags", ()
   });
 });
 
-describe("SettingsPage the-one-flag gate (CloudComputeModeCard)", () => {
-  it("hides CloudComputeModeCard when the-one-flag is OFF", () => {
-    // Asserting absence with flag OFF ensures a removal of the gate would
-    // break this test rather than silently pass.
+describe("SettingsPage pensero-integration flag gate (PenseroCredentialCard)", () => {
+  it("hides PenseroCredentialCard when pensero-integration is OFF", () => {
+    // Closed-by-default (ISS-4779): with the flag off the Integrations tab must
+    // render exactly as it did before the card existed. Asserting absence here
+    // is what makes a removed gate fail rather than silently ship the card on.
     renderSettings(SettingsTab.Integrations, false);
     expect(
-      screen.queryByTestId("cloud-compute-mode-card")
+      screen.queryByTestId("pensero-integration-card")
     ).not.toBeInTheDocument();
   });
 
-  it("shows CloudComputeModeCard when the-one-flag is ON", () => {
-    mockEnabledFlags.add("the-one-flag");
+  it("hides PenseroCredentialCard when PostHog has not resolved the flag", () => {
+    // A key that does not exist in PostHog resolves to `undefined`, not
+    // `{ enabled: false }`. For a closed-by-default gate that must still read
+    // as hidden -- this pins the third state rather than assuming two.
+    mockUnresolvedFlags.add(PENSERO_INTEGRATION_FEATURE_FLAG_KEY);
     renderSettings(SettingsTab.Integrations, false);
-    expect(screen.getByTestId("cloud-compute-mode-card")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("pensero-integration-card")
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows PenseroCredentialCard when pensero-integration is ON", () => {
+    mockEnabledFlags.add(PENSERO_INTEGRATION_FEATURE_FLAG_KEY);
+    renderSettings(SettingsTab.Integrations, false);
+    expect(screen.getByTestId("pensero-integration-card")).toBeInTheDocument();
   });
 });
 
-describe("SettingsPage google-drive flag gate (GoogleIntegrationCard)", () => {
-  it("hides GoogleIntegrationCard when google-drive is OFF", () => {
+describe("SettingsPage google-drive flag gate (GoogleDriveCard)", () => {
+  it("hides GoogleDriveCard when google-drive is OFF", () => {
     renderSettings(SettingsTab.Integrations, false);
     expect(
       screen.queryByTestId("google-integration-card")
     ).not.toBeInTheDocument();
   });
 
-  it("shows GoogleIntegrationCard when google-drive is ON", () => {
+  it("shows GoogleDriveCard when google-drive is ON", () => {
     mockEnabledFlags.add("google-drive");
     renderSettings(SettingsTab.Integrations, false);
     expect(screen.getByTestId("google-integration-card")).toBeInTheDocument();

@@ -10,18 +10,19 @@ import {
 } from "../sessions-summary-comparison";
 
 /**
- * ISS-6041 — the two-axis gate on the desktop Sessions strip's period-over-period
- * comparison, unit-tested apart from the view that consumes it.
+ * ISS-6041 — the desktop Sessions strip's period-over-period comparison,
+ * unit-tested apart from the view that consumes it.
  *
- * The pairing is the point: Cloud mode is what makes a comparison POSSIBLE (the
- * HTTP producer serves it; the local SQLite one cannot), and the shared Grid
- * Parity gate is what makes it VISIBLE. Either axis alone must not turn it on.
+ * ISS-8909 retired the second axis with the `grid-table-v2` gate, so what is
+ * left is the producer: Cloud mode is what makes a comparison POSSIBLE (the HTTP
+ * producer serves it; the local SQLite one cannot).
  */
 
 /** The props {@link useSessionComparisonSuppressed} takes, for `renderHook`. */
 type SuppressedProps = Parameters<typeof useSessionComparisonSuppressed>[0];
 
 const SETTLED_READ: SuppressedProps["read"] = {
+  isPending: false,
   isLoading: false,
   isError: false,
   isPlaceholderData: false,
@@ -38,18 +39,10 @@ const USAGE_WITH_COMPARISON = {
 
 describe("isSessionComparisonEnabled", () => {
   it.each([
-    { isCloudMode: true, comparisonV2Enabled: true, expected: true },
-    { isCloudMode: true, comparisonV2Enabled: false, expected: false },
-    { isCloudMode: false, comparisonV2Enabled: true, expected: false },
-    { isCloudMode: false, comparisonV2Enabled: false, expected: false },
-  ])("cloud=$isCloudMode gate=$comparisonV2Enabled → $expected", ({
-    isCloudMode,
-    comparisonV2Enabled,
-    expected,
-  }) => {
-    expect(
-      isSessionComparisonEnabled({ isCloudMode, comparisonV2Enabled })
-    ).toBe(expected);
+    { isCloudMode: true, expected: true },
+    { isCloudMode: false, expected: false },
+  ])("cloud=$isCloudMode → $expected", ({ isCloudMode, expected }) => {
+    expect(isSessionComparisonEnabled({ isCloudMode })).toBe(expected);
   });
 });
 
@@ -119,6 +112,7 @@ describe("resolveSessionSummaryDeltas", () => {
       usage: undefined,
     });
 
+    expect(deltas).toBeDefined();
     expect(deltas?.sessions).toBeUndefined();
   });
 
@@ -285,5 +279,100 @@ describe("useSessionComparisonSuppressed", () => {
     });
 
     expect(result.current).toBe(false);
+  });
+
+  /**
+   * ISS-7422 threaded the honest-loading gate through to the shared rule. These
+   * pin the INTERACTION: the gate relaxes the shared `isFetching` arm, and this
+   * hook's own scope narrowing must keep deciding the placeholder arm either way
+   * — otherwise a range change would silently start comparing the new window
+   * against the old population's figures.
+   */
+  describe("with the honest-loading gate on", () => {
+    it("still suppresses a real scope change, which the gate must not forgive", () => {
+      const { result, rerender } = renderHook(
+        (props: SuppressedProps) => useSessionComparisonSuppressed(props),
+        {
+          initialProps: {
+            honestLoadingEnabled: true,
+            read: SETTLED_READ,
+            summaryScopeKey: "scope-a",
+          },
+        }
+      );
+      expect(result.current).toBe(false);
+
+      rerender({
+        honestLoadingEnabled: true,
+        read: { ...SETTLED_READ, isPlaceholderData: true, isFetching: true },
+        summaryScopeKey: "scope-b",
+      });
+
+      expect(result.current).toBe(true);
+    });
+
+    it("still suppresses a failed read", () => {
+      const { result } = renderHook(() =>
+        useSessionComparisonSuppressed({
+          honestLoadingEnabled: true,
+          read: { ...SETTLED_READ, isError: true },
+          summaryScopeKey: "scope-a",
+        })
+      );
+
+      expect(result.current).toBe(true);
+    });
+
+    // The arm the gate DOES relax, reached without this hook's narrowing having
+    // to rescue it: the shared rule now returns false outright.
+    it("holds the comparison through a same-scope refetch on the first render", () => {
+      const { result } = renderHook(() =>
+        useSessionComparisonSuppressed({
+          honestLoadingEnabled: true,
+          read: { ...SETTLED_READ, isFetching: true },
+          summaryScopeKey: "scope-a",
+        })
+      );
+
+      expect(result.current).toBe(false);
+    });
+
+    // Flag-off, that same first render has no settled scope recorded yet, so the
+    // narrowing suppresses. The contrast is what proves the gate is read at all.
+    it("suppresses that same first render with the gate off", () => {
+      const { result } = renderHook(() =>
+        useSessionComparisonSuppressed({
+          read: { ...SETTLED_READ, isFetching: true },
+          summaryScopeKey: "scope-a",
+        })
+      );
+
+      expect(result.current).toBe(true);
+    });
+  });
+});
+
+/**
+ * ISS-6382: a read held closed by the restore gate on a WARM cache reports a
+ * settled success — none of the other four flags is true — while carrying the
+ * PREVIOUS view's figures. Two things must hold: the comparison stays
+ * suppressed, and the held snapshot is NOT stamped for a scope this mount never
+ * fetched (which would make the next settled render compare against it).
+ */
+describe("useSessionComparisonSuppressed with a held-closed read (ISS-6382)", () => {
+  it("suppresses, and does not adopt the scope of a read that never ran", () => {
+    const pending = { ...SETTLED_READ, isPending: true };
+    const { rerender, result } = renderHook(
+      (props: SuppressedProps) => useSessionComparisonSuppressed(props),
+      { initialProps: { read: pending, summaryScopeKey: "scope-a" } }
+    );
+
+    expect(result.current).toBe(true);
+
+    // The gate opens on a DIFFERENT scope. If the held-closed render had stamped
+    // `scope-a`, a later placeholder render on that key would read as "same
+    // scope" and un-suppress a comparison nothing computed.
+    rerender({ read: pending, summaryScopeKey: "scope-b" });
+    expect(result.current).toBe(true);
   });
 });

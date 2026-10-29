@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import {
   SpanKind,
   SpanStatusCode,
@@ -7,6 +6,7 @@ import {
 import { defaultResource } from "@opentelemetry/resources";
 import type { ResourceMetrics } from "@opentelemetry/sdk-metrics";
 import { KeylessTelemetrySignal } from "@repo/shared-platform/keyless-telemetry";
+import { test } from "vitest";
 import {
   asOtlpRecordArray,
   decodeOtlpBytesToHex,

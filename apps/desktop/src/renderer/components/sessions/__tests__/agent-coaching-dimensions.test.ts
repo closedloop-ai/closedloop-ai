@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildCostCandidate,
   buildWallTimeCandidate,
@@ -8,6 +8,7 @@ import type {
   AgentCoachingGroundedMetrics,
   AgentCoachingInput,
 } from "../agent-coaching-types";
+import { useGermanDefaultLocale } from "./german-default-locale";
 
 const INPUT: AgentCoachingInput = {
   analytics: null,
@@ -145,3 +146,52 @@ describe("buildWallTimeCandidate (stage review)", () => {
     ).toBe(false);
   });
 });
+
+describe("coaching figures under a non-US default locale (ISS-7336)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("puts the suite on a German-default machine, so an inherited locale shows", () => {
+    useGermanDefaultLocale();
+    // Guards the harness itself. If this stub ever stops biting, every
+    // assertion below would pass against the exact bug it exists to catch.
+    expect((1234.56).toLocaleString(undefined, TWO_DECIMALS)).toBe("1.234,56");
+    expect((1234.56).toLocaleString("en-US", TWO_DECIMALS)).toBe("1,234.56");
+  });
+
+  it("renders estimated dollars in the canonical locale, not the machine's", () => {
+    useGermanDefaultLocale();
+    const candidate = buildCostCandidate(
+      INPUT,
+      makeMetrics({ totalTokens: 5_000_000, estimatedCostUsd: 1234.56 }),
+      emptyFeedbackInsights()
+    );
+    expect(candidate?.tip.body).toContain("$1,234.56");
+    expect(candidate?.tip.body).not.toContain("$1.234,56");
+    expect(candidate?.tip.evidence).toContain("estimated spend: $1,234.56");
+    expect(candidate?.tip.evidence).not.toContain("estimated spend: $1.234,56");
+  });
+
+  it("renders the token and session counts in that same canonical locale", () => {
+    useGermanDefaultLocale();
+    const candidate = buildCostCandidate(
+      INPUT,
+      makeMetrics({
+        totalTokens: 5_000_000,
+        estimatedCostUsd: null,
+        sessionsAnalyzed: 12_500,
+      }),
+      emptyFeedbackInsights()
+    );
+    expect(candidate?.tip.body).toContain("5,000,000 tokens");
+    expect(candidate?.tip.body).not.toContain("5.000.000 tokens");
+    expect(candidate?.tip.evidence).toContain("12,500 sessions analyzed");
+    expect(candidate?.tip.evidence).not.toContain("12.500 sessions analyzed");
+  });
+});
+
+const TWO_DECIMALS: Intl.NumberFormatOptions = {
+  maximumFractionDigits: 2,
+  minimumFractionDigits: 2,
+};

@@ -5,8 +5,11 @@ import type {
   BranchPrState,
 } from "@repo/api/src/types/branch";
 import { BranchLinkedArtifactCollectionState } from "@repo/api/src/types/branch";
+import { observedPullRequestState } from "@repo/api/src/types/branch-associated-pull-request";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { getLabelForSlug } from "@repo/app/documents/lib/document-navigation";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { BRANCH_DETAIL_PR_BASE_AND_AUTHOR_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { Chip } from "@repo/design-system/components/ui/chip";
 import { Link } from "@repo/navigation/link";
 import {
@@ -15,6 +18,11 @@ import {
   GitPullRequestIcon,
 } from "lucide-react";
 import { useState } from "react";
+import { BRANCH_PULL_REQUEST_UNCONFIRMED_LABEL } from "../../lib/branch-outcome-copy";
+import {
+  PULL_REQUEST_AUTHOR_UNKNOWN_LABEL,
+  PULL_REQUEST_BASE_UNKNOWN_LABEL,
+} from "../../lib/pull-request-provenance-display";
 import { PrDescriptionMarkdown } from "../pr-comment-markdown";
 
 /**
@@ -177,8 +185,14 @@ function PullRequest({ detail }: { detail: BranchPageDetail }) {
   const hasPr = prNumber != null;
   const bodySource = selected?.body ?? detail.prBody;
   const body = bodySource?.trim() ? bodySource : null;
-  const prState = selected ? selected.state : detail.prState;
-  const stateChip = prState == null ? null : PR_STATE_CHIP[prState];
+  // ISS-8422 — `observedPullRequestState`, never `selected.state`: an unobserved
+  // item still reports the `OPEN` its column default produced, so reading the
+  // field directly rendered "Open" here while the selector two inches above said
+  // "Unconfirmed" about the same pull request.
+  const prState = selected
+    ? observedPullRequestState(selected)
+    : detail.prState;
+  const stateChip = pullRequestStateChip(hasPr, prState);
   const prUrl = selected ? selected.url : detail.prUrl;
   const prTitle = selected ? selected.title : detail.prTitle;
 
@@ -210,6 +224,7 @@ function PullRequest({ detail }: { detail: BranchPageDetail }) {
       {hasPr && prTitle ? (
         <p className="mb-1.5 font-medium text-sm">{prTitle}</p>
       ) : null}
+      {selected ? <PullRequestProvenance selected={selected} /> : null}
       {body ? (
         <>
           <div
@@ -250,6 +265,58 @@ function ArtifactCoverageNote({ detail }: { detail: BranchPageDetail }) {
   );
 }
 
+/**
+ * ISS-8241 (flag-gated): what this PR targets and who raised it.
+ *
+ * Both values come from the PR's own projected columns. An absent one names
+ * itself rather than falling back to the owning Branch's current base — that
+ * base belongs to whichever PR the branch points at NOW, so borrowing it makes
+ * every earlier PR claim a target it never had.
+ *
+ * Takes the RECORD, not the branch's compatibility `prNumber`: "the producer
+ * measured neither field" and "this response carries no PR record to describe"
+ * are different states, and only the first is something to say about a pull
+ * request. Callers gate on `selected` for that reason.
+ */
+function PullRequestProvenance({
+  selected,
+}: {
+  selected: NonNullable<BranchPageDetail["selectedPullRequest"]>;
+}) {
+  const enabled = useFeatureFlagEnabledOptional(
+    BRANCH_DETAIL_PR_BASE_AND_AUTHOR_FEATURE_FLAG_KEY
+  );
+  if (!enabled) {
+    return null;
+  }
+  // `.trim()`, not a nullish guard: ISS-8155's absent form on this wire is the
+  // EMPTY STRING as well as null, and an untrimmed blank renders as a hidden
+  // absence rather than the named one below.
+  const baseRefName = selected.baseRefName?.trim();
+  const authorLogin = selected.authorLogin?.trim();
+
+  return (
+    <p className="mb-1.5 text-muted-foreground text-xs">
+      <span>
+        {baseRefName ? (
+          <>
+            {"Base "}
+            <span className="font-mono">{baseRefName}</span>
+          </>
+        ) : (
+          PULL_REQUEST_BASE_UNKNOWN_LABEL
+        )}
+      </span>
+      {" · "}
+      <span>
+        {authorLogin
+          ? `Opened by ${authorLogin}`
+          : PULL_REQUEST_AUTHOR_UNKNOWN_LABEL}
+      </span>
+    </p>
+  );
+}
+
 export function BranchDeliveredPanel({
   detail,
   getArtifactHref,
@@ -263,4 +330,24 @@ export function BranchDeliveredPanel({
       <PullRequest detail={detail} />
     </section>
   );
+}
+
+/**
+ * ISS-8422: a NULL `prState` beside a real number is a pull request nobody
+ * observed, not a pull request with nothing to say. Rendering no chip put this
+ * box two inches above a selector reading "Unconfirmed" about the same pull
+ * request, with the panel silent — the same silence-carries-the-meaning defect
+ * the badge change exists to end. NULL with no number is still no chip.
+ */
+function pullRequestStateChip(
+  hasPullRequest: boolean,
+  prState: BranchPrState | null
+): { label: string; variant: "info" | "success" | "muted" } | null {
+  if (prState != null) {
+    return PR_STATE_CHIP[prState];
+  }
+  if (!hasPullRequest) {
+    return null;
+  }
+  return { label: BRANCH_PULL_REQUEST_UNCONFIRMED_LABEL, variant: "muted" };
 }

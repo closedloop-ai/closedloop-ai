@@ -22,7 +22,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { openTestDb } from "./agent-db-test-utils.js";
 import { expectedSubagentRowIds } from "./golden/golden-layer2-agent-ids.js";
 import { makePopulatedSession } from "./normalized-session-test-utils.js";

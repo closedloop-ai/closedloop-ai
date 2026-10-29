@@ -15,7 +15,10 @@
  * load the SAME rows twice (once each way), and compare the artifact each opted-in
  * caller actually consumes:
  *
- *   - the cloud-sync drain consumes `sanitizeSessionForSync(session)`;
+ *   - the cloud-sync drain consumes
+ *     `sanitizeSessionForSync(session, contentPolicy)` — the policy is REQUIRED
+ *     since ISS-7775, so the parity comparison below states one explicitly
+ *     rather than leaning on a default;
  *   - the list/analytics folds consume every field EXCEPT `metadata` (they read
  *     `metadata.messages` only through the assembled trace fields, which are
  *     compared here as part of the whole object).
@@ -29,13 +32,19 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { AGENT_TURN_TIMESTAMPS_METADATA_KEY } from "@repo/lib/agent-sessions/agent-turn-timestamps";
 import {
   compactMetadataForPreview,
   MAX_METADATA_KEYS,
+  MetadataContentPolicy,
   OMITTED_METADATA_KEYS,
 } from "@repo/lib/agent-sessions/metadata-preview";
-import { sanitizeSessionForSync } from "../src/main/agent-sync/agent-session-sync-payload.js";
+import { test } from "vitest";
+import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
+import {
+  estimateSessionPayloadBytes,
+  sanitizeSessionForSync,
+} from "../src/main/agent-sync/agent-session-sync-payload.js";
 import { sessionMetadataSelectExpression } from "../src/main/database/session-metadata-projection.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { loadSyncedSessionHydrationCosts } from "../src/main/database/synced-session-hydration-plan.js";
@@ -96,6 +105,43 @@ function metadataAtKeyCap(): string {
   );
   entries[40] = ["tokenSeries", [{ inputTokens: 1 }]];
   return JSON.stringify(Object.fromEntries(entries));
+}
+
+/**
+ * ISS-7775: a metadata blob whose bytes are almost all `messages[].text` — the
+ * one class the producer withholds below the `full` level. Everything else in it
+ * is structural and survives at every level, so the difference between the two
+ * policies' byte estimates is this text and nothing else.
+ */
+function turnTextHeavyBlob(): string {
+  return JSON.stringify({
+    slug: "iss-7775",
+    gitBranch: "fix/iss-7775",
+    messages: Array.from({ length: 40 }, (_, index) => ({
+      role: index % 2 === 0 ? "human" : "assistant",
+      timestamp: `2026-07-10T0${index % 6}:0${index % 6}:00.000Z`,
+      model: "model-a",
+      text: `turn ${index} ${"y".repeat(1200)}`,
+    })),
+  });
+}
+
+/**
+ * The same blob {@link turnTextHeavyBlob} seeds, as the shape the hydrator hands
+ * the producer — so the two policies' byte estimates can be computed in-process
+ * without re-reading the row.
+ */
+function turnTextHeavySession(): SyncedAgentSession {
+  return {
+    externalSessionId: "turn-text-heavy",
+    status: "inactive",
+    startedAt: "2026-07-10T00:00:00.000Z",
+    updatedAt: "2026-07-10T06:00:00.000Z",
+    metadata: JSON.parse(turnTextHeavyBlob()) as SyncedAgentSession["metadata"],
+    agents: [],
+    events: [],
+    tokenUsageByModel: [],
+  };
 }
 
 async function seedSession(
@@ -161,6 +207,10 @@ async function withSeededDb<T>(
       await seedSession(db, "one", metadataBlob(1), 1);
       await seedSession(db, "none", metadataBlob(0), 0);
       await seedSession(db, "null-metadata", null, 1);
+      // ISS-7775: a session whose bulk is ENTIRELY turn text — the class the
+      // producer now withholds below `full`. Sized under `Retain` it is far
+      // over the cap used below; sized under `Omit` it is far under it.
+      await seedSession(db, "turn-text-heavy", turnTextHeavyBlob(), 0);
       await seedSession(db, "malformed-metadata", "{not json", 1);
       await seedSession(
         db,
@@ -169,6 +219,11 @@ async function withSeededDb<T>(
         1
       );
       await seedSession(db, "key-cap", metadataAtKeyCap(), 0);
+      // ISS-9864: a token-event-less session WITH assistant rows, the shape the
+      // cloud counts on its `$.messages` fallback and the producer carries as
+      // the derived agent key. (Every other seed with messages also seeds
+      // `token_events`, on which the key is deliberately absent.)
+      await seedSession(db, "legacy-agent", metadataBlob(40), 0);
       return await run(db);
     } finally {
       await db.close?.();
@@ -286,11 +341,57 @@ test("ISS-6119: the cloud-sync payload is byte-identical across both arms", asyn
         "order is preserved"
       );
       assert.deepEqual(
-        JSON.parse(JSON.stringify(sanitizeSessionForSync(narrowSession))),
-        JSON.parse(JSON.stringify(sanitizeSessionForSync(fullSession))),
+        JSON.parse(
+          JSON.stringify(
+            sanitizeSessionForSync(narrowSession, MetadataContentPolicy.Retain)
+          )
+        ),
+        JSON.parse(
+          JSON.stringify(
+            sanitizeSessionForSync(fullSession, MetadataContentPolicy.Retain)
+          )
+        ),
         `the synced payload for ${fullSession.externalSessionId} is unchanged`
       );
     }
+  });
+});
+
+test("ISS-9864: the agent-turn key resolves identically on the drain's projection and the regen script's", async () => {
+  // The producer gates the key on `session.tokenEvents` (D2), a session-row
+  // fact hydrated whole on BOTH projections — not on `metadata.tokenSeries`,
+  // which the narrowed read replaces with a sentinel. A blob-side gate would
+  // emit the key on the golden regen path (FULL) and never on the real drain
+  // (NARROWED), and the fixtures would describe a payload production never
+  // sends. `many`/`one`/`no-dropped-key` seed `token_events` rows;
+  // `none`/`legacy-agent` do not.
+  await withSeededDb(async (db) => {
+    const ids = ["many", "one", "no-dropped-key", "none", "legacy-agent"];
+    const [full, narrow] = await Promise.all([
+      db.syncSource.loadSyncedSessions(ids, emptyAttributionCache(), FULL),
+      db.syncSource.loadSyncedSessions(ids, emptyAttributionCache(), NARROWED),
+    ]);
+    const keyOn = (session: SyncedAgentSession) =>
+      (
+        sanitizeSessionForSync(session, MetadataContentPolicy.Retain)
+          .metadata as Record<string, unknown>
+      )[AGENT_TURN_TIMESTAMPS_METADATA_KEY];
+    for (const [index, id] of ids.entries()) {
+      const onFull = keyOn(full[index]);
+      const onNarrow = keyOn(narrow[index]);
+      assert.deepEqual(onNarrow, onFull, `${id}: both projections agree`);
+      if (id === "none" || id === "legacy-agent") {
+        assert.ok(
+          Array.isArray(onFull),
+          `${id} has no token events: key present`
+        );
+      } else {
+        assert.equal(onFull, undefined, `${id} synced token events: no key`);
+      }
+    }
+    assert.deepEqual(keyOn(full[3]), [], "`none` seeds zero messages");
+    // 40 alternating human/assistant rows: the 20 assistant ones, and only them.
+    assert.equal((keyOn(full[4]) as string[]).length, 20);
   });
 });
 
@@ -490,3 +591,55 @@ function withoutMetadata(session: Record<string, unknown>): unknown {
   const { metadata, ...rest } = session;
   return rest;
 }
+
+test("ISS-7775: the oversized probe is a LOWER bound at every tier, not the widest one", async () => {
+  await withSeededDb(async (db) => {
+    // The probe's ONLY consumer DEAD-LETTERS on `payloadBytes > maxBytes`
+    // (`selectHydratableCandidateIds` -> `deadLetterOversizedLocalSession`),
+    // before hydration and before any send. So over-stating the size discards a
+    // session that would have synced fine — the exact failure this function's
+    // docstring forbids, and the one the tier split newly made possible: the
+    // drain now emits far fewer bytes below `full` than the widest policy does.
+    //
+    // The seeded session's bulk is entirely turn text. The cap below sits
+    // BETWEEN the two policies' estimates, so a probe sizing at `Retain` reports
+    // it oversized (and it is dead-lettered) while a probe sizing at `Omit` —
+    // the narrowest the producer can emit, and therefore a true lower bound at
+    // every level — does not.
+    const probe = db.syncSource.findLocallyOversizedSessions;
+    assert.ok(probe, "the sync source exposes the oversized probe");
+
+    const narrowBytes = estimateSessionPayloadBytes(
+      sanitizeSessionForSync(turnTextHeavySession(), MetadataContentPolicy.Omit)
+    );
+    const wideBytes = estimateSessionPayloadBytes(
+      sanitizeSessionForSync(
+        turnTextHeavySession(),
+        MetadataContentPolicy.Retain
+      )
+    );
+    // Anti-vacuity: the cap only discriminates while the two policies disagree.
+    assert.ok(
+      wideBytes > narrowBytes,
+      "the two policies size this session identically, so the cap below cannot tell them apart and the assertion proves nothing"
+    );
+    const capBetween = Math.floor((narrowBytes + wideBytes) / 2);
+
+    const oversized = await probe(["turn-text-heavy"], capBetween);
+    assert.deepEqual(
+      oversized,
+      [],
+      "a turn-text-heavy session was reported locally oversized at a cap its real below-full payload fits — the probe is sizing at the widest policy, so it dead-letters sessions that sync fine"
+    );
+
+    // POSITIVE CONTROL on the same call: the probe must still be able to report
+    // an oversize, or the assertion above passes against a probe that reports
+    // nothing at all.
+    const alwaysOversized = await probe(["turn-text-heavy"], 1);
+    assert.equal(
+      alwaysOversized.length,
+      1,
+      "a 1-byte cap reported nothing, so the probe cannot observe an oversize and the empty result above is meaningless"
+    );
+  });
+});

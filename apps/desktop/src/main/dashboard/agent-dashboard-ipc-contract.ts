@@ -7,12 +7,22 @@ import {
   type ConvertInstallOutcome,
   makeConvertInstallErrorOutcome,
 } from "@repo/api/src/types/convert-install";
-import type { SessionPageRequest } from "../../shared/agent-db-contract.js";
+import { AgentDashboardDbIpcChannel } from "../../shared/agent-dashboard-db-ipc-channel.js";
+import type {
+  SessionPageRequest,
+  WorkflowQueryData,
+} from "../../shared/agent-db-contract.js";
 import {
-  SCHEDULED_TASKS_IPC_CHANNEL_LIST,
-  ScheduledTasksIpcChannel,
-} from "../../shared/scheduled-tasks-channel.js";
-import { emptyAgentComponentsListResponse } from "../../shared/shared-agent-components-contract.js";
+  LOCAL_BRANCH_PRIORITY_WRITE_CHANNEL,
+  LOCAL_SESSION_PRIORITY_WRITE_CHANNEL,
+  type LocalPriorityWriteResult,
+  LocalPriorityWriteStatus,
+} from "../../shared/local-priority-write-contract.js";
+import {
+  emptyAgentComponentsListResponse,
+  emptyAgentComponentsPageDataResponse,
+  SHARED_AGENT_COMPONENTS_IPC_CHANNELS,
+} from "../../shared/shared-agent-components-contract.js";
 import {
   emptySharedAgentSessionsAnalytics,
   emptySharedAgentSessionsListResponse,
@@ -20,6 +30,7 @@ import {
   emptySharedAgentSessionsUsageSummary,
   SHARED_AGENT_SESSIONS_IPC_CHANNEL_LIST,
   SHARED_AGENT_SESSIONS_IPC_CHANNELS,
+  type SharedAgentSessionsCancelReadResult,
   type SharedAgentSessionsIpcChannel,
 } from "../../shared/shared-agent-sessions-contract.js";
 import {
@@ -32,9 +43,9 @@ import {
   type SharedBranchesIpcChannel,
 } from "../../shared/shared-branches-contract.js";
 import {
-  SHARED_TRACE_COMMENTS_IPC_CHANNEL_LIST,
-  type SharedTraceCommentsIpcChannel,
-} from "../../shared/shared-trace-comments-contract.js";
+  THREAD_VIEWED_CHANNEL,
+  type ThreadViewedResult,
+} from "../../shared/thread-viewership-contract.js";
 
 /**
  * The convert-engine IPC channel name (FEA-4079). Named once here and imported by
@@ -46,71 +57,86 @@ export const CATALOG_CONVERT_INSTALL_CHANNEL =
   "desktop:db:catalog-convert-install" as const;
 
 export const DESIGN_SYSTEM_DB_IPC_CHANNELS = [
-  "desktop:db:get-sessions",
-  "desktop:db:get-sessions-page",
-  "desktop:db:get-kanban-pages",
-  "desktop:db:get-session",
-  "desktop:db:get-session-details",
-  "desktop:db:get-agents",
-  "desktop:db:get-events",
-  "desktop:db:get-dashboard-summary",
-  "desktop:db:get-sessions-with-details",
-  "desktop:db:get-event-feed",
-  "desktop:db:get-events-with-session",
-  "desktop:db:get-event-count-by-type",
-  "desktop:db:get-token-analytics",
-  "desktop:db:get-insights",
-  "desktop:db:get-agent-hierarchy",
-  "desktop:db:get-analytics",
-  "desktop:db:get-workflow-data",
-  "desktop:db:get-core-features",
-  "desktop:db:get-packs",
-  "desktop:db:get-skills",
-  "desktop:db:get-tools",
-  "desktop:db:get-subagents",
-  "desktop:db:get-plans",
-  "desktop:db:get-pull-requests",
+  AgentDashboardDbIpcChannel.GetSessions,
+  AgentDashboardDbIpcChannel.GetSessionsPage,
+  AgentDashboardDbIpcChannel.GetKanbanPages,
+  AgentDashboardDbIpcChannel.GetSession,
+  AgentDashboardDbIpcChannel.GetSessionDetails,
+  AgentDashboardDbIpcChannel.GetAgents,
+  AgentDashboardDbIpcChannel.GetEvents,
+  AgentDashboardDbIpcChannel.GetDashboardSummary,
+  AgentDashboardDbIpcChannel.GetSessionsWithDetails,
+  AgentDashboardDbIpcChannel.GetEventFeed,
+  AgentDashboardDbIpcChannel.GetEventsWithSession,
+  AgentDashboardDbIpcChannel.GetEventCountByType,
+  AgentDashboardDbIpcChannel.GetTokenAnalytics,
+  AgentDashboardDbIpcChannel.GetInsights,
+  AgentDashboardDbIpcChannel.GetAgentHierarchy,
+  AgentDashboardDbIpcChannel.GetAnalytics,
+  AgentDashboardDbIpcChannel.GetWorkflowData,
+  AgentDashboardDbIpcChannel.GetCoreFeatures,
+  AgentDashboardDbIpcChannel.GetPacks,
+  AgentDashboardDbIpcChannel.GetSkills,
+  AgentDashboardDbIpcChannel.GetTools,
+  AgentDashboardDbIpcChannel.GetSubagents,
+  AgentDashboardDbIpcChannel.GetPlans,
+  AgentDashboardDbIpcChannel.GetPullRequests,
   // Catalog (FEA-1314)
-  "desktop:db:get-catalog",
-  "desktop:db:get-catalog-entry",
-  "desktop:db:get-catalog-readme",
-  "desktop:db:get-catalog-contents",
-  "desktop:db:get-catalog-history",
-  "desktop:db:catalog-install",
+  AgentDashboardDbIpcChannel.GetCatalog,
+  AgentDashboardDbIpcChannel.GetCatalogEntry,
+  AgentDashboardDbIpcChannel.GetCatalogContents,
+  AgentDashboardDbIpcChannel.GetCatalogHistory,
+  AgentDashboardDbIpcChannel.CatalogInstall,
   // Convert engine (FEA-4079): convert a component to a target harness's format
   // and install it, as one gateway operation, over the vetted install path.
   CATALOG_CONVERT_INSTALL_CHANNEL,
-  "desktop:db:catalog-uninstall",
-  "desktop:db:catalog-refresh",
-  "desktop:db:get-install-runs",
+  AgentDashboardDbIpcChannel.CatalogUninstall,
+  AgentDashboardDbIpcChannel.CatalogRefresh,
+  AgentDashboardDbIpcChannel.GetInstallRuns,
   // Installed packs (FEA-1224)
-  "desktop:db:get-installed-packs",
-  "desktop:db:get-pack-detail",
-  "desktop:db:get-pack-sessions",
-  "desktop:db:get-all-skills",
-  "desktop:db:get-skill-invocations",
-  "desktop:db:get-recent-projects",
+  AgentDashboardDbIpcChannel.GetInstalledPacks,
+  AgentDashboardDbIpcChannel.GetPackDetail,
+  AgentDashboardDbIpcChannel.GetPackSessions,
+  AgentDashboardDbIpcChannel.GetAllSkills,
+  AgentDashboardDbIpcChannel.GetSkillInvocations,
   // Plans (FEA-1189)
-  "desktop:db:get-plans-list",
-  "desktop:db:get-plan",
-  "desktop:db:get-plan-versions",
-  "desktop:db:confirm-plan",
-  "desktop:db:reject-plan",
-  "desktop:db:open-plan",
+  AgentDashboardDbIpcChannel.GetPlansList,
+  AgentDashboardDbIpcChannel.GetPlan,
+  AgentDashboardDbIpcChannel.GetPlanVersions,
+  AgentDashboardDbIpcChannel.ConfirmPlan,
+  AgentDashboardDbIpcChannel.RejectPlan,
+  AgentDashboardDbIpcChannel.OpenPlan,
   // Pull Requests (FEA-1226)
-  "desktop:db:get-pr-stats",
-  "desktop:db:get-pr-sessions",
-  "desktop:db:get-pr-list",
-  "desktop:db:open-pr",
+  AgentDashboardDbIpcChannel.GetPrStats,
+  AgentDashboardDbIpcChannel.GetPrSessions,
+  AgentDashboardDbIpcChannel.GetPrList,
+  AgentDashboardDbIpcChannel.OpenPr,
   // Diagnostics (FEA-1959)
-  "desktop:db:get-diagnostics",
+  AgentDashboardDbIpcChannel.GetDiagnostics,
   // Optimization analytics (FEA-2923 / AC-022)
-  "desktop:db:get-component-model-trend",
-  "desktop:db:get-subagent-frequency",
-  "desktop:db:is-skill-loaded",
+  AgentDashboardDbIpcChannel.GetComponentModelTrend,
+  AgentDashboardDbIpcChannel.GetSubagentFrequency,
+  AgentDashboardDbIpcChannel.IsSkillLoaded,
   // Agent components local read (FEA-2923 / T-16.3)
-  "desktop:db:list-agent-components",
-  "desktop:db:get-agent-component-detail",
+  SHARED_AGENT_COMPONENTS_IPC_CHANNELS.list,
+  SHARED_AGENT_COMPONENTS_IPC_CHANNELS.detail,
+  SHARED_AGENT_COMPONENTS_IPC_CHANNELS.frequency,
+  // ISS-6822: the bounded page-data read.
+  SHARED_AGENT_COMPONENTS_IPC_CHANNELS.pageData,
+  // ISS-10467: the per-content-version usage drill-down. A db-host handler that
+  // is NOT listed here keeps a live ipcMain channel with no disabled-mode
+  // responder behind it, so with the runtime down the renderer's call rejects
+  // instead of answering — which the panel would render as a failed read rather
+  // than as the unavailable capability it is. The CONST, not the literal, for the
+  // reason the entry below states: a rename is then a compile error here rather
+  // than a runtime "no handler for channel".
+  SHARED_AGENT_COMPONENTS_IPC_CHANNELS.versionUsage,
+  // ISS-7830: thread-viewership capture. The CONST, not the literal, so a rename
+  // is a compile error here rather than a runtime "no handler for channel".
+  THREAD_VIEWED_CHANNEL,
+  // ISS-10332: the local-mode priority writes.
+  LOCAL_SESSION_PRIORITY_WRITE_CHANNEL,
+  LOCAL_BRANCH_PRIORITY_WRITE_CHANNEL,
 ] as const;
 
 type DesignSystemDbIpcChannel = (typeof DESIGN_SYSTEM_DB_IPC_CHANNELS)[number];
@@ -159,23 +185,16 @@ const EMPTY_WORKFLOW_DATA = {
     avgDurationSec: 0,
     totalCompactions: 0,
     avgCompactions: 0,
-    topFlow: null,
   },
   orchestration: {
     sessionCount: 0,
     mainCount: 0,
     subagentTypes: [],
-    edges: [],
     outcomes: [],
     compactions: { total: 0, sessions: 0 },
   },
-  toolFlow: {
-    transitions: [],
-    toolCounts: [],
-  },
   effectiveness: [],
-  cooccurrence: [],
-};
+} satisfies WorkflowQueryData;
 
 const EMPTY_CORE_FEATURES = {
   packs: [],
@@ -221,7 +240,6 @@ const EMPTY_DIAGNOSTICS = {
   repos: [],
   backfill: {
     artifactLinks: { totalScanned: 0, lastScannedAt: null },
-    prBackfill: { totalScanned: 0, lastScannedAt: null },
   },
   linkStats: [],
   linkTotals: { totalLinks: 0, linkedSessions: 0, linkedArtifacts: 0 },
@@ -237,50 +255,49 @@ function resolveDisabledAgentDashboardDbIpcResponse(
   args: unknown[]
 ): unknown {
   switch (channel) {
-    case "desktop:db:get-dashboard-summary":
+    case AgentDashboardDbIpcChannel.GetDashboardSummary:
       return EMPTY_DASHBOARD_SUMMARY;
-    case "desktop:db:get-sessions-page":
+    case AgentDashboardDbIpcChannel.GetSessionsPage:
       return emptySessionPage(args[0]);
-    case "desktop:db:get-kanban-pages":
+    case AgentDashboardDbIpcChannel.GetKanbanPages:
       return emptyKanbanPages(args[0], args[1]);
-    case "desktop:db:get-token-analytics":
+    case AgentDashboardDbIpcChannel.GetTokenAnalytics:
       return EMPTY_TOKEN_ANALYTICS;
-    case "desktop:db:get-insights":
+    case AgentDashboardDbIpcChannel.GetInsights:
       return emptyInsightsResponse(args[0]);
-    case "desktop:db:get-analytics":
+    case AgentDashboardDbIpcChannel.GetAnalytics:
       return EMPTY_ANALYTICS;
-    case "desktop:db:get-workflow-data":
+    case AgentDashboardDbIpcChannel.GetWorkflowData:
       return EMPTY_WORKFLOW_DATA;
-    case "desktop:db:get-core-features":
+    case AgentDashboardDbIpcChannel.GetCoreFeatures:
       return EMPTY_CORE_FEATURES;
-    case "desktop:db:get-pr-stats":
+    case AgentDashboardDbIpcChannel.GetPrStats:
       return EMPTY_PR_STATS;
-    case "desktop:db:get-session":
-    case "desktop:db:get-session-details":
+    case AgentDashboardDbIpcChannel.GetSession:
+    case AgentDashboardDbIpcChannel.GetSessionDetails:
       return undefined;
-    case "desktop:db:get-catalog-entry":
-    case "desktop:db:get-catalog-readme":
-    case "desktop:db:get-catalog-contents":
-    case "desktop:db:get-plan":
+    case AgentDashboardDbIpcChannel.GetCatalogEntry:
+    case AgentDashboardDbIpcChannel.GetCatalogContents:
+    case AgentDashboardDbIpcChannel.GetPlan:
       return null;
-    case "desktop:db:catalog-install":
-    case "desktop:db:catalog-uninstall":
+    case AgentDashboardDbIpcChannel.CatalogInstall:
+    case AgentDashboardDbIpcChannel.CatalogUninstall:
       return DISABLED_MUTATION_RESULT;
     case CATALOG_CONVERT_INSTALL_CHANNEL:
       return DISABLED_CONVERT_INSTALL_RESULT;
-    case "desktop:db:catalog-refresh":
-    case "desktop:db:confirm-plan":
-    case "desktop:db:reject-plan":
-    case "desktop:db:open-plan":
-    case "desktop:db:open-pr":
+    case AgentDashboardDbIpcChannel.CatalogRefresh:
+    case AgentDashboardDbIpcChannel.ConfirmPlan:
+    case AgentDashboardDbIpcChannel.RejectPlan:
+    case AgentDashboardDbIpcChannel.OpenPlan:
+    case AgentDashboardDbIpcChannel.OpenPr:
       return undefined;
-    case "desktop:db:get-diagnostics":
+    case AgentDashboardDbIpcChannel.GetDiagnostics:
       return EMPTY_DIAGNOSTICS;
-    case "desktop:db:get-component-model-trend":
+    case AgentDashboardDbIpcChannel.GetComponentModelTrend:
       return { componentKind: "", componentKey: "", windowDays: 0, points: [] };
-    case "desktop:db:get-subagent-frequency":
+    case AgentDashboardDbIpcChannel.GetSubagentFrequency:
       return { subagentKey: "", windowDays: 0, points: [] };
-    case "desktop:db:is-skill-loaded":
+    case AgentDashboardDbIpcChannel.IsSkillLoaded:
       return {
         skillKey: "",
         existsInInventory: false,
@@ -288,10 +305,32 @@ function resolveDisabledAgentDashboardDbIpcResponse(
         totalInvocations: 0,
         lastUsedAt: null,
       };
-    case "desktop:db:list-agent-components":
+    case SHARED_AGENT_COMPONENTS_IPC_CHANNELS.list:
       return emptyAgentComponentsListResponse();
-    case "desktop:db:get-agent-component-detail":
+    case SHARED_AGENT_COMPONENTS_IPC_CHANNELS.detail:
       return null;
+    // ISS-6822: the disabled/degraded bounded read answers with the same empty
+    // population the `list` channel does, in the page-data shape.
+    case SHARED_AGENT_COMPONENTS_IPC_CHANNELS.pageData:
+      return emptyAgentComponentsPageDataResponse();
+    // ISS-10467: `null` is the same NOT-FOUND the detail channel answers with,
+    // and it is the honest one — with the runtime disabled nothing was read, so
+    // an entry carrying `0` invocations would assert this revision ran nothing.
+    case SHARED_AGENT_COMPONENTS_IPC_CHANNELS.versionUsage:
+    case SHARED_AGENT_COMPONENTS_IPC_CHANNELS.frequency:
+      return null;
+    // ISS-7830: with the runtime disabled nothing was persisted, and the honest
+    // answer says so. Falling through to the `[]` default would hand the renderer
+    // a value whose `recorded` is `undefined` — neither true nor a refusal.
+    case THREAD_VIEWED_CHANNEL:
+      return { recorded: false } satisfies ThreadViewedResult;
+    // ISS-10332: with the runtime disabled there is no local row to write, and
+    // the answer says so rather than falling through to the `[]` default.
+    case LOCAL_SESSION_PRIORITY_WRITE_CHANNEL:
+    case LOCAL_BRANCH_PRIORITY_WRITE_CHANNEL:
+      return {
+        status: LocalPriorityWriteStatus.NotFound,
+      } satisfies LocalPriorityWriteResult;
     default:
       return [];
   }
@@ -318,8 +357,31 @@ function resolveDisabledSharedAgentSessionsIpcResponse(
     // FEA-4157: disabled/degraded combined read → empty list + empty usage.
     case SHARED_AGENT_SESSIONS_IPC_CHANNELS.pageData:
       return emptySharedAgentSessionsPageDataResponse();
-    default:
-      return emptySharedAgentSessionsListResponse();
+    // ISS-9857: a page past a detail nothing can serve fails closed exactly as
+    // the detail does — the renderer's local source reads `null` as not-found.
+    case SHARED_AGENT_SESSIONS_IPC_CHANNELS.events:
+      return null;
+    // ISS-10737: a tree nothing can serve fails closed exactly as the detail
+    // does. `null` is "this source cannot tell you", which the renderer keeps
+    // distinct from an empty tree — a session that genuinely ran no components.
+    case SHARED_AGENT_SESSIONS_IPC_CHANNELS.invocationTree:
+      return null;
+    // ISS-9802: with the runtime disabled there is no in-flight read to cancel,
+    // so nothing was forwarded and the answer says exactly that. Answering
+    // `true` would report a cancellation that reached no work.
+    case SHARED_AGENT_SESSIONS_IPC_CHANNELS.cancelRead:
+      return { requested: false } satisfies SharedAgentSessionsCancelReadResult;
+    // ISS-8143: an exhaustiveness guard, not a fallback. This switch already
+    // covers the whole union, so the old `return emptySharedAgentSessionsList…`
+    // arm was unreachable AND harmful: it let a NEWLY added shared channel
+    // compile while silently answering with the LIST shape, instead of failing
+    // typecheck until someone maps it.
+    default: {
+      const unmapped: never = channel;
+      throw new Error(
+        `Unmapped shared agent-sessions IPC channel: ${String(unmapped)}`
+      );
+    }
   }
 }
 
@@ -354,47 +416,13 @@ function resolveDisabledSharedBranchesIpcResponse(
       return null;
     case SHARED_BRANCHES_IPC_CHANNELS.pageData:
       return emptySharedBranchesPageDataResponse();
-    default:
-      return emptySharedBranchesListResponse();
-  }
-}
-
-/**
- * Fail shared trace-comment IPC explicitly while the Agent Dashboard DB is
- * disabled or unavailable. Unlike sessions/branches, returning empty reads here
- * can hide local-only comments, so every trace-comment operation requires the
- * local store to be live.
- */
-function resolveDisabledSharedTraceCommentsIpcResponse(
-  _channel: SharedTraceCommentsIpcChannel
-): unknown {
-  throw new Error(
-    "Trace comments are unavailable because the local store is unavailable."
-  );
-}
-
-/**
- * Disabled-store responder for the Routines channels (the IPC channel strings
- * are the preserved `scheduled-tasks:*` wire contract). Reads degrade to an
- * empty surface so a mounted view renders its empty state; `previewSchedule`
- * returns an inert invalid result; writes reject so the mutation error handler
- * surfaces the failure instead of the UI believing the write landed.
- */
-function resolveDisabledScheduledTasksIpcResponse(channel: string): unknown {
-  switch (channel) {
-    case ScheduledTasksIpcChannel.List:
-    case ScheduledTasksIpcChannel.Runs:
-      return [];
-    case ScheduledTasksIpcChannel.PreviewSchedule:
-      return {
-        valid: false,
-        error: "Routines are unavailable because the daemon is off.",
-        nextRuns: [],
-      };
-    default:
+    // ISS-8143: exhaustiveness guard — see the twin above.
+    default: {
+      const unmapped: never = channel;
       throw new Error(
-        "Routines are unavailable because the local store is unavailable."
+        `Unmapped shared-branches IPC channel: ${String(unmapped)}`
       );
+    }
   }
 }
 
@@ -434,25 +462,6 @@ export function installDisabledAgentDashboardDbIpcHandlers(
       resolveDisabledSharedBranchesIpcResponse(channel)
     );
   }
-  for (const channel of SHARED_TRACE_COMMENTS_IPC_CHANNEL_LIST) {
-    ipc.removeHandler(channel);
-    ipc.handle(channel, () =>
-      resolveDisabledSharedTraceCommentsIpcResponse(channel)
-    );
-  }
-  // FEA-3852/3853/3854 (PRD-553): the Scheduled Tasks channels while the store is
-  // disabled/unavailable. Reads (`list`/`runs`) return an empty array so a mounted
-  // view renders its empty state (never a rejected promise), and `previewSchedule`
-  // returns an inert invalid result. Writes (`create`/`update`/`delete`/`toggle`/
-  // `runNow`) can't succeed against a disabled store, so they REJECT — the global
-  // mutation error handler surfaces it rather than the UI silently believing a
-  // create landed (a lying UI).
-  for (const channel of SCHEDULED_TASKS_IPC_CHANNEL_LIST) {
-    ipc.removeHandler(channel);
-    ipc.handle(channel, () =>
-      resolveDisabledScheduledTasksIpcResponse(channel)
-    );
-  }
 }
 
 const EMPTY_TIME_SERIES = { series: [], points: [] };
@@ -489,6 +498,9 @@ function emptyInsightsResponse(section: unknown): unknown {
     charts: {
       prTrend: EMPTY_TIME_SERIES,
       klocTrend: EMPTY_TIME_SERIES,
+      // ISS-8184: both vocabularies need an empty state, or a disabled dashboard
+      // silently changes which empty sentence it shows when the flag flips.
+      locTrend: EMPTY_TIME_SERIES,
       prByRepo: [],
       meanTimeToMerge: [],
       prByState: [],

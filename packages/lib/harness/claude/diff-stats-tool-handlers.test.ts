@@ -22,7 +22,7 @@ import {
   type DiffStatsAccumulator,
   isUsableDiffStatsToolInput,
 } from "./diff-stats-tool-handlers";
-import { parseClaudeTranscript } from "./parse-claude-core";
+import { parseClaudeTranscript } from "./parse-claude";
 
 function makeAcc(): DiffStatsAccumulator {
   return {
@@ -79,7 +79,7 @@ describe("DIFF_STATS_TOOL_HANDLERS — Edit", () => {
     expect(acc.diffFiles.has("/repo/mod.ts")).toBe(true);
   });
 
-  it("skips diffFiles when file_path is not a string", () => {
+  it("drops the record whole when file_path is not a string", () => {
     const acc = makeAcc();
     const tu = makeTu("Edit");
     handlerMap.get("Edit")!(acc, tu, {
@@ -87,8 +87,12 @@ describe("DIFF_STATS_TOOL_HANDLERS — Edit", () => {
       new_string: "after",
     });
 
-    // Delta is still computed, but diffFiles stays empty.
-    expect(tu.diffDelta).toBeDefined();
+    // ISS-6737: a delta with no `file_path` is attributable to no file, so the
+    // record is now dropped WHOLE rather than moving the totals while
+    // `filesChanged` stays put.
+    expect(tu.diffDelta).toBeUndefined();
+    expect(acc.totalAdded).toBe(0);
+    expect(acc.totalRemoved).toBe(0);
     expect(acc.diffFiles.size).toBe(0);
   });
 });
@@ -137,15 +141,17 @@ describe("DIFF_STATS_TOOL_HANDLERS — Write", () => {
     expect(acc.diffFiles.has("/repo/src/index.ts")).toBe(true);
   });
 
-  it("increments linesAdded but skips diffFiles when file_path is absent", () => {
+  it("drops the record whole when file_path is absent", () => {
     const acc = makeAcc();
     const tu = makeTu("Write");
     handlerMap.get("Write")!(acc, tu, { content: "some\ncontent" });
 
-    // No file_path → totalAdded is non-zero, diffFiles stays empty.
-    expect(acc.totalAdded).toBeGreaterThan(0);
+    // ISS-6737: a delta with no `file_path` is attributable to no file, so the
+    // record is now dropped WHOLE rather than moving the totals while
+    // `filesChanged` stays put.
+    // Measured before the fix: 3 added lines against 0 files.
+    expect(acc.totalAdded).toBe(0);
     expect(acc.diffFiles.size).toBe(0);
-    // And no path is cached (filePath == null guard).
     expect(acc.readContentByPath.size).toBe(0);
   });
 
@@ -154,10 +160,129 @@ describe("DIFF_STATS_TOOL_HANDLERS — Write", () => {
     const tu = makeTu("Write");
     handlerMap.get("Write")!(acc, tu, { file_path: "/repo/empty.ts" });
 
-    // content defaults to "" → 1 empty line counted as added.
-    expect(tu.diffDelta?.add).toBeGreaterThanOrEqual(1);
-    expect(tu.diffDelta?.del).toBe(0);
+    // ISS-6764: content defaults to "" → no lines written, so no lines counted.
+    // The path is still a file this session touched.
+    expect(tu.diffDelta).toEqual({ add: 0, del: 0 });
+    expect(acc.totalAdded).toBe(0);
     expect(acc.diffFiles.has("/repo/empty.ts")).toBe(true);
+    // ISS-6762: but the coerced default is NOT remembered — the path has no
+    // known state, so a later Write of it is not diffed against an empty file.
+    expect(acc.readContentByPath.size).toBe(0);
+  });
+
+  it("neither diffs against nor replaces a prior baseline when content is not a string", () => {
+    // ISS-6762, on the handler itself: a payload that carries no content
+    // evidences nothing about the file, so it must take the fresh-file path —
+    // diffing the coerced "" against the real baseline books a mass deletion
+    // nobody performed, and caching it erases the state the next genuine
+    // overwrite needs. ISS-6761 has since put a schema gate in front of both
+    // lanes, so no production caller reaches the handler with this payload; the
+    // handler is exported and total, so the invariant is still pinned here for
+    // any direct caller. The end-to-end parent-lane behavior is asserted in the
+    // ISS-6761 suite below.
+    const acc = makeAcc();
+    const tu = makeTu("Write");
+    acc.readContentByPath.set("/repo/src/app.ts", "a\nb\nc\n");
+
+    handlerMap.get("Write")!(acc, tu, {
+      file_path: "/repo/src/app.ts",
+      content: 42,
+    });
+
+    // ISS-6764: the fresh path now runs `computeLineDelta`, and the coerced ""
+    // has no lines — so the corrupt record books nothing rather than the one
+    // phantom line `"".split("\n").length` used to return.
+    expect(tu.diffDelta).toEqual({ add: 0, del: 0 });
+    expect(acc.readContentByPath.get("/repo/src/app.ts")).toBe("a\nb\nc\n");
+  });
+
+  it("still diffs the NEXT real overwrite against the true baseline after a corrupt Write", () => {
+    // Behavioural proof of the above, on the totals the session actually
+    // reports: against a poisoned "" baseline the real overwrite reads as
+    // {add: 3, del: 0} — three genuine deletions vanish and one line nobody
+    // wrote is added.
+    const acc = makeAcc();
+    acc.readContentByPath.set("/repo/src/app.ts", "a\nb\nc\n");
+    handlerMap.get("Write")!(acc, makeTu("Write"), {
+      file_path: "/repo/src/app.ts",
+      content: 42,
+    });
+
+    const real = makeTu("Write");
+    handlerMap.get("Write")!(acc, real, {
+      file_path: "/repo/src/app.ts",
+      content: "x\ny\n",
+    });
+
+    expect(real.diffDelta).toEqual({ add: 2, del: 3 });
+    // Every line the session reports — added and removed alike — comes from the
+    // real Write. ISS-6764 dropped the one added line the corrupt record used to
+    // contribute, so the corrupt payload is now fully inert on the totals.
+    expect(acc.totalRemoved).toBe(3);
+    expect(acc.totalAdded).toBe(2);
+  });
+
+  it("books zero added lines for empty content on a fresh file (ISS-6764)", () => {
+    const acc = makeAcc();
+    const tu = makeTu("Write");
+    handlerMap.get("Write")!(acc, tu, {
+      file_path: "/repo/blank.ts",
+      content: "",
+    });
+
+    // A zero-line file adds zero lines — not the one phantom line
+    // `"".split("\n").length` used to book.
+    expect(tu.diffDelta).toEqual({ add: 0, del: 0 });
+    expect(acc.totalAdded).toBe(0);
+    expect(acc.totalRemoved).toBe(0);
+    expect(acc.diffFiles.has("/repo/blank.ts")).toBe(true);
+    // What separates this from the absent-content case above: an explicit ""
+    // IS a known state, so it becomes the baseline the next Write diffs
+    // against. ISS-6762 withholds that only from a payload carrying no string.
+    expect(acc.readContentByPath.get("/repo/blank.ts")).toBe("");
+  });
+
+  it("counts an empty-content Write the same with and without a prior Read (ISS-6764)", () => {
+    const fresh = makeAcc();
+    const freshTu = makeTu("Write");
+    handlerMap.get("Write")!(fresh, freshTu, {
+      file_path: "/repo/blank.ts",
+      content: "",
+    });
+
+    // Same operation, same file, only difference is an unrelated earlier Read of
+    // an already-empty file. The added-line answer must not depend on it.
+    const afterRead = makeAcc();
+    const afterReadTu = makeTu("Write");
+    afterRead.readContentByPath.set("/repo/blank.ts", "");
+    handlerMap.get("Write")!(afterRead, afterReadTu, {
+      file_path: "/repo/blank.ts",
+      content: "",
+    });
+
+    // Pinned absolutely, not just to each other — two `undefined` deltas from a
+    // future early return would satisfy equality alone.
+    expect(freshTu.diffDelta).toEqual({ add: 0, del: 0 });
+    expect(afterReadTu.diffDelta).toEqual({ add: 0, del: 0 });
+    expect(fresh.totalAdded).toBe(afterRead.totalAdded);
+  });
+
+  it("still books the deletions when an empty Write truncates a read file", () => {
+    // The prior-Read arm above seeds "", which `computeLineDelta` treats as no
+    // baseline at all — so it cannot tell the fresh path from the overwrite
+    // path. A NON-empty baseline can: truncating a real file to "" is a
+    // deletion of every line, and ISS-6764 must not have flattened that to zero
+    // along with the phantom add.
+    const acc = makeAcc();
+    const tu = makeTu("Write");
+    acc.readContentByPath.set("/repo/app.ts", "a\nb");
+    handlerMap.get("Write")!(acc, tu, {
+      file_path: "/repo/app.ts",
+      content: "",
+    });
+
+    expect(tu.diffDelta).toEqual({ add: 0, del: 2 });
+    expect(acc.totalRemoved).toBe(2);
   });
 });
 
@@ -214,15 +339,20 @@ describe("DIFF_STATS_TOOL_HANDLERS — MultiEdit", () => {
     expect(acc.totalRemoved).toBe(0);
   });
 
-  it("skips diffFiles when file_path is not a string", () => {
+  it("drops the record whole when file_path is not a string", () => {
     const acc = makeAcc();
     const tu = makeTu("MultiEdit");
     handlerMap.get("MultiEdit")!(acc, tu, {
       edits: [{ old_string: "a", new_string: "b" }],
     });
 
+    // ISS-6737: a delta with no `file_path` is attributable to no file, so the
+    // record is now dropped WHOLE rather than moving the totals while
+    // `filesChanged` stays put.
     expect(acc.diffFiles.size).toBe(0);
-    expect(tu.diffDelta).toBeDefined();
+    expect(acc.totalAdded).toBe(0);
+    expect(acc.totalRemoved).toBe(0);
+    expect(tu.diffDelta).toBeUndefined();
   });
 
   // The two cases below are trust-boundary coercions: `edits[]` comes from
@@ -388,6 +518,229 @@ describe("DIFF_STATS_TOOL_HANDLERS — wiring through parseClaudeTranscript", ()
 });
 
 /**
+ * ISS-6761: the PARENT parser lane is fed the same raw transcript JSON as the
+ * sidecar lane — `block.input` straight off the parsed `.jsonl` line, with no
+ * normalization of `content` — so it must reject a corrupt payload on the same
+ * terms. It used to run the total handlers ungated, and the asymmetry was
+ * measurable: the identical malformed `Write` booked one fabricated added line
+ * and one changed file through the parent while contributing nothing through
+ * `applyDiffStatsToolUse`. One shared formula, two answers.
+ *
+ * These assert AGREEMENT between the lanes on the malformed shape, not merely
+ * that the parent produces some number.
+ */
+describe("ISS-6761 — the parent lane gates malformed payloads like the sidecar", () => {
+  function writeToolUseLine(input: unknown): string {
+    return JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-07-09T12:00:01.000Z",
+      message: {
+        role: "assistant",
+        model: "claude-opus-4",
+        content: [{ type: "tool_use", id: "toolu_w1", name: "Write", input }],
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    });
+  }
+
+  it("books no line and no changed file for a Write whose content is absent", async () => {
+    // Ungated, `content` coerced to "" and `"".split("\n").length` booked ONE
+    // added line against one changed file that nobody wrote.
+    const session = await parseClaudeTranscript(
+      [USER_LINE, writeToolUseLine({ file_path: "/repo/empty.ts" })],
+      { sessionId: "diff-gate-absent-content" }
+    );
+
+    expect(session?.diffStats).toBeNull();
+    const writeTu = session?.toolUses.find((tu) => tu.name === "Write");
+    expect(writeTu).toBeDefined();
+    expect(writeTu?.diffDelta).toBeUndefined();
+  });
+
+  it("agrees with the sidecar entry point on a non-string content", async () => {
+    const malformed = { file_path: "/repo/a.ts", content: 42 };
+
+    const session = await parseClaudeTranscript(
+      [USER_LINE, writeToolUseLine(malformed)],
+      { sessionId: "diff-gate-nonstring-content" }
+    );
+    const acc = makeAcc();
+    const countedBySidecarLane = applyDiffStatsToolUse(acc, "Write", malformed);
+
+    expect(countedBySidecarLane).toBe(false);
+    expect(acc.diffFiles.size).toBe(0);
+    // The parent must reach the SAME verdict on the SAME block.
+    expect(session?.diffStats).toBeNull();
+  });
+
+  it("drops only the malformed block — a later well-formed edit still counts", async () => {
+    // The gate withholds one handler call; it must not abort the record, the
+    // tool-use list, or the edits that follow it.
+    const editLine = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-07-09T12:00:02.000Z",
+      message: {
+        role: "assistant",
+        model: "claude-opus-4",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_e1",
+            name: "Edit",
+            input: {
+              file_path: "/repo/src/app.ts",
+              old_string: "const x = 1;",
+              new_string: "const x = 2;\nconst y = 3;",
+            },
+          },
+        ],
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    });
+
+    const session = await parseClaudeTranscript(
+      [USER_LINE, writeToolUseLine({ file_path: "/repo/empty.ts" }), editLine],
+      { sessionId: "diff-gate-mixed" }
+    );
+
+    expect(session?.diffStats).toEqual({
+      filesChanged: 1,
+      linesAdded: 2,
+      linesRemoved: 1,
+    });
+    expect(session?.toolUses.map((tu) => tu.name)).toEqual(["Write", "Edit"]);
+  });
+
+  it("drops a partially corrupt MultiEdit WHOLE, exactly as the sidecar lane does", async () => {
+    // The adopted trade, pinned: ISS-5402 drops a failing record whole rather
+    // than counting it in part, so the two well-formed edits below go with the
+    // corrupt third one. Relaxing that would have to move BOTH lanes together —
+    // this asserts the lanes agree, not that dropping is costless.
+    const malformed = {
+      file_path: "/repo/src/mod.ts",
+      edits: [
+        { old_string: "a", new_string: "a2" },
+        { old_string: "b", new_string: "b2" },
+        { old_string: 42, new_string: "c2" },
+      ],
+    };
+    const multiEditLine = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-07-09T12:00:01.000Z",
+      message: {
+        role: "assistant",
+        model: "claude-opus-4",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_m1",
+            name: "MultiEdit",
+            input: malformed,
+          },
+        ],
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    });
+
+    const session = await parseClaudeTranscript([USER_LINE, multiEditLine], {
+      sessionId: "diff-gate-partial-multiedit",
+    });
+    const acc = makeAcc();
+
+    expect(applyDiffStatsToolUse(acc, "MultiEdit", malformed)).toBe(false);
+    expect(session?.diffStats).toBeNull();
+  });
+
+  it("drops an Edit whose new_string is null, losing its well-formed side", async () => {
+    // The other half of the adopted trade the revision entry names. `null` is
+    // not `undefined`, so `z.string().optional()` rejects it and the record goes
+    // whole — `old_string` names real authored text that the parent lane no
+    // longer books. Pinned so relaxing the Edit schema cannot pass unnoticed in
+    // either lane.
+    const malformed = {
+      file_path: "/repo/src/mod.ts",
+      old_string: "a\nb",
+      new_string: null,
+    };
+    const editLine = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-07-09T12:00:01.000Z",
+      message: {
+        role: "assistant",
+        model: "claude-opus-4",
+        content: [
+          { type: "tool_use", id: "toolu_e1", name: "Edit", input: malformed },
+        ],
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    });
+
+    const session = await parseClaudeTranscript([USER_LINE, editLine], {
+      sessionId: "diff-gate-null-new-string-edit",
+    });
+    const acc = makeAcc();
+
+    expect(applyDiffStatsToolUse(acc, "Edit", malformed)).toBe(false);
+    expect(session?.diffStats).toBeNull();
+  });
+
+  it("leaves a tool with no diffStats schema dispatching as before", async () => {
+    // The gate is fail-open for a non-diffStats tool, so the registry's other
+    // handlers must be untouched by it.
+    const skillLine = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-07-09T12:00:01.000Z",
+      message: {
+        role: "assistant",
+        model: "claude-opus-4",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_s1",
+            name: "Skill",
+            input: { skill: "code-review" },
+          },
+        ],
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    });
+
+    const session = await parseClaudeTranscript([USER_LINE, skillLine], {
+      sessionId: "diff-gate-non-diffstats-tool",
+    });
+
+    expect(session?.toolUses.find((tu) => tu.name === "Skill")?.skillName).toBe(
+      "code-review"
+    );
+  });
+});
+
+/**
  * ISS-6733: the four EXPORTED entry points the ISS-5402/ISS-5426 sidecar lane
  * calls were entirely unexercised — the suite above drives the handler TABLE
  * directly and never goes through them. Mutation testing reported it precisely:
@@ -406,8 +759,18 @@ describe("isUsableDiffStatsToolInput", () => {
   });
 
   it("requires at least one edited side on Edit", () => {
-    expect(isUsableDiffStatsToolInput("Edit", { old_string: "a" })).toBe(true);
-    expect(isUsableDiffStatsToolInput("Edit", { new_string: "b" })).toBe(true);
+    expect(
+      isUsableDiffStatsToolInput("Edit", {
+        file_path: "/a.ts",
+        old_string: "a",
+      })
+    ).toBe(true);
+    expect(
+      isUsableDiffStatsToolInput("Edit", {
+        file_path: "/a.ts",
+        new_string: "b",
+      })
+    ).toBe(true);
     // Neither side means no delta: a {0,0} change still claiming a changed file.
     expect(isUsableDiffStatsToolInput("Edit", { file_path: "/a.ts" })).toBe(
       false
@@ -415,27 +778,42 @@ describe("isUsableDiffStatsToolInput", () => {
   });
 
   it("requires a string content on Write", () => {
-    expect(isUsableDiffStatsToolInput("Write", { content: "" })).toBe(true);
+    expect(
+      isUsableDiffStatsToolInput("Write", { file_path: "/a.ts", content: "" })
+    ).toBe(true);
     // A non-string content becomes "" in the handler, and "".split("\n") books
     // ONE added line nobody wrote.
-    expect(isUsableDiffStatsToolInput("Write", { content: 42 })).toBe(false);
+    expect(
+      isUsableDiffStatsToolInput("Write", { file_path: "/a.ts", content: 42 })
+    ).toBe(false);
     expect(isUsableDiffStatsToolInput("Write", {})).toBe(false);
   });
 
   it("requires a non-empty edits array with at least one edited side on MultiEdit", () => {
+    const path = "/a.ts";
     expect(
       isUsableDiffStatsToolInput("MultiEdit", {
+        file_path: path,
         edits: [{ old_string: "a" }],
       })
     ).toBe(true);
-    expect(isUsableDiffStatsToolInput("MultiEdit", { edits: [] })).toBe(false);
+    expect(
+      isUsableDiffStatsToolInput("MultiEdit", { file_path: path, edits: [] })
+    ).toBe(false);
     // Entries present, but not one of them carries a side.
-    expect(isUsableDiffStatsToolInput("MultiEdit", { edits: [{}, {}] })).toBe(
-      false
-    );
-    // `some`, not `every`: one usable entry among unusable ones still counts.
     expect(
       isUsableDiffStatsToolInput("MultiEdit", {
+        file_path: path,
+        edits: [{}, {}],
+      })
+    ).toBe(false);
+    // `some`, not `every`: one usable entry among unusable ones still counts.
+    // ISS-6737 kept this deliberately — an entry with no string side yields
+    // {0,0}, so `every` would discard real lines rather than prevent fabricated
+    // ones. The module docstring now states the exception.
+    expect(
+      isUsableDiffStatsToolInput("MultiEdit", {
+        file_path: path,
         edits: [{}, { new_string: "b" }],
       })
     ).toBe(true);
@@ -528,6 +906,10 @@ describe("applyDiffStatsToolUseState", () => {
     expect(acc.readContentByPath.size).toBe(0);
 
     // A corrupt Write must not poison the baseline the next real one diffs from.
+    // This entry point gets that from its schema gate; ISS-6762 made the same
+    // invariant hold on the ungated parent lane, covered in the Write suite
+    // above ("neither diffs against nor replaces a prior baseline when content
+    // is not a string").
     applyDiffStatsToolUseState(acc, "Write", {
       file_path: "/a.ts",
       content: 42,
@@ -582,5 +964,55 @@ describe("captureDiffStatsReadResult", () => {
     const acc = makeAcc();
     captureDiffStatsReadResult(acc, { file_path: 7 }, "one");
     expect(acc.readContentByPath.size).toBe(0);
+  });
+});
+
+describe("a pathless record cannot fold into a valid one's totals (ISS-6737)", () => {
+  // The hiding case named in ISS-6737: one valid edit keeps `diffStats` alive,
+  // so a pathless record in the same sidecar used to add its lines to the
+  // totals invisibly — `linesAdded`/`linesRemoved` moving while `filesChanged`
+  // did not. A single-record test cannot catch that, because dropping the only
+  // record also drops the whole `diffStats` object.
+  it("counts only the record that names a file", () => {
+    const acc = makeAcc();
+    handlerMap.get("Edit")!(acc, makeTu("Edit"), {
+      file_path: "/real.ts",
+      old_string: "a\nb\nc",
+      new_string: "a",
+    });
+    handlerMap.get("Edit")!(acc, makeTu("Edit"), {
+      old_string: "x\ny\nz",
+      new_string: "x",
+    });
+
+    // The valid edit removed 2 lines from one file. The pathless one adds
+    // nothing — before ISS-6737 it contributed another 2 removals.
+    expect(acc.totalRemoved).toBe(2);
+    expect(acc.diffFiles.size).toBe(1);
+    expect([...acc.diffFiles]).toEqual(["/real.ts"]);
+  });
+
+  it("holds for a pathless Write beside a valid one", () => {
+    const acc = makeAcc();
+    handlerMap.get("Write")!(acc, makeTu("Write"), {
+      file_path: "/real.ts",
+      content: "one\ntwo",
+    });
+    handlerMap.get("Write")!(acc, makeTu("Write"), { content: "a\nb\nc\nd" });
+
+    expect(acc.totalAdded).toBe(2);
+    expect(acc.diffFiles.size).toBe(1);
+  });
+
+  it("refuses a pathless payload at the schema gate on every diff tool", () => {
+    // The gated lanes drop it before dispatch; the handler assertions above
+    // cover the ungated direct caller the module's docstring warns about.
+    expect(
+      isUsableDiffStatsToolInput("Edit", { old_string: "a", new_string: "b" })
+    ).toBe(false);
+    expect(isUsableDiffStatsToolInput("Write", { content: "x" })).toBe(false);
+    expect(
+      isUsableDiffStatsToolInput("MultiEdit", { edits: [{ old_string: "a" }] })
+    ).toBe(false);
   });
 });

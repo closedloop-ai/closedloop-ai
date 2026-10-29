@@ -62,7 +62,11 @@ export function readBranchAnalyticsActivitySegmentRows(
     }));
 }
 
-/** Read lifecycle evidence for every Branch-linked Session in one bounded scan. */
+/**
+ * Read lifecycle evidence for one request's Branch cohort in one bounded scan.
+ * Every production caller passes `branchKeys` (ISS-9862); omitting them widens
+ * the scan to every Branch-linked Session and is for tests only.
+ */
 export function readBranchAnalyticsLifecycleEventRows(
   prisma: DbHostPrisma,
   branchKeys?: readonly BranchKeyRow[]
@@ -162,8 +166,17 @@ function buildBranchCohortSqlScope(
       parameters: [],
     };
   }
-  const values = branchKeys.map(() => "(?, ?)").join(", ");
-  const requestedBranchesCte = `requested_branches(repo_full_name, branch_name) AS (VALUES ${values}),\n       `;
+  // ISS-9862: the cohort crosses as ONE json_each bind, never `VALUES (?, ?)`
+  // per key. A branch list request permits 20,000 branch ids, and two binds per
+  // key faults the whole read at `too many SQL variables` above the 999-variable
+  // SQLite floor — which this page would hit at 500 branches. Same shape the
+  // canonical Branch activity read uses for the same cohort (branch-activity-sql.ts).
+  const requestedBranchesCte = `requested_branches(repo_full_name, branch_name) AS (
+         SELECT DISTINCT
+           json_extract(requested.value, '$.repoFullName'),
+           json_extract(requested.value, '$.branchName')
+         FROM json_each(?) requested
+       ),\n       `;
   const requestedBranchesJoin = `JOIN requested_branches rb
            ON rb.branch_name = a.branch_name
           AND rb.repo_full_name IS NOT DISTINCT FROM a.repo_full_name`;
@@ -178,9 +191,13 @@ function buildBranchCohortSqlScope(
     requestedBranchesCte,
     requestedBranchesJoin,
     sessionSubquery: "SELECT session_id FROM cohort_sessions",
-    parameters: branchKeys.flatMap(({ repoFullName, branchName }) => [
-      repoFullName,
-      branchName,
-    ]),
+    parameters: [
+      JSON.stringify(
+        branchKeys.map(({ repoFullName, branchName }) => ({
+          repoFullName,
+          branchName,
+        }))
+      ),
+    ],
   };
 }

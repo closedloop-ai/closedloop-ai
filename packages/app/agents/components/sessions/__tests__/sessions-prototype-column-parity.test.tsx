@@ -1,5 +1,7 @@
-import { GRID_TABLE_V2_FLAG_KEY } from "@repo/api/src/types/grid-table-v2-flag";
+import { SESSIONS_ARTIFACT_TAGS_FLAG_KEY } from "@repo/api/src/types/sessions-artifact-tags-flag";
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
 import { tooltipMockModule } from "@repo/app/test/mocks/tooltip";
+import { LEADING_COLUMN_DATA_ID } from "@repo/design-system/lib/grid-table-v2-rows";
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -7,47 +9,47 @@ import {
   sessionsToggleableColumns,
 } from "../../../hooks/use-sessions-view-state";
 import {
-  normalizeSessionColumnId,
   resolveRenderedSessionColumnIds,
+  SESSIONS_DEFAULT_VISIBLE_COLUMN_IDS,
+  SESSIONS_SEAM_REQUIRED_COLUMN_IDS,
+  selectOfferableSessionColumns,
+} from "../../../lib/sessions-column-visibility";
+import {
+  normalizeSessionColumnId,
   SESSIONS_AUTONOMY_COLUMN_ID,
   SESSIONS_BRANCHES_COLUMN_ID,
   SESSIONS_COLUMN_SPECS,
   SESSIONS_DATA_COLUMN_ORDER,
   SESSIONS_DEFAULT_HIDDEN_COLUMN_IDS,
-  SESSIONS_DEFAULT_VISIBLE_COLUMN_IDS,
   SESSIONS_ISSUES_COLUMN_ID,
   SESSIONS_LEGACY_BRANCHES_COLUMN_ID,
   SESSIONS_PROJECTS_COLUMN_ID,
-  SESSIONS_SEAM_REQUIRED_COLUMN_IDS,
-  selectOfferableSessionColumns,
+  SESSIONS_TAGS_COLUMN_ID,
 } from "../../../lib/sessions-table-columns";
+import { SessionsTable } from "../session-detail-table";
 import { createSessionTableRowFixture } from "../session-list-fixtures";
-import { SessionsTable, type SessionTableRow } from "../sessions-table";
 
 vi.mock("@repo/design-system/components/ui/tooltip", () => tooltipMockModule);
 
 /**
  * ISS-5770 / ISS-5713: the Sessions table's default column set, its order, and
- * its View menu are the Sessions PROTOTYPE's, and every consumer derives them
- * from one declaration instead of restating them.
+ * its View menu carry the approved Sessions contract, and every consumer now
+ * derives them from one declaration instead of restating them.
  *
- * The oracle below is transcribed from the prototype's own `COLUMN_SPECS`
- * (`apps/prototypes/app/p/sessions/components/sessions-table.tsx`) as DATA, so a
- * reordering of the production declaration fails these assertions rather than
- * drifting silently — which is what happened to the View menu, whose doc comment
- * promised it "mirrors SESSIONS_COLUMN_SPECS order" while carrying a different
- * tail order and a different id for the branches column.
+ * The prototype now renders `SessionsListSurfaceV2` directly, so it has no
+ * second `COLUMN_SPECS` to compare. The historical approved contract remains a
+ * literal oracle here so a reordering of the shared declaration fails loudly —
+ * which is what the old parallel View menu never did.
  */
 
 /**
- * The prototype's 17 columns, in order, with the operator-confirmed defaults.
+ * The approved 17 columns, in order, with the operator-confirmed defaults.
  *
- * Deliberately a literal rather than an import: `apps/prototypes` is a
- * presentational sandbox that production must not depend on, and this list is
- * the CONTRACT being pinned. If the prototype changes, this literal is the line
- * that has to be updated on purpose.
+ * Deliberately a literal rather than a second runtime declaration: this list is
+ * the contract being pinned. The prototype consumes the shared surface, so
+ * runtime parity is identity rather than synchronization.
  */
-const PROTOTYPE_COLUMNS: readonly { id: string; defaultOn: boolean }[] = [
+const APPROVED_COLUMNS: readonly { id: string; defaultOn: boolean }[] = [
   { id: "status", defaultOn: true },
   { id: "tags", defaultOn: false },
   { id: "owner", defaultOn: true },
@@ -70,11 +72,15 @@ const PROTOTYPE_COLUMNS: readonly { id: string; defaultOn: boolean }[] = [
 /**
  * Prototype columns production does not implement yet, each owned by its own
  * ticket. They are absent rather than half-built: every one needs backing data,
- * not just a column spec, and each is default-OFF in the prototype — which is
- * why the DEFAULT-VISIBLE set is already reachable without them.
+ * not just a column spec, and each was approved as default-OFF — which is why
+ * the default-visible set is already reachable without them.
  */
-const UNIMPLEMENTED_PROTOTYPE_COLUMN_IDS: readonly string[] = [
-  "tags", // FEA-4213
+const UNIMPLEMENTED_APPROVED_COLUMN_IDS: readonly string[] = [
+  // ISS-8712 removed `tags` from this list: the column now ships (default-OFF,
+  // seam-required, gated on `sessions-artifact-tags`) reading the generic
+  // `TagArtifact` join, in exactly the slot this literal already predicted —
+  // between `status` and `owner`. Its removal is what makes the order assertion
+  // below prove the new column landed in the prototype's slot.
   "collaborators", // FEA-4208
   "agents", // FEA-4212 (blocked on ISS-5664)
   // `updated` was here as "no ticket found; reported for triage". ISS-6005 IS
@@ -87,6 +93,15 @@ const UNIMPLEMENTED_PROTOTYPE_COLUMN_IDS: readonly string[] = [
 
 /** Production columns with no prototype slot. Kept, but default-OFF. */
 const EXTRA_PRODUCTION_COLUMN_IDS: readonly string[] = ["pr", "merge"];
+
+/**
+ * ISS-10332 / PLN-2086: a production column with no prototype slot that the
+ * operator ruled SHOWN by default (ruling 5, 2026-09-21). It sits beside Status
+ * and outside the prototype's order, so the order assertion sets it aside the
+ * way it sets aside the default-OFF pair; `sessions-table-columns.test.tsx`
+ * pins its slot and its default.
+ */
+const SHOWN_PRODUCTION_COLUMN_IDS: readonly string[] = ["priority"];
 
 const ROW: SessionTableRow = createSessionTableRowFixture({
   autonomy: 88,
@@ -105,30 +120,34 @@ function renderName(row: SessionTableRow, className: string) {
   );
 }
 
-/** The rendered header ids, left to right, off one real screen. */
+/** The rendered data-column ids, left to right, off one real screen. */
 function renderedHeaderIds(): string[] {
   return screen
     .getAllByRole("columnheader")
     .map((cell) => cell.getAttribute("data-column-id"))
-    .filter((id): id is string => Boolean(id));
+    .filter((id): id is string => Boolean(id) && id !== LEADING_COLUMN_DATA_ID);
 }
 
-describe("Sessions column parity with the prototype (ISS-5770)", () => {
-  it("declares the prototype's order for every column both sides have", () => {
-    const prototypeOrder = PROTOTYPE_COLUMNS.map((column) => column.id).filter(
-      (id) => !UNIMPLEMENTED_PROTOTYPE_COLUMN_IDS.includes(id)
+describe("Sessions approved column contract (ISS-5770)", () => {
+  it("declares the approved order for every implemented column", () => {
+    const approvedOrder = APPROVED_COLUMNS.map((column) => column.id).filter(
+      (id) => !UNIMPLEMENTED_APPROVED_COLUMN_IDS.includes(id)
     );
     const declaredOrder = SESSIONS_DATA_COLUMN_ORDER.filter(
-      (id) => !EXTRA_PRODUCTION_COLUMN_IDS.includes(id)
+      (id) =>
+        !(
+          EXTRA_PRODUCTION_COLUMN_IDS.includes(id) ||
+          SHOWN_PRODUCTION_COLUMN_IDS.includes(id)
+        )
     );
-    expect(declaredOrder).toEqual(prototypeOrder);
+    expect(declaredOrder).toEqual(approvedOrder);
   });
 
-  it("defaults exactly the prototype's ten ON columns, in order", () => {
-    const expected = PROTOTYPE_COLUMNS.filter(
+  it("defaults exactly the approved ten ON columns, in order", () => {
+    const expected = APPROVED_COLUMNS.filter(
       (column) =>
         column.defaultOn &&
-        !UNIMPLEMENTED_PROTOTYPE_COLUMN_IDS.includes(column.id)
+        !UNIMPLEMENTED_APPROVED_COLUMN_IDS.includes(column.id)
     ).map((column) => column.id);
     expect(expected).toHaveLength(10);
     expect(SESSIONS_DEFAULT_VISIBLE_COLUMN_IDS).toEqual(expected);
@@ -157,13 +176,29 @@ describe("Sessions column parity with the prototype (ISS-5770)", () => {
     render(
       <SessionsTable items={[ROW]} mode="expanded" renderName={renderName} />
     );
-    // The gated pair stays out — its gate is a property of the BUILD, so no
-    // `visibleColumns` set can conjure it — while the default-hidden columns do
+    // Every GATED column stays out — a gate is a property of the BUILD, so no
+    // `visibleColumns` set can conjure one — while the default-hidden columns do
     // appear, because nothing has hidden them yet.
+    //
+    // ISS-8712: derived from `spec.gate`, not the hand-listed pair this used to
+    // name. That literal was the same shape as the drifted `FLAG_GATED_COLUMN_IDS`
+    // this file's last describe block exists to catch: adding a third gated
+    // column reddened a correct build, and the test's own name already says
+    // "ungated" rather than "not those two".
+    // `Set<string>`, not the literal union the const specs infer: the ids it is
+    // checked against come from `SESSIONS_DATA_COLUMN_ORDER`, which is widened.
+    const gatedIds = new Set<string>(
+      SESSIONS_COLUMN_SPECS.filter((spec) => spec.gate !== null).map(
+        (spec) => spec.id
+      )
+    );
+    expect(gatedIds.size).toBeGreaterThan(0);
+    // A seam-required column a bare mount wires no seam for stays out too
+    // (ISS-10332: `priority` is ungated AND seam-required, so this is the first
+    // column where the two questions have different answers).
     expect(renderedHeaderIds()).toEqual(
       SESSIONS_DATA_COLUMN_ORDER.filter(
-        (id) =>
-          id !== SESSIONS_PROJECTS_COLUMN_ID && id !== SESSIONS_ISSUES_COLUMN_ID
+        (id) => !(gatedIds.has(id) || SESSIONS_SEAM_REQUIRED_COLUMN_IDS.has(id))
       )
     );
   });
@@ -181,8 +216,8 @@ describe("the Signals column is gone (ISS-5770)", () => {
   it("declares no qualifiers column in any flag state", () => {
     for (const enabledGates of [
       {},
-      { [GRID_TABLE_V2_FLAG_KEY]: true },
-      { [GRID_TABLE_V2_FLAG_KEY]: false },
+      { [SESSIONS_ARTIFACT_TAGS_FLAG_KEY]: true },
+      { [SESSIONS_ARTIFACT_TAGS_FLAG_KEY]: false },
     ]) {
       const rendered = resolveRenderedSessionColumnIds({ enabledGates });
       expect(rendered).not.toContain("qualifiers");
@@ -258,35 +293,24 @@ describe("the View menu derives from the column declaration (ISS-5713)", () => {
     }
   });
 
-  it("hides the gated linked-entity entries until the surface opts in", () => {
+  /**
+   * ISS-10301 ungated the pair: `grid-table-v2` retired ENABLED, so the SEAM
+   * DATA is the whole condition now. This case asserts both directions of it.
+   *
+   * Its sibling, "offers no seam-required entry without the seam data", went with
+   * the flag: it pinned the AND — seams present, gate closed, entries withheld —
+   * and with no gate left its second arm asserted the entries were absent WITH
+   * the seams supplied, which is the opposite of what the surface must now do.
+   */
+  it("hides the linked-entity entries until the surface supplies their seams", () => {
     const offIds = sessionsToggleableColumns().map((column) => column.id);
     expect(offIds).not.toContain(SESSIONS_PROJECTS_COLUMN_ID);
     expect(offIds).not.toContain(SESSIONS_ISSUES_COLUMN_ID);
     const onIds = sessionsToggleableColumns({
-      enabledGates: { [GRID_TABLE_V2_FLAG_KEY]: true },
       hostSuppliedColumnIds: [...SESSIONS_SEAM_REQUIRED_COLUMN_IDS],
     }).map((column) => column.id);
     expect(onIds).toContain(SESSIONS_PROJECTS_COLUMN_ID);
     expect(onIds).toContain(SESSIONS_ISSUES_COLUMN_ID);
-  });
-
-  it("needs BOTH halves: the flag alone does not offer a seam-required entry", () => {
-    // The menu now takes the same two inputs the table's resolver takes, so a
-    // surface that has the flag but not the data does not grow a switch for a
-    // column it cannot render — previously these were ANDed into one boolean at
-    // the call site and the helper could not tell them apart.
-    const flagOnlyIds = sessionsToggleableColumns({
-      enabledGates: { [GRID_TABLE_V2_FLAG_KEY]: true },
-    }).map((column) => column.id);
-    expect(flagOnlyIds).not.toContain(SESSIONS_PROJECTS_COLUMN_ID);
-    expect(flagOnlyIds).not.toContain(SESSIONS_ISSUES_COLUMN_ID);
-
-    const seamOnlyIds = sessionsToggleableColumns({
-      enabledGates: {},
-      hostSuppliedColumnIds: [...SESSIONS_SEAM_REQUIRED_COLUMN_IDS],
-    }).map((column) => column.id);
-    expect(seamOnlyIds).not.toContain(SESSIONS_PROJECTS_COLUMN_ID);
-    expect(seamOnlyIds).not.toContain(SESSIONS_ISSUES_COLUMN_ID);
   });
 });
 
@@ -391,22 +415,29 @@ describe("a column behind a FUTURE gate (ISS-5770 review)", () => {
 });
 
 describe("declarative gatedness cannot drift (ISS-5713)", () => {
+  /**
+   * ISS-10301 re-pointed this case. It used to drive both arms with
+   * `grid-table-v2`, which gated the Projects and Issues columns; that key
+   * retired ENABLED and both specs now carry `gate: null`, so driving them here
+   * would have made the two arms byte-identical and the assertions
+   * self-contradicting. Tags is the one spec still carrying a gate, so it is what
+   * the gate rule can actually be observed through — and the seam-only behaviour
+   * of the linked-entity pair keeps its own case above.
+   */
   it("excludes a gated column when its flag is off and includes it when on", () => {
     const off = resolveRenderedSessionColumnIds({
       enabledGates: {},
       hiddenColumnIds: [],
       hostSuppliedColumnIds: SESSIONS_DATA_COLUMN_ORDER,
     });
-    expect(off).not.toContain(SESSIONS_PROJECTS_COLUMN_ID);
-    expect(off).not.toContain(SESSIONS_ISSUES_COLUMN_ID);
+    expect(off).not.toContain(SESSIONS_TAGS_COLUMN_ID);
 
     const on = resolveRenderedSessionColumnIds({
-      enabledGates: { [GRID_TABLE_V2_FLAG_KEY]: true },
+      enabledGates: { [SESSIONS_ARTIFACT_TAGS_FLAG_KEY]: true },
       hiddenColumnIds: [],
       hostSuppliedColumnIds: SESSIONS_DATA_COLUMN_ORDER,
     });
-    expect(on).toContain(SESSIONS_PROJECTS_COLUMN_ID);
-    expect(on).toContain(SESSIONS_ISSUES_COLUMN_ID);
+    expect(on).toContain(SESSIONS_TAGS_COLUMN_ID);
   });
 
   it("every column states its gate, so a new one cannot default to ungated", () => {
@@ -415,9 +446,13 @@ describe("declarative gatedness cannot drift (ISS-5713)", () => {
       // shape matches, so the compile-time forcing function is not the only
       // thing standing between a new column and an unstated gate.
       expect(Object.hasOwn(spec, "gate")).toBe(true);
-      expect(spec.gate === null || spec.gate === GRID_TABLE_V2_FLAG_KEY).toBe(
-        true
-      );
+      // What this pins is the thing that matters — a spec cannot carry a gate
+      // string outside the union `SessionsColumnGate` declares. ISS-8712 widened
+      // it from one key to the vocabulary; ISS-10301 narrowed the vocabulary back
+      // to one when `grid-table-v2` retired ENABLED.
+      expect(
+        spec.gate === null || spec.gate === SESSIONS_ARTIFACT_TAGS_FLAG_KEY
+      ).toBe(true);
     }
   });
 
@@ -434,9 +469,13 @@ describe("declarative gatedness cannot drift (ISS-5713)", () => {
     }
     // …and the derivation both consumers share treats exactly `null` as "no
     // gate to satisfy": an ungated column survives an EMPTY enabled-gate map.
+    // Every seam is supplied so only the GATE half is under test here.
     const offered = selectOfferableSessionColumns(
       ungated.map((spec) => ({ id: spec.id, gate: spec.gate })),
-      { enabledGates: {} }
+      {
+        enabledGates: {},
+        hostSuppliedColumnIds: [...SESSIONS_SEAM_REQUIRED_COLUMN_IDS],
+      }
     );
     expect(offered).toHaveLength(ungated.length);
   });
@@ -454,11 +493,11 @@ describe("declarative gatedness cannot drift (ISS-5713)", () => {
     // this enforcement exists to make loud rather than silent.
     expect(staleHandMaintainedGatedIds).not.toEqual(declaredGatedIds);
     // And the derivation, which reads the declaration, is right regardless of
-    // what any consumer's copy says.
-    expect(declaredGatedIds).toEqual([
-      SESSIONS_PROJECTS_COLUMN_ID,
-      SESSIONS_ISSUES_COLUMN_ID,
-    ]);
+    // what any consumer's copy says. ISS-10301 took Projects and Issues out of
+    // this set: `grid-table-v2` was their gate and it retired ENABLED, so Tags is
+    // the only gated column left — which is exactly the kind of movement a
+    // hand-maintained copy misses and this case exists to make loud.
+    expect(declaredGatedIds).toEqual([SESSIONS_TAGS_COLUMN_ID]);
   });
 });
 

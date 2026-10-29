@@ -2,29 +2,47 @@
  * @file cohort-performance.test.ts
  * @description Unit + fake-db tests for the shared cohort delivery-performance
  * computation (FEA-2923 Performance tab). Pure math is tested directly; the DB
- * aggregation is exercised through a hand-rolled fake `db` that routes cohort vs.
- * baseline reads by their `where` shape — no real database.
+ * aggregation is exercised through the shared `cohort-performance.test-db`
+ * fake, which routes cohort vs. baseline reads by their `where` shape — no real
+ * database.
  */
-import { COHORT_SCAN_CAP } from "@repo/api/src/types/analytics";
-import { LOC_SOURCE_BRANCH_FALLBACK } from "@repo/api/src/utils/session-loc";
+import { GitHubPRState } from "@repo/api/src/types/github";
+import {
+  SessionArtifactLinkKind,
+  SessionPrRelationType,
+} from "@repo/api/src/types/session-artifact-link";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// The helper imports `@repo/database` only for a `typeof withDb` type + is called
-// with a caller-supplied `db`; mock it so the module loads without a real client.
-vi.mock("@repo/database", () => ({ withDb: vi.fn() }));
+// The helper is called with a caller-supplied `db`; mock the raw-SQL builder so
+// the fake DB can accept `$queryRaw(Prisma.sql`...`)` without a real client.
+vi.mock("@repo/database", () => ({
+  Prisma: {
+    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+      strings,
+      values,
+    }),
+    join: (values: unknown[]) => ({ values }),
+  },
+  withDb: vi.fn(),
+}));
 
+import {
+  cohortPrLink,
+  type FakeSessionQuery,
+  makeFakeDb,
+  ORG,
+  row,
+} from "@/__tests__/support/agent-components/cohort-performance.test-db";
 import {
   computeCohortPerformance,
   EMPTY_COHORT_METRICS,
   efficiencyTrendOf,
   klocPer1kTokensOf,
-  locPerDollarOf,
-  mean,
   pctDelta,
   ppDelta,
   sessionLoc,
   tokenEfficiencyDeltaOf,
-  tokensPerKlocOf,
+  tokensPerLocOf,
 } from "../cohort-performance";
 
 describe("pure math", () => {
@@ -34,17 +52,13 @@ describe("pure math", () => {
     expect(sessionLoc(null, null)).toBe(0);
   });
 
-  it("locPerDollarOf: ISS-4667 raw lines/cost, null unless both positive", () => {
-    expect(locPerDollarOf(2000, 4)).toBe(500);
-    expect(locPerDollarOf(0, 4)).toBeNull();
-    expect(locPerDollarOf(2000, 0)).toBeNull();
-    expect(locPerDollarOf(-10, 4)).toBeNull();
-  });
-
-  it("tokensPerKlocOf: tokens/(loc/1000), null unless both positive", () => {
-    expect(tokensPerKlocOf(10_000, 2000)).toBe(5000);
-    expect(tokensPerKlocOf(0, 2000)).toBeNull();
-    expect(tokensPerKlocOf(10_000, 0)).toBeNull();
+  it("tokensPerLocOf: tokens/loc, null unless both positive", () => {
+    // ISS-8184 ruling 5: 5 tokens per line, where this pinned 5000 per KLOC.
+    // The 1000x drop is the ruling; nothing renders this value raw, and its one
+    // consumer is a scale-invariant percentage delta.
+    expect(tokensPerLocOf(10_000, 2000)).toBe(5);
+    expect(tokensPerLocOf(0, 2000)).toBeNull();
+    expect(tokensPerLocOf(10_000, 0)).toBeNull();
   });
 
   it("klocPer1kTokensOf: KLOC per 1k tokens (higher = better)", () => {
@@ -61,6 +75,8 @@ describe("pure math", () => {
     expect(pctDelta(120, null)).toBeNull();
     // Negative baseline uses |baseline| so the sign reflects direction.
     expect(pctDelta(-50, -100)).toBe(50);
+    // The chip renders this raw, so 12.63…% must arrive as a whole percent.
+    expect(pctDelta(107, 95)).toBe(13);
   });
 
   it("tokenEfficiencyDeltaOf: positive when cohort spends FEWER tokens/KLOC", () => {
@@ -71,17 +87,35 @@ describe("pure math", () => {
     expect(tokenEfficiencyDeltaOf(null, 5000)).toBeNull();
     expect(tokenEfficiencyDeltaOf(4000, null)).toBeNull();
     expect(tokenEfficiencyDeltaOf(4000, 0)).toBeNull();
+    // 13.58% → a whole percent, not the raw float.
+    expect(tokenEfficiencyDeltaOf(4321, 5000)).toBe(14);
   });
 
   it("ppDelta: percentage-point difference, null when either null", () => {
     expect(ppDelta(74, 60)).toBe(14);
+    // 14.29 points → a whole point, not the raw float.
+    expect(ppDelta(74.4, 60.1)).toBe(14);
     expect(ppDelta(50, null)).toBeNull();
     expect(ppDelta(null, 60)).toBeNull();
   });
 
-  it("mean: average or null when empty", () => {
-    expect(mean([2, 4, 6])).toBe(4);
-    expect(mean([])).toBeNull();
+  it("efficiencyTrendOf: folds a cohort too wide to spread as arguments", () => {
+    // `Math.min(...times)` passes one ARGUMENT per row and throws `RangeError`
+    // once the stack cannot hold them — measured in this worker at 500,000
+    // (125,000 and 200,000 still pass, so the count here is not decorative).
+    // The retired 2,000-row scan cap made that unreachable; the ISS-9853 walk
+    // does not, and the failure would be a 500 on the whole detail read.
+    // `baselineWindowFor` folds its own window bounds through the same helper.
+    const points = Array.from({ length: 500_000 }, (_u, index) => ({
+      time: index,
+      tokens: 1000,
+      loc: 1000,
+      locSource: null,
+      repositoryFullName: null,
+      branch: null,
+    }));
+
+    expect(efficiencyTrendOf(points)).toHaveLength(8);
   });
 
   it("efficiencyTrendOf: empty input → [], single instant → last bucket", () => {
@@ -152,154 +186,62 @@ function trendPoint(time: number, loc: number, tokens: number) {
 // computeCohortPerformance — fake-db integration
 // ---------------------------------------------------------------------------
 
-const ORG = "org-1";
-
-type MergedPr = { repo: string | null; number: number | null };
-
-function row(opts: {
-  id: string;
-  loc?: number;
-  cost?: number;
-  tokens?: number;
-  startedAt?: number;
-  loopId?: string | null;
-  mergedPrs?: MergedPr[];
-}) {
-  const tokens = opts.tokens ?? 0;
-  return {
-    artifactId: opts.id,
-    linesAdded: opts.loc ?? 0,
-    linesRemoved: 0,
-    estimatedCost: opts.cost ?? 0,
-    inputTokens: BigInt(Math.floor(tokens / 2)),
-    outputTokens: BigInt(tokens - Math.floor(tokens / 2)),
-    sessionStartedAt: new Date(opts.startedAt ?? 1000),
-    sourceLoopId: opts.loopId ?? null,
-    artifact: {
-      sourceLinks: (opts.mergedPrs ?? []).map((pr, i) => ({
-        targetId: `${opts.id}-branch-${i}`,
-        target: {
-          branch: {
-            currentPullRequestDetail: {
-              number: pr.number,
-              prState: "MERGED",
-              mergedAt: new Date(2000),
-              isCurrent: true,
-              repositoryFullName: pr.repo,
-              repository: pr.repo ? { fullName: pr.repo } : null,
-            },
-          },
-        },
-      })),
-    },
-  };
-}
-
-/** Build a fake db that routes findMany by `where` shape and serves evals by loopId. */
-function makeFakeDb(opts: {
-  cohortRows: ReturnType<typeof row>[];
-  baselineRows?: ReturnType<typeof row>[];
-  baselineSum?: {
-    linesAdded: number | null;
-    linesRemoved: number | null;
-    estimatedCost: number | null;
-    inputTokens: bigint | null;
-    outputTokens: bigint | null;
-  };
-  // FEA-3633: keyed branch-fallback baseline LOC groups (one per distinct branch,
-  // MAX(added)+MAX(removed) counted once). Default none → per-session baseline LOC.
-  fallbackGroups?: {
-    _max: { linesAdded: number | null; linesRemoved: number | null };
-  }[];
-  scoresByLoopId?: Record<string, number[]>;
-}) {
-  const scores = opts.scoresByLoopId ?? {};
-  return {
-    sessionDetail: {
-      findMany: vi.fn((args: { where: { artifactId?: { notIn?: unknown } } }) =>
-        Promise.resolve(
-          args.where.artifactId?.notIn
-            ? (opts.baselineRows ?? [])
-            : opts.cohortRows
-        )
-      ),
-      // FEA-3633: `computeCohortPerformance` now issues THREE aggregate calls:
-      //  1. tokens/cost baseline — `where` has NO `locSource` filter;
-      //  2. non-fallback LOC baseline — `where.OR` filters locSource (git/null);
-      //  3. unkeyable-fallback LOC — `where.locSource === "branch_fallback"`.
-      // Route by the `where` shape so each returns the right slice of baselineSum.
-      aggregate: vi.fn(
-        (args: {
-          where?: {
-            locSource?: unknown;
-            OR?: unknown;
-          };
-        }) => {
-          const sum = opts.baselineSum ?? {
-            linesAdded: null,
-            linesRemoved: null,
-            estimatedCost: null,
-            inputTokens: null,
-            outputTokens: null,
-          };
-          const where = args.where ?? {};
-          if (where.locSource === LOC_SOURCE_BRANCH_FALLBACK) {
-            // Unkeyable fallback LOC: none in these tests.
-            return Promise.resolve({
-              _sum: { linesAdded: null, linesRemoved: null },
-            });
-          }
-          if (where.OR) {
-            // Non-fallback LOC baseline (all baseline LOC is non-fallback here).
-            return Promise.resolve({
-              _sum: {
-                linesAdded: sum.linesAdded,
-                linesRemoved: sum.linesRemoved,
-              },
-            });
-          }
-          // tokens/cost baseline.
-          return Promise.resolve({
-            _sum: {
-              estimatedCost: sum.estimatedCost,
-              inputTokens: sum.inputTokens,
-              outputTokens: sum.outputTokens,
-            },
-          });
-        }
-      ),
-      // FEA-3633: keyed-fallback baseline LOC groups. Tests with fallback branches
-      // pass `fallbackGroups`; the default (none) yields per-session baseline LOC.
-      groupBy: vi.fn(() => Promise.resolve(opts.fallbackGroups ?? [])),
-    },
-    artifactEvaluation: {
-      findMany: vi.fn((args: { where: { loopId: { in: string[] } } }) =>
-        Promise.resolve(
-          args.where.loopId.in.flatMap((loopId) =>
-            (scores[loopId] ?? []).map((score) => ({
-              judgeScores: [{ score }],
-            }))
-          )
-        )
-      ),
-    },
-    // A minimal structural fake satisfying only the reads the helper performs.
-  } as unknown as Parameters<typeof computeCohortPerformance>[0];
-}
-
 describe("computeCohortPerformance", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("returns EMPTY_COHORT_METRICS for an empty cohort (no query)", async () => {
     const db = makeFakeDb({ cohortRows: [] });
-    const result = await computeCohortPerformance(db, ORG, []);
+    const result = await computeCohortPerformance(db, ORG, [], {
+      cohortSampled: false,
+    });
     expect(result).toEqual(EMPTY_COHORT_METRICS);
     expect(db.sessionDetail.findMany).not.toHaveBeenCalled();
   });
 
   it("returns EMPTY when the cohort ids resolve to no rows", async () => {
     const db = makeFakeDb({ cohortRows: [] });
-    const result = await computeCohortPerformance(db, ORG, ["s1"]);
+    const result = await computeCohortPerformance(db, ORG, ["s1"], {
+      cohortSampled: false,
+    });
+    expect(result).toEqual(EMPTY_COHORT_METRICS);
+  });
+
+  // ISS-9853 (Test Modification Guardrail): this case asserted
+  // `take === COHORT_SCAN_CAP`. The EXPECTATION changed, not the test — the cap
+  // is gone, because a `take` on a read keyed by primary key was serving the
+  // first 2,000 of an insertion-ordered id set as the whole cohort (PRD-666).
+  // What the read owes now is the opposite: every id, no row bound at all.
+  it("scopes the cohort walk to the caller's org and bounds no rows", async () => {
+    const sessionQueries: FakeSessionQuery[] = [];
+    const db = makeFakeDb({
+      cohortRows: [row({ id: "s1" })],
+      sessionQueries,
+    });
+
+    await computeCohortPerformance(db, ORG, ["s2", "s1"], {
+      cohortSampled: false,
+    });
+
+    const [cohortQuery] = sessionQueries;
+    expect(cohortQuery?.where.artifact).toEqual({ organizationId: ORG });
+    // Sorted, so a chunk is one contiguous slice of the key space.
+    expect(cohortQuery?.where.artifactId?.in).toEqual(["s1", "s2"]);
+    expect(cohortQuery?.orderBy).toEqual([{ artifactId: "asc" }]);
+    expect(cohortQuery?.take).toBeUndefined();
+  });
+
+  it("returns EMPTY when the cohort ids live in another org", async () => {
+    const db = makeFakeDb({
+      cohortRows: [
+        row({ id: "s1", mergedPrs: [{ repo: "acme/repo", number: 1 }] }),
+      ],
+      organizationId: "org-2",
+    });
+
+    const result = await computeCohortPerformance(db, ORG, ["s1"], {
+      cohortSampled: false,
+    });
+
     expect(result).toEqual(EMPTY_COHORT_METRICS);
   });
 
@@ -313,17 +255,183 @@ describe("computeCohortPerformance", () => {
         row({ id: "s4", mergedPrs: [] }), // no merged PR
       ],
     });
-    const result = await computeCohortPerformance(db, ORG, [
-      "s1",
-      "s2",
-      "s3",
-      "s4",
-    ]);
+    const result = await computeCohortPerformance(
+      db,
+      ORG,
+      ["s1", "s2", "s3", "s4"],
+      { cohortSampled: false }
+    );
     // 3 of 4 sessions reached a merged PR.
     expect(result.successRate).toBe(75);
     // Distinct PRs: #1 and #2.
     expect(result.mergedPrs).toBe(2);
   });
+
+  it("counts only declared PRs when a reused branch has an incidental current PR", async () => {
+    const base = row({ id: "s1" });
+    const pr = (number: number, isCurrent: boolean) => ({
+      number,
+      prState: GitHubPRState.Merged,
+      mergedAt: new Date(2000 + number),
+      isCurrent,
+      lastVerifiedAt: new Date(2100 + number),
+      repositoryFullName: "acme/repo",
+      repository: { fullName: "acme/repo" },
+    });
+    base.artifact.sourceLinks = [
+      {
+        metadata: {
+          linkKind: SessionArtifactLinkKind.SessionBranch,
+          linkKinds: [SessionArtifactLinkKind.SessionPrSet],
+          prRefs: [1, 2].map((prNumber) => ({
+            repositoryFullName: "acme/repo",
+            prNumber,
+            relationTypes: [SessionPrRelationType.Created],
+          })),
+        },
+        targetId: "branch-reused",
+        target: {
+          branch: {
+            repository: { fullName: "acme/repo" },
+            currentPullRequestDetail: pr(3, true),
+          },
+          pullRequestDetails: [pr(1, false), pr(2, false), pr(3, true)],
+        },
+      },
+    ];
+    const db = makeFakeDb({ cohortRows: [base] });
+
+    const result = await computeCohortPerformance(db, ORG, ["s1"], {
+      cohortSampled: false,
+    });
+
+    expect(result.successRate).toBe(100);
+    expect(result.mergedPrs).toBe(2);
+  });
+
+  it("uses unique-Branch fallback for valid legacy metadata", async () => {
+    const base = row({ id: "legacy" });
+    base.artifact.sourceLinks = [
+      cohortPrLink({ linkKind: SessionArtifactLinkKind.SessionPr }),
+    ];
+    const result = await computeCohortPerformance(
+      makeFakeDb({ cohortRows: [base] }),
+      ORG,
+      ["legacy"],
+      { cohortSampled: false }
+    );
+
+    expect(result.successRate).toBe(100);
+    expect(result.mergedPrs).toBe(1);
+  });
+
+  it.each([
+    [
+      "canonical empty",
+      { linkKind: SessionArtifactLinkKind.SessionPr, prRefs: [] },
+    ],
+    [
+      "stale scalar plus empty",
+      {
+        linkKind: SessionArtifactLinkKind.SessionPr,
+        repositoryFullName: "stale/repo",
+        prNumber: 99,
+        prRefs: [],
+      },
+    ],
+    [
+      "malformed",
+      { linkKind: SessionArtifactLinkKind.SessionPr, prRefs: "bad" },
+    ],
+    // ISS-8051 retired a fourth shape here: an over-500 `prRefs` array, which
+    // this table asserted failed closed. That was the defect — the read schema's
+    // `.max()` made `safeParse` fail, which classifies as `invalid` and discards
+    // the whole stored PR set of a link the cloud had already accepted and
+    // written, so the cohort scored it as if the session had shipped nothing.
+    // The expectation itself changed rather than being weakened to pass; the
+    // replacement readback contract is asserted in
+    // `packages/api/src/types/session-pr-link-metadata.test.ts`, and the
+    // consumer-side admission it enables in `lib/session-pr-links.test.ts`.
+    [
+      "set marker without array",
+      {
+        linkKind: SessionArtifactLinkKind.SessionBranch,
+        linkKinds: [SessionArtifactLinkKind.SessionPrSet],
+      },
+    ],
+  ])("fails closed for %s metadata", async (_label, metadata) => {
+    const base = row({ id: `invalid-${_label}` });
+    base.artifact.sourceLinks = [cohortPrLink(metadata)];
+    const result = await computeCohortPerformance(
+      makeFakeDb({ cohortRows: [base] }),
+      ORG,
+      [base.artifactId],
+      { cohortSampled: false }
+    );
+
+    expect(result.successRate).toBe(0);
+    expect(result.mergedPrs).toBe(0);
+  });
+
+  it("counts a link carrying more refs than the retired read bound (ISS-8064)", async () => {
+    // Previously in the fail-closed table above: the persisted read schema's
+    // `.max(500)` made an over-bound link parse Invalid, so a session's merged
+    // PRs silently left the cohort population and the success rate read 0%
+    // rather than the truth.
+    const base = row({ id: "over-retired-read-bound" });
+    base.artifact.sourceLinks = [
+      cohortPrLink({
+        linkKind: SessionArtifactLinkKind.SessionPr,
+        prRefs: Array.from({ length: 501 }, (_, index) => ({
+          repositoryFullName: "acme/repo",
+          prNumber: index + 1,
+          relationTypes: [SessionPrRelationType.Created],
+        })),
+      }),
+    ];
+
+    const result = await computeCohortPerformance(
+      makeFakeDb({ cohortRows: [base] }),
+      ORG,
+      [base.artifactId],
+      { cohortSampled: false }
+    );
+
+    expect(result.successRate).toBe(100);
+    expect(result.mergedPrs).toBe(1);
+  });
+
+  it.each([true, false])(
+    "excludes an unverified current=%s PR detail",
+    async (isCurrent) => {
+      const base = row({ id: `unverified-${isCurrent}` });
+      base.artifact.sourceLinks = [
+        cohortPrLink(
+          {
+            linkKind: SessionArtifactLinkKind.SessionBranch,
+            linkKinds: [SessionArtifactLinkKind.SessionPrSet],
+            prRefs: [
+              {
+                repositoryFullName: "acme/repo",
+                prNumber: 7,
+                relationTypes: [SessionPrRelationType.Created],
+              },
+            ],
+          },
+          { isCurrent, lastVerifiedAt: undefined }
+        ),
+      ];
+      const result = await computeCohortPerformance(
+        makeFakeDb({ cohortRows: [base] }),
+        ORG,
+        [base.artifactId],
+        { cohortSampled: false }
+      );
+
+      expect(result.successRate).toBe(0);
+      expect(result.mergedPrs).toBe(0);
+    }
+  );
 
   it("computes kloc/token deltas vs. the baseline aggregate", async () => {
     const db = makeFakeDb({
@@ -338,16 +446,144 @@ describe("computeCohortPerformance", () => {
         outputTokens: 2000n,
       },
     });
-    const result = await computeCohortPerformance(db, ORG, ["s1"]);
+    const result = await computeCohortPerformance(db, ORG, ["s1"], {
+      cohortSampled: false,
+    });
     // KLOC/$ 2 vs 1 → +100%.
     expect(result.locDelta).toBeCloseTo(100);
     // tokens/KLOC 1000 vs 2000 → 50% more efficient.
     expect(result.tokenEfficiencyDelta).toBeCloseTo(50);
   });
 
+  it("excludes the scanned cohort from the baseline and signs both deltas", async () => {
+    const sessionQueries: FakeSessionQuery[] = [];
+    const db = makeFakeDb({
+      cohortRows: [
+        row({
+          id: "s1",
+          mergedPrs: [{ repo: "acme/repo", number: 1 }],
+        }),
+        row({
+          id: "s2",
+          mergedPrs: [{ repo: "acme/repo", number: 2 }],
+        }),
+      ],
+      baselineRows: [
+        row({
+          id: "b1",
+          mergedPrs: [{ repo: "acme/repo", number: 3 }],
+        }),
+        row({ id: "b2", mergedPrs: [] }),
+      ],
+      sessionQueries,
+    });
+
+    const result = await computeCohortPerformance(db, ORG, ["s1", "s2"], {
+      cohortSampled: false,
+    });
+
+    const baselineQueries = sessionQueries.filter(
+      (query) => query.where.artifactId?.notIn !== undefined
+    );
+    expect(baselineQueries).toHaveLength(1);
+    expect(baselineQueries[0]?.where.artifactId?.notIn).toEqual(["s1", "s2"]);
+    // Cohort 2/2 merged vs. baseline 1/2 → +50 points, not -50.
+    expect(result.successDelta).toBe(50);
+    // Mean judge score 9 vs. 6 → +50%, not -33%.
+    expect(result.qualityDelta).toBeNull();
+  });
+
+  // ISS-9853 locking tests: the two baseline-read shapes the cohort walk must
+  // NOT move. Stryker (2026-09-11, 76.32% on this file) reported the window's
+  // min/max and the sample's `orderBy`/`take` as surviving mutants — nothing
+  // pinned them — so they are pinned here before the walk lands.
+  it("bounds the baseline window by the cohort's earliest and latest start", async () => {
+    const sessionQueries: FakeSessionQuery[] = [];
+    const db = makeFakeDb({
+      cohortRows: [
+        row({ id: "s1", startedAt: 5000 }),
+        row({ id: "s2", startedAt: 1000 }),
+        row({ id: "s3", startedAt: 9000 }),
+      ],
+      sessionQueries,
+    });
+
+    await computeCohortPerformance(db, ORG, ["s1", "s2", "s3"], {
+      cohortSampled: false,
+    });
+
+    const [baselineQuery] = sessionQueries.filter(
+      (query) => query.where.artifactId?.notIn !== undefined
+    );
+    expect(baselineQuery?.where.sessionStartedAt).toEqual({
+      gte: new Date(1000),
+      lte: new Date(9000),
+    });
+  });
+
+  it("samples the baseline comparator from the most recent sessions, capped", async () => {
+    const sessionQueries: FakeSessionQuery[] = [];
+    const db = makeFakeDb({
+      cohortRows: [row({ id: "s1" })],
+      sessionQueries,
+    });
+
+    await computeCohortPerformance(db, ORG, ["s1"], { cohortSampled: false });
+
+    const [baselineQuery] = sessionQueries.filter(
+      (query) => query.where.artifactId?.notIn !== undefined
+    );
+    expect(baselineQuery?.orderBy).toEqual({ sessionStartedAt: "desc" });
+    // RULING 4 (ISS-9853): the comparator is a deliberate 500-row sample, kept.
+    expect(baselineQuery?.take).toBe(500);
+  });
+
+  it("keeps another org's sessions out of the baseline", async () => {
+    const db = makeFakeDb({
+      cohortRows: [
+        row({
+          id: "s1",
+          mergedPrs: [{ repo: "acme/repo", number: 1 }],
+        }),
+        row({
+          id: "s2",
+          mergedPrs: [{ repo: "acme/repo", number: 2 }],
+        }),
+      ],
+      baselineRows: [
+        row({
+          id: "b1",
+          mergedPrs: [{ repo: "acme/repo", number: 3 }],
+        }),
+        row({ id: "b2", mergedPrs: [] }),
+      ],
+      // Another tenant's sessions sit in the same window. The baseline read is
+      // `notIn`-scoped, not id-scoped, so only its org predicate holds them out.
+      foreignBaselineRows: [
+        row({
+          id: "f1",
+          mergedPrs: [{ repo: "other/repo", number: 9 }],
+        }),
+        row({
+          id: "f2",
+          mergedPrs: [{ repo: "other/repo", number: 10 }],
+        }),
+      ],
+    });
+
+    const result = await computeCohortPerformance(db, ORG, ["s1", "s2"], {
+      cohortSampled: false,
+    });
+
+    // Own-org baseline only: 1/2 merged and a mean score of 6 → +50 on both.
+    // Leaking the foreign rows in gives 3/4 merged and mean 7.5 → +25 and +20.
+    expect(result.successDelta).toBe(50);
+    expect(result.qualityDelta).toBeNull();
+  });
+
   it("dedups branch-fallback LOC per branch in the baseline (FEA-3633)", async () => {
     // Baseline non-fallback LOC = 0; the fallback LOC lives entirely on ONE branch
-    // shared by many sessions → MAX(added)+MAX(removed) = 2000 counted ONCE, NOT
+    // shared by many sessions → MAX(added+removed) = 2000 counted ONCE, NOT
     // once per session. With $2 baseline cost that's 1 KLOC/$; cohort 2 KLOC/$
     // (4000 LOC / $2) → +100%. If the baseline double-counted the branch (e.g.
     // 3×2000 = 6000 → 3 KLOC/$) the delta would be a wrong -33%.
@@ -362,9 +598,31 @@ describe("computeCohortPerformance", () => {
         outputTokens: 2000n,
       },
       // One branch's fallback total, deduped to a single group.
-      fallbackGroups: [{ _max: { linesAdded: 2000, linesRemoved: 0 } }],
+      fallbackGroups: [{ loc: 2000 }],
     });
-    const result = await computeCohortPerformance(db, ORG, ["s1"]);
+    const result = await computeCohortPerformance(db, ORG, ["s1"], {
+      cohortSampled: false,
+    });
+    expect(result.locDelta).toBeCloseTo(100);
+  });
+
+  it("keeps LOC deltas when the fallback baseline exactly reaches the branch cap", async () => {
+    const db = makeFakeDb({
+      cohortRows: [row({ id: "s1", loc: 10_000, cost: 10, tokens: 4000 })],
+      baselineSum: {
+        linesAdded: 0,
+        linesRemoved: 0,
+        estimatedCost: 10,
+        inputTokens: 2000n,
+        outputTokens: 2000n,
+      },
+      fallbackGroups: Array.from({ length: 5000 }, () => ({ loc: 1 })),
+    });
+
+    const result = await computeCohortPerformance(db, ORG, ["s1"], {
+      cohortSampled: false,
+    });
+
     expect(result.locDelta).toBeCloseTo(100);
   });
 
@@ -373,35 +631,25 @@ describe("computeCohortPerformance", () => {
       cohortRows: [row({ id: "s1", loc: 4000, cost: 2, tokens: 4000 })],
       // baselineSum defaults to all-null (no baseline sessions).
     });
-    const result = await computeCohortPerformance(db, ORG, ["s1"]);
+    const result = await computeCohortPerformance(db, ORG, ["s1"], {
+      cohortSampled: false,
+    });
     expect(result.locDelta).toBeNull();
     expect(result.tokenEfficiencyDelta).toBeNull();
     // Absolute cohort success rate is still real (0 here — no PRs).
     expect(result.successRate).toBe(0);
   });
 
-  it("averages judge scores over the cohort's loops (clamped 0–10)", async () => {
+  it("leaves quality null and reads no judge scores (ISS-12435: Loops removed)", async () => {
     const db = makeFakeDb({
-      cohortRows: [
-        row({ id: "s1", loopId: "loop-a" }),
-        row({ id: "s2", loopId: "loop-b" }),
-      ],
-      scoresByLoopId: { "loop-a": [8, 9], "loop-b": [7] },
+      cohortRows: [row({ id: "s1" })],
     });
-    const result = await computeCohortPerformance(db, ORG, ["s1", "s2"]);
-    // mean(8, 9, 7) = 8.
-    expect(result.qualityScore).toBe(8);
-  });
-
-  it("leaves quality null when no cohort session has an evaluation", async () => {
-    const db = makeFakeDb({
-      cohortRows: [row({ id: "s1", loopId: null })],
+    const result = await computeCohortPerformance(db, ORG, ["s1"], {
+      cohortSampled: false,
     });
-    const result = await computeCohortPerformance(db, ORG, ["s1"]);
     expect(result.qualityScore).toBeNull();
     expect(result.qualityDelta).toBeNull();
-    // Quality lookup is skipped entirely when there are no loop ids.
-    expect(db.artifactEvaluation.findMany).not.toHaveBeenCalled();
+    expect(db.judgeScore.aggregate).not.toHaveBeenCalled();
   });
 
   it("produces an efficiency trend sparkline from cohort timing", async () => {
@@ -411,7 +659,9 @@ describe("computeCohortPerformance", () => {
         row({ id: "s2", loc: 2000, tokens: 1000, startedAt: 1000 }),
       ],
     });
-    const result = await computeCohortPerformance(db, ORG, ["s1", "s2"]);
+    const result = await computeCohortPerformance(db, ORG, ["s1", "s2"], {
+      cohortSampled: false,
+    });
     expect(result.efficiencyTrend).toHaveLength(8);
     // Earliest window carries s1 (1.0), latest carries s2 (2.0).
     expect(result.efficiencyTrend[0]).toBe(1);
@@ -425,74 +675,11 @@ describe("computeCohortPerformance", () => {
         row({ id: "s2", mergedPrs: [{ repo: "acme/repo", number: null }] }),
       ],
     });
-    const result = await computeCohortPerformance(db, ORG, ["s1", "s2"]);
+    const result = await computeCohortPerformance(db, ORG, ["s1", "s2"], {
+      cohortSampled: false,
+    });
     // Two distinct PRs (keyed by branch id), not one `acme/repo#null` bucket.
     expect(result.mergedPrs).toBe(2);
     expect(result.successRate).toBe(100);
-  });
-
-  it("skips the baseline (null deltas) when the cohort exceeds the scan cap", async () => {
-    // Cohort larger than COHORT_SCAN_CAP (2000): a baseline that excludes only
-    // the scanned subset would be contaminated, so deltas are intentionally null
-    // and no baseline query is issued (bounded, no OOM).
-    const ids = Array.from({ length: 2001 }, (_, i) => `s${i}`);
-    const db = makeFakeDb({
-      cohortRows: [
-        row({ id: "s0", loc: 4000, cost: 2, tokens: 4000, mergedPrs: [] }),
-        row({ id: "s1", mergedPrs: [{ repo: "acme/repo", number: 1 }] }),
-      ],
-      baselineSum: {
-        linesAdded: 2000,
-        linesRemoved: 0,
-        estimatedCost: 2,
-        inputTokens: 2000n,
-        outputTokens: 2000n,
-      },
-    });
-    const result = await computeCohortPerformance(db, ORG, ids);
-    // Absolute metrics still computed over the bounded scan.
-    expect(result.successRate).toBe(50);
-    expect(result.mergedPrs).toBe(1);
-    // Deltas suppressed; the baseline aggregate was never queried.
-    expect(result.locDelta).toBeNull();
-    expect(result.successDelta).toBeNull();
-    expect(result.tokenEfficiencyDelta).toBeNull();
-    expect(db.sessionDetail.aggregate).not.toHaveBeenCalled();
-  });
-
-  // ISS-5521: the cap is fine; a capped `mergedPrs` presented as covering the
-  // whole cohort is not. The reader cannot see `scanIds` — the response has to
-  // carry the fact, or the card has no way to know its own population.
-  it("reports mergedPrsTruncated when the cohort exceeds the scan cap", async () => {
-    const ids = Array.from({ length: COHORT_SCAN_CAP + 1 }, (_, i) => `s${i}`);
-    const db = makeFakeDb({
-      cohortRows: [
-        row({ id: "s1", mergedPrs: [{ repo: "acme/repo", number: 1 }] }),
-      ],
-    });
-
-    const result = await computeCohortPerformance(db, ORG, ids);
-
-    // The count itself is unchanged — it is a FLOOR over the scanned slice, and
-    // suppressing it would trade an overstated number for a missing one.
-    expect(result.mergedPrs).toBe(1);
-    expect(result.mergedPrsTruncated).toBe(true);
-  });
-
-  it("does not report truncation for a cohort that fits the scan cap exactly", async () => {
-    const ids = Array.from({ length: COHORT_SCAN_CAP }, (_, i) => `s${i}`);
-    const db = makeFakeDb({
-      cohortRows: [
-        row({ id: "s1", mergedPrs: [{ repo: "acme/repo", number: 1 }] }),
-      ],
-    });
-
-    const result = await computeCohortPerformance(db, ORG, ids);
-
-    // Exactly `COHORT_SCAN_CAP` ids are all scanned — `slice(0, cap)` drops
-    // nothing — so the count DOES cover the whole cohort and must not be
-    // caveated. An off-by-one here would caveat an honest number on every
-    // component that happens to sit on the boundary.
-    expect(result.mergedPrsTruncated).toBe(false);
   });
 });

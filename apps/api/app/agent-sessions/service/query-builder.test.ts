@@ -3,16 +3,14 @@ import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { LinkType } from "@repo/api/src/types/artifact";
 import { SUBSCRIPTION_BILLING_MODES } from "@repo/api/src/types/billing-mode";
 import { SessionArtifactLinkKind } from "@repo/api/src/types/session-artifact-link";
-import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "@repo/api/src/types/session-status";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { Prisma } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildAgentSessionDbMock,
   buildSessionDetailRecord,
   buildSessionListRecord,
+  DEFAULT_LIST_PAGE_ECHO,
   installDb,
   SESSION_STARTED_AT,
 } from "@/__tests__/support/agent-sessions/service.test-harness";
@@ -135,38 +133,15 @@ describe("agentSessionsService", () => {
       ],
     });
   });
-  it("derives the Waiting facet from awaitingInputSince, not a persisted status (FEA-3035)", async () => {
-    const findMany = vi.fn().mockResolvedValue([]);
-    installDb({
-      sessionDetail: { findMany, count: vi.fn().mockResolvedValue(0) },
-    });
-
-    await agentSessionsService.findSessions({
-      organizationId: "org-1",
-      filters: { statuses: [DISPLAYED_SESSION_STATUS.WAITING], quality: "all" },
-    });
-
-    const where = findMany.mock.calls[0]?.[0].where as {
-      AND?: Record<string, unknown>[];
-    };
-    // "waiting" is never persisted — an awaiting-input session is a non-terminal
-    // status plus an awaitingInputSince timestamp and no sessionEndedAt, matching
-    // both desktop paths and the toAgentSessionState projection (which only
-    // reports PendingApproval while !sessionEndedAt). ISS-5592: the terminal set
-    // is {inactive,error} — the retired pair left it because no row can store one.
-    expect(where.AND).toEqual([
-      {
-        awaitingInputSince: { not: null },
-        sessionEndedAt: null,
-        artifact: {
-          is: {
-            status: { notIn: ["inactive", "error"] },
-          },
-        },
-      },
-    ]);
-  });
-  it("excludes awaiting-input sessions from the Active facet (FEA-3035)", async () => {
+  // ISS-9939 / ISS-10629 (2026-09-17) retired the Waiting-derived-from-
+  // awaitingInputSince FILTER predicate this test used to pin: the operator
+  // ruling collapsed the Sessions status FILTER to a plain equality against the
+  // three PERSISTED SESSION_STATUS values. DISPLAY is unchanged — an
+  // awaiting-input session still BADGES Waiting — but a `waiting` request is no
+  // longer resolved through `awaitingInputSince`; it falls through to an exact
+  // `artifact.status` match on a column that stores none of it, the same honest
+  // fallthrough every other unrecognized status value gets.
+  it("filters status through a plain artifact.status equality (ISS-9939 / ISS-10629)", async () => {
     const findMany = vi.fn().mockResolvedValue([]);
     installDb({
       sessionDetail: { findMany, count: vi.fn().mockResolvedValue(0) },
@@ -178,39 +153,38 @@ describe("agentSessionsService", () => {
     });
 
     const where = findMany.mock.calls[0]?.[0].where as {
-      AND?: Record<string, unknown>[];
+      artifact?: { is?: { organizationId?: unknown; status?: unknown } };
     };
-    // Active is status='active' AND not awaiting input, so awaiting-input
-    // sessions desktop excludes are excluded on the web too.
-    //
-    // ISS-5366 adds the third condition: a row silent past the display
-    // staleness cutoff DISPLAYS as Stale, so it must leave the Active bucket.
-    // The cutoff instant is computed per call, so the timestamps are matched
-    // structurally rather than pinned.
-    expect(where.AND).toEqual([
-      {
-        awaitingInputSince: null,
-        artifact: { is: { status: "active" } },
-        NOT: {
-          OR: [
-            // ISS-4556: `not: null` beside the cutoff. `lastActivityAt` is
-            // nullable, so a bare `last_activity_at < $cutoff` is SQL NULL — not
-            // false — for a null row, and this whole disjunction is NEGATED
-            // here. `NOT NULL` is NULL, which `WHERE` rejects, so a row with no
-            // activity timestamp and a fresh `sessionStartedAt` was returned by
-            // neither the Active nor the Stale facet while displaying Active.
-            { lastActivityAt: { not: null, lt: expect.any(Date) } },
-            {
-              lastActivityAt: null,
-              sessionStartedAt: { lt: expect.any(Date) },
-            },
-          ],
-        },
-      },
-    ]);
+    expect(where.artifact?.is?.status).toBe("active");
   });
 
-  it("ORs a mixed status multi-select, keeping plain statuses as equality (FEA-3035)", async () => {
+  it("makes an all-retired status request unsatisfiable rather than an equality that can match", async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    installDb({
+      sessionDetail: { findMany, count: vi.fn().mockResolvedValue(0) },
+    });
+
+    await agentSessionsService.findSessions({
+      organizationId: "org-1",
+      filters: { statuses: ["waiting"], quality: "all" },
+    });
+
+    const where = findMany.mock.calls[0]?.[0].where as {
+      artifact?: { is?: { status?: unknown } };
+    };
+    // EXPECTATION CHANGED, not weakened (davetho review). This asserted
+    // `status = "waiting"` under the name "exact-match-on-nothing" — but
+    // `artifacts.status` is freeform and off-vocabulary rows exist, so that
+    // equality matches precisely when a row literally STORES "waiting", which
+    // is what the published API and MCP docs say cannot happen. An empty `in`
+    // is unsatisfiable by construction and delivers what the old name claimed.
+    //
+    // Falling through to NO predicate would be worse than either: it widens a
+    // retired-value request to the whole population.
+    expect(where.artifact?.is?.status).toEqual({ in: [] });
+  });
+
+  it("drops retired values from a MIXED selection and keeps the persisted ones", async () => {
     const findMany = vi.fn().mockResolvedValue([]);
     installDb({
       sessionDetail: { findMany, count: vi.fn().mockResolvedValue(0) },
@@ -219,34 +193,22 @@ describe("agentSessionsService", () => {
     await agentSessionsService.findSessions({
       organizationId: "org-1",
       filters: {
-        // ISS-4985: `running` rather than `completed`. A RETIRED spelling is no
-        // longer a "plain" status — it now routes to the Inactive predicate (see
-        // the test below) — so using one here would assert the opposite of the
-        // shipped behavior. `running` is the remaining shape this test is about:
-        // a real legacy alias with no facet branch of its own.
-        statuses: [DISPLAYED_SESSION_STATUS.WAITING, "running"],
+        statuses: [SESSION_STATUS.ACTIVE, "waiting", SESSION_STATUS.ERROR],
         quality: "all",
       },
     });
 
     const where = findMany.mock.calls[0]?.[0].where as {
-      AND?: { OR: Record<string, unknown>[] }[];
+      artifact?: { is?: { status?: unknown } };
     };
-    expect(where.AND?.[0].OR).toEqual([
-      {
-        awaitingInputSince: { not: null },
-        sessionEndedAt: null,
-        artifact: {
-          is: {
-            status: { notIn: ["inactive", "error"] },
-          },
-        },
-      },
-      { artifact: { is: { status: "running" } } },
-    ]);
+    // The retired member is removed rather than narrowing the whole request to
+    // nothing OR riding along as a value that could match a stored literal.
+    expect(where.artifact?.is?.status).toEqual({
+      in: [SESSION_STATUS.ACTIVE, SESSION_STATUS.ERROR],
+    });
   });
 
-  it("keeps the Inactive facet a plain equality, not a widening onto the retired pair (ISS-5592)", async () => {
+  it("ORs a mixed status multi-select as a plain artifact.status IN clause (ISS-9939 / ISS-10629)", async () => {
     const findMany = vi.fn().mockResolvedValue([]);
     installDb({
       sessionDetail: { findMany, count: vi.fn().mockResolvedValue(0) },
@@ -254,21 +216,18 @@ describe("agentSessionsService", () => {
 
     await agentSessionsService.findSessions({
       organizationId: "org-1",
-      filters: { status: SESSION_STATUS.INACTIVE, quality: "all" },
+      filters: {
+        statuses: [SESSION_STATUS.ACTIVE, SESSION_STATUS.INACTIVE],
+        quality: "all",
+      },
     });
 
     const where = findMany.mock.calls[0]?.[0].where as {
-      AND?: Record<string, unknown>[];
+      artifact?: { is?: { status?: unknown } };
     };
-    // ISS-4586 had this widen onto `completed`/`abandoned` so the facet reached
-    // not-yet-migrated rows. ISS-5981's total ingest fold removed the producer of
-    // such a row and the ISS-4654 backfill collapsed the rest, so the widening
-    // matched a population that cannot exist — and made the cloud disagree with
-    // desktop, which never widened. This asserts the narrowed shape so the union
-    // cannot come back unnoticed.
-    expect(where.AND).toEqual([
-      { artifact: { is: { status: SESSION_STATUS.INACTIVE } } },
-    ]);
+    expect(where.artifact?.is?.status).toEqual({
+      in: [SESSION_STATUS.ACTIVE, SESSION_STATUS.INACTIVE],
+    });
   });
 
   it("filters by pull-request association across both PR sources", async () => {
@@ -300,10 +259,20 @@ describe("agentSessionsService", () => {
             sourceLinks: {
               some: {
                 linkType: LinkType.RelatesTo,
-                metadata: {
-                  path: ["linkKind"],
-                  equals: SessionArtifactLinkKind.SessionPr,
-                },
+                OR: [
+                  {
+                    metadata: {
+                      path: ["linkKind"],
+                      equals: SessionArtifactLinkKind.SessionPr,
+                    },
+                  },
+                  {
+                    metadata: {
+                      path: ["linkKinds"],
+                      array_contains: [SessionArtifactLinkKind.SessionPrSet],
+                    },
+                  },
+                ],
               },
             },
           },
@@ -315,12 +284,16 @@ describe("agentSessionsService", () => {
     const findMany = vi.fn().mockResolvedValue([
       buildSessionListRecord({
         artifactId: "session-2",
-        user: {
-          id: "user-2",
-          email: "grace@example.com",
-          firstName: "Grace",
-          lastName: "Hopper",
-          avatarUrl: null,
+        // ISS-12585: the wire `user` alias is filled from the assignee.
+        artifact: {
+          ...(buildSessionListRecord().artifact as Record<string, unknown>),
+          assignee: {
+            id: "user-2",
+            email: "grace@example.com",
+            firstName: "Grace",
+            lastName: "Hopper",
+            avatarUrl: null,
+          },
         },
       }),
     ]);
@@ -352,6 +325,9 @@ describe("agentSessionsService", () => {
       total: 1,
       idleCount: 0,
       viewerScope: AgentSessionViewerScope.Organization,
+      // ISS-9555: stated rather than loosened to `objectContaining`, because
+      // this assertion's job is the WHOLE response shape.
+      pageInfo: DEFAULT_LIST_PAGE_ECHO,
     });
 
     const expectedWhere = {
@@ -420,18 +396,20 @@ describe("agentSessionsService", () => {
       },
     });
 
+    // ISS-12251: the singular `userId` scope matches the Owner (the assignee);
+    // team scope matches sessions a team member created (D-4).
     const expectedWhere = {
       artifact: {
         is: {
           organizationId: "org-1",
-        },
-      },
-      userId: "user-2",
-      user: {
-        is: {
-          teamMemberships: {
-            some: {
-              teamId: "team-1",
+          assigneeId: { equals: "user-2" },
+          createdBy: {
+            is: {
+              teamMemberships: {
+                some: {
+                  teamId: "team-1",
+                },
+              },
             },
           },
         },
@@ -445,7 +423,7 @@ describe("agentSessionsService", () => {
     );
     expect(count).toHaveBeenCalledWith({ where: expectedWhere });
   });
-  it("filters the session-list date window on lastActivityAt with a start-time fallback (FEA-2180)", async () => {
+  it("filters the session-list date window on lastActivityAt (FEA-2180)", async () => {
     const findMany = vi.fn().mockResolvedValue([]);
     const count = vi.fn().mockResolvedValue(0);
 
@@ -466,8 +444,9 @@ describe("agentSessionsService", () => {
 
     // The window must filter on lastActivityAt — the field the list is ordered
     // by — so a recently-active session that started before the window is kept,
-    // and the dashboard / Sessions page lists stay in sync. Null-activity rows
-    // fall back to sessionStartedAt.
+    // and the dashboard / Sessions page lists stay in sync. ISS-6463 made the
+    // column NOT NULL, so this is one comparison rather than a disjunction with
+    // a sessionStartedAt fallback.
     const range = { gte: new Date(startDate), lte: new Date(endDate) };
     const expectedWhere = {
       artifact: {
@@ -475,10 +454,7 @@ describe("agentSessionsService", () => {
           organizationId: "org-1",
         },
       },
-      OR: [
-        { lastActivityAt: range },
-        { lastActivityAt: null, sessionStartedAt: range },
-      ],
+      lastActivityAt: range,
     };
 
     expect(findMany).toHaveBeenCalledWith(
@@ -533,10 +509,7 @@ describe("agentSessionsService", () => {
     const range = { gte: new Date(startDate), lte: new Date(endDate) };
     const expectedWhere = {
       artifact: { is: { organizationId: "org-1" } },
-      OR: [
-        { lastActivityAt: range },
-        { lastActivityAt: null, sessionStartedAt: range },
-      ],
+      lastActivityAt: range,
     };
     // The core aggregate that produces totalSessions / tokens / cost must scope
     // to the lastActivityAt window — identical to the list's predicate above.
@@ -591,34 +564,32 @@ describe("agentSessionsService", () => {
 
       const where = findMany.mock.calls[0]?.[0].where as {
         AND?: Record<string, unknown>[];
-        OR?: unknown;
+        lastActivityAt?: unknown;
       };
       // The date window lands on lastActivityAt (its own field) while the
       // completion boundary lands on sessionEndedAt — the two are independent
       // predicates, so a session started-before-but-completed-after the boundary
       // is not silently dropped by the started-at window.
-      expect(where.OR).toEqual([
-        { lastActivityAt: { gte: new Date(startDate) } },
-        {
-          lastActivityAt: null,
-          sessionStartedAt: { gte: new Date(startDate) },
-        },
-      ]);
+      expect(where.lastActivityAt).toEqual({ gte: new Date(startDate) });
       expect(where.AND).toEqual([
         { sessionEndedAt: { gte: new Date(completedAfter) } },
       ]);
     });
   });
   it("loads full same-organization session details without requiring ownership", async () => {
-    const findFirst = vi.fn().mockResolvedValue(
+    const findMany = vi.fn().mockResolvedValue([
       buildSessionDetailRecord({
         artifactId: "session-2",
-        user: {
-          id: "user-2",
-          email: "grace@example.com",
-          firstName: "Grace",
-          lastName: "Hopper",
-          avatarUrl: null,
+        // ISS-12585: the wire `user` alias is filled from the assignee.
+        artifact: {
+          ...(buildSessionListRecord().artifact as Record<string, unknown>),
+          assignee: {
+            id: "user-2",
+            email: "grace@example.com",
+            firstName: "Grace",
+            lastName: "Hopper",
+            avatarUrl: null,
+          },
         },
         events: [
           {
@@ -632,12 +603,12 @@ describe("agentSessionsService", () => {
             eventCreatedAt: SESSION_STARTED_AT,
           },
         ],
-      })
-    );
+      }),
+    ]);
 
     installDb({
       sessionDetail: buildAgentSessionDbMock({
-        findFirst,
+        findMany,
       }),
     });
 
@@ -663,10 +634,13 @@ describe("agentSessionsService", () => {
       })
     );
 
-    expect(findFirst).toHaveBeenCalledWith(
+    // ISS-9112: the detail read resolves an id SET, so the artifact predicate is
+    // an `in`. The org predicate it is ANDed with is the point of this
+    // assertion and is unchanged.
+    expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          artifactId: "session-2",
+          artifactId: { in: ["session-2"] },
           artifact: { is: { organizationId: "org-1" } },
         },
       })
@@ -674,6 +648,8 @@ describe("agentSessionsService", () => {
   });
 
   describe("FEA-3284/FEA-3345 hide idle sessions (fail-open default)", () => {
+    // ISS-5801 widened the substantive boundary: component invocations now
+    // count as work, so both pinned shapes carry the new arm.
     const SUBSTANTIVE_OR = [
       { turns: { gt: 0 } },
       { inputTokens: { gt: 0 } },
@@ -681,6 +657,7 @@ describe("agentSessionsService", () => {
       { cacheReadTokens: { gt: 0 } },
       { cacheWriteTokens: { gt: 0 } },
       { toolUseCount: { gt: 0 } },
+      { componentInvocationCount: { gt: 0 } },
     ];
     const IDLE_AND = [
       { OR: [{ turns: null }, { turns: { lte: 0 } }] },
@@ -689,6 +666,7 @@ describe("agentSessionsService", () => {
       { cacheReadTokens: { lte: 0 } },
       { cacheWriteTokens: { lte: 0 } },
       { toolUseCount: { lte: 0 } },
+      { componentInvocationCount: { lte: 0 } },
     ];
 
     // FEA-3345 AC-1/AC-3: with no `quality` param the list is fail-open — it
@@ -832,25 +810,14 @@ describe("agentSessionsService", () => {
     const START_DATE = "2026-06-18T00:00:00.000Z";
     const END_DATE = "2026-06-25T00:00:00.000Z";
     // The one date-window predicate both the table and the cards must window on
-    // for this range: `lastActivityAt` in [start, end], with the null-safe
-    // fallback to `sessionStartedAt` for pre-backfill rows (a null-activity
-    // session is kept, and kept IDENTICALLY, by both paths). This is the SSOT
-    // the two cohorts have to agree on.
-    const EXPECTED_DATE_WINDOW = [
-      {
-        lastActivityAt: {
-          gte: new Date(START_DATE),
-          lte: new Date(END_DATE),
-        },
-      },
-      {
-        lastActivityAt: null,
-        sessionStartedAt: {
-          gte: new Date(START_DATE),
-          lte: new Date(END_DATE),
-        },
-      },
-    ];
+    // for this range: `lastActivityAt` in [start, end]. This is the SSOT the two
+    // cohorts have to agree on. ISS-6463 made the column NOT NULL, so the
+    // null-activity fallback branch that used to make this a disjunction (and
+    // had to be applied IDENTICALLY by both paths) is gone.
+    const EXPECTED_DATE_WINDOW = {
+      gte: new Date(START_DATE),
+      lte: new Date(END_DATE),
+    };
 
     // Capture the WHERE the Sessions TABLE hands the DB for a given date range.
     async function captureListWhere(): Promise<Record<string, unknown>> {
@@ -903,11 +870,11 @@ describe("agentSessionsService", () => {
 
     it("windows the summary-cards aggregate on the SAME lastActivityAt cohort the table lists (not sessionStartedAt)", async () => {
       const summaryWhere = await captureSummaryWhere();
-      // The cards must window on lastActivityAt with the null-safe fallback —
-      // NOT a bare `sessionStartedAt` window. A `sessionStartedAt`-windowed
-      // summary would exclude a session active-but-not-started in the range that
-      // the table still shows, so the cards would summarize a different cohort.
-      expect(summaryWhere.OR).toEqual(EXPECTED_DATE_WINDOW);
+      // The cards must window on lastActivityAt — NOT a bare `sessionStartedAt`
+      // window. A `sessionStartedAt`-windowed summary would exclude a session
+      // active-but-not-started in the range that the table still shows, so the
+      // cards would summarize a different cohort.
+      expect(summaryWhere.lastActivityAt).toEqual(EXPECTED_DATE_WINDOW);
       expect(summaryWhere.sessionStartedAt).toBeUndefined();
     });
 
@@ -917,20 +884,22 @@ describe("agentSessionsService", () => {
       vi.clearAllMocks();
       const summaryWhere = await captureSummaryWhere();
 
-      // Same org scope, same date window (incl. the null-activity fallback
-      // branch), so the population the cards aggregate is exactly the population
-      // the table lists — they reconcile for the range.
+      // Same org scope, same date window, so the population the cards aggregate
+      // is exactly the population the table lists — they reconcile for the
+      // range.
       expect(summaryWhere).toEqual(listWhere);
-      expect(listWhere.OR).toEqual(EXPECTED_DATE_WINDOW);
+      expect(listWhere.lastActivityAt).toEqual(EXPECTED_DATE_WINDOW);
     });
   });
 });
 
 describe("ISS-4481 Unknown-cost DB clause (buildWhere)", () => {
-  // The DB twin `SESSION_COST_UNKNOWN_WHERE` is a fallback (the list/summary paths
-  // route Unknown through the reconciled path with `costBuckets` stripped), but it
-  // must still match `matchesUnknownCost`. Drive `buildWhere` directly with an
-  // un-stripped Unknown filter and assert the emitted clause is null-safe.
+  // ISS-7176: `SESSION_COST_UNKNOWN_WHERE` is THE path now, not a fallback. The
+  // list and summary used to strip `costBuckets` and route Unknown through the
+  // reconciled candidate scan, so this clause ran only when that scan did not —
+  // which is why these cases were written against `buildWhere` directly. They
+  // now cover the only implementation, and it must still match
+  // `matchesUnknownCost`.
   function findUnknownCostClause(
     where: Prisma.SessionDetailWhereInput
   ): Prisma.SessionDetailWhereInput | undefined {
@@ -939,23 +908,33 @@ describe("ISS-4481 Unknown-cost DB clause (buildWhere)", () => {
     const and = where.AND ?? [];
     const andClauses = Array.isArray(and) ? and : [and];
     for (const clause of andClauses) {
-      const estimatedCost = (clause as Prisma.SessionDetailWhereInput)
-        .estimatedCost as { lte?: number } | undefined;
-      if (estimatedCost?.lte === 0) {
+      // ISS-7176: the clause is now `{ AND: [ <cost disjunct>, <billing disjunct> ] }`
+      // rather than a flat `estimatedCost` key, because a NULLABLE cost has to be
+      // admitted by an explicit `{ estimatedCost: null }` OR-arm. Match on that
+      // inner cost disjunct instead of the old flat key.
+      const inner = (clause as Prisma.SessionDetailWhereInput).AND;
+      const innerClauses = [inner ?? []].flat();
+      const costDisjunct = innerClauses.find((c) =>
+        ((c as Prisma.SessionDetailWhereInput).OR ?? []).some(
+          (arm) =>
+            (arm as { estimatedCost?: unknown }).estimatedCost !== undefined
+        )
+      );
+      if (costDisjunct) {
         return clause as Prisma.SessionDetailWhereInput;
       }
     }
     return undefined;
   }
 
-  it("includes null-billingMode rows AND no-work subscription rows (the — cases), the exact complement of KNOWN", () => {
+  it("includes null-billingMode rows AND no-work subscription rows (the — cases), the exact complement of KNOWN", async () => {
     // A bare `billingMode: { notIn: [...] }` evaluates to NULL (not TRUE) for a
     // NULL column in SQL, so it would silently DROP the most common unknown-cost
     // row. The clause must OR in an explicit `billingMode: null` branch. ISS-4481:
     // it must ALSO include a subscription session that did no measurable work — it
     // renders `—`, not `$0.00` — so the clause and `SESSION_COST_KNOWN_WHERE`
     // partition every row (the `subscription AND idle` disjunct).
-    const where = buildWhere(
+    const where = await buildWhere(
       { organizationId: "org-1" },
       { costBuckets: [SESSION_UNKNOWN_COST_BUCKET_ID] },
       "lastActivityAt"
@@ -963,23 +942,36 @@ describe("ISS-4481 Unknown-cost DB clause (buildWhere)", () => {
 
     const unknownClause = findUnknownCostClause(where);
     expect(unknownClause).toBeDefined();
+    // ISS-7176 restructured this from a flat `estimatedCost` key plus a sibling
+    // `OR` into an `AND` of two disjuncts. The behaviour change that forced it:
+    // `estimatedCost` is nullable now, and in SQL `NULL <= 0` is NULL rather than
+    // TRUE — so the old bare `lte` matched no null row, and an unknown-cost
+    // session would have fallen out of BOTH this clause and the KNOWN one.
     expect(unknownClause).toEqual({
-      estimatedCost: { lte: 0 },
-      OR: [
-        { billingMode: null },
-        { billingMode: { notIn: [...SUBSCRIPTION_BILLING_MODES] } },
+      AND: [
+        { OR: [{ estimatedCost: null }, { estimatedCost: { lte: 0 } }] },
         {
-          AND: [
-            { billingMode: { in: [...SUBSCRIPTION_BILLING_MODES] } },
-            SESSION_IDLE_WHERE,
+          OR: [
+            { billingMode: null },
+            { billingMode: { notIn: [...SUBSCRIPTION_BILLING_MODES] } },
+            {
+              AND: [
+                { billingMode: { in: [...SUBSCRIPTION_BILLING_MODES] } },
+                SESSION_IDLE_WHERE,
+              ],
+            },
           ],
         },
       ],
     });
   });
 
-  it("does not add a cost clause when no cost filter is selected", () => {
-    const where = buildWhere({ organizationId: "org-1" }, {}, "lastActivityAt");
+  it("does not add a cost clause when no cost filter is selected", async () => {
+    const where = await buildWhere(
+      { organizationId: "org-1" },
+      {},
+      "lastActivityAt"
+    );
     expect(findUnknownCostClause(where)).toBeUndefined();
   });
 });

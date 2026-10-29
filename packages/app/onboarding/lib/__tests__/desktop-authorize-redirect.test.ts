@@ -43,6 +43,55 @@ describe("buildLoopbackRedirectUrl", () => {
   });
 });
 
+describe("buildLoopbackRedirectUrl account_created marker (ISS-10913)", () => {
+  it("stamps the marker when this auth return created an account", () => {
+    const url = new URL(
+      buildLoopbackRedirectUrl("http://127.0.0.1:49152/cb", "c", "s", true)
+    );
+
+    expect(url.searchParams.get("account_created")).toBe("1");
+  });
+
+  it("omits the param when no creation was observed", () => {
+    // An absent optional field stays absent on the wire — a `0` would be a
+    // claim the page cannot make, and omission is also what an installed
+    // desktop build that predates the param already reads.
+    const url = new URL(
+      buildLoopbackRedirectUrl("http://127.0.0.1:49152/cb", "c", "s", false)
+    );
+
+    expect(url.searchParams.has("account_created")).toBe(false);
+  });
+
+  it("omits the param for a caller that passes no marker at all", () => {
+    const url = new URL(
+      buildLoopbackRedirectUrl("http://127.0.0.1:49152/cb", "c", "s")
+    );
+
+    expect(url.searchParams.has("account_created")).toBe(false);
+  });
+});
+
+describe("buildLoopbackRedirectUrl desktop bootstrap marker", () => {
+  it("adds the marker only for the separate bootstrap return", () => {
+    const bootstrap = new URL(
+      buildLoopbackRedirectUrl(
+        "http://127.0.0.1:49152/cb",
+        "c",
+        "s",
+        true,
+        true
+      )
+    );
+    const ordinary = new URL(
+      buildLoopbackRedirectUrl("http://127.0.0.1:49152/cb", "c", "s", true)
+    );
+
+    expect(bootstrap.searchParams.get("desktop_bootstrap")).toBe("1");
+    expect(ordinary.searchParams.has("desktop_bootstrap")).toBe(false);
+  });
+});
+
 describe("buildLoopbackCancelUrl", () => {
   it("hands the loopback an access_denied error and the round-tripped state", () => {
     const url = new URL(

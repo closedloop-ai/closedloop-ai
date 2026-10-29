@@ -19,9 +19,9 @@ import {
 } from "@repo/api/src/types/token-cost-provenance";
 import { describe, expect, it, vi } from "vitest";
 import { resolveSessionEventEvidence } from "../branch-session-cost-evidence";
+import type { LinkedSession } from "./session-usage-link-read";
 import {
   getSessionUsageByBranch,
-  type LinkedSession,
   type SessionUsageClient,
 } from "./session-usage-window";
 
@@ -35,7 +35,7 @@ describe("Branch session cost evidence", () => {
     });
 
     expect(eventEvidenceQuery).toHaveBeenCalledOnce();
-    const evidenceSql = renderSql(eventEvidenceQuery.mock.calls[0]?.[0]);
+    const evidenceSql = capturedSqlText(eventEvidenceQuery.mock.calls[0]?.[0]);
     expect(evidenceSql).toContain('event.source_identity AS "sourceIdentity"');
     expect(evidenceSql).toContain(
       'event.cost_completeness AS "costCompleteness"'
@@ -72,6 +72,26 @@ describe("Branch session cost evidence", () => {
     expect(eventEvidenceQuery).not.toHaveBeenCalled();
   });
 
+  it("uses aggregate-only event spend for windowed usage without cost evidence", async () => {
+    const { db, eventEvidenceQuery, eventGroupBy } = makeClient({
+      estimatedCost: 99,
+      lifetimeInputTokens: 99,
+      events: [eventFixture({ estimatedCost: 7, inputTokens: 4 })],
+    });
+
+    const usage = await getSessionUsageByBranch(db, "org-1", ["branch-1"], {
+      dateWindow: { startDate: new Date("2026-06-01T00:00:00.000Z") },
+    });
+
+    expect(eventGroupBy).toHaveBeenCalledOnce();
+    expect(eventEvidenceQuery).not.toHaveBeenCalled();
+    expect(usage.get("branch-1")).toMatchObject({
+      inputTokens: 4,
+      estimatedCostUsd: 7,
+      hasPricedCost: true,
+    });
+  });
+
   it("requires persisted SessionDetail before hydrating branch usage", async () => {
     const { artifactLinkFindMany, db } = makeClient();
 
@@ -86,14 +106,16 @@ describe("Branch session cost evidence", () => {
     );
   });
 
-  it("treats an explicit-zero legacy session as partial rather than empty", async () => {
+  it("keeps an explicit-zero legacy session partial without pricing the placeholder", async () => {
     const { db } = makeClient({ events: [], estimatedCost: 0 });
     const evidence: BranchCostEvidenceContribution[] = [];
 
-    await getSessionUsageByBranch(db, "org-1", ["branch-1"], {
+    const usage = await getSessionUsageByBranch(db, "org-1", ["branch-1"], {
       costEvidenceOut: evidence,
     });
 
+    expect(usage.get("branch-1")?.hasPricedCost).toBe(false);
+    expect(usage.get("branch-1")?.sessions[0]?.estimatedCostUsd).toBeNull();
     expect(aggregateBranchCostCompleteness(evidence)).toEqual({
       completeness: BranchCostCompleteness.Partial,
       reason: BranchCostCompletenessReason.CoverageIncomplete,
@@ -182,38 +204,39 @@ describe("Branch session cost evidence", () => {
     });
   });
 
-  it.each([
-    3, 0,
-  ])("keeps captured subtotal %s while marking corrupt token totals malformed", async (subtotalUsd) => {
-    const { db } = makeClient({
-      lifetimeInputTokens: 0,
-      estimatedCost: subtotalUsd,
-      events: [
-        eventFixture({
-          inputTokens: -1,
-          estimatedCost: subtotalUsd,
+  it.each([3, 0])(
+    "keeps captured subtotal %s while marking corrupt token totals malformed",
+    async (subtotalUsd) => {
+      const { db } = makeClient({
+        lifetimeInputTokens: 0,
+        estimatedCost: subtotalUsd,
+        events: [
+          eventFixture({
+            inputTokens: -1,
+            estimatedCost: subtotalUsd,
+            subscriptionEquivalentCost: subtotalUsd,
+            apiEstimatedCost: 0,
+          }),
+        ],
+      });
+      const evidence: BranchCostEvidenceContribution[] = [];
+
+      await getSessionUsageByBranch(db, "org-1", ["branch-1"], {
+        dateWindow: { startDate: new Date("2026-06-01T00:00:00.000Z") },
+        costEvidenceOut: evidence,
+      });
+
+      expect(aggregateBranchCostCompleteness(evidence)).toEqual({
+        completeness: BranchCostCompleteness.Partial,
+        reason: BranchCostCompletenessReason.Malformed,
+        subtotalUsd,
+        lanes: {
           subscriptionEquivalentCost: subtotalUsd,
           apiEstimatedCost: 0,
-        }),
-      ],
-    });
-    const evidence: BranchCostEvidenceContribution[] = [];
-
-    await getSessionUsageByBranch(db, "org-1", ["branch-1"], {
-      dateWindow: { startDate: new Date("2026-06-01T00:00:00.000Z") },
-      costEvidenceOut: evidence,
-    });
-
-    expect(aggregateBranchCostCompleteness(evidence)).toEqual({
-      completeness: BranchCostCompleteness.Partial,
-      reason: BranchCostCompletenessReason.Malformed,
-      subtotalUsd,
-      lanes: {
-        subscriptionEquivalentCost: subtotalUsd,
-        apiEstimatedCost: 0,
-      },
-    });
-  });
+        },
+      });
+    }
+  );
 
   it("keeps matching mixed priced and unpriced events pricing-incomplete", async () => {
     const { db } = makeClient({
@@ -466,10 +489,10 @@ describe("Branch session cost evidence", () => {
     });
 
     expect(eventEvidenceQuery).toHaveBeenCalledTimes(1);
-    const evidenceSql = renderSql(eventEvidenceQuery.mock.calls[0]?.[0]);
+    const evidenceSql = capturedSqlText(eventEvidenceQuery.mock.calls[0]?.[0]);
     const sizeCte = evidenceSql.split("), stats AS")[0] ?? "";
     expect(sizeCte).toContain("octet_length(event.source_identity::text)");
-    expect(renderSqlValues(eventEvidenceQuery.mock.calls[0]?.[0])).toContain(
+    expect(capturedSqlValues(eventEvidenceQuery.mock.calls[0]?.[0])).toContain(
       branchCostEvidenceFixedRowBytes
     );
     expect(sizeCte).not.toContain('AS "sourceIdentity"');
@@ -487,49 +510,40 @@ describe("Branch session cost evidence", () => {
     ["just below", branchCostEvidenceByteBudget - 1, false],
     ["at", branchCostEvidenceByteBudget, false],
     ["above", branchCostEvidenceByteBudget + 1, true],
-  ] as const)("classifies %s the shared byte cap", async (_label, retainedBytes, exceeded) => {
-    const { db } = makeClient({
-      sourceIdentityBytes: retainedBytes - branchCostEvidenceFixedRowBytes,
-    });
-    const evidence: BranchCostEvidenceContribution[] = [];
+  ] as const)(
+    "classifies %s the shared byte cap",
+    async (_label, retainedBytes, exceeded) => {
+      const { db } = makeClient({
+        sourceIdentityBytes: retainedBytes - branchCostEvidenceFixedRowBytes,
+      });
+      const evidence: BranchCostEvidenceContribution[] = [];
 
-    await getSessionUsageByBranch(db, "org-1", ["branch-1"], {
-      costEvidenceOut: evidence,
-    });
+      await getSessionUsageByBranch(db, "org-1", ["branch-1"], {
+        costEvidenceOut: evidence,
+      });
 
-    expect(aggregateBranchCostCompleteness(evidence)).toEqual(
-      exceeded
-        ? {
-            completeness: BranchCostCompleteness.Partial,
-            reason: BranchCostCompletenessReason.CoverageIncomplete,
-            subtotalUsd: 3,
-          }
-        : {
-            completeness: BranchCostCompleteness.Complete,
-            subtotalUsd: 3,
-            lanes: {
-              subscriptionEquivalentCost: 1,
-              apiEstimatedCost: 2,
-            },
-          }
-    );
-  });
+      expect(aggregateBranchCostCompleteness(evidence)).toEqual(
+        exceeded
+          ? {
+              completeness: BranchCostCompleteness.Partial,
+              reason: BranchCostCompletenessReason.CoverageIncomplete,
+              subtotalUsd: 3,
+            }
+          : {
+              completeness: BranchCostCompleteness.Complete,
+              subtotalUsd: 3,
+              lanes: {
+                subscriptionEquivalentCost: 1,
+                apiEstimatedCost: 2,
+              },
+            }
+      );
+    }
+  );
 
   it("degrades when aggregate and materialized evidence observe different populations", async () => {
     const { db, eventGroupBy } = makeClient();
-    eventGroupBy.mockResolvedValueOnce([
-      {
-        agentSessionId: "session-1",
-        _sum: {
-          inputTokens: 1n,
-          outputTokens: 0n,
-          cacheReadTokens: 0n,
-          cacheWriteTokens: 0n,
-          estimatedCost: 3,
-        },
-        _count: { _all: 2 },
-      },
-    ]);
+    eventGroupBy.mockResolvedValueOnce([eventAggregate("session-1", 1n, 3, 2)]);
     const evidence: BranchCostEvidenceContribution[] = [];
 
     await getSessionUsageByBranch(db, "org-1", ["branch-1"], {
@@ -588,6 +602,7 @@ describe("Branch session cost evidence", () => {
     });
 
     expect(usage.get("branch-1")?.estimatedCostUsd).toBe(0);
+    expect(usage.get("branch-1")?.hasPricedCost).toBe(false);
     expect(aggregateBranchCostCompleteness(evidence)).toEqual({
       completeness: BranchCostCompleteness.Complete,
       subtotalUsd: 0,
@@ -596,29 +611,30 @@ describe("Branch session cost evidence", () => {
     expect(eventEvidenceQuery).not.toHaveBeenCalled();
   });
 
-  it.each([
-    5, 0,
-  ])("retains an all-time lifetime fallback after evidence overflow (%s)", async (estimatedCost) => {
-    const events = Array.from({ length: 10_001 }, (_, index) =>
-      eventFixture({ id: `event-${index}` })
-    );
-    const { db } = makeClient({
-      events,
-      estimatedCost,
-      lifetimeInputTokens: 10_001,
-    });
-    const evidence: BranchCostEvidenceContribution[] = [];
+  it.each([5, 0])(
+    "retains an all-time lifetime fallback after evidence overflow (%s)",
+    async (estimatedCost) => {
+      const events = Array.from({ length: 10_001 }, (_, index) =>
+        eventFixture({ id: `event-${index}` })
+      );
+      const { db } = makeClient({
+        events,
+        estimatedCost,
+        lifetimeInputTokens: 10_001,
+      });
+      const evidence: BranchCostEvidenceContribution[] = [];
 
-    await getSessionUsageByBranch(db, "org-1", ["branch-1"], {
-      costEvidenceOut: evidence,
-    });
+      await getSessionUsageByBranch(db, "org-1", ["branch-1"], {
+        costEvidenceOut: evidence,
+      });
 
-    expect(aggregateBranchCostCompleteness(evidence)).toEqual({
-      completeness: BranchCostCompleteness.Partial,
-      reason: BranchCostCompletenessReason.CoverageIncomplete,
-      subtotalUsd: estimatedCost,
-    });
-  });
+      expect(aggregateBranchCostCompleteness(evidence)).toEqual({
+        completeness: BranchCostCompleteness.Partial,
+        reason: BranchCostCompletenessReason.CoverageIncomplete,
+        subtotalUsd: estimatedCost,
+      });
+    }
+  );
 
   it("uses the same coverage fallback for all-time and equivalent bounded overflow", async () => {
     const events = Array.from({ length: 10_001 }, (_, index) =>
@@ -704,6 +720,20 @@ function makeClient(
         )
       )
     );
+  const queryRaw = vi.fn((query) => {
+    const sql = capturedSqlText(query);
+    if (sql.includes("WITH requested_sessions AS MATERIALIZED")) {
+      return eventGroupBy({
+        where: sql.includes("event.event_created_at")
+          ? { eventCreatedAt: {} }
+          : {},
+      });
+    }
+    if (sql.includes("WITH evidence_size AS MATERIALIZED")) {
+      return eventEvidenceQuery(query);
+    }
+    return Promise.resolve([{ id: "branch-1" }]);
+  });
   const artifactLinkFindMany = vi.fn().mockResolvedValue([
     {
       targetId: "branch-1",
@@ -718,24 +748,16 @@ function makeClient(
       source: {
         name: "Canonical session",
         slug: "canonical-session",
-        session: {
-          artifactId: "session-1",
-          externalSessionId: "external-1",
-          harness: "claude",
-          sessionStartedAt: new Date("2026-06-10T10:00:00.000Z"),
-          sessionEndedAt: null,
-          estimatedCost: options.estimatedCost ?? 3,
-          inputTokens: lifetimeInputTokens,
-          outputTokens: 0,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          userId: null,
-        },
+        session: linkedSession(
+          "session-1",
+          options.estimatedCost ?? 3,
+          lifetimeInputTokens
+        ),
       },
     },
   ]);
   const db = {
-    $queryRaw: eventEvidenceQuery,
+    $queryRaw: queryRaw,
     artifactLink: {
       findMany: artifactLinkFindMany,
     },
@@ -775,6 +797,9 @@ function eventAggregateRows(events: ReturnType<typeof eventFixture>[]) {
   if (events.length === 0) {
     return [];
   }
+  const observedCostEvents = events.filter(
+    (event) => event.estimatedCost !== null
+  );
   return [
     {
       agentSessionId: "session-1",
@@ -783,10 +808,13 @@ function eventAggregateRows(events: ReturnType<typeof eventFixture>[]) {
         outputTokens: 0n,
         cacheReadTokens: 0n,
         cacheWriteTokens: 0n,
-        estimatedCost: events.reduce(
-          (total, event) => total + (event.estimatedCost ?? 0),
-          0
-        ),
+        estimatedCost:
+          observedCostEvents.length === 0
+            ? null
+            : observedCostEvents.reduce(
+                (total, event) => total + (event.estimatedCost ?? 0),
+                0
+              ),
       },
       _min: {
         inputTokens: minimumEventToken(events, "inputTokens"),
@@ -825,14 +853,20 @@ function mockCloudEvidenceRows(
   }));
 }
 
-function renderSql(query: unknown): string {
+/**
+ * The captured statement's own `sql` text, VERBATIM — placeholders left as
+ * placeholders. Named apart from the `renderSql` renderers (ISS-7148), which
+ * inline each bound value at its placeholder; this suite asserts on SQL shape
+ * only and deliberately does not want the values substituted in.
+ */
+function capturedSqlText(query: unknown): string {
   if (typeof query !== "object" || query === null || !("sql" in query)) {
     return "";
   }
   return String(query.sql);
 }
 
-function renderSqlValues(query: unknown): unknown[] {
+function capturedSqlValues(query: unknown): unknown[] {
   if (typeof query !== "object" || query === null || !("values" in query)) {
     return [];
   }
@@ -954,12 +988,16 @@ function linkedSession(
     harness: "claude",
     sessionStartedAt: new Date("2026-06-10T10:00:00.000Z"),
     sessionEndedAt: null,
+    lastActivityAt: new Date("2026-06-10T10:00:00.000Z"),
     estimatedCost,
     inputTokens,
     outputTokens: 0n,
     cacheReadTokens: 0n,
     cacheWriteTokens: 0n,
+    turns: null,
+    toolUseCount: 0,
+    componentInvocationCount: 0,
     billingMode,
-    userId: null,
+    ownerUserId: null,
   };
 }

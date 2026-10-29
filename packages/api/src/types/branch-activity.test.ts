@@ -7,6 +7,7 @@ import {
   branchActivityAtomProducerValidator,
   normalizeBranchActivityAtom,
 } from "./branch-activity";
+import { MonitoredSessionActivityEventKind } from "./branch-activity-kind";
 
 const PULL_REQUEST_ID = "019ff6d4-51f8-7ad0-8a95-40d1f06400dc";
 const OCCURRED_AT = "2026-08-12T10:00:00.000Z";
@@ -122,6 +123,88 @@ describe("Branch activity atom contract", () => {
     ).toBeUndefined();
   });
 
+  it("rejects sourceIdentity on a known, non-unknown source", () => {
+    expect(
+      branchActivityAtomProducerValidator.safeParse({
+        ...branchAtom(),
+        sourceIdentity: "not-allowed-here",
+      }).success
+    ).toBe(false);
+  });
+
+  it("rejects a monitored kind attached to a non-monitored source", () => {
+    expect(
+      branchActivityAtomProducerValidator.safeParse({
+        ...branchAtom(),
+        kind: MonitoredSessionActivityEventKind.AgentRead,
+      }).success
+    ).toBe(false);
+  });
+
+  it("prefers an explicit compatibility sourceIdentity over the raw source", () => {
+    expect(
+      normalizeBranchActivityAtom({
+        ...branchAtom(),
+        source: "future_lane_x",
+        sourceIdentity: "custom-identity",
+      })
+    ).toMatchObject({
+      source: BranchActivitySource.Unknown,
+      sourceIdentity: "custom-identity",
+      completeness: BranchActivityEvidenceCompleteness.Partial,
+    });
+  });
+
+  it("returns a valid producer atom unchanged", () => {
+    const atom = branchAtom();
+    expect(normalizeBranchActivityAtom(atom)).toEqual(atom);
+  });
+
+  it("carries an already-valid completeness and kind through the compatibility path", () => {
+    // `extraLegacyField` fails the strict top-level schema so this falls to the
+    // lenient compatibility parse, which strips unknown keys and still resolves
+    // a real MonitoredSession + a supported kind + an already-complete value.
+    expect(
+      normalizeBranchActivityAtom({
+        ...branchAtom(),
+        source: BranchActivitySource.MonitoredSession,
+        kind: MonitoredSessionActivityEventKind.AgentRead,
+        completeness: BranchActivityEvidenceCompleteness.Complete,
+        extraLegacyField: "kept-out",
+      })
+    ).toMatchObject({
+      source: BranchActivitySource.MonitoredSession,
+      kind: MonitoredSessionActivityEventKind.AgentRead,
+      completeness: BranchActivityEvidenceCompleteness.Complete,
+    });
+  });
+
+  it("falls back to partial completeness when a known source's raw completeness is unrecognized", () => {
+    expect(
+      normalizeBranchActivityAtom({
+        ...branchAtom(),
+        completeness: "totally_unrecognized",
+        extraLegacyField: "kept-out",
+      })
+    ).toMatchObject({
+      source: BranchActivitySource.GitHubWebhook,
+      completeness: BranchActivityEvidenceCompleteness.Partial,
+    });
+  });
+
+  it("drops a blank raw source instead of treating it as an identity", () => {
+    // Pins current behavior: a whitespace-only `source` fails the strict schema,
+    // then normalizes to blank in the compatibility path (normalizedRawString
+    // rejects empty-after-trim), leaving no identity to carry forward, so the
+    // atom is discarded entirely rather than fabricating an identity.
+    expect(
+      normalizeBranchActivityAtom({
+        ...branchAtom(),
+        source: "   ",
+      })
+    ).toBeUndefined();
+  });
+
   it("preserves associated-PR attribution as a strict discriminated shape", () => {
     expect(
       branchActivityAtomProducerValidator.parse({
@@ -135,6 +218,33 @@ describe("Branch activity atom contract", () => {
     ).toEqual({
       kind: BranchActivityAttributionKind.PullRequest,
       pullRequestId: PULL_REQUEST_ID,
+    });
+  });
+
+  it("requires typed monitored kinds from producers and degrades legacy absence", () => {
+    const monitored = {
+      ...branchAtom(),
+      source: BranchActivitySource.MonitoredSession,
+    } as const;
+
+    expect(
+      branchActivityAtomProducerValidator.safeParse(monitored).success
+    ).toBe(false);
+    expect(
+      branchActivityAtomProducerValidator.parse({
+        ...monitored,
+        kind: MonitoredSessionActivityEventKind.AgentRead,
+      }).kind
+    ).toBe(MonitoredSessionActivityEventKind.AgentRead);
+    expect(normalizeBranchActivityAtom(monitored)).toMatchObject({
+      source: BranchActivitySource.MonitoredSession,
+      completeness: BranchActivityEvidenceCompleteness.Partial,
+    });
+    expect(
+      normalizeBranchActivityAtom({ ...monitored, kind: "future_kind" })
+    ).toMatchObject({
+      source: BranchActivitySource.MonitoredSession,
+      completeness: BranchActivityEvidenceCompleteness.Partial,
     });
   });
 });

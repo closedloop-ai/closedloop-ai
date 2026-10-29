@@ -1,10 +1,10 @@
+import { redactSecrets } from "@repo/lib/security/redact-secrets";
 import { eventRole } from "../../../shared/event-role";
 import {
   countNearbyErrors,
   frustrationScore,
 } from "../../../shared/frustration-score";
 import { extractShellCommand } from "./agent-coaching-model";
-import { redactSecrets } from "./agent-coaching-redaction";
 import type {
   AgentCoachingGroundedMetrics,
   AgentCoachingInput,
@@ -220,7 +220,11 @@ export function computePeakFrustration(
         score,
         nearbyErrorCount,
         excerpt: redactExcerpt(text),
-        sessionName: event.sessionName,
+        // Read from the RAW input events, so it needs its own redaction — the
+        // request builder's map does not reach this signal.
+        sessionName: event.sessionName
+          ? redactSecrets(event.sessionName)
+          : event.sessionName,
       };
     }
   }

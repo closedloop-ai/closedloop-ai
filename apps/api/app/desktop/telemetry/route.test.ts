@@ -1,3 +1,4 @@
+import { DESKTOP_SYNC_ACK_REASON_COMPUTE_TARGET_ID_INVALID } from "@repo/api/src/types/desktop-sync-ack-detail";
 import {
   DESKTOP_PLUGIN_VERSION_HEADER,
   DesktopWriteLaneRestErrorCode,
@@ -32,6 +33,8 @@ vi.mock("./service", () => ({
 
 import { maxDuration, POST } from "./route";
 
+const COMPUTE_TARGET_ID = "11111111-1111-7111-8111-111111111111";
+
 describe("POST /desktop/telemetry", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -51,7 +54,7 @@ describe("POST /desktop/telemetry", () => {
     expect(body).toEqual({ success: true, data: { received: true } });
     expect(mocks.receive).toHaveBeenCalledWith({
       clerkUserId: "clerk-user-1",
-      computeTargetId: "target-1",
+      computeTargetId: COMPUTE_TARGET_ID,
       organizationId: "org-1",
       pluginVersion: "0.16.71",
       rawBody: payload,
@@ -73,6 +76,31 @@ describe("POST /desktop/telemetry", () => {
     expect(body).toEqual({
       success: false,
       error: "computeTargetId is required",
+      details: { reason: DESKTOP_SYNC_ACK_REASON_COMPUTE_TARGET_ID_INVALID },
+    });
+    expect(mocks.receive).not.toHaveBeenCalled();
+  });
+
+  // ISS-8734: `ComputeTarget.id` is `@db.Uuid`; a malformed id used to reach
+  // the ownership lookup as a P2023 and come back as a 500.
+  it("rejects a malformed computeTargetId as a 400 before invoking the service", async () => {
+    const response = await POST(
+      new NextRequest(
+        "https://api.example.test/desktop/telemetry?computeTargetId=abc",
+        {
+          body: JSON.stringify(telemetryPayload()),
+          method: "POST",
+        }
+      ),
+      routeContext()
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body).toEqual({
+      success: false,
+      error: "computeTargetId must be a UUID",
+      details: { reason: DESKTOP_SYNC_ACK_REASON_COMPUTE_TARGET_ID_INVALID },
     });
     expect(mocks.receive).not.toHaveBeenCalled();
   });
@@ -95,7 +123,7 @@ describe("POST /desktop/telemetry", () => {
   it("rejects invalid JSON before invoking the service", async () => {
     const response = await POST(
       new NextRequest(
-        "https://api.example.test/desktop/telemetry?computeTargetId=target-1",
+        `https://api.example.test/desktop/telemetry?computeTargetId=${COMPUTE_TARGET_ID}`,
         {
           body: "{not-json",
           method: "POST",
@@ -167,13 +195,13 @@ function telemetryPayload(): Record<string, unknown> {
     category: "loop_perf",
     severity: "info",
     timestamp: "2026-07-23T00:00:00.000Z",
-    trace: { computeTargetId: "target-1" },
+    trace: { computeTargetId: COMPUTE_TARGET_ID },
   };
 }
 
 function request(body: unknown, headers?: Record<string, string>): NextRequest {
   return new NextRequest(
-    "https://api.example.test/desktop/telemetry?computeTargetId=target-1",
+    `https://api.example.test/desktop/telemetry?computeTargetId=${COMPUTE_TARGET_ID}`,
     {
       body: JSON.stringify(body),
       headers,

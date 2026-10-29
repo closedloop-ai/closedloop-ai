@@ -6,7 +6,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { buildLocalCommentsResponse } from "../local-pr-comments";
 
-const BRANCH_ID = "closedloop-ai/example-repo:branch-1";
+const BRANCH_ID = "closedloop-ai/closedloop-ai:branch-1";
 
 describe("buildLocalCommentsResponse", () => {
   it("carries the unavailable state rather than implying a real zero", () => {
@@ -14,7 +14,7 @@ describe("buildLocalCommentsResponse", () => {
       branchId: BRANCH_ID,
       state: BranchCommentsState.UnsyncedUnknown,
       prNumber: 42,
-      prUrl: "https://github.com/closedloop-ai/example-repo/pull/42",
+      prUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/42",
     });
 
     // An empty `comments` array alone would read as "this PR has no comments";

@@ -2,6 +2,15 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { Signer } from "@aws-sdk/rds-signer";
 import { PrismaPg } from "@prisma/adapter-pg";
 import pg from "pg";
+import {
+  gateDbAcquisitions,
+  withDbAcquisitionBudget,
+} from "./acquisition-budget";
+import {
+  hasAmbientTransactionOptionObserver,
+  reportAmbientTransactionOptionDiscard,
+} from "./ambient-transaction-observer";
+import { createRdsCredentialsProvider } from "./aws-credentials";
 import { PrismaClient } from "./generated/client";
 import type {
   TransactionClient,
@@ -20,6 +29,7 @@ import {
   isLocalhostUrl,
   resolveSslOption,
 } from "./scripts/db-utils";
+import { createServerGlobalSlot } from "./server-global-slot";
 
 // biome-ignore lint/performance/noBarrelFile: re-exporting Prisma client types
 export * from "./generated/client";
@@ -35,6 +45,17 @@ export {
   type PoolTelemetrySink,
   setPoolTelemetrySink,
 } from "./pool-telemetry";
+// ISS-8554: the TypedSQL statement factories, namespaced so a call site reads
+// `sql.sessionUsageTotals(...)` and cannot be confused with Prisma's own
+// `Prisma.sql` tagged template.
+//
+// From ./typed-sql, NOT ./generated/sql. `prisma generate --sql` needs a live
+// database and turbo's db:generate has none, so the modules are committed — and
+// they cannot be committed where Prisma writes them, because a plain
+// `prisma generate` empties that directory and any `pnpm install` would delete
+// them. `scripts/sync-typed-sql.mjs` is the only writer; prisma/sql/*.sql is
+// still the source, and `pnpm check:typed-sql-generated` keeps the two in step.
+export * as sql from "./typed-sql/sql";
 
 /**
  * Execute a database operation with an initialized Prisma client.
@@ -69,14 +90,16 @@ export async function withDb<T>(
   }
 
   const db = await getDatabase();
-  return fn(db);
+  // The await lives INSIDE the budget scope on purpose: a Prisma query is a lazy
+  // `PrismaPromise` that starts no work until awaited, so returning it here would
+  // leave the scope before the query runs and the gate would see no budget.
+  return await withDbAcquisitionBudget(async () => await fn(db));
 }
 
 export function getDatabaseTransportPosture() {
   return classifyDatabaseTransport({
     databaseUrl: process.env.DATABASE_URL,
     pgHost: process.env.PGHOST,
-    pgDatabase: process.env.PGDATABASE,
     pgUser: process.env.PGUSER,
     allowInsecureSsl: process.env.ALLOW_INSECURE_SSL === "1",
   });
@@ -122,7 +145,12 @@ export function getDatabaseTransportPosture() {
  *   them (ISS-4669), nor disagree about a page and its total because a row was
  *   inserted or deleted between the two reads (ISS-4576). `timeout`/`maxWait`
  *   are ignored when already inside an
- *   ambient transaction (the callback simply joins it), but `isolationLevel` is
+ *   ambient transaction (the callback simply joins it) — correct in production,
+ *   where the outer budget governs, but it silently collapses a per-chunk
+ *   transaction boundary a test believes it covers, so the discard is reported
+ *   to `observeAmbientTransactionOptionDiscards` observers (ISS-11104) and the
+ *   `autoRollbackTransaction` harness fails the case rather than staying green
+ *   over a boundary that never existed. `isolationLevel` is
  *   NOT silently dropped: joining an ambient transaction that was opened at a
  *   weaker level (the default READ COMMITTED) would give the caller a snapshot
  *   that does not satisfy the guarantee it asked for — the exact undercount /
@@ -152,12 +180,41 @@ withDb.tx = async <T>(
         `withDb.tx: cannot honor isolationLevel="${options.isolationLevel}" inside an ambient transaction — the outer transaction's isolation is fixed at BEGIN and may be weaker. Run this read as the outermost transaction, or open the ambient transaction at the required level.`
       );
     }
+    // ISS-11104: `maxWait`/`timeout` ARE dropped here, and that is correct —
+    // the outer transaction's budget governs. Refusing would break every
+    // legitimate production nesting. What is not correct is a TEST that opened
+    // the ambient transaction itself and therefore silently collapsed a
+    // per-chunk boundary it believes it covers, so the discard is reported to
+    // any installed observer (the test harness) and to nobody in production.
+    // The condition below is the report's whole reach: a nested call that
+    // declared NO budget joins just as silently and is not reported, so the
+    // harness guard reads as "no declared budget was discarded", never as "no
+    // boundary was collapsed".
+    if (
+      (options?.maxWait !== undefined || options?.timeout !== undefined) &&
+      hasAmbientTransactionOptionObserver()
+    ) {
+      reportAmbientTransactionOptionDiscard({
+        discarded: { maxWait: options.maxWait, timeout: options.timeout },
+        stack: new Error("withDb.tx ambient join").stack,
+      });
+    }
     return fn(tx);
   }
 
   const db = await getDatabase();
-  return db.$transaction((tx) => als.run({ tx }, fn, tx), options);
+  return await withDbAcquisitionBudget(
+    async () => await db.$transaction((tx) => als.run({ tx }, fn, tx), options)
+  );
 };
+
+/**
+ * Whether the caller is running inside a `withDb.tx` transaction, read from
+ * the same AsyncLocalStorage `withDb` and `withDb.tx` join through. Lets a
+ * writer refuse work that must never run while a transaction holds its
+ * connection (ISS-12552: a feature-flag evaluation that may call PostHog).
+ */
+withDb.inTransaction = (): boolean => als.getStore() !== undefined;
 
 // -----------------------------------------------------------------------------
 // Internal implementation
@@ -184,11 +241,12 @@ async function getDatabase(): Promise<PrismaClient> {
   // ISS-5984: strictly before the first query of a cold instance, and skipped
   // entirely once the client is cached above. No hook is registered by default,
   // and none is registered outside `apps/api` at all. See `setSchemaBootstrapHook`.
+  const schemaBootstrapHook = schemaBootstrapSlot.read();
   if (schemaBootstrapHook) {
     await schemaBootstrapHook();
   }
 
-  const pool = await getPool();
+  const pool = getPool();
   const schema = resolveSchemaName({
     pgSchema: keys().PGSCHEMA,
     vercelEnv: process.env.VERCEL_ENV,
@@ -204,34 +262,32 @@ async function getDatabase(): Promise<PrismaClient> {
  * Gets or creates the RDS Signer for IAM authentication.
  * Cached globally to reuse across requests.
  *
- * Note: Uses dynamic import for awsCredentialsProvider to avoid loading
- * OIDC code at module initialization time (which fails during instrumentation
- * when there's no request context).
+ * Credentials come from `createRdsCredentialsProvider`, which prefers Vercel
+ * OIDC and falls back to the AWS credential chain. Caching the Signer here is
+ * what makes that selection sticky per process: the provider closure lives
+ * exactly as long as this instance.
  */
-async function getSigner(): Promise<Signer> {
+function getSigner(): Signer {
   if (globalForPrisma.signer) {
     return globalForPrisma.signer;
   }
 
   const env = keys();
 
-  if (!(env.PGHOST && env.PGUSER && env.AWS_REGION && env.AWS_ROLE_ARN)) {
+  if (!(env.PGHOST && env.PGUSER && env.AWS_REGION)) {
     throw new Error(
-      "Missing required IAM credentials: PGHOST, PGUSER, AWS_REGION, AWS_ROLE_ARN"
+      "Missing required IAM credentials: PGHOST, PGUSER, AWS_REGION"
     );
   }
-
-  // Dynamic import to avoid OIDC token check at module load time
-  const { awsCredentialsProvider } = await import("@vercel/functions/oidc");
 
   globalForPrisma.signer = new Signer({
     hostname: env.PGHOST,
     port: Number(env.PGPORT || "5432"),
     username: env.PGUSER,
     region: env.AWS_REGION,
-    credentials: awsCredentialsProvider({
+    credentials: createRdsCredentialsProvider({
       roleArn: env.AWS_ROLE_ARN,
-      clientConfig: { region: env.AWS_REGION },
+      region: env.AWS_REGION,
     }),
   });
 
@@ -244,7 +300,7 @@ async function getSigner(): Promise<Signer> {
  * IAM tokens expire after 15 minutes, so we generate a fresh token for each new connection.
  * Cached globally to reuse connections.
  */
-async function getPool(): Promise<pg.Pool> {
+function getPool(): pg.Pool {
   if (globalForPrisma.pool) {
     return globalForPrisma.pool;
   }
@@ -259,7 +315,10 @@ async function getPool(): Promise<pg.Pool> {
     schema && schema.length > 0 ? formatSearchPath(schema) : null;
 
   if (env.DATABASE_URL) {
-    // Password auth via DATABASE_URL (local dev or remote ECS tasks)
+    // Password auth via DATABASE_URL. This branch WINS whenever DATABASE_URL is
+    // set, so it also decides whether the ISS-9108 IAM fallback below runs at
+    // all: a deployment that wants IAM auth must leave DATABASE_URL unset, not
+    // merely set PGHOST/PGUSER/AWS_REGION alongside it.
     //
     // NOTE: this branch's pool is the SMALLER of the two — anyone sizing work
     // against "the pool" must account for which branch they run on. `max` stays
@@ -298,10 +357,14 @@ async function getPool(): Promise<pg.Pool> {
       ...(searchPath ? { options: `-c search_path=${searchPath}` } : {}),
     });
   } else {
-    // Vercel/production with IAM authentication
+    // IAM authentication, reached whenever DATABASE_URL is unset. Since
+    // ISS-9108 this is no longer Vercel-only: credentials come from
+    // `createRdsCredentialsProvider`, which prefers Vercel OIDC and falls back
+    // to the AWS credential chain, so a containerized runtime authenticates
+    // here off its task role.
     // Use dynamic password function to generate fresh IAM token for each new connection.
     // This is critical because IAM tokens expire after 15 minutes.
-    const signer = await getSigner();
+    const signer = getSigner();
 
     globalForPrisma.pool = new pg.Pool({
       host: env.PGHOST,
@@ -324,27 +387,30 @@ async function getPool(): Promise<pg.Pool> {
         sslmode: null,
         allowInsecure: process.env.ALLOW_INSECURE_SSL === "1",
       }),
-      // Per-instance connection ceiling. `withDb` does not hold a connection —
-      // every query inside it borrows its own — so a single request that fans
-      // out N concurrent queries demands N of these. Consumers size their
-      // fan-outs against this via `DB_FANOUT_MAX_CONCURRENCY`
-      // (apps/api/lib/db-fanout.ts), which imports the same constant and pins
-      // the relationship with a test, so the two cannot drift apart
-      // (FEA-3299 / PRD-528).
+      // Per-instance connection ceiling. What spends it is ACQUISITIONS, not
+      // ORM calls: since Prisma 7 a single non-transactional read takes one of
+      // these per included relation edge, so a request's demand is its call
+      // count times its include width (ISS-8431). `gateDbAcquisitions` bounds
+      // that directly against `DB_ACQUISITION_BUDGET_MAX`;
+      // `DB_FANOUT_MAX_CONCURRENCY` (apps/api/lib/db-fanout.ts) bounds concurrent
+      // calls, which is a different and weaker thing
+      // (FEA-3299 / PRD-528 / ISS-8431).
       max: DB_POOL_MAX_IAM,
       // Bounds the connection handshake AND the wait behind a saturated pool.
       // Shared with the DATABASE_URL branch above so the two cannot drift.
       connectionTimeoutMillis: DB_POOL_ACQUIRE_TIMEOUT_MS,
-      // Close idle connections after 10 minutes (before 15-minute token expiry)
-      // Active connections remain valid for their entire session
-      idleTimeoutMillis: 10 * 60 * 1000,
+      // Release idle fleet slots quickly; IAM tokens are checked only when a
+      // connection opens, so their 15-minute expiry does not set this lifetime.
+      idleTimeoutMillis: 2 * 60 * 1000,
       ...(searchPath ? { options: `-c search_path=${searchPath}` } : {}),
     });
   }
 
-  // Instrument before the pool escapes this function, so no acquisition can
-  // bypass telemetry. Emits nothing until a sink is registered (FEA-3300).
-  return instrumentPool(globalForPrisma.pool);
+  // Gate first, instrument second, both before the pool escapes this function:
+  // no acquisition can bypass either, and telemetry's timer spans the permit
+  // wait so `db_pool_acquire_wait` still measures the caller's whole wait for a
+  // connection (FEA-3300 / ISS-8431). Emits nothing until a sink is registered.
+  return instrumentPool(gateDbAcquisitions(globalForPrisma.pool));
 }
 
 /**
@@ -364,7 +430,17 @@ async function getPool(): Promise<pg.Pool> {
  */
 export type SchemaBootstrapHook = () => Promise<void>;
 
-let schemaBootstrapHook: SchemaBootstrapHook | null = null;
+/**
+ * Where the registered hook lives: one process-wide slot, not a module-local
+ * binding (ISS-6942).
+ *
+ * Same reason as `poolTelemetrySink`: `apps/api` registers from its
+ * instrumentation entry, `getDatabase` reads from route code, and the two do
+ * not always land in the same Turbopack chunk.
+ */
+const schemaBootstrapSlot = createServerGlobalSlot<SchemaBootstrapHook>(
+  "closedloop.database.schemaBootstrapHook"
+);
 
 /**
  * Registers (or, with `null`, clears) the pre-client bootstrap hook. Rejecting
@@ -372,5 +448,5 @@ let schemaBootstrapHook: SchemaBootstrapHook | null = null;
  * against a schema that may not exist.
  */
 export function setSchemaBootstrapHook(hook: SchemaBootstrapHook | null): void {
-  schemaBootstrapHook = hook;
+  schemaBootstrapSlot.set(hook);
 }

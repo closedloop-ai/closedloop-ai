@@ -1,4 +1,12 @@
-import { SECRET_VALUE_PATTERN } from "@closedloop-ai/loops-api/secret-value-pattern";
+import {
+  SECRET_VALUE_PATTERN,
+  UNBOUNDED_SECRET_VALUE_PATTERN,
+} from "@closedloop-ai/loops-api/secret-value-pattern";
+import type { AppTelemetrySchema } from "@closedloop-ai/telemetry-contract/app";
+import type {
+  AppBootFailureKind,
+  AppBootFailureOutcome,
+} from "@closedloop-ai/telemetry-contract/app-boot-failure-kind";
 import type { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
 
@@ -6,6 +14,20 @@ export type DesktopExceptionTelemetryInput = {
   error: unknown;
   origin: AppExceptionOrigin;
   componentStack?: string;
+  /**
+   * ISS-8907: why an Agent Monitor boot failure happened. Set only by the boot
+   * path; every other exception producer omits it, and omission is what an older
+   * installed build also sends — so a consumer must read absence as "not
+   * classified", never as `unknown`.
+   */
+  bootFailureKind?: AppBootFailureKind;
+  /**
+   * ISS-9259: whether that boot failure ended the boot or cleared on a retry.
+   * Set alongside `bootFailureKind` by the boot path and omitted everywhere
+   * else, so a consumer reads absence as "not classified" — never as `failed`,
+   * which would count an older build's RECOVERED timeout as a dead install.
+   */
+  bootFailureOutcome?: AppBootFailureOutcome;
 };
 
 export type DesktopExceptionTelemetryAttributesInput = {
@@ -13,6 +35,8 @@ export type DesktopExceptionTelemetryAttributesInput = {
   origin: AppExceptionOrigin;
   message?: string;
   stacktrace?: string;
+  bootFailureKind?: AppBootFailureKind;
+  bootFailureOutcome?: AppBootFailureOutcome;
 };
 
 export type SanitizedDesktopExceptionAttributes = {
@@ -20,6 +44,8 @@ export type SanitizedDesktopExceptionAttributes = {
   [TelemetryAttribute.AppExceptionOrigin]: AppExceptionOrigin;
   [TelemetryAttribute.ExceptionMessage]?: string;
   [TelemetryAttribute.ExceptionStacktrace]?: string;
+  [TelemetryAttribute.AppBootFailureKind]?: AppBootFailureKind;
+  [TelemetryAttribute.AppBootFailureOutcome]?: AppBootFailureOutcome;
 };
 
 const NON_ERROR_EXCEPTION_TYPE = "NonErrorRejection";
@@ -31,12 +57,42 @@ const EMPTY_EXCEPTION_TYPE = "UnknownException";
  * the markers below instead, so a stack keeps its frame structure.
  */
 const REDACTED_EXCEPTION_TEXT = "[redacted]";
+/**
+ * Whole-field replacement for a value too large to scan at all (ISS-6330).
+ *
+ * Distinct from {@link REDACTED_EXCEPTION_TEXT} on purpose: that marker means
+ * "a sensitive marker matched", this one means "we declined to look". Reusing
+ * the first would make a reader believe a secret was found here.
+ */
+const REDACTED_OVERLONG_EXCEPTION_TEXT = "[redacted-overlong]";
 const REDACTED_PATH_TEXT = "[redacted-path]";
 const REDACTED_URL_TEXT = "[redacted-url]";
 const REDACTED_EMAIL_TEXT = "[redacted-email]";
 const MAX_EXCEPTION_TYPE_LENGTH = 128;
 const MAX_EXCEPTION_MESSAGE_LENGTH = 1024;
 const MAX_EXCEPTION_STACKTRACE_LENGTH = 8192;
+/**
+ * Ceiling on what this module will scan at all (ISS-6330). Past it the field is
+ * replaced wholesale, before normalization, the marker tests, or substitution.
+ *
+ * Every pass below is a full-string walk — a per-codepoint normalize, two
+ * control scans, three marker tests, five global substitutions, and finally an
+ * `Array.from` that allocates one array element per codepoint — and the length
+ * caps above are applied only at the END of that. On the pre-init crash path
+ * this runs synchronously on Electron's main thread with an `error.stack` that
+ * no one bounds, so a multi-megabyte value stalls or OOMs the very startup it
+ * was trying to report on.
+ *
+ * The overlong field is redacted WHOLE rather than truncated and then scanned:
+ * a cut can land mid-token, and a half of a secret no longer matches
+ * `SECRET_VALUE_PATTERN`, which would ship the surviving prefix as clean text.
+ *
+ * 8x the largest field cap, so no legitimate report is affected — a V8 stack is
+ * bounded by `Error.stackTraceLimit` and is orders of magnitude under this —
+ * while everything above it is pathological by construction.
+ */
+const MAX_SANITIZABLE_EXCEPTION_TEXT_LENGTH =
+  MAX_EXCEPTION_STACKTRACE_LENGTH * 8;
 const LAST_ASCII_CONTROL_CHARACTER_CODE = 31;
 const DELETE_CONTROL_CHARACTER_CODE = 127;
 const HORIZONTAL_TAB_CHARACTER_CODE = 9;
@@ -113,6 +169,8 @@ export function sanitizeDesktopException({
   error,
   origin,
   componentStack,
+  bootFailureKind,
+  bootFailureOutcome,
 }: DesktopExceptionTelemetryInput): SanitizedDesktopExceptionAttributes {
   const normalized = normalizeUnknownExceptionReason(error);
   return sanitizeDesktopExceptionAttributes({
@@ -120,6 +178,8 @@ export function sanitizeDesktopException({
     origin,
     message: normalized.message,
     stacktrace: componentStack ?? normalized.stack,
+    ...(bootFailureKind ? { bootFailureKind } : {}),
+    ...(bootFailureOutcome ? { bootFailureOutcome } : {}),
   });
 }
 
@@ -128,6 +188,8 @@ export function sanitizeDesktopExceptionAttributes({
   origin,
   message,
   stacktrace,
+  bootFailureKind,
+  bootFailureOutcome,
 }: DesktopExceptionTelemetryAttributesInput): SanitizedDesktopExceptionAttributes {
   const safeMessage = sanitizeExceptionTextField(
     message,
@@ -147,6 +209,17 @@ export function sanitizeDesktopExceptionAttributes({
     ...(safeStacktrace
       ? { [TelemetryAttribute.ExceptionStacktrace]: safeStacktrace }
       : {}),
+    // A closed enum, so it bypasses the text passes above by construction —
+    // there is no value of it that could carry a path, a specifier, or a secret.
+    // Spread-omitted rather than set to undefined: this record crosses a
+    // `.strict()` parse and an OTLP encode, and an absent optional field must
+    // stay absent (cross-repo contract), not become a null.
+    ...(bootFailureKind
+      ? { [TelemetryAttribute.AppBootFailureKind]: bootFailureKind }
+      : {}),
+    ...(bootFailureOutcome
+      ? { [TelemetryAttribute.AppBootFailureOutcome]: bootFailureOutcome }
+      : {}),
   };
 }
 
@@ -160,6 +233,11 @@ export function sanitizeExceptionTextField(
   const trimmed = value.trim();
   if (!trimmed) {
     return undefined;
+  }
+  // Before any full-string pass. `trim` runs first so a field that is only
+  // whitespace still returns undefined rather than a marker for no content.
+  if (trimmed.length > MAX_SANITIZABLE_EXCEPTION_TEXT_LENGTH) {
+    return REDACTED_OVERLONG_EXCEPTION_TEXT;
   }
   const normalized = normalizeControlWhitespace(trimmed);
   if (containsUnsafeControlCharacter(normalized)) {
@@ -220,14 +298,24 @@ function sanitizeExceptionType(value: string | undefined): string {
 
 /**
  * True when the field carries a marker whose VALUE is unbounded — everything
- * after `request_body:` or an `org_id:` prefix, and any secret-shaped token.
- * There is no safe substring to keep, so the caller blanks the whole field.
+ * after `request_body:` or an `org_id:` prefix, and any secret-shaped token whose
+ * extent the vocabulary cannot determine. There is no safe substring to keep, so
+ * the caller blanks the whole field.
+ *
+ * `UNBOUNDED_SECRET_VALUE_PATTERN` and not `SECRET_VALUE_PATTERN` (ISS-6993):
+ * the vocabulary now also carries BOUNDED families, and a bounded value is by
+ * definition one this module can substitute in place instead — which is the
+ * ISS-6228/ISS-6229 contract that a stack carrying only bounded values keeps its
+ * frames. `scheme://user:pass@host` is the case: `URL_VALUE_PATTERN` below
+ * already replaces the whole URL with `[redacted-url]`, so blanking the field on
+ * it would destroy the message and stack to re-remove a credential that was
+ * already gone.
  */
 function containsUnparseableSensitiveText(value: string): boolean {
   return (
     BODY_MARKER_PATTERN.test(value) ||
     IDENTITY_MARKER_PATTERN.test(value) ||
-    matchesPattern(SECRET_VALUE_PATTERN, value)
+    matchesPattern(UNBOUNDED_SECRET_VALUE_PATTERN, value)
   );
 }
 
@@ -330,3 +418,38 @@ export function containsSensitivePathOrUrlValue(value: string): boolean {
 export function containsSensitiveSecretValue(value: string): boolean {
   return matchesPattern(SECRET_VALUE_PATTERN, value);
 }
+
+/** Every attribute key the `.strict()` app schema declares. */
+type AppTelemetryAttributeKey = keyof (typeof AppTelemetrySchema)["shape"];
+
+/**
+ * ISS-8907: the forcing function for this module's half of the app-exception
+ * wire contract, in BOTH directions.
+ *
+ * `emitExceptionSpan` hands what this module returns to `AppTelemetrySchema`,
+ * which is `.strict()`. A key the schema does not declare therefore does not
+ * drop that ATTRIBUTE — it fails the parse and drops the WHOLE span, silently,
+ * and re-drops it on every retry. The in-process callers never see it because
+ * they read the object rather than the parse.
+ *
+ * The ANNOTATION fails typecheck when a key is added to the emitted shape and
+ * not listed here; the `satisfies` fails when a listed key is not one the schema
+ * declares, which is the rename case. They are deliberately two separate
+ * constraints and not one intersection: excess-property checking against an
+ * intersection passes a key that ANY constituent allows, so `satisfies A & B`
+ * here silently accepted a key the schema had dropped — verified by removing it
+ * from `AppTelemetrySchema` and watching `tsc` stay green. A plain array of key
+ * literals would have caught neither direction; it is a side inventory, and a
+ * side inventory is what stays green while the set it mirrors moves.
+ */
+export const SANITIZED_EXCEPTION_ATTRIBUTE_KEY_PRESENCE: Record<
+  keyof SanitizedDesktopExceptionAttributes,
+  true
+> = {
+  [TelemetryAttribute.ExceptionType]: true,
+  [TelemetryAttribute.AppExceptionOrigin]: true,
+  [TelemetryAttribute.ExceptionMessage]: true,
+  [TelemetryAttribute.ExceptionStacktrace]: true,
+  [TelemetryAttribute.AppBootFailureKind]: true,
+  [TelemetryAttribute.AppBootFailureOutcome]: true,
+} satisfies Partial<Record<AppTelemetryAttributeKey, true>>;

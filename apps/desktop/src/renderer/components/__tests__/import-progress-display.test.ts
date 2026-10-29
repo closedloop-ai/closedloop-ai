@@ -49,8 +49,8 @@ describe("describeImportProgress", () => {
 
 // ISS-4444: the derived "couldn't import" count is clamped so a version-skewed or
 // malformed main-process payload can never render a nonsense number. ISS-5281
-// moved the helper here from `sessions/sessions-summary-cards-state.ts` so the
-// React-free import-splash derivation can share the one clamp.
+// moved the helper here from `sessions/sessions-summary-cards-state.ts` so every
+// reader shares the one clamp.
 describe("resolveCouldNotImportCount", () => {
   it("returns a positive quarantined count", () => {
     expect(
@@ -106,10 +106,9 @@ describe("formatCount", () => {
  * importer commits its record groups one at a time, so a later group timing out
  * leaves the earlier ones already written.
  *
- * These are the copy contract for all four surfaces that report the population
- * (the startup-readiness detail, the import splash alert, the splash body, and
- * the shared Sessions summary card), which is why the phrase is built in one
- * place instead of at each of them.
+ * These are the copy contract for every surface that reports the population —
+ * today the shared Sessions summary card — which is why the phrase is built in
+ * one place instead of at each of them.
  */
 describe("describeQuarantinedSources", () => {
   it("says 'couldn't be read' only for the parse-stage population", () => {
@@ -247,9 +246,8 @@ describe("describeLaneRemainders", () => {
         remainder(SyncLaneId.InvocationParts, 40),
         remainder(SyncLaneId.TranscriptArchive, 12),
         remainder(SyncLaneId.ComponentInventory, 7),
-        remainder(SyncLaneId.TraceComments, 3),
       ])
-    ).toBe("2,900 sessions, 40 session details and 3 other kinds");
+    ).toBe("2,900 sessions, 40 session details and 2 other kinds");
   });
 
   it("never ends on a bare count the reader can take for items", () => {
@@ -258,7 +256,7 @@ describe("describeLaneRemainders", () => {
     // hidden lane owes 2,985 here — the size of the misread.
     const hiddenSets = [
       [SyncLaneId.ComponentInventory],
-      [SyncLaneId.ComponentInventory, SyncLaneId.TraceComments],
+      [SyncLaneId.ComponentInventory, SyncLaneId.InvocationParts],
     ];
     for (const hidden of hiddenSets) {
       const label = describeLaneRemainders([
@@ -275,9 +273,9 @@ describe("describeLaneRemainders", () => {
     expect(
       describeLaneRemainders([
         remainder(SyncLaneId.ComponentInventory, 2985, true),
-        remainder(SyncLaneId.TraceComments, 1),
+        remainder(SyncLaneId.InvocationParts, 1),
       ])
-    ).toBe("at least 2,985 activity records and 1 comment");
+    ).toBe("at least 2,985 activity records and 1 session detail");
   });
 });
 
@@ -310,9 +308,11 @@ describe("describeAllLaneRemainders", () => {
       describeAllLaneRemainders([
         remainder(SyncLaneId.SessionMetadata, 5, true),
         remainder(SyncLaneId.TranscriptArchive, 12),
-        remainder(SyncLaneId.TraceComments, 3, true),
+        remainder(SyncLaneId.InvocationParts, 3, true),
       ])
-    ).toBe("at least 5 sessions, 12 transcripts and at least 3 comments");
+    ).toBe(
+      "at least 5 sessions, 12 transcripts and at least 3 session details"
+    );
   });
 });
 

@@ -7,12 +7,12 @@ import {
 } from "@repo/api/src/types/document";
 import { buildCommentPermalink } from "@repo/collaboration/shared/permalinks";
 import { useCallback } from "react";
+import { useDocumentPermalinkOrigin } from "./document-host-context";
 
 /**
  * Returns a per-thread permalink-URL factory for the current artifact,
  * or undefined when the document type has no canonical route prefix
- * (e.g. TEMPLATE) — that disables the Copy Link button at the card
- * layer.
+ * so the card can hold its Copy Link control when the route is unavailable.
  */
 export function useCommentPermalinkBuilder({
   documentType,
@@ -23,18 +23,21 @@ export function useCommentPermalinkBuilder({
   documentSlug: string;
   orgSlug: string | null;
 }): ((threadId: string) => string) | undefined {
+  const hostOrigin = useDocumentPermalinkOrigin();
+  const origin = hostOrigin ?? globalThis.window?.location.origin ?? "";
   const routePrefix = TYPE_ROUTE_PREFIX[documentType];
-  const artifactPath = routePrefix
-    ? buildScopedDocumentPath(routePrefix, documentSlug, orgSlug)
-    : null;
+  const artifactPath =
+    routePrefix && hostOrigin !== null
+      ? buildScopedDocumentPath(routePrefix, documentSlug, orgSlug)
+      : null;
   const build = useCallback(
     (threadId: string) =>
       buildCommentPermalink({
-        origin: globalThis.window?.location.origin ?? "",
+        origin,
         artifactPath: artifactPath ?? "",
         threadId,
       }),
-    [artifactPath]
+    [artifactPath, origin]
   );
   return artifactPath === null ? undefined : build;
 }

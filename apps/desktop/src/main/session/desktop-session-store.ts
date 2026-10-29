@@ -48,7 +48,7 @@ const REQUIRED_STRING_FIELDS: readonly (keyof DesktopSessionRecord)[] = [
 
 /**
  * Encrypted persistence for the single active desktop session. Same primitive
- * as {@link ApiKeyStore} / {@link LoopTokenStore}: safeStorage encrypts the
+ * as {@link ApiKeyStore}: safeStorage encrypts the
  * serialized record before it ever touches electron-store / disk, so the
  * refresh token is never written as plaintext JSON (FEA-1514 no-plaintext gate).
  */

@@ -1,17 +1,14 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "@repo/api/src/types/session-status";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { describe, it } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
-import { SESSIONS_SURFACE_DATE_WINDOW_FIELD } from "../src/main/agent-sync/session-date-window.js";
 import {
   compareOwnerName,
   sessionDurationMs,
   sortSyncedSessions,
 } from "../src/main/session/session-working-set-sort.js";
-import type { SanitizedQuery } from "../src/main/session/shared-agent-sessions-query.js";
+import { projectDisplayedSharedStatus } from "../src/main/session/shared-agent-session-status.js";
+import { sessionSortQuery } from "./helpers/session-sort-query.js";
 
 // FEA-4300/FEA-4297 (thread #8): the desktop Local Sessions sort must mirror the
 // cloud's display-value semantics so the SAME table sorts identically whether it
@@ -141,21 +138,19 @@ describe("sessionDurationMs (ISS-5131 desktop-cloud parity)", () => {
     );
   });
 
-  it("never reaches the clock for an INDETERMINATE status with no end instant", () => {
-    // An unrecognized or display-only status asserts nothing about the
-    // lifecycle, and the ABSENCE of an end instant is not evidence the run
-    // continues. A clock-bound key here would rank a row the cell renders blank
-    // as the longest session on the page.
-    for (const status of [
-      "some-future-status",
-      DISPLAYED_SESSION_STATUS.STALE,
-    ]) {
+  it("keeps timing an unrecognized or display-only status against the clock it is handed (ISS-10364)", () => {
+    // ISS-10364 (operator ruling 2026-09-23): there is no more Indeterminate
+    // fold for these spellings. `normalizeSessionStatus` fails an unrecognized
+    // value open to Active exactly like the literal `stale` spelling now
+    // does, so both reach the clock instead of declining to. Kept as the
+    // counterfactual: `null` here would mean the retired fold came back.
+    for (const status of ["some-future-status", "stale"]) {
       assert.equal(
         sessionDurationMs(
           session({ status, startedAt: START, endedAt: null }),
           new Date(START).getTime() + 90 * 60_000
         ),
-        null
+        90 * 60_000
       );
     }
   });
@@ -189,161 +184,155 @@ describe("sessionDurationMs (ISS-5131 desktop-cloud parity)", () => {
     );
   });
 
-  it("bounds the LEGACY terminal statuses too (ISS-4586 version skew)", () => {
+  it("keeps the LEGACY terminal statuses timing against the clock too (ISS-10364)", () => {
+    // ISS-4586 named these "version skew"; ISS-10364 changed what an
+    // unrecognized status now means for duration — see the note above. Pinned
+    // with an EXPLICIT clock rather than the original no-argument call, which
+    // read the real wall clock and would have made this suite non-deterministic
+    // now that the row is no longer bounded by its (absent) `endedAt`.
     for (const status of ["completed", "abandoned"]) {
       assert.equal(
-        sessionDurationMs(session({ status, startedAt: START, endedAt: null })),
-        null
+        sessionDurationMs(
+          session({ status, startedAt: START, endedAt: null }),
+          new Date(START).getTime() + 90 * 60_000
+        ),
+        90 * 60_000
       );
     }
   });
 
-  it("resolves an unrecognized status by evidence rather than by guess", () => {
-    // ISS-4997: an unknown status asserts nothing about the lifecycle. An
-    // `endedAt` is evidence the session ended and bounds it.
+  it("no longer bounds an unrecognized status by its recorded end (ISS-10364)", () => {
+    // ISS-10364 (operator ruling 2026-09-23): `resolveDisplayedSessionStatus`
+    // folds an unrecognized spelling straight to Active regardless of a
+    // genuine `endedAt`, so the row keeps timing against the clock instead of
+    // bounding at its recorded end. Kept as the counterfactual for the claim
+    // ISS-4997 established (an `endedAt` bounds an unrecognized status),
+    // pinned with an explicit clock: the original no-argument call read the
+    // real wall clock, which this new unbounded behavior would have made
+    // genuinely non-deterministic.
     assert.equal(
       sessionDurationMs(
         session({
           status: "some-future-status",
           startedAt: START,
           endedAt: new Date(new Date(START).getTime() + 5000).toISOString(),
-        })
+        }),
+        new Date(START).getTime() + 90 * 60_000
       ),
-      5000
+      90 * 60_000
     );
   });
 });
-
-const AWAITING = new Date("2026-05-20T17:05:00.000Z").toISOString();
-
-function statusQuery(dir: "asc" | "desc"): SanitizedQuery {
-  return {
-    startDate: null,
-    endDate: null,
-    dateWindowField: SESSIONS_SURFACE_DATE_WINDOW_FIELD,
-    completedAfter: null,
-    harness: null,
-    status: null,
-    statuses: [],
-    userId: null,
-    userIds: [],
-    repositories: [],
-    harnesses: [],
-    models: [],
-    autonomyTiers: [],
-    costBuckets: [],
-    changePresence: [],
-    prAssociation: [],
-    quality: "all",
-    search: null,
-    countOnly: false,
-    limit: 50,
-    offset: 0,
-    sortBy: "status",
-    sortDir: dir,
-    hasUnsupportedCloudFilter: false,
-    scopeUnsatisfiable: false,
-  };
-}
 
 function sortStatusIds(
   sessions: SyncedAgentSession[],
   dir: "asc" | "desc"
 ): string[] {
-  return sortSyncedSessions(sessions, statusQuery(dir)).map(
+  return sortSyncedSessions(sessions, sessionSortQuery("status", dir)).map(
     (s) => s.externalSessionId
   );
 }
 
-describe("sortSyncedSessions status column (FEA-4301 desktop-cloud parity)", () => {
-  it("orders ASC by the DISPLAYED status lifecycle, mirroring the cloud rank", () => {
+/**
+ * ISS-9939 / ISS-10262 (davetho, PR #7289 review): the desktop Local
+ * Sessions Status SORT must move with the cloud's — the FEA-4301
+ * desktop-cloud parity suite this replaces pinned BOTH surfaces to the
+ * DISPLAYED-status rank, and moving only the cloud half would have reopened
+ * exactly the drift class that suite existed to close: an awaiting-input
+ * session (stored `active`) sorting with Active in cloud and with Waiting
+ * locally.
+ *
+ * The new contract is a plain PERSISTED-status string comparison — no rank
+ * table, matching the ISS-9939 ruling's "no denormalized column, no
+ * maintained writer, no rank table" and the cloud `dbColumnOrderBy`/
+ * `bindSortRule` "status" cases. DISPLAY (`projectDisplayedSharedStatus`),
+ * the Status FACET (`matchesStatusFilter`), and Duration
+ * (`resolveDisplayedSharedSessionStatus`, exercised above) are UNCHANGED —
+ * this suite pins that a Waiting-displayed row still projects as Waiting
+ * even though it no longer SORTS as Waiting.
+ */
+describe("sortSyncedSessions status column (ISS-9939 / ISS-10262)", () => {
+  it("orders ASC by the raw persisted lifecycle string: active < error < inactive", () => {
     const sessions = [
-      session({ externalSessionId: "abandoned", status: "abandoned" }),
-      session({ externalSessionId: "active", status: "active" }),
-      session({ externalSessionId: "failed", status: "failed" }),
-      // Stored `active`, but awaiting input → DISPLAYS as Waiting.
-      session({
-        externalSessionId: "waiting",
-        status: "active",
-        awaitingInputSince: AWAITING,
-      }),
-      session({ externalSessionId: "completed", status: "completed" }),
+      session({ externalSessionId: "c", status: SESSION_STATUS.INACTIVE }),
+      session({ externalSessionId: "a", status: SESSION_STATUS.ACTIVE }),
+      session({ externalSessionId: "b", status: SESSION_STATUS.ERROR }),
     ];
-    // ISS-5592, in two steps. First the retired spellings stopped keying the
-    // rank map on either surface; now the `failed` ALIAS has too, since nothing
-    // manufactures it. All three degrade to the unrecognized rank, which is
-    // still parity — the cloud `DISPLAYED_STATUS_RANK` is keyed by
-    // `DisplayedSessionStatus` and never held `failed` either.
+    assert.deepEqual(sortStatusIds(sessions, "asc"), ["a", "b", "c"]);
+    assert.deepEqual(sortStatusIds(sessions, "desc"), ["c", "b", "a"]);
+  });
+
+  it("sorts a row awaiting input (stored active) WITH the other Active rows, unaffected by the retired Waiting badge", () => {
+    // The deliberate FEA-4301 reversal, together with the cloud: a raw-string
+    // sort collapses `waiting`'s shape onto `active` (both store "active"),
+    // which is the INTENDED behavior on both surfaces rather than the bug
+    // FEA-4301 fixed.
     //
-    // Equal ranks fall to the stable sort's input order, which is why these
-    // three keep the order the fixture declares them in rather than an
-    // alphabetical one.
-    assert.deepEqual(sortStatusIds(sessions, "asc"), [
-      "active",
-      "waiting",
-      "abandoned",
-      "failed",
-      "completed",
-    ]);
-  });
-
-  it("sorts a displayed-Waiting row (stored active) as Waiting, not among Active rows", () => {
+    // ISS-10364 (operator ruling 2026-09-23): the badge assertion below used
+    // to prove the row was genuinely Waiting-displayed before checking it
+    // still SORTS with Active; the badge itself is retired, so it now reads
+    // plain Active too. The sort contract this test is actually about was
+    // already independent of the badge (ISS-9939 moved the Status SORT onto
+    // the raw persisted string) and is unchanged.
+    const waiting = session({
+      externalSessionId: "waiting",
+      status: SESSION_STATUS.ACTIVE,
+      awaitingInputSince: new Date("2026-05-20T17:05:00.000Z").toISOString(),
+    });
+    assert.equal(projectDisplayedSharedStatus(waiting), SESSION_STATUS.ACTIVE);
     const sessions = [
-      session({ externalSessionId: "completed", status: "completed" }),
       session({
-        externalSessionId: "waiting",
-        status: "active",
-        awaitingInputSince: AWAITING,
+        externalSessionId: "inactive",
+        status: SESSION_STATUS.INACTIVE,
       }),
-      session({ externalSessionId: "active", status: "active" }),
+      waiting,
+      session({ externalSessionId: "active", status: SESSION_STATUS.ACTIVE }),
     ];
-    // A raw-string sort would have collapsed `waiting` onto `active` (both store
-    // "active"); the projected rank lands it between Active and Completed.
+    // "active" ties between `waiting` and `active` (both persist that literal
+    // string), so the stable sort keeps their INCOMING relative order —
+    // `waiting` before `active` — both ahead of "inactive".
     assert.deepEqual(sortStatusIds(sessions, "asc"), [
-      "active",
       "waiting",
-      "completed",
-    ]);
-  });
-
-  it("does not project Waiting for an awaiting-input row that has ended", () => {
-    const sessions = [
-      session({ externalSessionId: "active", status: "active" }),
-      // Ended → the Waiting projection is suppressed; stays Active.
-      session({
-        externalSessionId: "ended-awaiting",
-        status: "active",
-        awaitingInputSince: AWAITING,
-        endedAt: new Date("2026-05-20T17:10:00.000Z").toISOString(),
-      }),
-    ];
-    // Both display as Active → equal rank → stable incoming order preserved.
-    assert.deepEqual(sortStatusIds(sessions, "asc"), [
       "active",
-      "ended-awaiting",
+      "inactive",
     ]);
   });
 
-  it("keeps an UNKNOWN status LAST in BOTH directions (never promoted to the front on desc)", () => {
-    // ISS-5592: the third row must carry a status the rank map still KNOWS.
-    // This case used `completed`, which is unrecognized now — it would have
-    // tied with `quantum-flux` at the unknown rank and the test would have
-    // asserted nothing about known-vs-unknown ordering.
+  it("orders a locally-stored `waiting` literal by its own raw spelling, matching cloud's raw comparison", () => {
+    // marisolashgrove (#7289 review): the ISS-5981 migration deliberately leaves
+    // a LIVE-AND-ANCHORLESS session (`sessionEndedAt` null,
+    // `awaitingInputSince` null) storing the literal "waiting" on the CLOUD
+    // side too — it is not a desktop-only legacy spelling, and no later
+    // migration drains it. So this no longer folds it to Active: both
+    // surfaces compare the raw string, and "waiting" sorts after "inactive"
+    // ascending like any other value outside the three-member lifecycle set.
     const sessions = [
-      session({ externalSessionId: "unknown", status: "quantum-flux" }),
-      session({ externalSessionId: "active", status: "active" }),
-      session({ externalSessionId: "inactive", status: "inactive" }),
+      session({
+        externalSessionId: "inactive",
+        status: SESSION_STATUS.INACTIVE,
+      }),
+      session({ externalSessionId: "waiting-literal", status: "waiting" }),
+      session({ externalSessionId: "active", status: SESSION_STATUS.ACTIVE }),
     ];
     assert.deepEqual(sortStatusIds(sessions, "asc"), [
       "active",
       "inactive",
-      "unknown",
+      "waiting-literal",
     ]);
-    // On desc the KNOWN ranks reverse, but the unknown status stays last — a
-    // direction-flipped raw rank would have put it first here.
-    assert.deepEqual(sortStatusIds(sessions, "desc"), [
-      "inactive",
+  });
+
+  it("orders an unrecognized future status by its own raw spelling, not by a fail-open guess", () => {
+    const sessions = [
+      session({
+        externalSessionId: "inactive",
+        status: SESSION_STATUS.INACTIVE,
+      }),
+      session({ externalSessionId: "unknown", status: "some-future-status" }),
+      session({ externalSessionId: "active", status: SESSION_STATUS.ACTIVE }),
+    ];
+    assert.deepEqual(sortStatusIds(sessions, "asc"), [
       "active",
+      "inactive",
       "unknown",
     ]);
   });

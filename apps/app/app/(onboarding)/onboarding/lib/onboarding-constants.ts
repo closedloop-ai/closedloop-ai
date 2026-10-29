@@ -1,4 +1,5 @@
 import { OnboardingStep } from "@repo/api/src/types/onboarding";
+import { WEB_CANONICAL_LANDING_HREF } from "@repo/app/shared/lib/primary-nav-destinations";
 import { z } from "zod";
 
 /**
@@ -98,5 +99,13 @@ export function clearWizardState(): void {
   }
 }
 
-/** Where the finished wizard hands off. */
-export const POST_WIZARD_ROUTE = "/my-tasks?from=onboarding";
+/**
+ * Where the finished wizard hands off — the canonical landing route, like every
+ * other workspace entry point.
+ *
+ * Derived from `WEB_CANONICAL_LANDING_HREF` rather than written out, because a
+ * literal here is exactly how this path kept landing on My Tasks after the
+ * already-completed guard beside it had moved: the wizard's own completion is
+ * the most-travelled onboarding exit and it consulted no constant at all.
+ */
+export const POST_WIZARD_ROUTE = `${WEB_CANONICAL_LANDING_HREF}?from=onboarding`;

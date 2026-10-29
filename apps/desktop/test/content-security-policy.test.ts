@@ -8,11 +8,12 @@
  * untouched, and that a pre-existing CSP is replaced rather than intersected.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { installAppContentSecurityPolicy } from "../src/main/settings/content-security-policy.js";
 import {
   CONTENT_SECURITY_POLICY_HEADER,
   CONTENT_SECURITY_POLICY_META,
+  isRendererDisplayableImageUrl,
 } from "../src/shared/content-security-policy.js";
 
 type ResponseHeaders = Record<string, string[]>;
@@ -104,7 +105,7 @@ test("header policy locks down the dangerous directives", () => {
 
 /**
  * Extracts a single directive's full value from a `"; "`-joined CSP string
- * (e.g. `"connect-src"` → `"connect-src 'self' app:"`); undefined when the
+ * (e.g. `"font-src"` → `"font-src 'self' app: data:"`); undefined when the
  * directive is absent. No directive value contains `"; "`, so the split is
  * unambiguous.
  */
@@ -114,14 +115,14 @@ function cspDirective(policy: string, name: string): string | undefined {
     .find((entry) => entry === name || entry.startsWith(`${name} `));
 }
 
-test("connect-src admits no remote origin — renderer stays same-origin (PLN-1138 / FEA-3324 Option B2)", () => {
-  // The renderer makes no outbound network requests: cloud REST marshals over
-  // IPC, and session transcript bytes are served same-origin over `app://` by the
-  // main process (FEA-3324 Option B2). Assert the WHOLE directive (not substring
-  // inclusion) so reintroducing ANY remote origin here — e.g. a transcript S3
-  // host for a renderer-direct read (Option A) — fails CI rather than passing
-  // silently.
-  const expected = "connect-src 'self' app:";
+test("connect-src admits only the replay proxy and document collaboration endpoints", () => {
+  // REST and attachment bytes remain main-owned. Pin the entire directive so
+  // neither the SDK endpoints nor the narrow boundary can silently drift.
+  // No document sync host is admitted until ISS-12512 (PLN-2189 T-4.3), and
+  // the local service at `ws://localhost:3050` never is: the dev renderer that
+  // reaches it runs without a CSP (see the loopback-dev test above).
+  const expected =
+    "connect-src 'self' app: https://api.closedloop.ai https://api.stage.example https://api.liveblocks.io wss://api.liveblocks.io";
   assert.equal(
     cspDirective(CONTENT_SECURITY_POLICY_HEADER, "connect-src"),
     expected
@@ -137,4 +138,66 @@ test("meta policy omits header-only frame-ancestors", () => {
   // frame-ancestors is ignored in a <meta> tag and only logs a warning there.
   assert.ok(!CONTENT_SECURITY_POLICY_META.includes("frame-ancestors"));
   assert.ok(CONTENT_SECURITY_POLICY_META.includes("default-src 'self' app:"));
+});
+
+test("allows Clerk avatar images and nothing else remote (ISS-10402)", () => {
+  // Every user avatar is served from this host; without it `img-src` blocked
+  // all of them. Pinned so a future tightening cannot silently re-break avatars.
+  // Asserted as the WHOLE directive, not substring inclusion: an `img-src` that
+  // ALSO admitted `https://anything.example` would still contain this text, so
+  // equality is what pins the one-host boundary in both directions — the host
+  // cannot be dropped, and a second remote origin cannot be added beside it.
+  const expectedImgSrc = "img-src 'self' app: data: https://img.clerk.com";
+  assert.equal(
+    cspDirective(CONTENT_SECURITY_POLICY_HEADER, "img-src"),
+    expectedImgSrc
+  );
+  assert.equal(
+    cspDirective(CONTENT_SECURITY_POLICY_META, "img-src"),
+    expectedImgSrc
+  );
+  // Widening any of these would give the renderer a remote code or style path,
+  // which the app:// architecture forbids. `connect-src` carries the replay
+  // proxy's origins and is pinned whole by the test above.
+  for (const directive of ["script-src", "style-src", "font-src"]) {
+    const clause = CONTENT_SECURITY_POLICY_HEADER.split("; ").find((part) =>
+      part.startsWith(`${directive} `)
+    );
+    assert.ok(clause, `${directive} is declared`);
+    assert.ok(
+      !clause.includes("http"),
+      `${directive} carries no remote origin: ${clause}`
+    );
+  }
+});
+
+test("the displayable-image predicate admits exactly what img-src does (ISS-11465)", () => {
+  // The predicate is what screens the server-supplied organization logo and
+  // user avatar before the menu renders them, and `User.avatarUrl` is NOT
+  // constrained to Clerk — `PUT /users/:id` accepts any valid URL. A predicate
+  // looser than the directive paints a blank `<img>` with no fallback behind
+  // it; a stricter one drops a logo the policy would have allowed, so both
+  // directions are asserted here.
+  assert.equal(
+    isRendererDisplayableImageUrl("https://img.clerk.com/avatar.png"),
+    true
+  );
+  assert.equal(
+    isRendererDisplayableImageUrl("data:image/png;base64,AAA"),
+    true
+  );
+  assert.equal(
+    isRendererDisplayableImageUrl("https://avatars.example.com/ada.png"),
+    false
+  );
+  assert.equal(
+    isRendererDisplayableImageUrl("http://img.clerk.com/avatar.png"),
+    false
+  );
+  assert.equal(
+    isRendererDisplayableImageUrl("https://evil.example/img.clerk.com"),
+    false
+  );
+  assert.equal(isRendererDisplayableImageUrl("/relative/avatar.png"), false);
+  assert.equal(isRendererDisplayableImageUrl(""), false);
 });

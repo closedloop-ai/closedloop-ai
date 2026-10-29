@@ -3,10 +3,19 @@ import "server-only";
 import { z } from "zod";
 import { uuidValidator } from "@/app/compute-targets/validators";
 import {
-  desktopContractError,
+  DesktopConnectStage,
+  desktopConnectRejected,
   desktopContractSuccess,
 } from "@/app/desktop/contract";
-import { desktopSessionService } from "../service";
+import {
+  DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES,
+  readBoundedJsonBody,
+} from "@/app/desktop/route-helpers";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
+import {
+  type DesktopSessionExchangeError,
+  desktopSessionService,
+} from "../service";
 
 const exchangeRequestValidator = z
   .object({
@@ -15,11 +24,36 @@ const exchangeRequestValidator = z
   })
   .strict();
 
-export async function POST(request: Request) {
-  const rawBody = await request.json().catch(() => null);
+const EXCHANGE_ERROR_RESPONSES: Record<
+  DesktopSessionExchangeError,
+  { status: number; code: string }
+> = {
+  already_used: {
+    status: 409,
+    code: "DESKTOP_SESSION_ALREADY_USED",
+  },
+  invalid: {
+    status: 401,
+    code: "DESKTOP_SESSION_EXCHANGE_INVALID",
+  },
+  org_required: {
+    status: 400,
+    code: "DESKTOP_SESSION_ORG_REQUIRED",
+  },
+  pop_failed: {
+    status: 403,
+    code: "DESKTOP_SESSION_POP_REQUIRED",
+  },
+};
+
+async function handlePost(request: Request) {
+  const { rawBody } = await readBoundedJsonBody(
+    request,
+    DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES
+  );
   const parsedBody = exchangeRequestValidator.safeParse(rawBody);
   if (!parsedBody.success) {
-    return desktopContractError(400, "INVALID_DESKTOP_SESSION_EXCHANGE", false);
+    return exchangeRejected(400, "INVALID_DESKTOP_SESSION_EXCHANGE", false);
   }
 
   const outcome = await desktopSessionService
@@ -31,25 +65,25 @@ export async function POST(request: Request) {
     .catch(() => null);
 
   if (outcome === null) {
-    return desktopContractError(503, "DESKTOP_SESSION_EXCHANGE_FAILED", true);
+    return exchangeRejected(503, "DESKTOP_SESSION_EXCHANGE_FAILED", true);
   }
 
   if (!outcome.ok) {
-    switch (outcome.error) {
-      case "pop_failed":
-        return desktopContractError(403, "DESKTOP_SESSION_POP_REQUIRED", false);
-      case "already_used":
-        return desktopContractError(409, "DESKTOP_SESSION_ALREADY_USED", false);
-      case "org_required":
-        return desktopContractError(400, "DESKTOP_SESSION_ORG_REQUIRED", false);
-      default:
-        return desktopContractError(
-          401,
-          "DESKTOP_SESSION_EXCHANGE_INVALID",
-          false
-        );
-    }
+    const errorResponse = EXCHANGE_ERROR_RESPONSES[outcome.error];
+    return exchangeRejected(errorResponse.status, errorResponse.code, false);
   }
 
   return desktopContractSuccess(outcome.value);
 }
+
+function exchangeRejected<TCode extends string>(
+  status: number,
+  code: TCode,
+  retryable: boolean
+) {
+  return desktopConnectRejected(status, code, retryable, {
+    stage: DesktopConnectStage.SessionExchange,
+  });
+}
+
+export const POST = withRequestCompleted(handlePost);

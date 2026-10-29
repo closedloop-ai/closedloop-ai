@@ -3,7 +3,13 @@
 import { useMediaQuery } from "@closedloop-ai/design-system/hooks/use-media-query";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef } from "react";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "./sheet";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "./sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./tabs";
 
 const NARROW_VIEWPORT_QUERY = "(max-width: 1024px)";
@@ -11,13 +17,7 @@ const NARROW_VIEWPORT_QUERY = "(max-width: 1024px)";
 // fixed-width right overlay — a 400px overlay leaves almost nothing on a phone.
 const MOBILE_VIEWPORT_QUERY = "(max-width: 639px)";
 const NARROW_OVERLAY_WIDTH = 400;
-
-export const FeedRailTab = {
-  Feed: "feed",
-  Chat: "chat",
-} as const;
-
-export type FeedRailTab = (typeof FeedRailTab)[keyof typeof FeedRailTab];
+const FEED_TAB_VALUE = "feed";
 
 /**
  * Layout mode for the feed rail (FEA-3865).
@@ -41,11 +41,7 @@ type FeedRailProps = {
   onClose: () => void;
   width: number;
   onWidthChange: (nextWidth: number) => void;
-  activeTab: FeedRailTab;
-  hasChat: boolean;
-  onTabChange: (next: FeedRailTab) => void;
   feedPanel: ReactNode;
-  chatPanel?: ReactNode;
   /**
    * FEA-3865: how the rail lays out. Defaults to `inline` (the adaptive
    * inline→overlay→sheet behavior). Callers rarely override this — it exists so
@@ -60,11 +56,7 @@ export function FeedRail({
   onClose,
   width,
   onWidthChange,
-  activeTab,
-  hasChat,
-  onTabChange,
   feedPanel,
-  chatPanel,
   mode = FeedRailMode.Inline,
 }: Readonly<FeedRailProps>) {
   const isNarrow = useMediaQuery(NARROW_VIEWPORT_QUERY);
@@ -108,8 +100,6 @@ export function FeedRail({
     };
   }, []);
 
-  const effectiveTab: FeedRailTab = hasChat ? activeTab : FeedRailTab.Feed;
-
   // Resolve the effective layout. `inline` is adaptive (sheet < sm, overlay
   // sm..lg, inline lg+); the other two modes are forced.
   const resolvedMode = resolveFeedRailMode(mode, isMobile, isNarrow);
@@ -122,14 +112,10 @@ export function FeedRail({
   // draggable edge (nothing to resize against).
   const railBody = (
     <FeedRailBody
-      chatPanel={chatPanel}
-      effectiveTab={effectiveTab}
       feedPanel={feedPanel}
-      hasChat={hasChat}
       onStartResize={
         resolvedMode === FeedRailMode.Inline ? startResize : undefined
       }
-      onTabChange={onTabChange}
     />
   );
 
@@ -149,6 +135,7 @@ export function FeedRail({
         >
           <SheetHeader className="sr-only">
             <SheetTitle>Feed</SheetTitle>
+            <SheetDescription>Comments for this document.</SheetDescription>
           </SheetHeader>
           {railBody}
         </SheetContent>
@@ -183,23 +170,15 @@ export function FeedRail({
 }
 
 /**
- * The tab shell + feed/chat panels, shared by all three layout modes so the
- * inline rail, the overlay, and the bottom sheet render identical content. The
- * resize handle only appears when `onStartResize` is supplied (inline mode).
+ * The tab shell + feed panel, shared by all three layout modes so the inline
+ * rail, the overlay, and the bottom sheet render identical content. The resize
+ * handle only appears when `onStartResize` is supplied (inline mode).
  */
 function FeedRailBody({
-  effectiveTab,
-  hasChat,
-  onTabChange,
   feedPanel,
-  chatPanel,
   onStartResize,
 }: {
-  effectiveTab: FeedRailTab;
-  hasChat: boolean;
-  onTabChange: (next: FeedRailTab) => void;
   feedPanel: ReactNode;
-  chatPanel?: ReactNode;
   onStartResize?: (event: React.PointerEvent<HTMLButtonElement>) => void;
 }) {
   return (
@@ -214,31 +193,19 @@ function FeedRailBody({
       ) : null}
       <Tabs
         className="flex min-h-0 flex-1 flex-col gap-0"
-        onValueChange={(value) => onTabChange(value as FeedRailTab)}
-        value={effectiveTab}
+        value={FEED_TAB_VALUE}
       >
         <header className="flex h-10 shrink-0 items-center border-b px-3">
           <TabsList aria-label="Feed mode">
-            <TabsTrigger value={FeedRailTab.Feed}>Feed</TabsTrigger>
-            {hasChat ? (
-              <TabsTrigger value={FeedRailTab.Chat}>Chat</TabsTrigger>
-            ) : null}
+            <TabsTrigger value={FEED_TAB_VALUE}>Feed</TabsTrigger>
           </TabsList>
         </header>
         <TabsContent
           className="flex min-h-0 flex-1 flex-col"
-          value={FeedRailTab.Feed}
+          value={FEED_TAB_VALUE}
         >
           {feedPanel}
         </TabsContent>
-        {hasChat ? (
-          <TabsContent
-            className="flex min-h-0 flex-1 flex-col overflow-hidden"
-            value={FeedRailTab.Chat}
-          >
-            {chatPanel}
-          </TabsContent>
-        ) : null}
       </Tabs>
     </>
   );

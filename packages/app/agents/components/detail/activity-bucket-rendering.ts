@@ -256,6 +256,26 @@ export const UNREAD_BAR_STYLE = {
 export const SYNTHESIZED_BAR_CLASS = "synthesized";
 
 /**
+ * ISS-5850: what an UNMEASURED column's bar wears instead of the idle hatch.
+ *
+ * ISS-5075 settled the principle one axis over, and the stylesheet states it on
+ * `.unread`: the `.idle`/`.cb-gap` hatch on this strip already means "observed,
+ * and nothing happened", so a region nobody looked at must not wear it. Without
+ * this the tooltip withdraws the false sentence and the bar keeps the false
+ * picture — and the picture is what every reader gets, while the sentence is
+ * only for the ones who hover.
+ *
+ * The WASH says "not looked at" (the same `--muted-foreground` 10% mix `.unread`
+ * uses, so no new colour and no new token); the IDLE HEIGHT keeps it out of the
+ * unread tail's lane, because `.unread` stretches full-height and means
+ * something different — "we stopped reading" rather than "the collector never
+ * binned here". A trailing run of unmeasured columns painted at full height
+ * would be indistinguishable from an unread tail, which is the same collapse
+ * this ticket exists to remove.
+ */
+export const UNMEASURED_BAR_CLASS = "unmeasured";
+
+/**
  * Named ONCE beneath the strip, the way {@link UNREAD_BAR_STYLE}'s tail is —
  * per-bar copy would repeat the same line up to 48 times into a screen reader's
  * path for a fact about the strip as a whole.
@@ -309,6 +329,29 @@ export const TIMELINE_SYNTHESIZED_IDLE_TOOLTIP =
   "Nothing recorded in this slice";
 
 /**
+ * ISS-5850: what a column says when the producer's measured extent does not
+ * reach it at all.
+ *
+ * THE DISTINCTION IT PROTECTS, in one line: the measured idle answer below ends
+ * "no tokens billed", which is a claim about what happened. This column supports
+ * no such claim — the collector bins over the stretch where activity actually
+ * occurred, the strip draws a wider clock window around it, and these columns
+ * were never looked at. Rendering them as observed quiet is the same
+ * distinction-collapse ISS-5566 removed for synthesized money, one axis over.
+ *
+ * "Stretch of this session", not "window" or "extent": window is the thing the
+ * reader is looking AT (and the scale toggle already owns that word), and extent
+ * is ours, not theirs. "Measured" carries the whole point — something else here
+ * was measured, and this was not.
+ *
+ * NO WARNING TONE (ISS-5842). A collector that binned tightly around the
+ * activity is working correctly; there is nothing here for the reader to fix, so
+ * this states a fact in the same muted voice as the idle line it replaces.
+ */
+export const TIMELINE_UNMEASURED_INTERVAL_TOOLTIP =
+  "Outside the measured stretch of this session";
+
+/**
  * The first bucket index the detail read never reached — everything from here to
  * the end of the strip is unread rather than idle. `buckets.length` (nothing
  * unread) whenever the stream was whole, and `0` when the cut landed before
@@ -344,11 +387,24 @@ export function getUnreadFromIndex(
  * and 4px. `.reach` lets the stylesheet extend that target up its own column
  * without moving the bar, which stays the visual encoding of magnitude.
  *
- * Keyed off `tl0`, NOT off the bar's value. A bucket with no transcript anchor
- * has nowhere to send a click, so it is deliberately left at today's size: this
- * flag must never turn inert space into a bigger dead target, which is the
- * defect ISS-5479 (PR #4615) fixed. An unreachable bar and a reachable-but-inert
- * bar stay distinguishable in either position of this flag.
+ * Keyed off where a click can LAND, never off the bar's value. A bar that cannot
+ * send a click anywhere is deliberately left at today's size: reach must never
+ * turn inert space into a bigger dead target, which is the defect ISS-5479
+ * (PR #4615) fixed. An unreachable bar and a reachable-but-inert bar stay
+ * distinguishable with or without reach.
+ *
+ * ISS-8727: `tl0 != null` asks whether the bucket HAS an anchor, which is only
+ * half the question — {@link getBucketJumpBlock} answers the other half, and on
+ * a partial or `subagent:{id}` transcript it returns
+ * {@link BucketJumpBlock.NotInReadTranscript} for a bucket whose anchor the
+ * rendered trace does not cover. Those bars wore the column-tall target,
+ * `.no-jump` and `aria-disabled` simultaneously while a click on them resolved
+ * nowhere, which is the same "bigger dead target" the paragraph above forbids —
+ * the predicate simply never reached the case. `block` is that authority,
+ * passed in rather than recomputed so the hit box, the affordance, the name and
+ * the tooltip hint all answer from ONE value. It defaults to `null` — no block
+ * known — which leaves the predicate at `tl0 != null`, i.e. exactly the render
+ * that shipped before this parameter existed.
  *
  * ## What this box governs: the CLICK. The hover rides along.
  *
@@ -359,13 +415,15 @@ export function getUnreadFromIndex(
  * split, the event count and the tool-call count. The predicate is chosen for
  * the CLICK, and the tooltip follows because it is on the same element.
  *
- * The consequence is real and is the intended trade, not an oversight: an idle
- * or interior-gap bucket with no anchor keeps its 7px / 4px hover region while
- * an anchored neighbour gets the full 62px, so the smallest targets on the strip
- * are the ones this flag skips. The alternative — extending the box on
- * anchorless bars for the tooltip's sake — is rejected because it re-creates
- * exactly the defect ISS-5479 (PR #4615) fixed, at ten times the size: those
- * bars are deliberately marked `aria-disabled` with the affordance withdrawn
+ * The consequence is real and is the intended trade, not an oversight: a BLOCKED
+ * bucket keeps its 7px / 4px hover region while a jumpable neighbour gets the
+ * full 62px, so the smallest targets on the strip are the ones this treatment
+ * skips. Nothing becomes unreachable — the tooltip still opens on the bar, and
+ * ISS-5761 put the same bucket's cost in the button's accessible name, where a
+ * pointer is not needed at all. The alternative — extending the box on blocked
+ * bars for the tooltip's sake — is rejected because it re-creates exactly the
+ * defect ISS-5479 (PR #4615) fixed, at ten times the size: those bars are
+ * deliberately marked `aria-disabled` with the affordance withdrawn
  * (`.no-jump`), and a 62px region that announces itself as unavailable is a
  * worse control than a 7px one. Making a quiet bucket's tooltip easier to reach
  * is a separate problem from making its jump easier to hit, and it wants its own
@@ -374,13 +432,15 @@ export function getUnreadFromIndex(
  *
  * ## Two anchored-looking bars that behave differently
  *
- * A costly-but-anchorless bucket (`cIn: 0.4, tl0: null`) sits beside a jumpable
- * one and, on geometry alone, nothing distinguishes them. What tells them apart
- * is `.no-jump` — ISS-5479's withdrawn affordance, which lives in this same
- * module (`getBucketJumpBlock`) and stylesheet and is unconditional since
- * ISS-6006 retired its gate ON. That treatment governs what a click SAYS while
- * this flag governs where it LANDS, so the anchorless bar already reads as
- * unavailable at the moment its neighbour grows a column-tall target.
+ * A costly-but-blocked bucket — anchorless (`cIn: 0.4, tl0: null`), or anchored
+ * at a turn the read transcript does not cover — sits beside a jumpable one and,
+ * on geometry alone, nothing distinguishes them. What tells them apart is
+ * `.no-jump` — ISS-5479's withdrawn affordance, which lives in this same module
+ * (`getBucketJumpBlock`) and stylesheet and is unconditional since ISS-6006
+ * retired its gate ON. That treatment governs what a click SAYS while the reach
+ * treatment governs where it LANDS, and ISS-8727 put both on the one block
+ * answer, so a bar can no longer say "unavailable" out of a region grown for a
+ * jump it cannot make.
  *
  * `disabled` is part of the predicate, not a styling detail left to CSS (code
  * review). FEA-4252 passes `disabled` for the whole strip while the trace has no
@@ -392,15 +452,15 @@ export function getUnreadFromIndex(
  * and the base `.sd3-bar2:hover` outline is likewise unscoped, so hovering blank
  * space 50px up the column would light the 6px sliver at the floor with nothing
  * under the pointer. Withholding the class settles all three at once and keeps a
- * disabled bar on exactly today's geometry — this flag changes where a live
+ * disabled bar on exactly today's geometry — reach changes where a live
  * click LANDS, never what a dead control offers.
  */
 export function getBucketReachClass(
   bucket: ActivityBucket,
-  columnHitTargetEnabled: boolean,
-  disabled = false
+  disabled = false,
+  block: BucketJumpBlock | null = null
 ): string {
-  if (columnHitTargetEnabled && !disabled && bucket.tl0 != null) {
+  if (!disabled && block == null && bucket.tl0 != null) {
     return "reach";
   }
   return "";
@@ -466,8 +526,7 @@ export function formatBucketBarLabel(cost: number): string {
  * ISS-5563: the money format for the bucket TOOLTIP — the bar label's exact
  * counterpart, moved here from `agent-session-detail-view.tsx` so the two
  * formatters that render one bucket's cost sit together and a change to either
- * is made with the other in view. (That file is grandfathered shrink-only, so
- * the move also pays down a little of it.)
+ * is made with the other in view.
  *
  * Scope: the per-model BREAKDOWN ROWS only — never the tooltip's header total.
  * The rows are a decomposition, and a long tail of `$0.0000` cells there is

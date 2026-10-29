@@ -1,8 +1,16 @@
 import { verify as verifySignature } from "node:crypto";
-import { isFeatureFlagEnabledForDistinctId } from "@repo/analytics/feature-flags";
 import { ApiKeySource } from "@repo/database";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
+import {
+  type FeatureFlagIdentity,
+  resolveDistinctIdsForIdentity,
+} from "@/lib/feature-flag-identity";
+import { evaluateServerFeatureFlagForDistinctId } from "@/lib/feature-flags/server-feature-flag-evaluation";
+import {
+  DESKTOP_MANAGED_POP_ENFORCEMENT_SERVER_FLAG,
+  type RegisteredServerFeatureFlag,
+} from "@/lib/feature-flags/server-feature-flags";
 import type { VerifiedApiKeyContextWithMetadata } from "./api-key-context";
 import {
   BASE64URL_SIGNATURE_PATTERN,
@@ -13,7 +21,7 @@ import {
 } from "./desktop-pop-utils";
 
 export const DESKTOP_MANAGED_POP_ENFORCEMENT_FLAG =
-  "desktop-managed-pop-enforcement";
+  DESKTOP_MANAGED_POP_ENFORCEMENT_SERVER_FLAG.key;
 
 export type DesktopManagedPopMode = "monitor" | "enforce";
 
@@ -40,10 +48,12 @@ export type DesktopManagedPopFailure = {
   status: 401 | 403 | 503;
 };
 
-export type DesktopManagedFeatureFlagIdentity = {
-  userId: string;
-  clerkUserId?: string | null;
-};
+/**
+ * ISS-7778: an alias of the canonical {@link FeatureFlagIdentity} rather than a
+ * second structural copy of it. The copy that used to live here is what let the
+ * distinct-id resolver below drift away from the canonical one.
+ */
+export type DesktopManagedFeatureFlagIdentity = FeatureFlagIdentity;
 
 type DesktopManagedPopVerificationInput = {
   keyContext: VerifiedApiKeyContextWithMetadata & {
@@ -86,53 +96,23 @@ export async function isDesktopManagedPopEnforcementEnabled(
   identity: DesktopManagedFeatureFlagIdentity
 ): Promise<boolean> {
   return await isDesktopManagedFeatureFlagEnabled(
-    DESKTOP_MANAGED_POP_ENFORCEMENT_FLAG,
+    DESKTOP_MANAGED_POP_ENFORCEMENT_SERVER_FLAG,
     identity
   );
 }
 
 /**
- * Evaluates a Desktop-managed rollout flag using the same Clerk distinct ID
- * that the browser identifies in PostHog. The database user UUID is retained as
- * a temporary fallback for any server-side-only flags created before this
- * identity alignment.
+ * Fail-closed boolean fold over {@link evaluateDesktopManagedFeatureFlag}: a
+ * disabled flag and an unreachable flag provider both read as not-enabled.
  */
 export async function isDesktopManagedFeatureFlagEnabled(
-  flag: string,
+  flag: RegisteredServerFeatureFlag,
   identity: DesktopManagedFeatureFlagIdentity
 ): Promise<boolean> {
-  const distinctIds = resolveFeatureFlagDistinctIds(identity);
-  try {
-    for (const distinctId of distinctIds) {
-      if (
-        (await isFeatureFlagEnabledForDistinctId(flag, distinctId)) === true
-      ) {
-        return true;
-      }
-    }
-    return false;
-  } catch (error) {
-    log.warn(
-      "desktop_managed_pop_feature_flag_unavailable_defaulting_to_disabled",
-      {
-        flag,
-        error: parseError(error),
-      }
-    );
-    return false;
-  }
-}
-
-function resolveFeatureFlagDistinctIds(
-  identity: DesktopManagedFeatureFlagIdentity
-): string[] {
-  return [
-    ...new Set(
-      [identity.clerkUserId, identity.userId].filter(
-        (distinctId): distinctId is string => Boolean(distinctId)
-      )
-    ),
-  ];
+  return (
+    (await evaluateDesktopManagedFeatureFlag(flag, identity)) ===
+    DesktopManagedFeatureFlagOutcome.Enabled
+  );
 }
 
 /**
@@ -199,17 +179,8 @@ export function verifyDesktopManagedPop(
     return logAndReturn(input, toDecision(mode, "gateway_mismatch"));
   }
 
-  let pathname: string;
-  let signature: Buffer;
-  try {
-    pathname = new URL(request.url).pathname || "/";
-    signature = Buffer.from(headers.signature, "base64url");
-  } catch (error) {
-    return logAndReturn(
-      input,
-      toDecision(mode, "verifier_unavailable", parseError(error))
-    );
-  }
+  const pathname = new URL(request.url).pathname;
+  const signature = Buffer.from(headers.signature, "base64url");
 
   const canonical = [
     request.method.toUpperCase(),
@@ -352,4 +323,90 @@ function safePathname(url: string): string {
   } catch {
     return "unavailable";
   }
+}
+
+/**
+ * What a desktop-managed rollout-flag evaluation actually observed.
+ *
+ * `Faulted` exists because the boolean fold cannot express it: the fail-closed
+ * default is deliberate — an unavailable flag keeps managed keys bearer-
+ * compatible — but "policy says no" and "we could not ask the policy" are not
+ * the same refusal, and a caller that must tell a permanent rejection from a
+ * transient one has to see the difference (ISS-8132).
+ */
+export const DesktopManagedFeatureFlagOutcome = {
+  Enabled: "enabled",
+  Disabled: "disabled",
+  /** The flag provider itself failed — the policy was never asked. */
+  Faulted: "faulted",
+} as const;
+export type DesktopManagedFeatureFlagOutcome =
+  (typeof DesktopManagedFeatureFlagOutcome)[keyof typeof DesktopManagedFeatureFlagOutcome];
+
+/**
+ * Evaluates a Desktop-managed rollout flag using the same Clerk distinct ID
+ * that the browser identifies in PostHog, and reports which of the three things
+ * happened.
+ *
+ * {@link isDesktopManagedFeatureFlagEnabled} is the fail-closed fold over this,
+ * so a `Faulted` evaluation still reads as not-enabled everywhere that only
+ * needs the boolean.
+ *
+ * ISS-7778: the distinct ids come from the canonical
+ * {@link resolveDistinctIdsForIdentity}. This module used to carry its own
+ * resolver, and ISS-8196 narrowed the canonical one WITHOUT it — so this path
+ * went on ORing a second, internal-namespace draw that PostHog holds no person
+ * under, and a viewer bucketed OUT on their Clerk id could still be bucketed IN
+ * here by coin flip. That is the divergence ISS-8196 exists to remove, applied
+ * to the one caller it missed; on this ENFORCEMENT flag it means the server now
+ * enforces for exactly the cohort the rollout targets.
+ */
+export async function evaluateDesktopManagedFeatureFlag(
+  flag: RegisteredServerFeatureFlag,
+  identity: DesktopManagedFeatureFlagIdentity
+): Promise<DesktopManagedFeatureFlagOutcome> {
+  const distinctIds = resolveDistinctIdsForIdentity(identity);
+  let anyUnanswered = false;
+  try {
+    for (const distinctId of distinctIds) {
+      const enabled = await evaluateServerFeatureFlagForDistinctId(
+        flag,
+        distinctId
+      );
+      if (enabled === true) {
+        return DesktopManagedFeatureFlagOutcome.Enabled;
+      }
+      // `null` is PostHog saying NOTHING, not saying no (ISS-4556 — a real
+      // outage resolves `null` rather than rejecting, so the catch below is the
+      // rare path, not the common one). Folding it into `Disabled` would put
+      // the outage back on the permanent-refusal arm this split exists to keep
+      // it off.
+      anyUnanswered ||= enabled === null;
+    }
+    return anyUnanswered
+      ? DesktopManagedFeatureFlagOutcome.Faulted
+      : DesktopManagedFeatureFlagOutcome.Disabled;
+  } catch (error) {
+    log.warn(
+      "desktop_managed_pop_feature_flag_unavailable_defaulting_to_disabled",
+      {
+        flag: flag.key,
+        error: parseError(error),
+      }
+    );
+    return DesktopManagedFeatureFlagOutcome.Faulted;
+  }
+}
+
+/**
+ * {@link isDesktopManagedPopEnforcementEnabled} for a caller that must tell a
+ * disabled rollout from an unreachable flag provider.
+ */
+export function evaluateDesktopManagedPopEnforcement(
+  identity: DesktopManagedFeatureFlagIdentity
+): Promise<DesktopManagedFeatureFlagOutcome> {
+  return evaluateDesktopManagedFeatureFlag(
+    DESKTOP_MANAGED_POP_ENFORCEMENT_SERVER_FLAG,
+    identity
+  );
 }

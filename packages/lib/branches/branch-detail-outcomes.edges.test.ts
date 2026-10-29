@@ -12,11 +12,16 @@ import {
 } from "@repo/api/src/types/branch-phase-attribution";
 import { GitHubPRState } from "@repo/api/src/types/github-status";
 import { describe, expect, it } from "vitest";
+import { rollupTotalUsd } from "./__tests__/branch-phase-attribution-fixture";
 import { expectPartialMetric } from "./__tests__/coverage-narrowing";
 import {
   branchMetricCycleFromPullRequest,
   calculateBranchDetailMetrics,
 } from "./branch-detail-outcomes";
+
+// Each call passes the fixture's own rollup total, which keeps these lead-time,
+// idle and LOC cases on the reconciled path. Divergence between attributed and
+// rollup cost is exercised in `branch-detail-cost-reconciliation.test.ts`.
 
 // ---------------------------------------------------------------------------
 // Inline helpers — NO default parameters, NO ternaries, ZERO denominator branches.
@@ -130,6 +135,31 @@ describe("branchMetricCycleFromPullRequest", () => {
     expect(result?.successfulPushes).toHaveLength(0);
   });
 
+  // ISS-8422. The counterfactual is the point: the SAME row with the flag
+  // absent still yields a cycle whose outcome is Open, so this pair fails the
+  // moment the guard is removed rather than passing on the null-PR arm above.
+  // Downstream, a null cycle is what `calculateBranchDetailMetrics with null
+  // selectedCycle` below pins to Unavailable; an `Open` cycle would instead take
+  // `calculateOutcome`'s Open early return and render "N/A — Not applicable to
+  // the selected pull request's latest cycle", a positive claim about a pull
+  // request nobody observed.
+  it("returns null for an unobserved pull request, and a cycle without the flag", () => {
+    const unobserved = branchMetricCycleFromPullRequest(
+      {
+        ...pr(GitHubPRState.Open, false, null, null),
+        lifecycleObserved: false,
+      },
+      PUSH
+    );
+    const observed = branchMetricCycleFromPullRequest(
+      pr(GitHubPRState.Open, false, null, null),
+      PUSH
+    );
+
+    expect(unobserved).toBeNull();
+    expect(observed?.outcome).toBe(BranchMetricPullRequestOutcome.Open);
+  });
+
   it("produces Draft outcome for an open PR marked as draft", () => {
     const result = branchMetricCycleFromPullRequest(
       pr(GitHubPRState.Open, true, null, null),
@@ -177,6 +207,7 @@ describe("calculateBranchDetailMetrics with null selectedCycle", () => {
       selectedPrAdditions: 10,
       selectedPrDeletions: 5,
       selectedPrLocComplete: true,
+      attributedCostUsd: rollupTotalUsd(emptyAttribution()),
       phaseAttribution: emptyAttribution(),
       selectedCycle: null,
     });
@@ -200,6 +231,7 @@ describe("calculateBranchDetailMetrics — locPerDollar edge cases", () => {
       selectedPrAdditions: null,
       selectedPrDeletions: 5,
       selectedPrLocComplete: true,
+      attributedCostUsd: rollupTotalUsd(emptyAttribution()),
       phaseAttribution: emptyAttribution(),
       selectedCycle: mergedCycle(),
     });
@@ -213,6 +245,7 @@ describe("calculateBranchDetailMetrics — locPerDollar edge cases", () => {
       selectedPrAdditions: 10,
       selectedPrDeletions: null,
       selectedPrLocComplete: true,
+      attributedCostUsd: rollupTotalUsd(emptyAttribution()),
       phaseAttribution: emptyAttribution(),
       selectedCycle: mergedCycle(),
     });
@@ -227,65 +260,12 @@ describe("calculateBranchDetailMetrics — locPerDollar edge cases", () => {
       selectedPrAdditions: 10,
       selectedPrDeletions: 5,
       selectedPrLocComplete: true,
+      attributedCostUsd: rollupTotalUsd(emptyAttribution()),
       phaseAttribution: emptyAttribution(), // no segments → totalCost = complete(0)
       selectedCycle: mergedCycle(),
     });
     expect(metrics.locPerDollar.state).toBe(
       BranchMetricAvailability.NotApplicable
-    );
-  });
-
-  it("returns CostIncomplete disclosure when cost is Partial and loc is complete", () => {
-    const partialAttribution: BranchPhaseAttributionResult = {
-      ...emptyAttribution(),
-      rollups: [
-        {
-          phase: BranchVisibleLifecyclePhase.Build,
-          estimatedCostUsd: 10,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          durationMs: 0,
-          sessionCount: 1,
-        },
-        {
-          phase: BranchVisibleLifecyclePhase.Review,
-          estimatedCostUsd: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          durationMs: 0,
-          sessionCount: 0,
-        },
-        {
-          phase: BranchVisibleLifecyclePhase.Rework,
-          estimatedCostUsd: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          durationMs: 0,
-          sessionCount: 0,
-        },
-      ],
-      coverage: {
-        completeness: BranchPhaseAttributionCompleteness.Partial,
-        reason: BranchPhaseAttributionCompletenessReason.PricingIncomplete,
-        subtotalUsd: 10,
-      },
-    };
-    const metrics = calculateBranchDetailMetrics({
-      selectedPrAdditions: 100,
-      selectedPrDeletions: 0,
-      selectedPrLocComplete: true, // loc IS complete
-      phaseAttribution: partialAttribution,
-      selectedCycle: mergedCycle(),
-    });
-    expect(metrics.locPerDollar.state).toBe(BranchMetricAvailability.Partial);
-    expect(expectPartialMetric(metrics.locPerDollar).disclosure).toBe(
-      BranchMetricDisclosure.CostIncomplete
     );
   });
 
@@ -333,12 +313,15 @@ describe("calculateBranchDetailMetrics — locPerDollar edge cases", () => {
       selectedPrAdditions: 50,
       selectedPrDeletions: 0,
       selectedPrLocComplete: false, // loc is INCOMPLETE
+      attributedCostUsd: rollupTotalUsd(attribution),
       phaseAttribution: attribution,
       selectedCycle: mergedCycle(),
     });
     expect(metrics.locPerDollar.state).toBe(BranchMetricAvailability.Partial);
+    // ISS-6543 gives incomplete publication LOC its own exact disclosure rather
+    // than the generic fallback used by the retired selected-PR-only formula.
     expect(expectPartialMetric(metrics.locPerDollar).disclosure).toBe(
-      BranchMetricDisclosure.DefaultIncomplete
+      BranchMetricDisclosure.LocIncomplete
     );
   });
 });
@@ -353,6 +336,7 @@ describe("calculateBranchDetailMetrics — calculateOutcome edge cases", () => {
       selectedPrAdditions: 1,
       selectedPrDeletions: 0,
       selectedPrLocComplete: true,
+      attributedCostUsd: rollupTotalUsd(emptyAttribution()),
       phaseAttribution: emptyAttribution(),
       selectedCycle: {
         cycleId: "c1",
@@ -375,6 +359,7 @@ describe("calculateBranchDetailMetrics — calculateOutcome edge cases", () => {
       selectedPrAdditions: 1,
       selectedPrDeletions: 0,
       selectedPrLocComplete: true,
+      attributedCostUsd: rollupTotalUsd(emptyAttribution()),
       phaseAttribution: emptyAttribution(),
       selectedCycle: {
         cycleId: "c1",
@@ -396,6 +381,7 @@ describe("calculateBranchDetailMetrics — calculateOutcome edge cases", () => {
       selectedPrAdditions: 1,
       selectedPrDeletions: 0,
       selectedPrLocComplete: true,
+      attributedCostUsd: rollupTotalUsd(emptyAttribution()),
       phaseAttribution: emptyAttribution(),
       selectedCycle: {
         cycleId: "c1",
@@ -429,6 +415,7 @@ describe("calculateBranchDetailMetrics — calculateIdle edge cases", () => {
       selectedPrAdditions: 1,
       selectedPrDeletions: 0,
       selectedPrLocComplete: true,
+      attributedCostUsd: rollupTotalUsd(unavailableAttrib),
       phaseAttribution: unavailableAttrib,
       selectedCycle: mergedCycle(), // has valid push → span is non-null
     });
@@ -480,10 +467,57 @@ describe("calculateBranchDetailMetrics — calculateIdle edge cases", () => {
       selectedPrAdditions: 1,
       selectedPrDeletions: 0,
       selectedPrLocComplete: true,
+      attributedCostUsd: rollupTotalUsd(partialOther),
       phaseAttribution: partialOther,
       selectedCycle: mergedCycle(),
     });
     expect(metrics.idleTimeMs.state).toBe(BranchMetricAvailability.Unavailable);
+  });
+
+  // Which Partial reason a Branch carries decides whether it keeps an idle
+  // number, so the reason value is a contract, not a label. The
+  // PricingIncomplete control is load-bearing: without it this passes under a
+  // blanket "Partial means unavailable" rule that calculateIdle does not have.
+  it("loses idle availability for Partial/LifecycleIncomplete but keeps it for Partial/PricingIncomplete", () => {
+    const lifecycleIncomplete: BranchPhaseAttributionResult = {
+      ...emptyAttribution(),
+      coverage: {
+        completeness: BranchPhaseAttributionCompleteness.Partial,
+        reason: BranchPhaseAttributionCompletenessReason.LifecycleIncomplete,
+        subtotalUsd: 0,
+      },
+    };
+    const lifecycleIncompleteMetrics = calculateBranchDetailMetrics({
+      selectedPrAdditions: 1,
+      selectedPrDeletions: 0,
+      selectedPrLocComplete: true,
+      attributedCostUsd: rollupTotalUsd(lifecycleIncomplete),
+      phaseAttribution: lifecycleIncomplete,
+      selectedCycle: mergedCycle(), // valid push → non-null span
+    });
+    expect(lifecycleIncompleteMetrics.idleTimeMs.state).toBe(
+      BranchMetricAvailability.Unavailable
+    );
+
+    const pricingIncomplete: BranchPhaseAttributionResult = {
+      ...emptyAttribution(),
+      coverage: {
+        completeness: BranchPhaseAttributionCompleteness.Partial,
+        reason: BranchPhaseAttributionCompletenessReason.PricingIncomplete,
+        subtotalUsd: 0,
+      },
+    };
+    const pricingIncompleteMetrics = calculateBranchDetailMetrics({
+      selectedPrAdditions: 1,
+      selectedPrDeletions: 0,
+      selectedPrLocComplete: true,
+      attributedCostUsd: rollupTotalUsd(pricingIncomplete),
+      phaseAttribution: pricingIncomplete,
+      selectedCycle: mergedCycle(),
+    });
+    expect(pricingIncompleteMetrics.idleTimeMs.state).toBe(
+      BranchMetricAvailability.Complete
+    );
   });
 
   it("returns Unavailable idle when a segment has malformed (non-finite) bounds", () => {
@@ -541,6 +575,7 @@ describe("calculateBranchDetailMetrics — calculateIdle edge cases", () => {
       selectedPrAdditions: 1,
       selectedPrDeletions: 0,
       selectedPrLocComplete: true,
+      attributedCostUsd: rollupTotalUsd(malformedAttrib),
       phaseAttribution: malformedAttrib,
       selectedCycle: mergedCycle(),
     });
@@ -603,6 +638,7 @@ describe("calculateBranchDetailMetrics — calculateIdle edge cases", () => {
       selectedPrAdditions: 1,
       selectedPrDeletions: 0,
       selectedPrLocComplete: true,
+      attributedCostUsd: rollupTotalUsd(invertedAttrib),
       phaseAttribution: invertedAttrib,
       selectedCycle: mergedCycle(),
     });
@@ -623,6 +659,7 @@ describe("calculateBranchDetailMetrics — parseTimestamp NaN arm (non-null unpa
       selectedPrAdditions: 1,
       selectedPrDeletions: 0,
       selectedPrLocComplete: true,
+      attributedCostUsd: rollupTotalUsd(emptyAttribution()),
       phaseAttribution: emptyAttribution(),
       selectedCycle: {
         cycleId: "c1",

@@ -4,8 +4,11 @@ import {
   deriveAvailableHarnesses,
   HarnessType,
   type HealthCheckResponse,
+  isComputeTargetOwnedByViewer,
   isMcpProviderAvailable,
   isTerminalStatus,
+  parseSelectedHarness,
+  toMintingApiOrigin,
 } from "./compute-target.ts";
 
 const baseHealthCheck: HealthCheckResponse = {
@@ -86,4 +89,47 @@ describe("MCP provider availability helpers", () => {
       })
     ).toEqual([]);
   });
+});
+
+describe("toMintingApiOrigin", () => {
+  it("reduces a configured URL to the bare origin both transports state", () => {
+    expect(toMintingApiOrigin("https://api.origin-a.test/some/base/")).toBe(
+      "https://api.origin-a.test"
+    );
+  });
+
+  it.each([undefined, "", "api.origin-a.test"])(
+    "states nothing for %j, so the sender omits the field",
+    (value) => {
+      expect(toMintingApiOrigin(value)).toBeUndefined();
+    }
+  );
+});
+
+describe("isComputeTargetOwnedByViewer", () => {
+  it("treats an absent ownerName as viewer-owned", () => {
+    expect(isComputeTargetOwnedByViewer({})).toBe(true);
+  });
+
+  it("treats a populated ownerName as not viewer-owned", () => {
+    expect(isComputeTargetOwnedByViewer({ ownerName: "Someone Else" })).toBe(
+      false
+    );
+  });
+});
+
+describe("parseSelectedHarness", () => {
+  it.each([HarnessType.Claude, HarnessType.Codex])(
+    "passes a recognized harness value %s through unchanged",
+    (value) => {
+      expect(parseSelectedHarness(value)).toBe(value);
+    }
+  );
+
+  it.each([null, undefined, "", "future_harness"])(
+    "defaults %j to Claude, since the column is free-text and can carry an unlaunchable value",
+    (value) => {
+      expect(parseSelectedHarness(value)).toBe(HarnessType.Claude);
+    }
+  );
 });

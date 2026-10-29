@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { UUID_V4_PATTERN } from "@repo/api/src/types/onboarding-analytics";
 import Store from "electron-store";
 import ts from "typescript6";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import {
   DESKTOP_NODE_IDENTITY_STORE_NAME,
   NODE_UUID_STORE_KEY,
   NodeUuidStore,
-  UUID_V4_PATTERN,
 } from "../src/main/util/node-uuid-store.js";
 import { forEachNode, parseTypeScriptFile } from "./helpers/ts-ast.js";
 

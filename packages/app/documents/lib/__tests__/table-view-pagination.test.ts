@@ -6,12 +6,24 @@ import type {
   TreeChild,
   TreeNode,
 } from "@repo/api/src/types/project-tree";
+import { SortKey } from "@repo/app/documents/components/table/sort-keys";
+import { makeTreeArtifact } from "@repo/app/documents/lib/__tests__/tree-fixtures";
 import type { DocumentRowData } from "@repo/app/documents/lib/artifact-row-adapter";
+import { buildDocumentGridGroups } from "@repo/app/documents/lib/documents-grid-groups";
 import { GroupByMode } from "@repo/app/documents/lib/group-by";
+import { STORED_SESSION_STATUS_ROW_OPTIONS } from "@repo/app/documents/lib/row-artifact-status";
+import {
+  buildSortedGroups,
+  DEFAULT_TABLE_VIEW_ORDERING,
+  rootFirstTableViewOrdering,
+  type TableViewOrdering,
+} from "@repo/app/documents/lib/table-view-pipeline";
 import { describe, expect, test } from "vitest";
-import { countTableViewRows, pageTableView } from "../table-view-pagination";
-
-// ---- Fixtures ----
+import {
+  buildTableViewPagePlan,
+  countTableViewRows,
+  pageTableView,
+} from "../table-view-pagination";
 
 function doc(
   id: string,
@@ -119,8 +131,6 @@ const baseInput = {
   groupBy: GroupByMode.None,
 };
 
-// ---- Honest count ----
-
 describe("countTableViewRows — one honest total across all three streams", () => {
   test("counts documents plus tree roots once, not double, for entities in both streams", () => {
     // doc-1 is BOTH an assigned document AND a tree root (merged in by id):
@@ -141,8 +151,6 @@ describe("countTableViewRows — one honest total across all three streams", () 
   });
 });
 
-// ---- Filters apply across the full set ----
-
 describe("countTableViewRows — filters apply to the FULL merged set", () => {
   test("search text narrows the count across documents and branches", () => {
     const documents = [doc("alpha"), doc("beta")];
@@ -159,8 +167,6 @@ describe("countTableViewRows — filters apply to the FULL merged set", () => {
     ).toBe(2);
   });
 });
-
-// ---- Paging: honest total, correct slice, nesting preserved ----
 
 describe("pageTableView — honest total + correct paged slice", () => {
   test("total is the full root count while the slice is bounded by page size", () => {
@@ -230,6 +236,43 @@ describe("pageTableView — honest total + correct paged slice", () => {
     ]);
   });
 
+  test("the paged tree keeps flat parent context for the roots on the page (whitlockk, PR #6745)", () => {
+    // `pagedTreeData` is the tree the table actually renders its Parent column
+    // from, so dropping `flatParents` in the slice would empty that column on
+    // every paged read no matter what the server sent. Narrowed to this page's
+    // roots for the same contract reason `externalParents` is.
+    const treeData: ProjectTreeResponse = {
+      ...tree([branchNode("branch-1"), branchNode("branch-2")]),
+      flatParents: [
+        {
+          childId: "branch-1",
+          parent: makeTreeArtifact("plan-1", ArtifactType.Document),
+          linkType: LinkType.Produces,
+        },
+        {
+          childId: "branch-2",
+          parent: makeTreeArtifact("plan-2", ArtifactType.Document),
+          linkType: LinkType.Produces,
+        },
+      ],
+    };
+
+    const result = pageTableView({
+      ...baseInput,
+      documents: [],
+      treeData,
+      page: 0,
+      pageSize: 1,
+    });
+
+    expect(result.pagedTreeData?.nodes.map((n) => n.root.id)).toEqual([
+      "branch-1",
+    ]);
+    expect(result.pagedTreeData?.flatParents?.map((e) => e.childId)).toEqual([
+      "branch-1",
+    ]);
+  });
+
   test("no double-count: an entity in both streams is one root and one paged document", () => {
     const documents = [doc("doc-1"), doc("doc-2")];
     const treeData = tree([docNodeWithBranchChild("doc-1", "branch-1")]);
@@ -250,8 +293,6 @@ describe("pageTableView — honest total + correct paged slice", () => {
     expect(doc1Count).toBe(1);
   });
 });
-
-// ---- Grouping reaches the paginator (page membership follows grouped order) ----
 
 describe("pageTableView — grouped order drives page membership", () => {
   test("groupBy=Status slices the page in section order, not input/sort order", () => {
@@ -323,8 +364,6 @@ describe("pageTableView — grouped order drives page membership", () => {
     expect(new Set([...ids0, ...ids1]).size).toBe(3);
   });
 });
-
-// ---- Branches tab pages the flat branch rows ----
 
 describe("pageTableView — branches tab", () => {
   test("counts and pages branch rows collected from the tree", () => {
@@ -467,3 +506,331 @@ describe("pageTableView — branches tab", () => {
     expect(renderedBranchIds(result.pagedTreeData)).toEqual(["branch-a"]);
   });
 });
+
+/**
+ * A grouped board whose sections straddle a page boundary. Sizes are pinned to
+ * literals here rather than derived from PAGE_PLAN_SIZE, so a change to the
+ * page size cannot silently re-satisfy the expectations below.
+ *
+ * Sections render in `STATUS_DISPLAY_ORDER`: Draft, then In Review, then
+ * Approved.
+ */
+const PAGE_PLAN_SIZE = 10;
+
+function statusDocs(
+  status: string,
+  prefix: string,
+  count: number
+): DocumentRowData[] {
+  return Array.from({ length: count }, (_u, i) =>
+    doc(`${prefix}-${i}`, "p1", status)
+  );
+}
+
+function groupedStatusBoard(): DocumentRowData[] {
+  return [
+    ...statusDocs(DocumentStatus.Draft, "draft", 6),
+    ...statusDocs(DocumentStatus.InReview, "review", 7),
+    ...statusDocs(DocumentStatus.Approved, "approved", 25),
+  ];
+}
+
+function groupedStatusPlan() {
+  return buildTableViewPagePlan(
+    {
+      ...baseInput,
+      documents: groupedStatusBoard(),
+      treeData: null,
+      groupBy: GroupByMode.Status,
+    },
+    PAGE_PLAN_SIZE
+  );
+}
+
+describe("buildTableViewPagePlan — sections stay whole across page boundaries", () => {
+  test("a section that would straddle the boundary starts a fresh page instead of splitting", () => {
+    const plan = groupedStatusPlan();
+
+    // Draft(6) then In Review(7): 13 > 10, so In Review does NOT share page 0.
+    // Fixed 10-row slicing would have put review-0..review-3 under a repeated
+    // "In Review" header at the foot of page 0.
+    expect(plan?.pages[0]?.ids).toEqual([
+      "draft-0",
+      "draft-1",
+      "draft-2",
+      "draft-3",
+      "draft-4",
+      "draft-5",
+    ]);
+    expect(plan?.pages[1]?.ids).toEqual([
+      "review-0",
+      "review-1",
+      "review-2",
+      "review-3",
+      "review-4",
+      "review-5",
+      "review-6",
+    ]);
+  });
+
+  test("only a section larger than one page splits, and its spill pages say so", () => {
+    const plan = groupedStatusPlan();
+
+    // Approved(25) cannot fit a 10-row page, so it is the one section allowed
+    // to split: 10 / 10 / 5 starting on its own page.
+    expect(plan?.pages.map((page) => page.ids.length)).toEqual([
+      6, 7, 10, 10, 5,
+    ]);
+    expect([...(plan?.pages[2]?.continuedSectionKeys ?? [])]).toEqual([]);
+    expect([...(plan?.pages[3]?.continuedSectionKeys ?? [])]).toEqual([
+      DocumentStatus.Approved,
+    ]);
+    expect([...(plan?.pages[4]?.continuedSectionKeys ?? [])]).toEqual([
+      DocumentStatus.Approved,
+    ]);
+  });
+
+  test("every row lands on exactly one page — nothing is dropped or repeated", () => {
+    const plan = groupedStatusPlan();
+    const placed = (plan?.pages ?? []).flatMap((page) => page.ids);
+
+    expect(placed).toHaveLength(38);
+    expect(new Set(placed).size).toBe(38);
+    expect(new Set(placed)).toEqual(
+      new Set(groupedStatusBoard().map((d) => d.id))
+    );
+  });
+
+  test("sectionTotals are the FULL-list per-status counts, not any page's slice", () => {
+    const plan = groupedStatusPlan();
+
+    expect(plan?.sectionTotals.get(DocumentStatus.Draft)).toBe(6);
+    expect(plan?.sectionTotals.get(DocumentStatus.InReview)).toBe(7);
+    // The page slices of Approved are 10, 10 and 5 — none of them is 25.
+    expect(plan?.sectionTotals.get(DocumentStatus.Approved)).toBe(25);
+  });
+
+  test("an ungrouped board has no plan, so it keeps fixed pageSize slicing", () => {
+    expect(
+      buildTableViewPagePlan(
+        {
+          ...baseInput,
+          documents: groupedStatusBoard(),
+          treeData: null,
+          groupBy: GroupByMode.None,
+        },
+        PAGE_PLAN_SIZE
+      )
+    ).toBeNull();
+  });
+
+  test("floors a non-positive page size at 1 instead of looping on an unplaceable section", () => {
+    const plan = buildTableViewPagePlan(
+      {
+        ...baseInput,
+        documents: statusDocs(DocumentStatus.Draft, "draft", 3),
+        treeData: null,
+        groupBy: GroupByMode.Status,
+      },
+      0
+    );
+
+    expect(plan?.pages.map((page) => page.ids)).toEqual([
+      ["draft-0"],
+      ["draft-1"],
+      ["draft-2"],
+    ]);
+  });
+
+  test("an empty board plans no pages and claims no section population", () => {
+    const plan = buildTableViewPagePlan(
+      {
+        ...baseInput,
+        documents: [],
+        treeData: null,
+        groupBy: GroupByMode.Status,
+      },
+      PAGE_PLAN_SIZE
+    );
+
+    expect(plan?.pages).toEqual([]);
+    expect(plan?.sectionTotals.size).toBe(0);
+  });
+});
+
+describe("pageTableView — explicit plan membership", () => {
+  test("renders exactly the plan's page, not the fixed slice at that index", () => {
+    const result = pageTableView({
+      ...baseInput,
+      documents: groupedStatusBoard(),
+      treeData: null,
+      groupBy: GroupByMode.Status,
+      page: 1,
+      pageSize: PAGE_PLAN_SIZE,
+      pageIds: groupedStatusPlan()?.pages[1]?.ids,
+    });
+
+    // The whole In Review section — seven rows on a ten-row page.
+    expect(result.pagedDocuments.map((d) => d.id)).toEqual([
+      "review-0",
+      "review-1",
+      "review-2",
+      "review-3",
+      "review-4",
+      "review-5",
+      "review-6",
+    ]);
+    expect(result.total).toBe(38);
+  });
+});
+
+/**
+ * ISS-9437 — the paginator and the view must partition ONE ordered corpus.
+ *
+ * The paginator decides page membership by running this pipeline; `DocumentsView`
+ * then re-runs `buildSortedGroups` over the subset it is handed. If the two
+ * resolve different orderings, a row lands on no page or on two, and nothing in
+ * either module notices. These cases page the corpus, re-sort each page the way
+ * the view does, concatenate, and compare against a SEPARATELY-DERIVED oracle —
+ * a literal, not a value re-derived by the code under test.
+ */
+const ROOT_FIRST_ORDERING = rootFirstTableViewOrdering(
+  STORED_SESSION_STATUS_ROW_OPTIONS
+);
+const PARTITION_PAGE_SIZE = 2;
+
+/**
+ * Five documents spanning four roots, plus a branch tree root whose `OPEN`
+ * status is a raw-rank MISS inside a band that also holds a ranked row — so the
+ * corpus exercises both comparator levels and has no tie at either.
+ */
+function partitionDocuments(): DocumentRowData[] {
+  return [
+    doc("d-garbage", "p1", "GARBAGE"),
+    doc("d-executed", "p1", DocumentStatus.Executed),
+    doc("d-draft", "p1", DocumentStatus.Draft),
+    doc("d-approved", "p1", DocumentStatus.Approved),
+    doc("d-review", "p1", DocumentStatus.InReview),
+  ];
+}
+
+/**
+ * Hand-derived from the fixture, not read back out of the pipeline:
+ * in_progress (DRAFT) → in_review (IN_REVIEW ranked, then the unranked branch)
+ * → done (APPROVED before EXECUTED) → unknown (GARBAGE).
+ */
+const PARTITION_ORACLE = [
+  "d-draft",
+  "d-review",
+  "branch-open",
+  "d-approved",
+  "d-executed",
+  "d-garbage",
+];
+
+const partitionInput = {
+  ...baseInput,
+  documents: partitionDocuments(),
+  treeData: tree([branchNode("branch-open")]),
+  sortBy: SortKey.Status,
+  sortDir: "asc" as const,
+};
+
+describe("ISS-9437 partition proof — ungrouped, root-first", () => {
+  test("the pages concatenate to the full ordered corpus", () => {
+    expect(concatenatePages(ROOT_FIRST_ORDERING, ROOT_FIRST_ORDERING)).toEqual(
+      PARTITION_ORACLE
+    );
+  });
+
+  test("detects a paginator and a view that resolved DIFFERENT orderings", () => {
+    // Page membership sliced root-first, each page then re-sorted by today's
+    // raw rank. The rows are all still reachable, so a set comparison would pass;
+    // the ORDER is what breaks, and the oracle is what sees it.
+    const mismatched = concatenatePages(
+      ROOT_FIRST_ORDERING,
+      DEFAULT_TABLE_VIEW_ORDERING
+    );
+    expect([...mismatched].sort()).toEqual([...PARTITION_ORACLE].sort());
+    expect(mismatched).not.toEqual(PARTITION_ORACLE);
+  });
+
+  test("flag OFF partitions the corpus in today's order, not the oracle's", () => {
+    const off = concatenatePages(
+      DEFAULT_TABLE_VIEW_ORDERING,
+      DEFAULT_TABLE_VIEW_ORDERING
+    );
+    expect([...off].sort()).toEqual([...PARTITION_ORACLE].sort());
+    expect(off).not.toEqual(PARTITION_ORACLE);
+  });
+});
+
+describe("ISS-9437 partition proof — grouped, through the section-aware plan", () => {
+  test("the planned pages concatenate to the full ordered corpus", () => {
+    const input = {
+      ...partitionInput,
+      groupBy: GroupByMode.Status,
+      ordering: ROOT_FIRST_ORDERING,
+    };
+    const plan = buildTableViewPagePlan(input, PARTITION_PAGE_SIZE);
+    expect(plan).not.toBeNull();
+
+    const rendered = (plan?.pages ?? []).flatMap((planPage) => {
+      const page = pageTableView({
+        ...input,
+        page: 0,
+        pageSize: PARTITION_PAGE_SIZE,
+        pageIds: planPage.ids,
+      });
+      const { groups } = buildSortedGroups({
+        treeData: page.pagedTreeData ?? null,
+        documents: page.pagedDocuments,
+        filterText: input.filterText,
+        sortBy: input.sortBy,
+        sortDir: input.sortDir,
+        ordering: ROOT_FIRST_ORDERING,
+      });
+      return buildDocumentGridGroups({
+        groupBy: GroupByMode.Status,
+        isGroupedView: true,
+        groups,
+        flatItems: [],
+        groupOptions: ROOT_FIRST_ORDERING.groupOptions,
+      }).flatMap((section) => section.items.map((item) => item.data.id));
+    });
+
+    expect(rendered).toEqual(PARTITION_ORACLE);
+  });
+});
+
+/**
+ * Page the corpus with `pagingOrdering`, then re-sort each page with
+ * `viewOrdering` exactly as `DocumentsView` does, and concatenate. Passing two
+ * different orderings is how the divergence case is expressed.
+ */
+function concatenatePages(
+  pagingOrdering: TableViewOrdering,
+  viewOrdering: TableViewOrdering
+): string[] {
+  const input = { ...partitionInput, ordering: pagingOrdering };
+  const total = countTableViewRows(input);
+  const pages = Math.ceil(total / PARTITION_PAGE_SIZE);
+  const rendered: string[] = [];
+  for (let page = 0; page < pages; page++) {
+    const slice = pageTableView({
+      ...input,
+      page,
+      pageSize: PARTITION_PAGE_SIZE,
+    });
+    const { groups } = buildSortedGroups({
+      treeData: slice.pagedTreeData ?? null,
+      documents: slice.pagedDocuments,
+      filterText: input.filterText,
+      sortBy: input.sortBy,
+      sortDir: input.sortDir,
+      ordering: viewOrdering,
+    });
+    rendered.push(...groups.map((group) => group.groupKey));
+  }
+  return rendered;
+}

@@ -41,6 +41,7 @@ vi.mock("@repo/observability/log", () => ({
 
 import { API_KEY_SCOPES_UNRESOLVABLE_EVENT } from "@repo/api/src/utils/api-key-scope-resolution";
 import { withDb } from "@repo/database";
+import { ClerkOrgRoleFixture } from "@/__tests__/utils/auth-helpers";
 import { apiKeysService } from "../service";
 
 const mockWithDb = withDb as unknown as Mock & { tx: Mock };
@@ -53,6 +54,8 @@ const SK_LIVE_PREFIX_REGEX = /^sk_live_/;
 // ---------------------------------------------------------------------------
 
 const ORG_ID = "org-abc";
+/** `ApiKey.id` is `@db.Uuid`, so `revoke` refuses anything that is not one. */
+const REVOKE_KEY_ID = "0199a000-0000-7000-8000-000000000204";
 const USER_ID = "user-xyz";
 
 function makeApiKeyRecord(
@@ -403,7 +406,7 @@ describe("apiKeysService.list", () => {
     vi.clearAllMocks();
   });
 
-  it("filters by organizationId only when caller is org:admin", async () => {
+  it("filters by organizationId only when the caller holds a privileged role", async () => {
     let capturedWhere: Record<string, unknown> | undefined;
 
     mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
@@ -418,7 +421,7 @@ describe("apiKeysService.list", () => {
       return callback(mockDb);
     });
 
-    await apiKeysService.list(ORG_ID, USER_ID, "org:admin");
+    await apiKeysService.list(ORG_ID, USER_ID, ClerkOrgRoleFixture.Admin);
 
     expect(capturedWhere).toEqual({ organizationId: ORG_ID });
     // userId must NOT be present so admins see all keys in the org
@@ -440,7 +443,7 @@ describe("apiKeysService.list", () => {
       return callback(mockDb);
     });
 
-    await apiKeysService.list(ORG_ID, USER_ID, "org:member");
+    await apiKeysService.list(ORG_ID, USER_ID, ClerkOrgRoleFixture.Member);
 
     expect(capturedWhere).toEqual({ organizationId: ORG_ID, userId: USER_ID });
   });
@@ -477,7 +480,11 @@ describe("apiKeysService.list", () => {
       return callback(mockDb);
     });
 
-    const results = await apiKeysService.list(ORG_ID, USER_ID, "org:admin");
+    const results = await apiKeysService.list(
+      ORG_ID,
+      USER_ID,
+      ClerkOrgRoleFixture.Admin
+    );
 
     expect(results).toHaveLength(1);
     expect(results[0]).not.toHaveProperty("keyHash");
@@ -515,10 +522,10 @@ describe("apiKeysService.revoke", () => {
       return callback(mockDb);
     });
 
-    await apiKeysService.revoke("key-1", ORG_ID, USER_ID);
+    await apiKeysService.revoke(REVOKE_KEY_ID, ORG_ID, USER_ID);
 
     expect(capturedArgs?.where).toEqual({
-      id: "key-1",
+      id: REVOKE_KEY_ID,
       organizationId: ORG_ID,
       userId: USER_ID,
       revokedAt: null,
@@ -535,7 +542,7 @@ describe("apiKeysService.revoke", () => {
       return callback(mockDb);
     });
 
-    const result = await apiKeysService.revoke("key-1", ORG_ID, USER_ID);
+    const result = await apiKeysService.revoke(REVOKE_KEY_ID, ORG_ID, USER_ID);
 
     expect(result).toBe(true);
   });

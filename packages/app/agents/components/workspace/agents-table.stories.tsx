@@ -220,7 +220,8 @@ const TYPE_PRESENTATION_COMPONENTS: AgentComponent[] = [
 ];
 
 const meta = {
-  title: "App Core/Agents/Agents Table",
+  title: "Composites v1.0/Agents/Workspace/Agents Table",
+  tags: ["deprecated"],
   component: AgentsTable,
   parameters: { layout: "fullscreen" },
   args: {

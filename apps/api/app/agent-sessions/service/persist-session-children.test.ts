@@ -10,6 +10,7 @@ import {
   buildSlugCounterMock,
   buildSyncedSession,
   installDb,
+  persistedSessionDetail,
   SESSION_STARTED_AT,
   SESSION_UPDATED_AT,
 } from "@/__tests__/support/agent-sessions/service.test-harness";
@@ -42,7 +43,7 @@ describe("agentSessionsService", () => {
   it("bounds ingestion transactions to one session slice", async () => {
     const sessionUpsert = vi
       .fn()
-      .mockResolvedValue({ artifactId: "persisted-session-1" });
+      .mockResolvedValue(persistedSessionDetail("persisted-session-1"));
     const computeTargetUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
 
     installDb({
@@ -115,7 +116,7 @@ describe("agentSessionsService", () => {
       vi.clearAllMocks();
       const sessionUpsert = vi
         .fn()
-        .mockResolvedValue({ artifactId: "persisted-session-1" });
+        .mockResolvedValue(persistedSessionDetail("persisted-session-1"));
       const componentDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
       const componentUpsert = vi.fn();
       const executeRaw = vi.fn().mockResolvedValue(0);
@@ -164,13 +165,19 @@ describe("agentSessionsService", () => {
         }
       );
 
+      const rawStatementsMatching = (fragment: string) =>
+        executeRaw.mock.calls.filter(([strings]) =>
+          (strings as TemplateStringsArray).join("").includes(fragment)
+        ).length;
+
       return {
         componentDeleteMany: componentDeleteMany.mock.calls.length,
-        componentRawUpsert: executeRaw.mock.calls.filter(([strings]) =>
-          (strings as TemplateStringsArray)
-            .join("")
-            .includes("agent_component_session_usage")
-        ).length,
+        componentRawInsert: rawStatementsMatching(
+          "INSERT INTO agent_component_session_usage"
+        ),
+        componentRawPrune: rawStatementsMatching(
+          "DELETE FROM agent_component_session_usage"
+        ),
         componentUpsert: componentUpsert.mock.calls.length,
         sessionUpsert: sessionUpsert.mock.calls.length,
         tx: mocks.withDb.tx.mock.calls.length,
@@ -180,16 +187,25 @@ describe("agentSessionsService", () => {
     const small = await countsFor(2);
     const large = await countsFor(5);
 
+    // ISS-8062 moved the FEA-2990 branch-bucket prune off
+    // `agentComponentSessionUsage.deleteMany` and onto a raw DELETE binding a
+    // fixed six parameters, because its `notIn` is intersective and so could not
+    // be sliced. The bound this case exists to hold is unchanged: each session
+    // still costs one prune plus one insert however many components it carries,
+    // and the Prisma `deleteMany` lane is now reached only by the ISS-4778
+    // shadowed-command delete, which this payload does not trigger.
     expect(small).toMatchObject({
-      componentDeleteMany: 2,
-      componentRawUpsert: 2,
+      componentDeleteMany: 0,
+      componentRawInsert: 2,
+      componentRawPrune: 2,
       componentUpsert: 0,
       sessionUpsert: 2,
       tx: 2,
     });
     expect(large).toMatchObject({
-      componentDeleteMany: 5,
-      componentRawUpsert: 5,
+      componentDeleteMany: 0,
+      componentRawInsert: 5,
+      componentRawPrune: 5,
       componentUpsert: 0,
       sessionUpsert: 5,
       tx: 5,
@@ -199,7 +215,7 @@ describe("agentSessionsService", () => {
   it("advances the target watermark for committed slices when a later slice fails", async () => {
     const sessionUpsert = vi
       .fn()
-      .mockResolvedValue({ artifactId: "persisted-session-1" });
+      .mockResolvedValue(persistedSessionDetail("persisted-session-1"));
     const computeTargetUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
 
     installDb({
@@ -275,7 +291,7 @@ describe("agentSessionsService", () => {
   it("persists sync trace fields without overwriting manual state", async () => {
     const sessionUpsert = vi
       .fn()
-      .mockResolvedValue({ artifactId: "persisted-session-1" });
+      .mockResolvedValue(persistedSessionDetail("persisted-session-1"));
 
     installDb({
       computeTarget: {
@@ -330,7 +346,6 @@ describe("agentSessionsService", () => {
     const createData = sessionUpsert.mock.calls[0]?.[0].create;
     const updateData = sessionUpsert.mock.calls[0]?.[0].update;
     expect(createData).toMatchObject({
-      branch: "fea-1771",
       linesAdded: 10,
       linesRemoved: 2,
       tracePhaseSources: [],
@@ -343,7 +358,6 @@ describe("agentSessionsService", () => {
       markers: [],
     });
     expect(updateData).toMatchObject({
-      branch: "fea-1771",
       linesAdded: 10,
       linesRemoved: 2,
       tracePhaseSources: [],
@@ -355,6 +369,8 @@ describe("agentSessionsService", () => {
       throttles: [],
       markers: [],
     });
+    expect(createData).not.toHaveProperty("branch");
+    expect(updateData).not.toHaveProperty("branch");
     expect(createData).not.toHaveProperty("state");
     expect(updateData).not.toHaveProperty("state");
     expect(mocks.emitTelemetryMetric).not.toHaveBeenCalledWith(
@@ -423,7 +439,7 @@ describe("agentSessionsService", () => {
   it("coalesces duplicate per-model token usage before persisting session usage rows", async () => {
     const sessionUpsert = vi
       .fn()
-      .mockResolvedValue({ artifactId: "persisted-session-1" });
+      .mockResolvedValue(persistedSessionDetail("persisted-session-1"));
     const createMany = vi.fn().mockResolvedValue({ count: 2 });
 
     installDb({
@@ -445,7 +461,6 @@ describe("agentSessionsService", () => {
         organizationId: "org-1",
         userId: "user-1",
         computeTargetId: "target-1",
-        gatewaySessionId: "gateway-session-1",
       },
       {
         schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
@@ -533,7 +548,7 @@ describe("agentSessionsService", () => {
   it("preserves existing token usage rows when a sync carries no replacement usage", async () => {
     const sessionUpsert = vi
       .fn()
-      .mockResolvedValue({ artifactId: "persisted-session-1" });
+      .mockResolvedValue(persistedSessionDetail("persisted-session-1"));
     const deleteMany = vi.fn().mockResolvedValue({ count: 0 });
     const createMany = vi.fn().mockResolvedValue({ count: 0 });
 
@@ -579,7 +594,7 @@ describe("agentSessionsService", () => {
   it("persists deviceTimeZone from sync payload into create and update branches", async () => {
     const sessionUpsert = vi
       .fn()
-      .mockResolvedValue({ artifactId: "persisted-session-1" });
+      .mockResolvedValue(persistedSessionDetail("persisted-session-1"));
 
     installDb({
       computeTarget: {
@@ -600,7 +615,6 @@ describe("agentSessionsService", () => {
         organizationId: "org-1",
         userId: "user-1",
         computeTargetId: "target-1",
-        gatewaySessionId: "gateway-session-1",
       },
       {
         schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
@@ -628,7 +642,7 @@ describe("agentSessionsService", () => {
     // simply absent on create (DB default null).
     const sessionUpsert = vi
       .fn()
-      .mockResolvedValue({ artifactId: "persisted-session-1" });
+      .mockResolvedValue(persistedSessionDetail("persisted-session-1"));
 
     installDb({
       computeTarget: {
@@ -649,7 +663,6 @@ describe("agentSessionsService", () => {
         organizationId: "org-1",
         userId: "user-1",
         computeTargetId: "target-1",
-        gatewaySessionId: "gateway-session-1",
       },
       {
         schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
@@ -667,7 +680,7 @@ describe("agentSessionsService", () => {
   it("delays session cost rounding until after cross-model aggregation", async () => {
     const sessionUpsert = vi
       .fn()
-      .mockResolvedValue({ artifactId: "persisted-session-1" });
+      .mockResolvedValue(persistedSessionDetail("persisted-session-1"));
 
     installDb({
       computeTarget: {

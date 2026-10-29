@@ -1,10 +1,10 @@
 /**
  * The cost-split fields carried by every agent-session usage summary.
  *
- * Extracted from `agent-session.ts` by ISS-4773. That file is grandfathered
- * shrink-only, and this is the exact concern the ticket changes — how a matched
- * session set's spend is classified and reported — so the whole group moves out
- * together rather than growing the hot file by two more fields. `AgentSessionUsageSummary`
+ * Extracted from `agent-session.ts` by ISS-4773: this is the exact concern the
+ * ticket changes — how a matched session set's spend is classified and reported
+ * — so the whole group moves out together rather than growing the hot file by
+ * two more fields. `AgentSessionUsageSummary`
  * intersects this type, so every producer and consumer sees the identical shape it
  * always did.
  *
@@ -20,13 +20,14 @@ export type AgentSessionCostSplitFields = {
    * FEA-3986 — subscription-INCLUSIVE grand total, GUARANTEED equal to
    * `subscriptionEstimatedCost + apiEstimatedCost` by construction: both
    * producers derive it FROM the classified buckets read in ONE snapshot (cloud
-   * sums its single `costsByLoop` groupBy; desktop folds its three cost
-   * ledgers), so the headline and the breakdown can never drift apart. Both
+   * sums its single `groupBy(legacyLoopCostLedger, billingMode)`; desktop folds
+   * its three cost ledgers), so the headline and the breakdown can never drift
+   * apart. Both
    * surfaces MUST emit this subscription-inclusive meaning — never narrow it to
    * metered-only; the not-subscription-covered spend is `apiEstimatedCost`.
    */
   totalEstimatedCost: number;
-  /** Cost on subscription-covered compute targets (loop apiKeySource === 'none') */
+  /** Cost on subscription-covered compute targets. */
   subscriptionEstimatedCost: number;
   /**
    * Everything NOT covered by a subscription — `meteredEstimatedCost +
@@ -51,7 +52,8 @@ export type AgentSessionCostSplitFields = {
   /**
    * ISS-4773 — the UNCLASSIFIED half of `apiEstimatedCost`: spend whose billing
    * mode was never determined (legacy-null, the literal `"unknown"`, an
-   * unrecognized value, or a source loop with no resolvable `apiKeySource`).
+   * unrecognized value, or a former loop session whose stored ledger is
+   * unknown).
    * Neither confirmed metered nor confirmed subscription.
    *
    * Published so a surface can DISCLOSE the share rather than fold it into a

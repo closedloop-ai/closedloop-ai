@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetTraceContextProvider } from "../trace-context";
 import { deleteEnvForTest, importModuleWithFetch } from "./test-helpers";
 
 // ---------------------------------------------------------------------------
@@ -18,10 +19,26 @@ import { deleteEnvForTest, importModuleWithFetch } from "./test-helpers";
 const SAMPLE_TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
 const SAMPLE_SPAN_ID = "00f067aa0ba902b7";
 
+// Deliberately different from the ids above: the cross-registry test asserts on
+// these, so a provider left registered by an earlier test in this file cannot
+// satisfy its assertions and make it pass without proving anything.
+const CROSS_REGISTRY_TRACE_ID = "0af7651916cd43dd8448eb211c80319c";
+const CROSS_REGISTRY_SPAN_ID = "b7ad6b7169203331";
+
 type LogModule = typeof import("../log");
 type TraceContextModule = typeof import("../trace-context");
 
+// The provider slot is process-wide (ISS-5857), so `vi.resetModules()` alone no
+// longer isolates these tests from one another. Clear it on BOTH edges: the
+// teardown keeps this file's own cases independent, and the setup means a case
+// asserting on the unregistered state does not depend on runner file isolation
+// or on a sibling file having reached its teardown.
+beforeEach(() => {
+  resetTraceContextProvider();
+});
+
 afterEach(() => {
+  resetTraceContextProvider();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -105,6 +122,46 @@ describe("structured console sink (Vercel Log Drain path)", () => {
     const parsed = JSON.parse(warnSpy.mock.calls[0][0] as string);
     expect(parsed["dd.trace_id"]).toBe(SAMPLE_TRACE_ID);
     expect(parsed["dd.span_id"]).toBe(SAMPLE_SPAN_ID);
+  });
+});
+
+describe("cross-bundle provider registration (ISS-5857)", () => {
+  it("reaches a logger that loaded its own copy of trace-context", async () => {
+    deleteEnvForTest("DD_API_KEY");
+    vi.stubEnv("DD_LOGS_JSON", "1");
+
+    // Stands in for the instrumentation entry's copy of trace-context. The
+    // apps/api Turbopack build emits trace-context TWICE — once for
+    // `tracing/provider.ts`, once inlined into the `log.ts` every route
+    // handler loads — so the module the tracer registers on is not the module
+    // the logger reads. A second module registry reproduces that here.
+    const registrar = await import("../trace-context");
+
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {
+      // silence
+    });
+    const { log, traceContext: reader } = await importLogAndTraceContext(
+      vi.fn()
+    );
+
+    // Guard the guard: same instance on both sides and the assertions below
+    // would hold for the ordinary single-module reason, proving nothing about
+    // the split this test exists for.
+    expect(reader.setTraceContextProvider).not.toBe(
+      registrar.setTraceContextProvider
+    );
+
+    registrar.setTraceContextProvider(() => ({
+      traceId: CROSS_REGISTRY_TRACE_ID,
+      spanId: CROSS_REGISTRY_SPAN_ID,
+    }));
+    infoSpy.mockClear();
+
+    log.info("request_completed", { path: "/branches" });
+
+    const parsed = JSON.parse(infoSpy.mock.calls[0][0] as string);
+    expect(parsed["dd.trace_id"]).toBe(CROSS_REGISTRY_TRACE_ID);
+    expect(parsed["dd.span_id"]).toBe(CROSS_REGISTRY_SPAN_ID);
   });
 });
 

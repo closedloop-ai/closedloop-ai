@@ -1,4 +1,12 @@
-import { DocumentType } from "@repo/api/src/types/document";
+import {
+  ARTIFACT_STATUS_UNKNOWN_LABEL,
+  lookupStatusLabel,
+} from "@repo/api/src/types/artifact-status-display";
+import {
+  DOCUMENT_ROUTE_PREFIX,
+  DocumentType,
+  LEGACY_TYPE_ROUTE_PREFIXES,
+} from "@repo/api/src/types/document";
 import { DOCUMENT_TYPE_BADGE_LABELS } from "@repo/app/documents/lib/document-type-labels";
 import { ARTIFACT_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
 import type { Metadata } from "next";
@@ -65,50 +73,63 @@ function buildMetaUrl(
   return orgSlug ? `${base}?org=${encodeURIComponent(orgSlug)}` : base;
 }
 
+const DOCUMENT_OG_PATH_PREFIXES = [
+  DOCUMENT_ROUTE_PREFIX,
+  ...Object.values(LEGACY_TYPE_ROUTE_PREFIXES).flat(),
+];
+const DOCUMENT_OG_PATH_PATTERN = new RegExp(
+  String.raw`^(?:([^/]+)\/)?(?:${DOCUMENT_OG_PATH_PREFIXES.join("|")})\/([^/]+)$`
+);
+
 /**
  * OG metadata handler registry.
  *
  * Each handler matches a URL path pattern and fetches metadata from the
  * appropriate API endpoint. Patterns support an optional org-slug prefix
- * so both `prds/PRD-1` and `acme/prds/PRD-1` match. When an org slug is
- * present, it's forwarded to the meta endpoint for org-scoped lookup.
+ * so both `documents/PRD-1` and `acme/documents/PRD-1` match. When an org slug
+ * is present, it's forwarded to the meta endpoint for org-scoped lookup.
  */
 const handlers: OgHandler[] = [
   {
-    pattern: /^(?:([^/]+)\/)?(?:prds|implementation-plans|documents)\/([^/]+)$/,
+    // ISS-12855: every document unfurls from `/documents/:slug`; the legacy
+    // per-type prefixes are still matched because Clerk's `redirect_url` and the
+    // Slackbot `/features` rewrite still carry them.
+    pattern: DOCUMENT_OG_PATH_PATTERN,
     async resolve(match, apiUrl) {
       const orgSlug = match[1];
       const slug = match[2];
       const data = await fetchJson(buildMetaUrl(apiUrl, slug, orgSlug));
-      if (!data) {
+      // A Template has no detail page (PRD-799), so its link must not unfurl
+      // as a real page that then renders not-found.
+      if (!data || data.type === DocumentType.Template) {
         return FALLBACK_METADATA;
+      }
+      if (data.type === DocumentType.Feature) {
+        return makeMetadata(data.title, issueOgDescription(data.status));
       }
       const description =
         DOCUMENT_TYPE_BADGE_LABELS[data.type as DocumentType] ?? data.type;
       return makeMetadata(data.title, description);
     },
   },
-  {
-    // FEA-4137: Issues live at /issues/; /features/ is the retired alias path,
-    // still matched so link-unfurl previews resolve for old bookmarks/links.
-    pattern: /^(?:([^/]+)\/)?(?:issues|features)\/([^/]+)$/,
-    async resolve(match, apiUrl) {
-      const orgSlug = match[1];
-      const slug = match[2];
-      const data = await fetchJson(buildMetaUrl(apiUrl, slug, orgSlug));
-      if (!data) {
-        return FALLBACK_METADATA;
-      }
-      const typeLabel = DOCUMENT_TYPE_BADGE_LABELS[DocumentType.Feature];
-      const description =
-        ARTIFACT_STATUS_LABELS[data.status] ?? data.status ?? typeLabel;
-      // Comma, not an em dash: this unfurl copy ships to Slack/Linear previews
-      // for every /issues/ link, and we don't ship em dashes in customer-facing
-      // copy.
-      return makeMetadata(data.title, `${typeLabel}, ${description}`);
-    },
-  },
 ];
+
+function issueOgDescription(status: string | undefined): string {
+  const typeLabel = DOCUMENT_TYPE_BADGE_LABELS[DocumentType.Feature];
+  // ISS-9560: a status with no label entry, or none at all, now reads
+  // "Unknown". The old chain printed the raw wire token and then fell
+  // through to the TYPE label, so a status-less issue unfurled to Slack and
+  // Linear as "Issue, Issue" — the type stated twice, and nothing about the
+  // status. UNGATED, unlike the in-app surfaces: this is a server module
+  // with no flag seam, and restoring the intended behavior of a broken
+  // fallback is a bug fix.
+  const description =
+    lookupStatusLabel(ARTIFACT_STATUS_LABELS, status) ??
+    ARTIFACT_STATUS_UNKNOWN_LABEL;
+  // Comma, not an em dash: this unfurl copy ships to Slack/Linear previews
+  // for every issue link, and we don't ship em dashes in customer-facing copy.
+  return `${typeLabel}, ${description}`;
+}
 
 /**
  * Resolves OG metadata for a given path.

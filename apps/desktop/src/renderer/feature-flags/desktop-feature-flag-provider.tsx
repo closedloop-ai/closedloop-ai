@@ -1,113 +1,79 @@
+import {
+  suppressesFeatureFlag,
+  useCustomerViewState,
+} from "@repo/analytics/customer-view";
+import { useFeatureFlagOverride } from "@repo/analytics/feature-flag-overrides";
+import { DEV_MODE_FLAG_KEY } from "@repo/api/src/types/dev-mode-flag";
 import type { FeatureFlagAdapter } from "@repo/app/shared/feature-flags/feature-flag-adapter";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
+import { createContext, type ReactNode, useContext, useMemo } from "react";
 import {
-  createContext,
-  type ReactNode,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-import { FEATURE_FLAGS } from "../../shared/feature-flags";
-
-type DesktopFlagState = {
-  key: string;
-  value: boolean;
-};
+  DesktopDevModeFlagScope,
+  DesktopDevModeProvider,
+} from "./desktop-dev-mode-provider";
+import {
+  type DesktopPostHogFlagAssignment,
+  useDesktopPostHogFlagAssignment,
+} from "./desktop-posthog-flag-assignment";
 
 /**
  * Desktop shell adapter for the `@repo/app` feature-flag port (FEA-1514).
  *
- * Until PostHog is wired into the desktop renderer, unknown/shared flags still
- * resolve from the build type: ENABLED in an unpackaged dev build and DISABLED
- * in a packaged release. Desktop-owned flags resolve from the settings registry
- * defaults until persisted settings arrive, then from the persisted values.
- * This keeps default-off local features from briefly mounting in dev while
- * preserving the dev fallback for shared UI flags such as Branches.
+ * ONE SOURCE (ISS-8753, operator direction 2026-09-01): the signed-in user's
+ * PostHog assignment — the same per-user evaluation the web app resolves from,
+ * fetched server-side and delivered over the IPC bridge
+ * ({@link useDesktopPostHogFlagAssignment}). There is no second path and no
+ * switch between paths, so a gate cannot resolve one way on web and another on
+ * desktop.
  *
- * `app.isPackaged` (main process) is the authoritative signal, surfaced on the
- * runtime-status IPC payload. It defaults to DISABLED until the async fetch
- * resolves, so a packaged build never briefly flashes gated UI; when PostHog
- * lands here this whole adapter is replaced by a posthog-backed one, like
- * `posthogFeatureFlagAdapter` in apps/app.
+ * FAIL-CLOSED IN EVERY BUILD, dev included. Nothing here reads `app.isPackaged`:
+ * the local Labs registry this provider used to consult also carried a dev
+ * fail-OPEN for any key it did not declare, and that branch is gone with it. An
+ * unknown key, an unresolved assignment, a signed-out session (beyond the
+ * ISS-11945 anonymous keys) and an offline one are all `false`.
+ *
+ * ENABLED AND RESOLVED STAY SEPARATE. `useFeatureFlagResolved` reports
+ * SETTLED-ness, never enabled-ness — every terminal non-answer (signed out,
+ * offline, bridge absent, transport failure) settles CLOSED rather than staying
+ * pending, so a gated route is held dark through the resolution window and is
+ * never stranded in it.
+ *
+ * DEV MODE (ISS-12048) sits between the assignment and the consumers, as on
+ * web: off is the customer view (every non-exempt key settles closed), on lets
+ * Dev Tools overrides win over the assignment through the same
+ * `@repo/analytics` precedence web uses. An overridden or suppressed key reads
+ * resolved, since its value no longer waits on the assignment. `dev-mode`
+ * itself is read straight from the assignment, so neither can move it.
  */
 export function DesktopFeatureFlagProvider({
   children,
 }: {
   children: ReactNode;
 }) {
-  const [flagsEnabled, setFlagsEnabled] = useState(false);
-  const [desktopFlags, setDesktopFlags] = useState<Record<string, boolean>>(
-    () => ({ ...DESKTOP_FLAG_DEFAULTS })
-  );
-  // ISS-5037: has the FIRST `getAllFlags` settled? Before it does, every
-  // desktop flag reads its registry default, which for a default-OFF flag is
-  // indistinguishable from "the user turned it off". That is the right posture
-  // for SHOWING gated UI (stay dark), but not for a one-way decision like
-  // redirecting a route away — see `App.tsx`'s Labs gate.
-  const [desktopFlagsResolved, setDesktopFlagsResolved] = useState(false);
+  const posthogAssignment = useDesktopPostHogFlagAssignment();
 
-  useEffect(() => {
-    let cancelled = false;
-    const refreshDesktopFlags = () => {
-      window.desktopApi
-        .getAllFlags()
-        .then((payload) => {
-          if (cancelled) {
-            return;
-          }
-          setDesktopFlags(readDesktopFlags(payload));
-          setDesktopFlagsResolved(true);
-        })
-        .catch(() => {
-          if (!cancelled) {
-            setDesktopFlags({ ...DESKTOP_FLAG_DEFAULTS });
-            // Settled, even though it settled on the defaults: an unreachable
-            // bridge must not hold a gated route on its loading state forever.
-            setDesktopFlagsResolved(true);
-          }
-        });
-    };
-    window.desktopApi
-      .getRuntimeStatus()
-      .then((status) => {
-        if (!cancelled) {
-          setFlagsEnabled(isUnpackagedBuild(status));
-        }
-      })
-      .catch(() => {
-        // Unreachable status → stay prod-safe (all flags disabled).
-      });
-    refreshDesktopFlags();
-    window.desktopApi.onFlagsChanged?.(refreshDesktopFlags);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const adapter = useMemo<FeatureFlagAdapter>(
-    () => ({
-      useFeatureFlagEnabled: (key) => {
-        if (Object.hasOwn(DESKTOP_FLAG_DEFAULTS, key)) {
-          return desktopFlags[key] === true;
-        }
-        return flagsEnabled;
-      },
-    }),
-    [desktopFlags, flagsEnabled]
+  const adapter = useMemo(
+    () => createDesktopFeatureFlagAdapter(posthogAssignment),
+    [posthogAssignment]
   );
 
   return (
-    <DesktopFeatureFlagsResolvedContext value={desktopFlagsResolved}>
-      <FeatureFlagAdapterProvider adapter={adapter}>
-        {children}
-      </FeatureFlagAdapterProvider>
+    <DesktopFeatureFlagsResolvedContext value={posthogAssignment.resolved}>
+      <DesktopDevModeProvider
+        isRolledOut={posthogAssignment.flags[DEV_MODE_FLAG_KEY] === true}
+      >
+        <DesktopDevModeFlagScope>
+          <FeatureFlagAdapterProvider adapter={adapter}>
+            {children}
+          </FeatureFlagAdapterProvider>
+        </DesktopDevModeFlagScope>
+      </DesktopDevModeProvider>
     </DesktopFeatureFlagsResolvedContext>
   );
 }
 
 /**
- * ISS-5037 — whether the desktop flag snapshot has actually arrived.
+ * ISS-5037 — whether the flag answers have actually arrived.
  *
  * Defaults to `false` (and to `false` with no provider, e.g. a unit test that
  * mounts a bare subtree), so a caller that withholds a one-way decision until
@@ -119,39 +85,40 @@ export function useDesktopFeatureFlagsResolved(): boolean {
 
 const DesktopFeatureFlagsResolvedContext = createContext(false);
 
-const DESKTOP_FLAG_DEFAULTS: Record<string, boolean> = Object.fromEntries(
-  FEATURE_FLAGS.map((flag) => [flag.key, flag.default])
-);
-
-function isUnpackagedBuild(status: unknown): boolean {
-  return (
-    typeof status === "object" &&
-    status !== null &&
-    (status as { isPackaged?: unknown }).isPackaged === false
-  );
-}
-
-function readDesktopFlags(payload: unknown): Record<string, boolean> {
-  return { ...DESKTOP_FLAG_DEFAULTS, ...extractDesktopFlags(payload) };
-}
-
-function extractDesktopFlags(payload: unknown): Record<string, boolean> {
-  if (typeof payload !== "object" || payload === null) {
-    return {};
-  }
-  const flags = (payload as { flags?: unknown }).flags;
-  if (!Array.isArray(flags)) {
-    return {};
-  }
-  return Object.fromEntries(
-    flags.filter(isDesktopFlagState).map((flag) => [flag.key, flag.value])
-  );
-}
-
-function isDesktopFlagState(value: unknown): value is DesktopFlagState {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  return typeof record.key === "string" && typeof record.value === "boolean";
+/**
+ * The port adapter over one assignment snapshot. Its members are hooks, called
+ * at each flag consumer's render position, which is why the Dev Mode scope
+ * above sits between the adapter and the consumers. Customer-view suppression
+ * is decided before the override, matching `useFeatureFlag` on web.
+ */
+function createDesktopFeatureFlagAdapter(
+  posthogAssignment: DesktopPostHogFlagAssignment
+): FeatureFlagAdapter {
+  return {
+    useFeatureFlagEnabled(key) {
+      const customerView = useCustomerViewState();
+      const override = useFeatureFlagOverride(key);
+      if (suppressesFeatureFlag(customerView, key)) {
+        return false;
+      }
+      return override ?? posthogAssignment.flags[key] === true;
+    },
+    useFeatureFlagResolved(key) {
+      const customerView = useCustomerViewState();
+      const override = useFeatureFlagOverride(key);
+      return (
+        suppressesFeatureFlag(customerView, key) ||
+        override !== undefined ||
+        posthogAssignment.resolved
+      );
+    },
+    // ISS-12048: the overlay's production value, the assignment untouched by
+    // overrides or the customer view. The API's desktop flag route already
+    // pins a preview's snapshot, so this is the snapshot value there.
+    useFeatureFlagProductionValue(key) {
+      return posthogAssignment.resolved
+        ? posthogAssignment.flags[key] === true
+        : undefined;
+    },
+  };
 }

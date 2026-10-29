@@ -1,14 +1,10 @@
 import "server-only";
-
-import { randomUUID } from "node:crypto";
-import type { ContextPackAttachmentSchema } from "@closedloop-ai/loops-api/context-pack";
 import { createId } from "@paralleldrive/cuid2";
 import type {
   AttachmentDownloadResponse,
   AttachmentPurpose as AttachmentPurposeType,
   AttachmentUploadError as AttachmentUploadErrorType,
   CreateAttachmentResponse,
-  CreateInlineImageAttachmentResponse,
   FileAttachment,
   ResolveInlineImagesResponse,
 } from "@repo/api/src/types/attachment";
@@ -16,9 +12,6 @@ import {
   AttachmentPurpose,
   AttachmentPurposeSelector,
   type AttachmentPurposeSelector as AttachmentPurposeSelectorType,
-  AttachmentUploadError as AttachmentUploadErrorContract,
-  buildInlineAttachmentRef,
-  CreateInlineImageAttachmentErrorCode as CreateInlineImageAttachmentErrorCodeContract,
   InlineImageResolveSkipReason,
   isImageMimeType,
   MAX_ATTACHMENT_FILE_SIZE_BYTES,
@@ -32,26 +25,27 @@ import {
   getSignedDownloadUrl,
   getSignedDownloadUrlWithDisposition,
   getSignedUploadUrl,
-  putAttachmentObject,
 } from "@repo/aws";
 import { keys as awsKeys } from "@repo/aws/keys";
-import { ArtifactType, type TransactionClient, withDb } from "@repo/database";
+import { ArtifactType, withDb } from "@repo/database";
+import { BoundedMap } from "@repo/lib/bounded-map";
 import { log } from "@repo/observability/log";
-import type { z } from "zod";
-import type { CreateInlineImageAttachmentError } from "@/app/documents/inline-image-attachment-contract";
 import {
-  decodeInlineImageBase64,
-  validateInlineImageBytes,
-} from "@/app/documents/inline-image-bytes";
-import { BoundedCache } from "@/lib/bounded-cache";
-import { getPrismaErrorCode } from "@/lib/db-utils";
-import { getSafeAttachmentStorageErrorMessage } from "./attachment-storage-key-redaction";
+  type RecordWriteInTransaction,
+  writeRecorded,
+} from "@/lib/record-write-in-transaction";
+import {
+  ATTACHMENT_UPLOAD_LIMIT_BUCKET,
+  ATTACHMENT_UPLOAD_LIMIT_MAX_REQUESTS,
+  ATTACHMENT_UPLOAD_LIMIT_WINDOW_MS,
+  consumeAttachmentUploadLimit,
+} from "./attachment-upload-rate-limit";
 
 /**
  * Convert a Prisma FileAttachment record to the API FileAttachment type.
  * createdAt is serialized to ISO 8601 string.
  */
-function toFileAttachment(record: {
+export function toFileAttachment(record: {
   id: string;
   artifactId: string | null;
   filename: string;
@@ -77,7 +71,7 @@ function toFileAttachment(record: {
  * Verify a document artifact exists and belongs to the given org.
  * Throws "Document not found" if missing or org-mismatched.
  */
-async function requireDocument(
+export async function requireDocument(
   documentId: string,
   organizationId: string
 ): Promise<{ id: string }> {
@@ -140,44 +134,19 @@ const SIGNED_URL_CACHE_SAFETY_MARGIN_MS = 5 * 60 * 1000;
 // worker that signs many distinct objects cannot grow it without limit.
 const SIGNED_URL_CACHE_MAX_ENTRIES = 10_000;
 export const ATTACHMENT_UPLOAD_SIGNED_URL_EXPIRY_SECONDS = 900;
-const ATTACHMENT_UPLOAD_LIMIT_BUCKET = "document_attachment_upload_request";
-const ATTACHMENT_UPLOAD_LIMIT_MAX_REQUESTS = 60;
-const ATTACHMENT_UPLOAD_LIMIT_WINDOW_MS = 60 * 60 * 1000;
-const ATTACHMENT_ORPHAN_RECOVERY_MODE = "scheduled_attachment_reconcile_sweep";
 export const INVALID_INLINE_ATTACHMENT_UPLOAD_ERROR =
   "Invalid inline attachment upload";
 export const ATTACHMENT_NOT_FOUND_ERROR = "Attachment not found";
 export const DOCUMENT_NOT_FOUND_ERROR = "Document not found";
 
-/** Maximum number of attachments returned by the signed-URL listing methods. */
-export const ATTACHMENT_SIGNED_URL_MAX_FILES = 20;
-
 /**
  * Upper bound on attachments returned by the general document listing
- * (`listByDocument`). Larger than the signed-URL cap because the UI listing has
- * no pagination and must show a document's full attachment set in normal use,
- * but still bounded so a document with thousands of bulk-uploaded attachments
- * cannot return every row to the client.
+ * (`listByDocument`). The UI listing has no pagination and must show a
+ * document's full attachment set in normal use, but it is still bounded so a
+ * document with thousands of bulk-uploaded attachments cannot return every row
+ * to the client.
  */
 export const ATTACHMENT_LISTING_MAX_FILES = 200;
-
-const signedUrlSelect = {
-  id: true,
-  filename: true,
-  mimeType: true,
-  sizeBytes: true,
-  key: true,
-  bucket: true,
-} as const;
-
-type SignedUrlRecord = {
-  id: string;
-  filename: string;
-  mimeType: string;
-  sizeBytes: number;
-  key: string;
-  bucket: string;
-};
 
 type ResolvableInlineImageRecord = {
   id: string;
@@ -196,19 +165,12 @@ type RequestUploadOptions = {
    * stay unchanged.
    */
   consumeDirectUploadLimit?: boolean;
+  recordCreated?: RecordWriteInTransaction<{ attachmentId: string }>;
 };
-
-type ContextPackAttachment = z.infer<typeof ContextPackAttachmentSchema>;
-type AttachmentUploadLimitClient = Pick<TransactionClient, "oAuthRateLimit">;
 
 type RequestUploadResult = ServiceResult<
   CreateAttachmentResponse,
   AttachmentUploadErrorType
->;
-
-type CreateInlineImageAttachmentResult = ServiceResult<
-  CreateInlineImageAttachmentResponse,
-  CreateInlineImageAttachmentError
 >;
 
 export const DeleteAttachmentErrorCode = {
@@ -263,7 +225,7 @@ function getSafeErrorMessage(error: unknown): string {
   return String(error);
 }
 
-function isDocumentNotFoundError(error: unknown): boolean {
+export function isDocumentNotFoundError(error: unknown): boolean {
   return error instanceof Error && error.message === DOCUMENT_NOT_FOUND_ERROR;
 }
 
@@ -287,191 +249,6 @@ function countInlineImageSkipReasons(
     counts[item.reason] = (counts[item.reason] ?? 0) + 1;
     return counts;
   }, {});
-}
-
-async function consumeAttachmentUploadLimit(
-  organizationId: string,
-  documentId: string
-): Promise<ServiceResult<void, AttachmentUploadErrorType>> {
-  const now = new Date();
-  const subject = `${organizationId}:${documentId}`;
-  const windowExpiresAt = new Date(
-    now.getTime() + ATTACHMENT_UPLOAD_LIMIT_WINDOW_MS
-  );
-
-  const consumeExistingWindow = async (
-    db: AttachmentUploadLimitClient,
-    record: {
-      id: string;
-      requestCount: number;
-      windowExpiresAt: Date;
-    }
-  ): Promise<ServiceResult<void, AttachmentUploadErrorType>> => {
-    const updateResult = await db.oAuthRateLimit.updateMany({
-      where: {
-        id: record.id,
-        requestCount: { lt: ATTACHMENT_UPLOAD_LIMIT_MAX_REQUESTS },
-        windowExpiresAt: { gt: now },
-      },
-      data: { requestCount: { increment: 1 } },
-    });
-    if (updateResult.count === 1) {
-      return Result.ok(undefined);
-    }
-
-    const latestRecord = await db.oAuthRateLimit.findUnique({
-      where: {
-        bucket_subject: {
-          bucket: ATTACHMENT_UPLOAD_LIMIT_BUCKET,
-          subject,
-        },
-      },
-    });
-    if (!latestRecord) {
-      throw new Error("Attachment upload limiter row disappeared");
-    }
-    if (latestRecord.windowExpiresAt <= now) {
-      return resetExpiredWindow(db, latestRecord);
-    }
-
-    return Result.err({
-      type: AttachmentUploadErrorContract.RateLimited,
-      retryAfterSeconds: Math.max(
-        1,
-        Math.ceil(
-          (latestRecord.windowExpiresAt.getTime() - now.getTime()) / 1000
-        )
-      ),
-    });
-  };
-
-  const resetExpiredWindow = async (
-    db: AttachmentUploadLimitClient,
-    record: {
-      id: string;
-      windowExpiresAt: Date;
-    }
-  ): Promise<ServiceResult<void, AttachmentUploadErrorType>> => {
-    const resetResult = await db.oAuthRateLimit.updateMany({
-      where: {
-        id: record.id,
-        windowExpiresAt: { lte: now },
-      },
-      data: {
-        requestCount: 1,
-        windowStartedAt: now,
-        windowExpiresAt,
-      },
-    });
-    if (resetResult.count === 1) {
-      return Result.ok(undefined);
-    }
-
-    const latestRecord = await db.oAuthRateLimit.findUnique({
-      where: {
-        bucket_subject: {
-          bucket: ATTACHMENT_UPLOAD_LIMIT_BUCKET,
-          subject,
-        },
-      },
-    });
-    if (!latestRecord) {
-      throw new Error("Attachment upload limiter row disappeared");
-    }
-    if (latestRecord.windowExpiresAt <= now) {
-      return resetExpiredWindow(db, latestRecord);
-    }
-    return consumeExistingWindow(db, latestRecord);
-  };
-
-  await withDb((db) =>
-    cleanupExpiredAttachmentUploadLimitRows(db, subject, now)
-  );
-
-  try {
-    return await withDb.tx(async (db) => {
-      const record = await db.oAuthRateLimit.findUnique({
-        where: {
-          bucket_subject: {
-            bucket: ATTACHMENT_UPLOAD_LIMIT_BUCKET,
-            subject,
-          },
-        },
-      });
-
-      if (!record) {
-        await db.oAuthRateLimit.create({
-          data: {
-            id: randomUUID(),
-            bucket: ATTACHMENT_UPLOAD_LIMIT_BUCKET,
-            subject,
-            requestCount: 1,
-            windowStartedAt: now,
-            windowExpiresAt,
-          },
-          select: { id: true },
-        });
-        return Result.ok(undefined);
-      }
-
-      if (record.windowExpiresAt <= now) {
-        return resetExpiredWindow(db, record);
-      }
-      return consumeExistingWindow(db, record);
-    });
-  } catch (error) {
-    if (getPrismaErrorCode(error) !== "P2002") {
-      throw error;
-    }
-
-    // A failed create can poison Prisma's interactive transaction, so recover
-    // from the first-window race after rollback in a fresh transaction.
-    return await withDb.tx(async (db) => {
-      const racedRecord = await db.oAuthRateLimit.findUnique({
-        where: {
-          bucket_subject: {
-            bucket: ATTACHMENT_UPLOAD_LIMIT_BUCKET,
-            subject,
-          },
-        },
-      });
-      if (!racedRecord) {
-        throw error;
-      }
-      if (racedRecord.windowExpiresAt <= now) {
-        return resetExpiredWindow(db, racedRecord);
-      }
-      return consumeExistingWindow(db, racedRecord);
-    });
-  }
-}
-
-/**
- * Clears stale limiter rows without blocking the upload path. The active
- * subject is excluded so its expired row can be reset atomically by the caller.
- */
-async function cleanupExpiredAttachmentUploadLimitRows(
-  db: AttachmentUploadLimitClient,
-  subject: string,
-  now: Date
-): Promise<void> {
-  try {
-    await db.oAuthRateLimit.deleteMany({
-      where: {
-        bucket: ATTACHMENT_UPLOAD_LIMIT_BUCKET,
-        subject: { not: subject },
-        windowExpiresAt: { lt: now },
-      },
-    });
-  } catch (error) {
-    log.warn(
-      "[attachments-service] Failed to clean up expired attachment upload limiter rows",
-      {
-        bucket: ATTACHMENT_UPLOAD_LIMIT_BUCKET,
-        error: getSafeErrorMessage(error),
-      }
-    );
-  }
 }
 
 /**
@@ -518,10 +295,9 @@ type CachedSignedDownloadUrl = { url: string; expiresAtMs: number };
  * SIGNED_URL_CACHE_SAFETY_MARGIN_MS of its real lifetime remains, so a URL handed
  * to a client always has comfortable headroom left.
  */
-const signedDownloadUrlCache = new BoundedCache<
-  string,
-  CachedSignedDownloadUrl
->(SIGNED_URL_CACHE_MAX_ENTRIES);
+const signedDownloadUrlCache = new BoundedMap<string, CachedSignedDownloadUrl>(
+  SIGNED_URL_CACHE_MAX_ENTRIES
+);
 
 /**
  * Return a presigned GET URL for an immutable object together with the real
@@ -575,46 +351,6 @@ async function getCachedSignedDownloadUrl(
   return entry.url;
 }
 
-/**
- * Convert attachment records to ContextPackAttachment entries with presigned download URLs.
- */
-async function toContextPackAttachments(
-  records: SignedUrlRecord[]
-): Promise<ContextPackAttachment[]> {
-  const results = await Promise.allSettled(
-    records.map(async (record) => {
-      const signed = await getCachedSignedDownloadEntry(
-        record.key,
-        SIGNED_URL_EXPIRY_SECONDS,
-        record.bucket
-      );
-      return {
-        id: record.id,
-        filename: record.filename,
-        mimeType: record.mimeType,
-        sizeBytes: record.sizeBytes,
-        signedUrl: signed.url,
-        signedUrlExpiresAt: new Date(signed.expiresAtMs).toISOString(),
-      };
-    })
-  );
-
-  const attachments: ContextPackAttachment[] = [];
-  for (const result of results) {
-    if (result.status === "fulfilled") {
-      attachments.push(result.value);
-    } else {
-      log.warn(
-        "[attachments-service] Failed to sign attachment URL, skipping",
-        {
-          error: result.reason,
-        }
-      );
-    }
-  }
-  return attachments;
-}
-
 export const attachmentsService = {
   /**
    * Initiate a file upload for a document.
@@ -628,13 +364,14 @@ export const attachmentsService = {
     filename: string,
     mimeType: string,
     sizeBytes: number,
-    purpose: AttachmentPurposeType = AttachmentPurpose.Context
+    purpose: AttachmentPurposeType = AttachmentPurpose.Context,
+    recordCreated?: RecordWriteInTransaction<{ attachmentId: string }>
   ): Promise<CreateAttachmentResponse> {
     const result = await requestUploadWithOptionalLimit({
       documentId,
       filename,
       mimeType,
-      options: {},
+      options: { recordCreated },
       organizationId,
       purpose,
       sizeBytes,
@@ -657,175 +394,19 @@ export const attachmentsService = {
     filename: string,
     mimeType: string,
     sizeBytes: number,
-    purpose: AttachmentPurposeType = AttachmentPurpose.Context
+    purpose: AttachmentPurposeType = AttachmentPurpose.Context,
+    recordCreated?: RecordWriteInTransaction<{ attachmentId: string }>
   ): Promise<RequestUploadResult> {
     return requestUploadWithOptionalLimit({
       documentId,
       filename,
       mimeType,
-      options: { consumeDirectUploadLimit: true },
+      options: { consumeDirectUploadLimit: true, recordCreated },
       organizationId,
       purpose,
       sizeBytes,
       userId,
     });
-  },
-
-  /**
-   * Create an inline image attachment from API-owned bytes in one call.
-   */
-  async createInlineImageAttachment(
-    documentId: string,
-    organizationId: string,
-    userId: string,
-    filename: string,
-    mimeType: string,
-    dataBase64: string
-  ): Promise<CreateInlineImageAttachmentResult> {
-    const bucket = awsKeys().FILE_ATTACHMENTS_BUCKET;
-    if (!bucket) {
-      log.error(
-        "[attachments-service] Inline image attachment missing bucket",
-        {
-          documentId,
-          mimeType,
-          reason:
-            CreateInlineImageAttachmentErrorCodeContract.StorageUnconfigured,
-        }
-      );
-      return Result.err({
-        code: CreateInlineImageAttachmentErrorCodeContract.StorageUnconfigured,
-      });
-    }
-
-    try {
-      await requireDocument(documentId, organizationId);
-    } catch (error) {
-      if (isDocumentNotFoundError(error)) {
-        return Result.err({
-          code: CreateInlineImageAttachmentErrorCodeContract.DocumentNotFound,
-        });
-      }
-      throw error;
-    }
-
-    const limitResult = await consumeAttachmentUploadLimit(
-      organizationId,
-      documentId
-    );
-    if (limitResult.ok === false) {
-      return Result.err({
-        code: CreateInlineImageAttachmentErrorCodeContract.RateLimited,
-        retryAfterSeconds: limitResult.error.retryAfterSeconds,
-      });
-    }
-
-    const decoded = decodeInlineImageBase64(dataBase64);
-    if (!decoded.ok) {
-      return Result.err(decoded.error);
-    }
-
-    const validation = validateInlineImageBytes(mimeType, decoded.value);
-    if (!validation.ok) {
-      return Result.err(validation.error);
-    }
-
-    const key = `attachments/${organizationId}/${documentId}/${createId()}`;
-    try {
-      await putAttachmentObject({
-        body: decoded.value,
-        bucket,
-        contentLength: decoded.value.byteLength,
-        contentType: mimeType,
-        key,
-      });
-    } catch (error) {
-      log.error(
-        "[attachments-service] Inline image attachment S3 write failed",
-        {
-          documentId,
-          error: getSafeAttachmentStorageErrorMessage(error),
-          mimeType,
-          reason:
-            CreateInlineImageAttachmentErrorCodeContract.StorageWriteFailed,
-          sizeBytes: decoded.value.byteLength,
-        }
-      );
-      return Result.err({
-        code: CreateInlineImageAttachmentErrorCodeContract.StorageWriteFailed,
-      });
-    }
-
-    try {
-      const created = await withDb((db) =>
-        db.fileAttachment.create({
-          data: {
-            artifactId: documentId,
-            bucket,
-            key,
-            filename,
-            mimeType,
-            sizeBytes: decoded.value.byteLength,
-            createdById: userId,
-            purpose: AttachmentPurpose.Inline,
-          },
-        })
-      );
-      return Result.ok({
-        attachment: toFileAttachment(created),
-        attachmentId: created.id,
-        attachmentRef: buildInlineAttachmentRef(created.id),
-      });
-    } catch (error) {
-      const persistedRecord = await findPersistedInlineImageAttachment({
-        bucket,
-        documentId,
-        key,
-        organizationId,
-      });
-      if (persistedRecord.ok) {
-        const created = persistedRecord.value;
-        if (created) {
-          return Result.ok({
-            attachment: toFileAttachment(created),
-            attachmentId: created.id,
-            attachmentRef: buildInlineAttachmentRef(created.id),
-          });
-        }
-        await cleanupFailedInlineImageAttachment({
-          bucket,
-          documentId,
-          error,
-          key,
-          mimeType,
-          sizeBytes: decoded.value.byteLength,
-        });
-      } else {
-        // The DB create may have committed even though the client observed an
-        // error. Do not delete the S3 object when the status lookup also fails:
-        // a committed row would then point at missing storage. If no row exists,
-        // the scheduled attachment reconcile sweep removes the unreferenced
-        // attachments/ object after the in-flight upload window.
-        log.error(
-          "[attachments-service] Inline image attachment persistence status check failed",
-          {
-            documentId,
-            error: getSafeAttachmentStorageErrorMessage(error),
-            lookupError: getSafeAttachmentStorageErrorMessage(
-              persistedRecord.error
-            ),
-            mimeType,
-            recoveryMode: ATTACHMENT_ORPHAN_RECOVERY_MODE,
-            reconcileAfterSeconds: ATTACHMENT_UPLOAD_SIGNED_URL_EXPIRY_SECONDS,
-            reason: "inline_image_persistence_status_unknown",
-            sizeBytes: decoded.value.byteLength,
-          }
-        );
-      }
-      return Result.err({
-        code: CreateInlineImageAttachmentErrorCodeContract.PersistenceFailed,
-      });
-    }
   },
 
   /**
@@ -847,6 +428,7 @@ export const attachmentsService = {
         },
         orderBy: { createdAt: "desc" },
         take: ATTACHMENT_LISTING_MAX_FILES,
+        select: ATTACHMENT_LISTING_SELECT,
       })
     );
 
@@ -869,6 +451,7 @@ export const attachmentsService = {
     const attachment = await withDb((db) =>
       db.fileAttachment.findFirst({
         where: { id: attachmentId, artifactId: documentId },
+        select: { bucket: true, filename: true, key: true },
       })
     );
 
@@ -891,7 +474,8 @@ export const attachmentsService = {
     organizationId: string,
     actorUserId: string,
     attachmentId: string,
-    options: DeleteAttachmentOptions = {}
+    options: DeleteAttachmentOptions = {},
+    recordDeleted?: RecordWriteInTransaction<{ attachmentId: string }>
   ): Promise<DeleteAttachmentResult> {
     try {
       await requireDocument(documentId, organizationId);
@@ -939,6 +523,7 @@ export const attachmentsService = {
           code: DeleteAttachmentErrorCode.AttachmentNotFound,
         });
       }
+      await recordDeleted?.(tx, { attachmentId });
       return Result.ok<AttachmentDeleteRecord, DeleteAttachmentError>(record);
     });
 
@@ -1114,29 +699,6 @@ export const attachmentsService = {
 
     return { images, skipped };
   },
-
-  /**
-   * List all attachments for a document with presigned download URLs (for context pack use).
-   */
-  async listWithSignedUrlsByDocument(
-    documentId: string,
-    organizationId: string
-  ): Promise<ContextPackAttachment[]> {
-    const records = await withDb((db) =>
-      db.fileAttachment.findMany({
-        where: {
-          artifactId: documentId,
-          artifact: { organizationId },
-          purpose: AttachmentPurpose.Context,
-        },
-        select: signedUrlSelect,
-        orderBy: { createdAt: "desc" },
-        take: ATTACHMENT_SIGNED_URL_MAX_FILES,
-      })
-    );
-
-    return toContextPackAttachments(records);
-  },
 };
 
 async function requestUploadWithOptionalLimit({
@@ -1218,21 +780,16 @@ async function requestUploadWithOptionalLimit({
     }
   }
 
-  const key = `attachments/${organizationId}/${documentId}/${createId()}`;
-  const expiresAt = new Date(
-    Date.now() + ATTACHMENT_UPLOAD_SIGNED_URL_EXPIRY_SECONDS * 1000
-  ).toISOString();
-
-  // Generate presigned URL first; if this fails, no orphaned DB record is created.
-  let uploadUrl: string;
+  // Signed before the row is written, so a signing failure leaves no row.
+  let signed: SignedAttachmentUpload;
   try {
-    uploadUrl = await getSignedUploadUrl(
-      key,
-      mimeType,
-      ATTACHMENT_UPLOAD_SIGNED_URL_EXPIRY_SECONDS,
+    signed = await signDocumentAttachmentUpload({
       bucket,
-      sizeBytes
-    );
+      documentId,
+      mimeType,
+      organizationId,
+      sizeBytes,
+    });
   } catch (error) {
     if (isInlineUpload) {
       log.error(
@@ -1246,21 +803,25 @@ async function requestUploadWithOptionalLimit({
     }
     throw error;
   }
+  const { key, uploadUrl, expiresAt } = signed;
 
-  const created = await withDb((db) =>
-    db.fileAttachment.create({
-      data: {
-        artifactId: documentId,
+  // No transaction unless the caller records the row (ISS-12552 parity).
+  const attachmentId = await writeRecorded(
+    options.recordCreated,
+    () =>
+      storeDocumentAttachmentRow({
         bucket,
-        key,
+        documentId,
         filename,
+        key,
         mimeType,
-        sizeBytes,
-        createdById: userId,
         purpose,
-      },
-    })
+        sizeBytes,
+        userId,
+      }),
+    (id) => ({ attachmentId: id })
   );
+  const created = { id: attachmentId };
 
   if (isInlineUpload) {
     log.info("[attachments-service] Inline attachment upload request created", {
@@ -1272,73 +833,36 @@ async function requestUploadWithOptionalLimit({
   return Result.ok({ attachmentId: created.id, uploadUrl, key, expiresAt });
 }
 
-async function findPersistedInlineImageAttachment({
-  bucket,
-  documentId,
-  key,
-  organizationId,
-}: {
-  bucket: string;
-  documentId: string;
-  key: string;
-  organizationId: string;
-}): Promise<
-  ServiceResult<InlineImageAttachmentPersistenceRecord | null, unknown>
-> {
-  try {
-    const record = await withDb((db) =>
-      db.fileAttachment.findFirst({
-        where: {
-          artifactId: documentId,
-          artifact: { organizationId },
-          bucket,
-          key,
-        },
-      })
-    );
-    return Result.ok(record);
-  } catch (lookupError) {
-    return Result.err(lookupError);
-  }
-}
-
-async function cleanupFailedInlineImageAttachment({
-  bucket,
-  documentId,
-  error,
-  key,
-  mimeType,
-  sizeBytes,
-}: {
-  bucket: string;
-  documentId: string;
-  error: unknown;
-  key: string;
-  mimeType: string;
-  sizeBytes: number;
-}): Promise<void> {
-  try {
-    await deleteArtifact(key, bucket);
-  } catch (cleanupError) {
-    log.error(
-      "[attachments-service] Failed to clean up inline image attachment after DB persistence failure",
-      {
-        cleanupError: getSafeAttachmentStorageErrorMessage(cleanupError),
-        documentId,
-        error: getSafeAttachmentStorageErrorMessage(error),
-        mimeType,
-        recoveryMode: ATTACHMENT_ORPHAN_RECOVERY_MODE,
-        reconcileAfterSeconds: ATTACHMENT_UPLOAD_SIGNED_URL_EXPIRY_SECONDS,
-        reason: "inline_image_cleanup_failed",
-        sizeBytes,
-      }
-    );
-  }
-}
-
-type InlineImageAttachmentPersistenceRecord = Parameters<
+export type InlineImageAttachmentPersistenceRecord = Parameters<
   typeof toFileAttachment
 >[0];
+
+/**
+ * The columns `toFileAttachment` reads, and nothing else. Typed against its
+ * parameter so a field newly read inside the mapper fails `tsc` here instead of
+ * arriving `undefined` in an API response.
+ */
+export const FILE_ATTACHMENT_API_SELECT = {
+  id: true,
+  artifactId: true,
+  filename: true,
+  mimeType: true,
+  sizeBytes: true,
+  createdAt: true,
+  createdById: true,
+  purpose: true,
+} as const satisfies Record<keyof InlineImageAttachmentPersistenceRecord, true>;
+
+/**
+ * The listing read additionally needs `bucket`/`key` to presign image previews.
+ * The reconcile bookkeeping columns (`reconciledAt`, `reconcileAbsent`) are
+ * owned solely by the row-reconcile sweep and stay out of this RETURNING.
+ */
+const ATTACHMENT_LISTING_SELECT = {
+  ...FILE_ATTACHMENT_API_SELECT,
+  bucket: true,
+  key: true,
+} as const;
 
 export const attachmentServiceInternalsForTesting = {
   ATTACHMENT_UPLOAD_LIMIT_BUCKET,
@@ -1346,3 +870,77 @@ export const attachmentServiceInternalsForTesting = {
   ATTACHMENT_UPLOAD_LIMIT_WINDOW_MS,
   clearSignedDownloadUrlCache: () => signedDownloadUrlCache.clear(),
 };
+
+/** A presigned upload for a document attachment whose row is not yet stored. */
+export type SignedAttachmentUpload = {
+  key: string;
+  uploadUrl: string;
+  expiresAt: string;
+};
+
+/**
+ * Signs the upload for a new attachment on `documentId`. Nothing is stored, so
+ * a caller can sign before it opens the transaction that writes the row
+ * (ISS-12552): an unused URL leaves no object behind.
+ */
+export async function signDocumentAttachmentUpload(input: {
+  bucket: string;
+  organizationId: string;
+  documentId: string;
+  mimeType: string;
+  sizeBytes: number;
+}): Promise<SignedAttachmentUpload> {
+  const key = `attachments/${input.organizationId}/${input.documentId}/${createId()}`;
+  const expiresAt = new Date(
+    Date.now() + ATTACHMENT_UPLOAD_SIGNED_URL_EXPIRY_SECONDS * 1000
+  ).toISOString();
+  const uploadUrl = await getSignedUploadUrl(
+    key,
+    input.mimeType,
+    ATTACHMENT_UPLOAD_SIGNED_URL_EXPIRY_SECONDS,
+    input.bucket,
+    input.sizeBytes
+  );
+  return { key, uploadUrl, expiresAt };
+}
+
+/**
+ * Stores a signed attachment's row. `withDb` joins the caller's transaction
+ * when there is one, so the row commits or rolls back with it.
+ */
+export async function storeDocumentAttachmentRow(input: {
+  documentId: string;
+  bucket: string;
+  key: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  userId: string;
+  purpose: AttachmentPurposeType;
+}): Promise<string> {
+  const row = await withDb((db) =>
+    db.fileAttachment.create({
+      data: {
+        artifactId: input.documentId,
+        bucket: input.bucket,
+        key: input.key,
+        filename: input.filename,
+        mimeType: input.mimeType,
+        sizeBytes: input.sizeBytes,
+        createdById: input.userId,
+        purpose: input.purpose,
+      },
+      select: { id: true },
+    })
+  );
+  return row.id;
+}
+
+/** The configured attachment bucket; throws when storage is not configured. */
+export function requireAttachmentBucket(): string {
+  const bucket = awsKeys().FILE_ATTACHMENTS_BUCKET;
+  if (!bucket) {
+    throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
+  }
+  return bucket;
+}

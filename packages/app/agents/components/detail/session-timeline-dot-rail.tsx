@@ -2,9 +2,19 @@
 
 import type { ActivityBucket } from "@repo/api/src/types/agent-session";
 import { TraceScrollOutcome } from "@repo/app/agents/lib/trace-scroll-target";
+import {
+  TimelineMarkerRail,
+  TimelineMarkerTrigger,
+} from "@repo/app/shared/components/timeline-marker-rail";
 import { cn } from "@repo/design-system/lib/utils";
 import { getBucketKey } from "./activity-bucket-rendering";
-import { type DotColor, getDotButtonLabel } from "./activity-dot-rendering";
+import {
+  type DotColor,
+  getDotButtonLabel,
+  getDotJumpRow,
+  getDotShape,
+  getDotShapeClassName,
+} from "./activity-dot-rendering";
 import type { ActivityMarker } from "./session-timeline-axis";
 import {
   getTimelineTooltipAnchor,
@@ -16,8 +26,7 @@ import {
  * marker lane per column inside it.
  *
  * Extracted from `agent-session-detail-view.tsx` (ISS-5819) for the same reason
- * ISS-5761 extracted the bar row: that file is grandfathered shrink-only under
- * the file-size ceiling, and the rail is the last inline piece of a strip whose
+ * ISS-5761 extracted the bar row: the rail is the last inline piece of a strip whose
  * bars, cost rail and tooltips are already their own units. Pulling it out also
  * took the strip's cognitive complexity back under the lint ceiling, which the
  * timeline controls had pushed it over.
@@ -51,38 +60,49 @@ export function SessionTimelineDotRail({
   ) => void;
 }>) {
   return (
-    <div className="sd3-drail">
-      {cells.map((cell, bucketIndex) => (
-        <div
-          className="sd3-dcell"
-          key={`dots-${getBucketKey(buckets[bucketIndex], bucketIndex)}`}
-        >
-          {DOT_ORDER.map((color) =>
-            cell[color].length > 0 ? (
-              <TimelineDot
-                bucketIndex={bucketIndex}
-                color={color}
-                disabled={disabled}
-                // ISS-5479: `tl` is typed `number` but a synced marker can
-                // deserialize without it. Resolved ONCE, here, so the label, the
-                // affordance and the click all answer from the same value —
-                // previously the dot took only half the bar's treatment and kept
-                // its pointer cursor and scale-1.4 hover while announcing a jump
-                // it could not make.
-                dotRow={cell[color][0]?.tl ?? null}
-                hot={
-                  hoverDot?.bucketIndex === bucketIndex &&
-                  hoverDot.color === color
-                }
-                key={color}
-                onHoverDot={onHoverDot}
-                onJump={onJump}
-              />
-            ) : null
-          )}
+    <TimelineMarkerRail
+      className="sd3-drail"
+      columns={cells.map((cell, bucketIndex) => ({
+        id: `dots-${getBucketKey(buckets[bucketIndex], bucketIndex)}`,
+        markers: DOT_ORDER.flatMap((color) =>
+          cell[color].length > 0
+            ? [
+                {
+                  bucketIndex,
+                  color,
+                  dotRow: getDotJumpRow(cell[color]),
+                },
+              ]
+            : []
+        ),
+      }))}
+      layout="bucketed"
+      renderColumn={(column, children) => (
+        <div className="sd3-dcell" key={column.id}>
+          {children}
         </div>
-      ))}
-    </div>
+      )}
+      renderMarker={(marker) => (
+        <TimelineDot
+          bucketIndex={marker.bucketIndex}
+          color={marker.color}
+          disabled={disabled}
+          // ISS-5479: a synced marker can deserialize without a row, and
+          // ISS-7632 made `ActivityMarker.tl` optional so the type says so
+          // (the wire type `SessionMarker.tl` stays required). Resolved by the
+          // shared `getDotJumpRow`, so the label, the affordance, the click AND
+          // the hover card all answer from the same value.
+          dotRow={marker.dotRow}
+          hot={
+            hoverDot?.bucketIndex === marker.bucketIndex &&
+            hoverDot.color === marker.color
+          }
+          key={marker.color}
+          onHoverDot={onHoverDot}
+          onJump={onJump}
+        />
+      )}
+    />
   );
 }
 
@@ -115,10 +135,16 @@ function TimelineDot({
 }>) {
   const dotNoJump = dotRow == null;
   return (
-    <button
-      aria-disabled={dotNoJump}
-      aria-label={getDotButtonLabel(color, dotNoJump)}
-      className={cn(`sd3-dot d-${color}`, hot && "hot", dotNoJump && "no-jump")}
+    <TimelineMarkerTrigger
+      ariaDisabled={dotNoJump}
+      ariaLabel={getDotButtonLabel(color, dotNoJump)}
+      className={cn(
+        `sd3-dot d-${color}`,
+        getDotShapeClassName(color),
+        hot && "hot",
+        dotNoJump && "no-jump"
+      )}
+      data-shape={getDotShape(color)}
       disabled={disabled}
       onClick={() => {
         // Never a silent `?? 0` jump to the top of the transcript, and never a
@@ -135,7 +161,6 @@ function TimelineDot({
         })
       }
       onMouseLeave={() => onHoverDot(null)}
-      type="button"
     />
   );
 }

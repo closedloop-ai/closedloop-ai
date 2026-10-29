@@ -8,7 +8,7 @@
  * `process.env` mutation) so the tests are order-independent.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   E2E_PARSE_QUARANTINE_CONFIG,
   E2E_PARSE_QUARANTINE_ENABLED_VALUE,

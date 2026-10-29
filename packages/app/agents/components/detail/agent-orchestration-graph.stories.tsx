@@ -53,9 +53,9 @@ const FLAT_ROSTER_NOTE =
 const NARROW_COLUMN_PX = 320;
 
 const meta = {
-  title: "App Core/Agents/Session Detail Orchestration Graph",
+  title: "Composites v1.0/Agents/Detail/Agent Orchestration Graph",
   component: AgentOrchestrationGraph,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof AgentOrchestrationGraph>;
 

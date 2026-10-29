@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   branchTraceCommentCollectionQuerySchema,
+  CommentSurface,
   DocumentThreadAnchorStatus,
   resolveAnchorStatusKernel,
-  TraceCommentSurface,
 } from "./comment.js";
 
 describe("branchTraceCommentCollectionQuerySchema", () => {
@@ -11,12 +11,12 @@ describe("branchTraceCommentCollectionQuerySchema", () => {
     expect(branchTraceCommentCollectionQuerySchema.parse({})).toEqual({});
     expect(
       branchTraceCommentCollectionQuerySchema.parse({
-        surface: TraceCommentSurface.BranchTimeline,
+        surface: CommentSurface.BranchTimeline,
       })
-    ).toEqual({ surface: TraceCommentSurface.BranchTimeline });
+    ).toEqual({ surface: CommentSurface.BranchTimeline });
     expect(
       branchTraceCommentCollectionQuerySchema.safeParse({
-        surface: TraceCommentSurface.SessionDetail,
+        surface: CommentSurface.SessionDetail,
       }).success
     ).toBe(false);
   });

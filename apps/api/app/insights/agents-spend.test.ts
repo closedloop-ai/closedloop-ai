@@ -212,6 +212,45 @@ describe("fetchAgentsSpendBreakdowns", () => {
     ]);
   });
 
+  /**
+   * ISS-8052 — equal spend is broken on the model NAME, not on arrival order.
+   *
+   * The rows a `GROUP BY GROUPING SETS` returns come back in whatever order the
+   * plan produces, and `Array#sort` is stable, so a comparator that only
+   * compared values left tied models in that order. This array is serialized
+   * into the byte-compared Layer 5.3 fixture AND picks the top-N models the
+   * model-usage series stacks, so a tie resolving two ways can change which
+   * model collapses into "Other". The rows below are seeded in DESCENDING name
+   * order so a fall-through to arrival order fails this.
+   */
+  it("breaks equal-spend models on the model name, ascending", async () => {
+    const { modelBreakdown } = await runSpendBreakdowns([
+      modelRow("sonnet", 5),
+      modelRow("opus", 5),
+      modelRow("haiku", 5),
+    ]);
+
+    expect(modelBreakdown.map((bucket) => bucket.key)).toEqual([
+      "haiku",
+      "opus",
+      "sonnet",
+    ]);
+  });
+
+  it("still ranks by spend before the name, so the tiebreak cannot reorder unequal models", async () => {
+    // The positive sibling: a comparator that sorted by label FIRST would
+    // satisfy the tie case above while silently destroying the spend ranking.
+    const { modelBreakdown } = await runSpendBreakdowns([
+      modelRow("zeta", 40),
+      modelRow("alpha", 1),
+    ]);
+
+    expect(modelBreakdown.map((bucket) => bucket.key)).toEqual([
+      "zeta",
+      "alpha",
+    ]);
+  });
+
   it("scopes the read to the caller's window and scope predicate", async () => {
     const { queries } = await runSpendBreakdowns([]);
 

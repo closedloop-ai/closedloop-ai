@@ -290,6 +290,10 @@ describe("the projected strip across a DST transition", () => {
         { endMs, startMs }
       ),
       endMs,
+      // ISS-5850: these cases are about DST column geometry, not coverage. No
+      // stated extent keeps every column `Unknown`, which is the pre-ISS-5850
+      // render and leaves the assertions below describing the same strip.
+      extent: null,
       startMs,
     };
 
@@ -297,7 +301,6 @@ describe("the projected strip across a DST transition", () => {
       limitDotEvents: [],
       markers: [],
       scale: TimelineScale.TwelveHours,
-      segmentRows: [],
       source,
       windowStart: 0,
     });

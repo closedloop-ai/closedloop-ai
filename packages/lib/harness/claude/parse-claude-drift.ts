@@ -1,11 +1,33 @@
+import {
+  boundMessage,
+  renderDiagnosticName,
+} from "../../diagnostics/log-safe-text";
 import { stringValue } from "../parser-utils";
 import {
-  ABSENT_RECORD_TYPE,
+  ABSENT_FIELD_VALUE,
   type ClaudeRecordType,
   type ParseSessionLogger,
   type SessionAccumulator,
 } from "./parse-claude-accumulator";
 
+/**
+ * THESE SETS ARE A DRIFT DETECTOR, NOT A TO-DO LIST.
+ *
+ * They record every attribute the harness is KNOWN to emit — whether this parser
+ * consumes it, deliberately ignores it, or has not decoded it yet. Against a
+ * corpus of current transcripts the attribute report is therefore silent, and
+ * the first thing it says is that the harness started sending something new.
+ *
+ * So: adding an attribute here is an assertion that we have SEEN it, not that we
+ * handle it. What is still undecoded is tracked by the failing suites, not here.
+ * When the report names an attribute, decide what it means and then add it.
+ *
+ * ISS-6576: these two blocks lived in `parse-claude-accumulator.ts` after the
+ * module split, where they documented declarations that had moved here — and
+ * the second one rendered as the JSDoc for `ParseSessionLogger` on hover.
+ */
+
+/** Envelope attributes that can ride on any record, whatever its type. */
 const COMMON_ATTRIBUTES: ReadonlySet<string> = new Set([
   // Consumed by `collectSessionAttributes`.
   "type",
@@ -29,6 +51,16 @@ const COMMON_ATTRIBUTES: ReadonlySet<string> = new Set([
   // Read by `collectRecordFaults` on any record that carries them.
   "isCompactSummary",
   "isApiErrorMessage",
+  // ISS-7258: CONSUMED, and genuinely COMMON — measured on `attachment`, `user`,
+  // `assistant` and `system` alike, because it is a fact about the SESSION that
+  // the harness stamps on every record. `collectSessionAttributes` reads it
+  // first-wins for that reason.
+  "sessionKind",
+  // ISS-8659: CONSUMED, and common for the same reason on the same four record
+  // types — a fork stamps it on every record it replayed out of its parent.
+  // `processRecord` reads it once per record and passes the verdict to every
+  // tallying site.
+  "forkedFrom",
 ]);
 
 /** Payload attributes belonging to one record type. */
@@ -44,6 +76,22 @@ export const USER_ATTRIBUTES: ReadonlySet<string> = new Set([
   "sourceToolUseID",
   "toolDenialKind",
   "toolUseResult",
+  // ISS-7258: measured against the live corpus's TOP-LEVEL transcripts and seen
+  // on `user` alone, which is why each is here rather than in
+  // COMMON_ATTRIBUTES. Consumed by nothing.
+  "classifierMetaLines",
+  "isVisibleInTranscriptOnly",
+  "mcpMeta",
+  // Named for the queue but carried by the `user` record the queue re-injected,
+  // never by a `queue-operation` record — which is where the names put them and
+  // where the measurement did not find them.
+  "queueOrigin",
+  "queuePriority",
+  "turnCompanion",
+  "userFeedback",
+  // The same case as `queueOrigin` and `queuePriority` above, and it rides the
+  // same re-injected `user` record.
+  "queueSkipAttachments",
 ]);
 export const ASSISTANT_ATTRIBUTES: ReadonlySet<string> = new Set([
   "message",
@@ -70,14 +118,48 @@ export const ASSISTANT_ATTRIBUTES: ReadonlySet<string> = new Set([
   "attributionMcpTool",
   "attributionPlugin",
   "attributionSkill",
+  // ISS-7258: seen and not consumed. Whether a turn was cut off mid-stream is a
+  // fact this layer does not model — listing it is not a plan to.
+  "isAbortedMidStream",
+  // ISS-7258: CONSUMED — `processAssistantRecord` reads it into
+  // `usageExtras.efforts`. It rides the record, not `message.usage`, which is
+  // why it is here and not among the usage fields.
+  "effort",
+  // `apiBlockIndex` numbers the content blocks WITHIN one
+  // API turn, so every line sharing a `message.id` and `requestId` carries a
+  // different index and the SAME `message.usage` — measured 0..5 over 3,550
+  // records with one distinct usage per turn. It therefore splits nothing the
+  // usage dedup collapses, and reading it as a second dedup dimension would
+  // multiply a turn's tokens by its block count.
+  "apiBlockIndex",
+  // A per-turn override of `effort` above,
+  // null on all 638 observations while `effort` read "high" — so what a
+  // non-null value means relative to the session-level field is undecided, and
+  // listing it here asserts only that the harness sends it.
+  "perTurnEffort",
+  // Keyed by tool-use id: the input as
+  // the harness REWROTE it for execution, and the `cwd` it injected to do so.
+  // The parser models the MODEL-authored input from `message.content`, so these
+  // are a second spelling of a field it already has rather than a missing one.
+  "wireIngestContext",
+  "wireToolInputs",
 ]);
 export const ATTACHMENT_ATTRIBUTES: ReadonlySet<string> = new Set([
   "attachment",
+  // The display copy of the same
+  // attachment `attachment` already carries — the blocks as rendered into the
+  // prompt, and the subset rendered into the human's own turn. The parser reads
+  // the structured `attachment`, so taking these would store the transcript's
+  // prose twice.
+  "rendered",
+  "renderedInHumanTurn",
 ]);
 export const AI_TITLE_ATTRIBUTES: ReadonlySet<string> = new Set(["aiTitle"]);
 export const LAST_PROMPT_ATTRIBUTES: ReadonlySet<string> = new Set([
   "lastPrompt",
   "leafUuid",
+  // ISS-7258: seen on `last-prompt` and consumed by nothing.
+  "explicit",
 ]);
 export const MODE_ATTRIBUTES: ReadonlySet<string> = new Set(["mode"]);
 export const PERMISSION_MODE_ATTRIBUTES: ReadonlySet<string> = new Set();
@@ -106,10 +188,29 @@ export const SYSTEM_ATTRIBUTES: ReadonlySet<string> = new Set([
   "hookCount",
   "hookErrors",
   "hookInfos",
+  // ISS-7258: seen on `system` alone and consumed by nothing. `logicalParentUuid`
+  // is a second threading link beside the envelope's `parentUuid`, which this
+  // layer already declines to read.
+  "cronKind",
+  "logicalParentUuid",
+  // ISS-7258: CONSUMED — `collectCompactBoundary` reads its five scalars onto
+  // the compaction marker named by `preservedSegment.anchorUuid`. It rides a
+  // `subtype: compact_boundary` record, never the `isCompactSummary` marker.
+  "compactMetadata",
 ]);
 export const QUEUE_OPERATION_ATTRIBUTES: ReadonlySet<string> = new Set([
   "operation",
   "content",
+  // Why a queued prompt left the queue
+  // — measured only on `operation: "remove"`, as `absorbed_mid_turn` or
+  // `delivered_to_agent`. Nothing at this layer models the queue at all, so the
+  // operation's own reason has no reader to give it to.
+  "reason",
+]);
+// ISS-7258: CONSUMED. The record's only payload key; `type` and `sessionId` are
+// both already common.
+export const WORKTREE_STATE_ATTRIBUTES: ReadonlySet<string> = new Set([
+  "worktreeSession",
 ]);
 
 /**
@@ -121,42 +222,6 @@ export const QUEUE_OPERATION_ATTRIBUTES: ReadonlySet<string> = new Set([
  */
 const MAX_UNKNOWN_RECORD_TYPES = 50;
 const MAX_UNKNOWN_ATTRIBUTES_PER_TYPE = 50;
-/** Per-name ceiling in the rendered report; a key can be arbitrarily long. */
-const MAX_DIAGNOSTIC_NAME_CHARS = 120;
-/** Whole-message ceiling, so one report line cannot become a durable log flood. */
-const MAX_DIAGNOSTIC_MESSAGE_CHARS = 2000;
-
-// Matching control characters is the point here — they are what forge a second,
-// fabricated log entry out of one transcript-controlled name.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: see above
-const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F]/g;
-
-/**
- * Render one transcript-controlled name safe to interpolate into a log line.
- *
- * JSON permits a newline inside a record type or an object key, so an unescaped
- * name can forge a second log entry that reads as the collector's own — and can
- * be arbitrarily long. Control characters become a visible escape rather than
- * being stripped, so the report still shows that something odd arrived.
- */
-function renderDiagnosticName(name: string): string {
-  const escaped = name.replace(CONTROL_CHARACTERS, (character) => {
-    const code = character.codePointAt(0) ?? 0;
-    return `\\x${code.toString(16).padStart(2, "0")}`;
-  });
-  if (escaped.length <= MAX_DIAGNOSTIC_NAME_CHARS) {
-    return escaped;
-  }
-  return `${escaped.slice(0, MAX_DIAGNOSTIC_NAME_CHARS)}…(+${escaped.length - MAX_DIAGNOSTIC_NAME_CHARS} chars)`;
-}
-
-/** Bound a fully-rendered report line, saying how much it dropped. */
-function boundMessage(message: string): string {
-  if (message.length <= MAX_DIAGNOSTIC_MESSAGE_CHARS) {
-    return message;
-  }
-  return `${message.slice(0, MAX_DIAGNOSTIC_MESSAGE_CHARS)}…(+${message.length - MAX_DIAGNOSTIC_MESSAGE_CHARS} chars truncated)`;
-}
 
 export function countUnknownRecordType(
   record: Record<string, unknown>,
@@ -165,7 +230,9 @@ export function countUnknownRecordType(
   if (!accumulator.collectDiagnostics) {
     return;
   }
-  const key = stringValue(record.type) ?? ABSENT_RECORD_TYPE;
+  const key = renderDiagnosticName(
+    stringValue(record.type) ?? ABSENT_FIELD_VALUE
+  );
   const existing = accumulator.unknownRecordTypes.get(key);
   if (existing === undefined) {
     if (accumulator.unknownRecordTypes.size >= MAX_UNKNOWN_RECORD_TYPES) {
@@ -193,23 +260,11 @@ export function collectUnknownAttributes(
   if (!accumulator.collectDiagnostics) {
     return;
   }
-  let unknown = accumulator.unknownAttributes.get(type);
   for (const attribute of Object.keys(record)) {
     if (COMMON_ATTRIBUTES.has(attribute) || known.has(attribute)) {
       continue;
     }
-    if (!unknown) {
-      unknown = new Set<string>();
-      accumulator.unknownAttributes.set(type, unknown);
-    }
-    if (unknown.has(attribute)) {
-      continue;
-    }
-    if (unknown.size >= MAX_UNKNOWN_ATTRIBUTES_PER_TYPE) {
-      accumulator.droppedUnknownAttributes++;
-      continue;
-    }
-    unknown.add(attribute);
+    noteUnknownName(type, attribute, accumulator);
   }
 }
 
@@ -227,7 +282,7 @@ function reportUnknownRecordTypes(
   }
   const summary = [...accumulator.unknownRecordTypes]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([type, count]) => `${renderDiagnosticName(type)} (${count})`)
+    .map(([type, count]) => `${type} (${count})`)
     .join(", ");
   const overflow =
     accumulator.droppedUnknownTypes > 0
@@ -251,14 +306,14 @@ function reportUnknownAttributes(
   const types = [...accumulator.unknownAttributes].sort((a, b) =>
     a[0].localeCompare(b[0])
   );
-  const overflow =
-    accumulator.droppedUnknownAttributes > 0
-      ? ` (+${accumulator.droppedUnknownAttributes} past the ${MAX_UNKNOWN_ATTRIBUTES_PER_TYPE}-attribute cap)`
-      : "";
   for (const [type, attributes] of types) {
+    const dropped = accumulator.droppedUnknownAttributes.get(type) ?? 0;
+    const overflow =
+      dropped > 0
+        ? ` (+${dropped} past the ${MAX_UNKNOWN_ATTRIBUTES_PER_TYPE}-attribute cap)`
+        : "";
     const listed = [...attributes]
       .sort((a, b) => a.localeCompare(b))
-      .map(renderDiagnosticName)
       .join(", ");
     logger(
       boundMessage(
@@ -282,4 +337,101 @@ export function reportUnknownRecords(
 ): void {
   reportUnknownRecordTypes(accumulator, logger);
   reportUnknownAttributes(accumulator, logger);
+  reportUnreadableTimestamps(accumulator, logger);
+}
+
+/**
+ * ISS-6738 (whitlockk): report records whose timestamp carried a non-empty value no
+ * `Date` could read.
+ *
+ * Reported HERE, beside the other drift signals, because this is the last point
+ * that still knows the transcript: the caller's very next statement drops the
+ * whole session when no timestamp survived, and from there the pass reports zero
+ * sessions, the file is marked seen, and the orphan self-heal readmits it — an
+ * unbounded silent rework loop that looks exactly like an empty transcript.
+ *
+ * Says whether the drop is TOTAL, because the two cases want different
+ * responses: some unreadable stamps among good ones narrows the session's span,
+ * while all of them costs the entire import.
+ *
+ * Silent when every timestamp read, and silent without a logger — the same rule
+ * the reports above follow, so a surface with nowhere to put it pays nothing.
+ */
+function reportUnreadableTimestamps(
+  accumulator: SessionAccumulator,
+  logger?: ParseSessionLogger
+): void {
+  if (!logger || accumulator.unreadableTimestamps === 0) {
+    return;
+  }
+  const total = accumulator.startedAt
+    ? ""
+    : " — NO timestamp survived, so this transcript imports no session at all and will be re-scanned on every pass";
+  logger(
+    boundMessage(
+      `Unreadable timestamps: ${accumulator.unreadableTimestamps} record(s)${total}`
+    )
+  );
+}
+
+/**
+ * ISS-12625: report an unrecognised `queued_command` mode instead of dropping
+ * it. The capture gate admits only `commandMode: "prompt"`, so a mode the
+ * harness adds later is silently discarded — and a discarded mode may be a
+ * human turn, which is the exact failure this ticket was filed to fix. Routed
+ * through the attribute channel (prefixed, so it cannot collide with a real
+ * attribute name) rather than a new one, because `collectUnknownAttributes`
+ * walks the OUTER record and never inspects the attachment's own keys.
+ *
+ * `null` is the unreadable mode — the field absent, or carrying something that
+ * is not a non-empty string — and is reported rather than passed over: a
+ * renamed or retyped discriminator takes every queued prompt with it, which is
+ * this bug again (PR #8942 review, marisolashgrove).
+ *
+ * Widening the drift sets to reach nested payloads is ISS-12686.
+ */
+export function noteUnknownQueuedCommandMode(
+  type: ClaudeRecordType,
+  mode: string | null,
+  accumulator: SessionAccumulator
+): void {
+  if (!accumulator.collectDiagnostics) {
+    return;
+  }
+  noteUnknownName(
+    type,
+    `attachment.commandMode=${mode ?? ABSENT_FIELD_VALUE}`,
+    accumulator
+  );
+}
+
+/**
+ * Retain one drift name under `type`, bounded by the per-type cap. The name is
+ * transcript-derived, so it is rendered log-safe before storage.
+ */
+function noteUnknownName(
+  type: ClaudeRecordType,
+  name: string,
+  accumulator: SessionAccumulator
+): void {
+  let unknown = accumulator.unknownAttributes.get(type);
+  if (!unknown) {
+    unknown = new Set<string>();
+    accumulator.unknownAttributes.set(type, unknown);
+  }
+  const rendered = renderDiagnosticName(name);
+  if (unknown.has(rendered)) {
+    return;
+  }
+  if (unknown.size >= MAX_UNKNOWN_ATTRIBUTES_PER_TYPE) {
+    // ISS-6576: per TYPE, not session-wide. One shared counter made every
+    // type's line claim the overflow suffix, so a type that dropped nothing
+    // reported as truncated.
+    accumulator.droppedUnknownAttributes.set(
+      type,
+      (accumulator.droppedUnknownAttributes.get(type) ?? 0) + 1
+    );
+    return;
+  }
+  unknown.add(rendered);
 }

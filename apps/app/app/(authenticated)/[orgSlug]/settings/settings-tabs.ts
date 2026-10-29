@@ -49,20 +49,6 @@ export const ADMIN_SETTINGS_TABS: readonly SettingsTab[] = [
 ];
 
 /**
- * DOM id of the `Anthropic API Key` card, and the URL fragment that scrolls to
- * it: `/<org>/settings?tab=integrations#anthropic-api-key`.
- *
- * The Integrations tab stacks Cloud compute mode, Local compute targets, this
- * card, GitHub, Google, and Linear, so a deep link that only selected the tab
- * left the arriving user to scan for the card it sent them for. Anything that
- * links a user to a specific Integrations card should target it by id like
- * this rather than trusting tab selection alone.
- *
- * Stable wire value for the same reason the tab ids are: it is bookmarkable.
- */
-export const ANTHROPIC_API_KEY_CARD_ANCHOR = "anthropic-api-key";
-
-/**
  * Query keys this page reads as an integration OAuth callback.
  *
  * These OUTRANK `?tab=`: any nonempty value on one of them forces the

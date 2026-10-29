@@ -17,7 +17,11 @@
  * touching the network.
  */
 
-import { transcriptAccessResponseSchema } from "@repo/api/src/types/desktop-transcripts";
+import { existsSync } from "node:fs";
+import {
+  TRANSCRIPT_ACCESS_FILE_KEY_PARAM,
+  transcriptAccessResponseSchema,
+} from "@repo/api/src/types/desktop-transcripts";
 import { ORG_IDENTITY_HEADER } from "@repo/api/src/types/headers";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { z } from "zod";
@@ -39,6 +43,8 @@ import {
   stageLocalTranscript,
   statLocalTranscriptSize,
 } from "../transcript/transcript-read-cache.js";
+import { unwrapApiEnvelope } from "../util/api-response-utils.js";
+import { applyDesktopClientAttribution } from "../util/desktop-client-attribution-provider.js";
 
 /** Upper bound on the read-route (descriptor) call. */
 const ACCESS_TIMEOUT_MS = 30_000;
@@ -263,10 +269,7 @@ async function tryLocalFallback(
   // `.jsonl` under the trusted transcript root.
   const trustedPath = resolveTrustedTranscriptPath(candidate);
   if (!trustedPath) {
-    gatewayLog.warn(
-      "transcript-read",
-      "local fallback refused: path failed the trusted-transcript-root check"
-    );
+    gatewayLog.warn("transcript-read", localFallbackRefusalMessage(candidate));
     return null;
   }
   // Oversize gate BEFORE staging: stat the vetted file and, if it is over the
@@ -331,6 +334,7 @@ async function cloudFailureOrLocal(
 async function fetchTranscriptAccess(
   deps: TranscriptReadDeps,
   sessionId: string,
+  fileKey: string,
   token: string
 ): Promise<z.infer<typeof transcriptAccessResponseSchema>> {
   const origin = deps.resolveApiOrigin();
@@ -339,6 +343,8 @@ async function fetchTranscriptAccess(
     `/agent-sessions/${encodeURIComponent(sessionId)}/transcript`,
     origin
   );
+  // ISS-12276: the route presigns only this file; an older API ignores it.
+  url.searchParams.set(TRANSCRIPT_ACCESS_FILE_KEY_PARAM, fileKey);
   // Re-assert composition stayed on the configured origin (defense in depth;
   // sessionId is encoded, but keep the invariant explicit).
   if (url.origin !== originUrl.origin) {
@@ -352,6 +358,7 @@ async function fetchTranscriptAccess(
   if (identity) {
     headers.set(ORG_IDENTITY_HEADER, identity.organizationId);
   }
+  applyDesktopClientAttribution(headers);
 
   const doFetch = deps.fetchImpl ?? fetch;
   const response = await doFetch(url, {
@@ -362,8 +369,10 @@ async function fetchTranscriptAccess(
   if (!response.ok) {
     throw new Error(`transcript access failed (HTTP ${response.status})`);
   }
+  // The route answers `{ success: true, data }` (`successResponse`); the
+  // descriptor is the `data` (ISS-12135).
   const parsed = transcriptAccessResponseSchema.safeParse(
-    await response.json()
+    unwrapApiEnvelope(await response.json())
   );
   if (!parsed.success) {
     throw new Error("transcript access response was malformed");
@@ -407,7 +416,7 @@ async function runPrepare(
 
   let access: z.infer<typeof transcriptAccessResponseSchema>;
   try {
-    access = await fetchTranscriptAccess(deps, sessionId, token);
+    access = await fetchTranscriptAccess(deps, sessionId, fileKey, token);
   } catch (error) {
     return cloudFailureOrLocal(
       deps,
@@ -568,4 +577,16 @@ export function registerTranscriptReadIpcHandler(
     cancelTranscriptPrepare(registry, request);
     return Promise.resolve();
   });
+}
+
+/**
+ * ISS-12135 bug 55: why the local fallback was refused, for the log. A tracked
+ * path whose file is gone is a missing transcript, not a path outside the
+ * trusted root, and the log said the latter for both. Only the wording
+ * differs; the trusted-root check above decides the refusal either way.
+ */
+export function localFallbackRefusalMessage(candidate: string): string {
+  return existsSync(candidate)
+    ? "local fallback refused: path failed the trusted-transcript-root check"
+    : "local fallback skipped: the tracked transcript file is missing";
 }

@@ -14,9 +14,9 @@ const completeCollection = makeCollection(
 );
 
 const meta = {
-  title: "App Core/Branches/Pull Request Selector",
+  title: "Composites v1.0/Branches/Branch Pull Request Selector",
   component: BranchPullRequestSelector,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     collection: completeCollection,
@@ -64,11 +64,11 @@ function makeCollection(
 ): BranchAssociatedPullRequestCollection {
   return {
     items: [
-      makePullRequest("closedloop-ai/example-repo", 4473, "Open", false),
+      makePullRequest("closedloop-ai/closedloop-ai", 4473, "Open", false),
       makePullRequest("closedloop-ai/desktop", 4473, "Draft", true),
-      makePullRequest("closedloop-ai/example-repo", 4401, "Merged", false),
+      makePullRequest("closedloop-ai/closedloop-ai", 4401, "Merged", false),
     ],
-    selectedId: "closedloop-ai/example-repo#4473",
+    selectedId: "closedloop-ai/closedloop-ai#4473",
     selectionReason: BranchAssociatedPullRequestSelectionReason.Active,
     completeness: {
       state,

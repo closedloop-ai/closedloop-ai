@@ -1,6 +1,6 @@
 import type { Prisma } from "@repo/database";
 import type { SessionUsageInput } from "./records";
-import { buildUsageSummaryWhereParts } from "./usage-summary-where";
+import { buildUsageSummaryWhere } from "./usage-summary-where";
 
 /**
  * ISS-5283 — per-facet count scoping for the Sessions usage summary.
@@ -32,30 +32,18 @@ import { buildUsageSummaryWhereParts } from "./usage-summary-where";
  * A dimension that carries no active filter has an "excluding" `where` that is
  * by definition identical to the full one, so this returns the caller's already
  * built `where` unchanged and issues no extra query. An unfiltered Sessions page
- * — the overwhelmingly common read — is therefore byte-identical to before,
- * including under the cost-bucket reconciliation path in
- * `buildUsageSummaryWhere`, whose candidate scan is NOT re-run for a dimension
- * that resolves to the base `where`.
+ * — the overwhelmingly common read — is therefore byte-identical to before.
  *
- * A dimension the user HAS filtered on costs a `buildWhere` re-composition, and
- * — on a cost-sensitive query — a second capped candidate scan plus its
- * reconciled-cost read, up to four of them per summary read. That is a real
- * cost, not a free path (stage review); it is bounded by how many facets the
- * user has actually operated, which is 0 on the common read and rarely above 2.
+ * A dimension the user HAS filtered on costs a `buildUsageSummaryWhere`
+ * re-composition per facet, bounded by how many facets the user has actually
+ * operated (0 on the common read, rarely above 2).
  *
- * ## Reconciling the cost path's cap (stage review)
- *
- * `resolveCostBucketMatchedSessionIds` scans at most
- * `SESSION_COST_RECONCILE_CANDIDATE_CAP` candidates, ordered by recency, and
- * honestly drops the rest. The relaxed scan runs over a strictly WIDER
- * population than the fully-filtered one, so on an org that clears the cap the
- * two truncate different tails — and the facet could then advertise FEWER
- * sessions for the selection the table and the cards are already showing, a
- * count that fails to reconcile with its own parent population. So the relaxed
- * id set is UNIONED with the fully-filtered one the totals use. The union can
- * only add rows that also satisfy the full filter, i.e. rows under the
- * CURRENTLY SELECTED option, so it restores that option's count to at least the
- * parent total and leaves every other option's count untouched.
+ * ISS-7176 removed the cost-bucket half of this cost entirely: a cost bucket is
+ * now an ordinary `estimated_cost` predicate `buildUsageSummaryWhere` composes
+ * directly, with no candidate scan and no reconciliation to keep in sync across
+ * facets. ISS-10150 (`quality`) and ISS-10753 (`statuses`) did the same for the
+ * two remaining D13 facets — `resolveFacetCohort` no longer exists, and no
+ * facet resolves through a capped cohort scan any more.
  *
  * ## What is deliberately NOT excluded
  *
@@ -68,12 +56,6 @@ import { buildUsageSummaryWhereParts } from "./usage-summary-where";
  *
  * That makes the rule at the top of this file specifically the **Sessions
  * `userIds` facet's** rule, and it is stated that way on purpose (stage review).
- * Analytics (`agent-telemetry-analytics.tsx`) operates its User Breakdown by
- * sending the clicked owner as `sharedFilters.userId` and reading `usage.byUser`
- * — so on THAT surface the owner breakdown still collapses to the selected row.
- * This file does not change that (it behaved the same before), and it does not
- * claim to: separating a user-operated `userId` from the pinned scope is a
- * change to the Analytics query contract, not to this predicate.
  *
  * The date window, quality, team scope, and the autonomy/cost/change/PR clauses
  * likewise stay on every facet: none of them is the counted dimension.
@@ -172,14 +154,7 @@ function omitFacetDimension(
 export async function buildSessionFacetCountWheres(
   input: SessionUsageInput,
   where: Prisma.SessionDetailWhereInput,
-  dateField: "sessionStartedAt" | "lastActivityAt" = "lastActivityAt",
-  /**
-   * The reconciled cost-matched id set the summary TOTALS are scoped to, from
-   * `buildUsageSummaryWhereParts`. `null` on a non-cost-sensitive query. Used to
-   * keep a relaxed facet count from falling below its own parent when the
-   * candidate cap bites — see the module doc.
-   */
-  costMatchedIds: string[] | null = null
+  dateField: "sessionStartedAt" | "lastActivityAt" = "lastActivityAt"
 ): Promise<SessionFacetCountWheres> {
   const dimensions = [
     SessionFacetDimension.Owner,
@@ -194,41 +169,12 @@ export async function buildSessionFacetCountWheres(
         // No filter on this dimension ⇒ the excluded where IS the full where.
         return [dimension, where] as const;
       }
-      const relaxed = await buildUsageSummaryWhereParts(
+      const relaxed = await buildUsageSummaryWhere(
         { ...input, filters: omitFacetDimension(input.filters, dimension) },
         dateField
       );
-      return [dimension, unionCostMatchedIds(relaxed, costMatchedIds)] as const;
+      return [dimension, relaxed] as const;
     })
   );
   return Object.fromEntries(entries) as SessionFacetCountWheres;
-}
-
-/**
- * Widen a relaxed cost-sensitive `where` so its `artifactId IN (…)` also carries
- * every id the fully-filtered totals counted. See "Reconciling the cost path's
- * cap" in the module doc. A non-cost-sensitive relaxed build has no id set to
- * union and is returned unchanged.
- */
-function unionCostMatchedIds(
-  relaxed: {
-    where: Prisma.SessionDetailWhereInput;
-    costMatchedIds: string[] | null;
-  },
-  costMatchedIds: string[] | null
-): Prisma.SessionDetailWhereInput {
-  if (relaxed.costMatchedIds === null || costMatchedIds === null) {
-    return relaxed.where;
-  }
-  const merged = [...new Set([...relaxed.costMatchedIds, ...costMatchedIds])];
-  if (merged.length === relaxed.costMatchedIds.length) {
-    // The relaxed scan already covered the filtered one — nothing to widen.
-    return relaxed.where;
-  }
-  // `buildUsageSummaryWhereParts` composes exactly `AND: [baseWhere, { artifactId: { in } }]`
-  // on the cost path, so rebuilding that pair here keeps the shape it produced.
-  const [baseWhere] = Array.isArray(relaxed.where.AND)
-    ? relaxed.where.AND
-    : [relaxed.where];
-  return { AND: [baseWhere, { artifactId: { in: merged } }] };
 }

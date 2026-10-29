@@ -1,37 +1,27 @@
+import type { Harness } from "@repo/api/src/types/agent-component";
 import type {
-  AgentComponent,
-  Harness,
-} from "@repo/api/src/types/agent-component";
+  AgentComponentFacetCounts,
+  AgentComponentFilters,
+} from "@repo/api/src/utils/agent-component-reduce";
 import { AGENT_COMPONENT_AUTHORS_LABEL } from "@repo/app/agents/lib/agent-component-authors";
 import type { FilterFacetGroup } from "@repo/design-system/components/ui/table-filters";
-import { BotIcon, FolderGitIcon, UsersIcon } from "lucide-react";
 import { toggleFacetValue } from "../../../shared/lib/facet-filter";
-import {
-  type AgentComponentFilters,
-  filterAgentComponentRows,
-} from "../../hooks/use-agent-components-filter-state";
-import {
-  type AgentComponentActiveFilters,
-  countFacetValues,
-} from "../../lib/agent-component-sort-group";
 
 /**
- * Maps the multi-select Agents workspace filter state to the generic
- * `FilterPopover` facet groups (Authors / Source / Harness).
- *
- * Options are derived from `countFacetValues` so each option shows how many
- * items the selection would add on top of the current type-tab and other active
- * facet narrowing. Zero-count options are included (shown grayed) so the menu
- * remains stable as filters change.
+ * Maps the Agents workspace's facet counts to the generic `FilterPopover` facet
+ * groups (Authors / Source / Harness).
  *
  * Mirrors the `branchFilterFacetGroups` pattern from
  * `packages/app/branches/lib/branch-filter-adapter.tsx`.
  *
- * ISS-5009: this is a plain function, not a hook, so the Source-provenance flag
- * arrives as `honestSourceEnabled` from the mounting component and is forwarded
- * to the facet builders. The caller MUST pass the same value it passes to
- * `useAgentComponentsFilterState`, or the menu it renders offers options the
- * membership predicate cannot match.
+ * ISS-6822: this takes the COUNTS, not the rows. It used to take the filtered
+ * rows plus the whole inventory corpus and call `countFacetValues` itself, which
+ * made the filter menu a second reason the browser needed the entire population
+ * in memory — and put the ISS-5009 source-projection flag in a second place
+ * where it had to agree with the membership predicate. The counting now happens
+ * once, wherever the population is (`useAgentsInventoryView` on the legacy path,
+ * the producer on the bounded one), and this stays presentational: labels,
+ * icons, selection, and the toggle handlers.
  *
  * Usage (in a toolbar component):
  * ```tsx
@@ -44,59 +34,28 @@ import {
  *     statusOptions: [],
  *     priorityOptions: [],
  *     hideQuickToggles: true,
- *     facetGroups: agentComponentFilterFacetGroups(filteredRows, allRows, filters, onChange, honestSourceEnabled),
+ *     facetGroups: agentComponentFilterFacetGroups(facets, filters, onChange),
  *   }}
  * />
  * ```
  */
 export function agentComponentFilterFacetGroups(
-  /** Already-filtered rows (type-tab + other active facets applied). */
-  rows: AgentComponent[],
-  /** Full inventory corpus — used to build the complete value universe for zero-count options. */
-  allRows: AgentComponent[],
+  /**
+   * Per-option counts and the complete value universe, already reduced. The
+   * Source options carry whichever projection (`honestSource` or the legacy
+   * echo) the membership predicate was given, because one reduction produced
+   * both — an option counted under one projection and matched under the other
+   * would offer a positive count that selects zero rows (ISS-5009).
+   */
+  facets: AgentComponentFacetCounts,
   filters: AgentComponentFilters,
-  onChange: (next: AgentComponentFilters) => void,
-  /** ISS-5009 Source-provenance honesty flag, resolved once by the caller. */
-  honestSourceEnabled: boolean
+  onChange: (next: AgentComponentFilters) => void
 ): FilterFacetGroup[] {
-  const activeFilters: AgentComponentActiveFilters = {
-    kinds: filters.kinds,
-    collaborators: filters.collaborators,
-    sources: filters.sources,
-    harnesses: filters.harnesses,
-    search: filters.search,
-  };
-
-  // Harness option counts must ignore the active harness selection, otherwise
-  // once one harness is checked the other reads 0 even though checking it would
-  // add its rows through the OR predicate (whitlockk, FEA-4336). Re-filter the full
-  // corpus with the harness facet cleared so each harness option honestly
-  // previews how many rows toggling it surfaces. When no harness is selected
-  // this is exactly `rows`, so the extra pass only runs while a harness is
-  // active.
-  const harnessCountRows =
-    filters.harnesses.length === 0
-      ? rows
-      : filterAgentComponentRows(
-          allRows,
-          { ...filters, harnesses: [] },
-          honestSourceEnabled
-        );
-
-  const { collaborators, sources, harnesses } = countFacetValues(
-    rows,
-    allRows,
-    activeFilters,
-    harnessCountRows,
-    honestSourceEnabled
-  );
-
   return [
     {
       id: "collaborator",
       label: AGENT_COMPONENT_AUTHORS_LABEL,
-      icon: <UsersIcon className="size-4" />,
-      options: collaborators,
+      options: facets.collaborators,
       selectedValues: filters.collaborators,
       onToggle: (value) =>
         onChange({
@@ -107,8 +66,7 @@ export function agentComponentFilterFacetGroups(
     {
       id: "source",
       label: "Source",
-      icon: <FolderGitIcon className="size-4" />,
-      options: sources,
+      options: facets.sources,
       selectedValues: filters.sources,
       onToggle: (value) =>
         onChange({
@@ -119,8 +77,7 @@ export function agentComponentFilterFacetGroups(
     {
       id: "harness",
       label: "Harness",
-      icon: <BotIcon className="size-4" />,
-      options: harnesses,
+      options: facets.harnesses,
       selectedValues: filters.harnesses as string[],
       onToggle: (value) =>
         onChange({

@@ -14,7 +14,7 @@
 //   So a session is modeled here as belonging to a single phase (a simplification)
 //   and the expanded rows do NOT print a per-phase cost — the whole-session cost
 //   shows only on the session detail. Phase and headline costs are DERIVED by
-//   summing sessions so they always reconcile (pinned in phase-breakdown.test.ts).
+//   summing sessions so they always reconcile.
 // - Unattributed carries the sessions whose activity could not be attributed to a
 //   phase, so the phase session counts still reconcile with the branch total.
 
@@ -470,7 +470,7 @@ const ELAPSED_MINUTES_BY_PHASE = new Map<PhaseKey, number>(
   ).map((segment) => [segment.key, segment.minutes])
 );
 
-export const headlineCostUsd: number = PHASE_SESSIONS.reduce(
+const headlineCostUsd: number = PHASE_SESSIONS.reduce(
   (sum, phase) =>
     sum + phase.sessions.reduce((phaseSum, s) => phaseSum + s.costUsd, 0),
   0

@@ -5,10 +5,12 @@
  * `scripts/run-electron-builder.mjs`.
  *
  * The entrypoint stays a thin shell (stat the staged app, spawn
- * electron-builder, propagate the exit code). The decision it makes BEFORE
- * spawning — is this a signed release build, an unsigned local build, or a
- * broken secret configuration we must refuse — lives here, parameterized over
- * an injected env object so it can be driven without touching `process.env`.
+ * electron-builder, propagate the exit code — plus the single ISS-10381 retry
+ * below). The decision it makes BEFORE spawning — is this a signed release
+ * build, an unsigned local build, or a broken secret configuration we must
+ * refuse — lives here, parameterized over an injected env object so it can be
+ * driven without touching `process.env`. So does the decision it makes AFTER a
+ * failed spawn: whether that failure is the one class worth a second attempt.
  *
  * Why it is a classification and not a boolean: "the signing secrets are all
  * here" and "I cannot tell whether they are here" must not collapse to the same
@@ -141,4 +143,59 @@ function macSigningMode(emptyDefined, absent, configured) {
     return MacSigningMode.Unsigned;
   }
   return MacSigningMode.Partial;
+}
+
+/**
+ * ISS-10381 (PRD-707 FR2) — the transient macOS signing failures a second
+ * packaging attempt actually clears.
+ *
+ * An ALLOWLIST, and that polarity is the whole design. A signing failure this
+ * table does not recognise is treated as real and fails on its first, legible
+ * error: a bad identity, a revoked certificate and an entitlement mismatch are
+ * all permanent, and retrying one buys nothing but eight minutes and a second
+ * copy of the same error above the one that matters. A denylist would invert
+ * that and retry every failure nobody had thought of yet.
+ *
+ * The one member is evidenced, not guessed. Scheduled candidate run
+ * 34992566918 (2026-09-15) died mid-`codesign --timestamp` on
+ * `locale.pak: A timestamp was expected but was not found.` — Apple's timestamp
+ * authority refusing for that one request, with the certificate, keychain and
+ * entitlements all fine; the 08:00 run the same morning signed the same tree.
+ *
+ * NOT here, deliberately: the `security set-key-partition-list` keychain-import
+ * class PRD-707 FR2 also names. This repo diagnosed its one occurrence
+ * (ISS-9161) as a DETERMINISTIC macOS 26.6 behaviour change and fixed it in
+ * `patches/app-builder-lib@26.15.3.patch`; `docs/runbooks/desktop-release-failure-triage.md`
+ * records that re-dispatching does not clear it. Adding it is one row here if a
+ * human decides otherwise.
+ */
+const RETRYABLE_MAC_SIGNING_FAILURES = Object.freeze([
+  Object.freeze({
+    label: "Apple timestamp authority",
+    pattern:
+      /A timestamp was expected but was not found|timestamp service is not available/i,
+  }),
+]);
+
+/**
+ * Name the transient class in a failed packaging run's output, or `null` when
+ * nothing in it is known to be transient.
+ *
+ * The caller passes a bounded TAIL of each of the run's output streams, joined
+ * — which is where electron-builder's failure always is, since it stops at the
+ * error. Per stream, not one shared tail, because the two are separate OS pipes
+ * and a stdout flood would otherwise evict a stderr diagnostic (ISS-10547). So
+ * this is not one contiguous slice of the run: match within a line, never
+ * across the join.
+ *
+ * @param {string} output
+ * @returns {string | null}
+ */
+export function classifyRetryableMacSigningFailure(output) {
+  for (const { label, pattern } of RETRYABLE_MAC_SIGNING_FAILURES) {
+    if (pattern.test(output)) {
+      return label;
+    }
+  }
+  return null;
 }

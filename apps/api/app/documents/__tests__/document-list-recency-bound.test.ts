@@ -117,24 +117,26 @@ function seedPowerUserYear(): SeededArtifact[] {
       updatedAt: new Date(FIXED_NOW.getTime() - dayIndex * DAY_MS),
     });
   }
-  artifacts.push({
-    id: "artifact-other-user",
-    organizationId: ORGANIZATION_ID,
-    type: ArtifactType.DOCUMENT,
-    assigneeId: OTHER_USER_ID,
-    projectId: ACTIVE_PROJECT_ID,
-    createdAt: FIXED_NOW,
-    updatedAt: FIXED_NOW,
-  });
-  artifacts.push({
-    id: "artifact-not-a-document",
-    organizationId: ORGANIZATION_ID,
-    type: ArtifactType.BRANCH,
-    assigneeId: USER_ID,
-    projectId: ACTIVE_PROJECT_ID,
-    createdAt: FIXED_NOW,
-    updatedAt: FIXED_NOW,
-  });
+  artifacts.push(
+    {
+      id: "artifact-other-user",
+      organizationId: ORGANIZATION_ID,
+      type: ArtifactType.DOCUMENT,
+      assigneeId: OTHER_USER_ID,
+      projectId: ACTIVE_PROJECT_ID,
+      createdAt: FIXED_NOW,
+      updatedAt: FIXED_NOW,
+    },
+    {
+      id: "artifact-not-a-document",
+      organizationId: ORGANIZATION_ID,
+      type: ArtifactType.BRANCH,
+      assigneeId: USER_ID,
+      projectId: ACTIVE_PROJECT_ID,
+      createdAt: FIXED_NOW,
+      updatedAt: FIXED_NOW,
+    }
+  );
   return artifacts;
 }
 

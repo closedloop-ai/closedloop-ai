@@ -11,7 +11,6 @@ import {
   ANCHOR_TEXT_NOT_FOUND_ERROR,
   anchorThreadToText,
   findAnchorText,
-  hashOfJSON,
   isAnchorValidationError,
 } from "../server/yjs-anchor";
 
@@ -91,38 +90,6 @@ function collectAllAttrKeys(doc: Doc): string[] {
 
   return keys;
 }
-
-// ---------------------------------------------------------------------------
-// hashOfJSON
-// ---------------------------------------------------------------------------
-
-describe("hashOfJSON", () => {
-  it("produces consistent 8-char output for a known input", () => {
-    const input = {
-      type: "liveblocksCommentMark",
-      attrs: { orphan: false, threadId: "th_abc" },
-    };
-    const result = hashOfJSON(input);
-    // Base64 of 6 bytes is exactly 8 characters (with padding)
-    expect(result).toHaveLength(8);
-    // Same input always produces the same hash
-    expect(hashOfJSON(input)).toBe(result);
-  });
-
-  it("produces the same hash on repeated calls with identical input", () => {
-    const input = {
-      type: "liveblocksCommentMark",
-      attrs: { orphan: false, threadId: "th_abc" },
-    };
-    expect(hashOfJSON(input)).toBe(hashOfJSON(input));
-  });
-
-  it("produces a different hash when attribute key order differs (lib0.encodeAny is order-sensitive)", () => {
-    const ordered = { orphan: false, threadId: "th_abc" };
-    const reversed = { threadId: "th_abc", orphan: false };
-    expect(hashOfJSON(ordered)).not.toBe(hashOfJSON(reversed));
-  });
-});
 
 describe("isAnchorValidationError", () => {
   it.each([

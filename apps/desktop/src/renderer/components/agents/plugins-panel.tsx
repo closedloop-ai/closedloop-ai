@@ -30,6 +30,7 @@ import {
 } from "@repo/app/packs/components/member-targets-block";
 import { PacksWorkspace } from "@repo/app/packs/components/packs-workspace";
 import { PacksWorkspaceSkeleton } from "@repo/app/packs/components/packs-workspace-skeleton";
+import { usePacksRouteSelection } from "@repo/app/packs/hooks/use-packs-route-selection";
 import { deriveContentInstallStates } from "@repo/app/packs/lib/content-install-state";
 import { MemberInstallDispatchTone } from "@repo/app/packs/lib/member-install-dispatch-copy";
 import { LOCAL_MACHINE_TARGET_ID } from "@repo/app/packs/lib/member-targets";
@@ -38,8 +39,14 @@ import {
   createPacksContext,
   PacksMode,
 } from "@repo/app/packs/lib/packs-context";
-import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
-import { MEMBER_SELF_SERVICE_INSTALL_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import {
+  useFeatureFlagEnabledOptional,
+  useFeatureFlagGateOptional,
+} from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import {
+  MEMBER_SELF_SERVICE_INSTALL_FEATURE_FLAG_KEY,
+  PACKS_DETAIL_ROUTE_FEATURE_FLAG_KEY,
+} from "@repo/app/shared/lib/feature-flags";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   CatalogContentItem,
@@ -47,6 +54,8 @@ import type {
   InstalledPackDetail,
   InstallRunRecord,
 } from "../../../shared/agent-db-contract";
+import { cleanIpcError } from "../../clean-ipc-error";
+import { useCancelledRef } from "../../hooks/use-cancelled-ref";
 import {
   buildPackViewsFromInstalledMap,
   catalogEntryToPackView,
@@ -75,6 +84,11 @@ function useCatalogData(): CatalogData {
   );
   const [state, setState] = useState<LoadState>("idle");
 
+  // `useRunHistory` below already guards its read with the house `cancelled`
+  // flag; `reload` is reachable from the mount effect, the install-output
+  // subscription, and the retry button, so it takes the lifetime-scoped form.
+  const cancelled = useCancelledRef();
+
   const reload = useCallback(() => {
     const api = window.desktopApi?.db;
     if (!api) {
@@ -84,6 +98,9 @@ function useCatalogData(): CatalogData {
     setState("loading");
     Promise.all([api.getCatalog(), api.getInstalledPacks()])
       .then(([catalog, installed]) => {
+        if (cancelled.current) {
+          return;
+        }
         setEntries(catalog);
         const map = new Map<string, string[]>();
         for (const pack of installed) {
@@ -92,8 +109,12 @@ function useCatalogData(): CatalogData {
         setInstalledById(map);
         setState("ready");
       })
-      .catch(() => setState("error"));
-  }, []);
+      .catch(() => {
+        if (!cancelled.current) {
+          setState("error");
+        }
+      });
+  }, [cancelled]);
 
   useEffect(() => {
     reload();
@@ -174,10 +195,37 @@ export function PluginsPanel() {
   );
   const [historyKey, setHistoryKey] = useState(0);
   const runs = useRunHistory(historyKey);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // ISS-6925: the desktop shell's ONE read of the addressable-detail gate, at
+  // its mount site — the same PostHog key `apps/app` reads, resolved from the
+  // signed-in account's assignment. It picks between two whole selection
+  // shapes; nothing below is handed the boolean.
+  const packsDetailRouteGate = useFeatureFlagGateOptional(
+    PACKS_DETAIL_ROUTE_FEATURE_FLAG_KEY
+  );
+  const routeSelection = usePacksRouteSelection();
+  // Scoped to the Packs surface, and only once the flag has RESOLVED. This
+  // panel is ALSO the Agents view's plugins panel (`agents-view.tsx`), where a
+  // card click must keep opening the detail in place — turning it into a
+  // navigation there would throw the reader onto a different screen. The
+  // `isReady` half stops an unresolved flag from handing a selection to
+  // component state and then snatching it back when PostHog answers.
+  const packsDetailRouteEnabled =
+    packsDetailRouteGate.isReady &&
+    packsDetailRouteGate.enabled &&
+    routeSelection.isPacksRoute;
+  const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
+  const selectedId = packsDetailRouteEnabled
+    ? routeSelection.selectedPackId
+    : localSelectedId;
+  const selectPack = packsDetailRouteEnabled
+    ? routeSelection.selectPack
+    : setLocalSelectedId;
   const [contentsById, setContentsById] = useState<
     Map<string, CatalogContentItem[]>
   >(new Map());
+  const [contentsUnavailableById, setContentsUnavailableById] = useState<
+    Set<string>
+  >(new Set());
   const [analyticsById, setAnalyticsById] = useState<
     Map<string, PackAnalyticsResponse>
   >(new Map());
@@ -236,9 +284,7 @@ export function PluginsPanel() {
           setError(result.error?.message ?? `Could not ${action} plugin.`);
         }
       } catch (err: unknown) {
-        setError(
-          err instanceof Error ? err.message : `Could not ${action} plugin.`
-        );
+        setError(cleanIpcError(err, `Could not ${action} plugin.`));
       } finally {
         setPending(null);
         setHistoryKey((k) => k + 1);
@@ -329,31 +375,39 @@ export function PluginsPanel() {
     lastInstallHarness,
   ]);
 
-  const handleSelect = useCallback(
-    (packId: string | null) => {
-      setSelectedId(packId);
-      // The per-machine block's outcome is keyed by (machine × harness) only,
-      // and the local machine row is the same row for every pack — so a failure
-      // left over from the previous pack would render against the newly
-      // selected one. Clear it with the selection that made it stale.
-      setError(null);
-      setLastInstallHarness(null);
-      if (!packId) {
-        return;
-      }
+  // ISS-6925: hydration is keyed on the SELECTION rather than the click that
+  // used to be its only cause. A pack reached by URL (a reload, a shared link)
+  // never fires `handleSelect`, so leaving these reads there would render its
+  // detail with no contents, no analytics, and no per-component install state —
+  // indistinguishable from a pack that genuinely has none.
+  const hydratePack = useCallback(
+    (packId: string) => {
       if (!contentsById.has(packId)) {
-        window.desktopApi?.db
-          ?.getCatalogContents?.(packId)
-          ?.then((contents) => {
-            if (contents) {
-              setContentsById((prev) =>
-                new Map(prev).set(packId, contents as CatalogContentItem[])
-              );
-            }
-          })
-          ?.catch(() => {
-            // Contents are best-effort; the cached entry contents still render.
-          });
+        const contentsPromise =
+          window.desktopApi?.db?.getCatalogContents?.(packId);
+        if (isPromiseLike<CatalogContentItem[] | null>(contentsPromise)) {
+          contentsPromise
+            .then((contents) => {
+              if (Array.isArray(contents)) {
+                setContentsById((prev) => new Map(prev).set(packId, contents));
+                setContentsUnavailableById((prev) => {
+                  if (!prev.has(packId)) {
+                    return prev;
+                  }
+                  const next = new Set(prev);
+                  next.delete(packId);
+                  return next;
+                });
+                return;
+              }
+              setContentsUnavailableById((prev) => new Set(prev).add(packId));
+            })
+            .catch(() => {
+              setContentsUnavailableById((prev) => new Set(prev).add(packId));
+            });
+        } else {
+          setContentsUnavailableById((prev) => new Set(prev).add(packId));
+        }
       }
       // Org-wide team-usage + performance overlay (best-effort; requires
       // sign-in + cloud reach — null when unavailable, tabs stay hidden).
@@ -379,6 +433,36 @@ export function PluginsPanel() {
       }
     },
     [contentsById, analyticsById, detailById, fetchPackDetail]
+  );
+
+  useEffect(() => {
+    if (selectedId) {
+      hydratePack(selectedId);
+    }
+  }, [selectedId, hydratePack]);
+
+  // The per-machine block's outcome is keyed by (machine × harness) only, and
+  // the local machine row is the same row for every pack — so a failure left
+  // over from the previous pack would render against the newly selected one.
+  //
+  // ISS-6925 review (whitlockk): this must key on the SELECTION, not on the click.
+  // Once detail is addressable, Back, Forward and a direct load all move
+  // `selectedId` without ever reaching `handleSelect`, so a reset that lived in
+  // the click handler would render pack A's failed install under pack B.
+  // Deliberately depends on `selectedId` alone: adding `hydratePack` would
+  // re-run this whenever the contents cache changes, wiping a fresh mutation
+  // error the moment its own refetch landed.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: see above — the effect is the selection change, not the hydration identity.
+  useEffect(() => {
+    setError(null);
+    setLastInstallHarness(null);
+  }, [selectedId]);
+
+  const handleSelect = useCallback(
+    (packId: string | null) => {
+      selectPack(packId);
+    },
+    [selectPack]
   );
 
   const detailPack = useMemo<PackView | null>(() => {
@@ -443,7 +527,11 @@ export function PluginsPanel() {
   return (
     <div className="min-h-0 flex-1" data-testid="plugins-panel">
       <PacksWorkspace
+        backHref={packsDetailRouteEnabled ? routeSelection.backHref : undefined}
         context={context}
+        detailContentsUnavailable={
+          selectedId ? contentsUnavailableById.has(selectedId) : false
+        }
         detailPack={detailPack}
         footerSlot={<RunHistoryList runs={runs} />}
         installError={error}
@@ -459,6 +547,9 @@ export function PluginsPanel() {
         }
         onUpdate={(packId, harness) => runMutation(packId, harness, "update")}
         packs={packViews}
+        selectedPackId={
+          packsDetailRouteEnabled ? routeSelection.selectedPackId : undefined
+        }
       />
     </div>
   );
@@ -504,6 +595,13 @@ function RunStatusBadge({ exitCode }: { exitCode: number | null }) {
     return <Badge variant="secondary">Success</Badge>;
   }
   return <Badge variant="destructive">Failed ({exitCode})</Badge>;
+}
+
+function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
+  if (typeof value !== "object" || value === null || !("then" in value)) {
+    return false;
+  }
+  return typeof (value as { then?: unknown }).then === "function";
 }
 
 /**

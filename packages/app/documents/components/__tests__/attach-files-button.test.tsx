@@ -1,4 +1,10 @@
-import { MAX_ATTACHMENT_FILE_SIZE_BYTES } from "@repo/api/src/types/attachment";
+import {
+  ALLOWED_EXTENSIONS,
+  MAX_ATTACHMENT_FILE_SIZE_BYTES,
+  MAX_MEDIA_FILE_SIZE_BYTES,
+  MEDIA_MIME_TYPES,
+} from "@repo/api/src/types/attachment";
+import { formatAttachmentSize } from "@repo/app/documents/lib/format-attachment-size";
 import { fireEvent, render } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -24,13 +30,18 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
 
 import { AttachFilesButton } from "../attach-files-button";
 
-function selectFile(sizeBytes: number, filename = "report.pdf") {
+function renderPicker() {
   const { container } = render(<AttachFilesButton documentId="document-1" />);
-  const input = container.querySelector(
-    'input[type="file"]'
-  ) as HTMLInputElement;
+  return container.querySelector('input[type="file"]') as HTMLInputElement;
+}
 
-  const file = new File(["x"], filename, { type: "application/pdf" });
+function selectFile(
+  sizeBytes: number,
+  mimeType = "application/pdf",
+  filename = "report.pdf"
+) {
+  const input = renderPicker();
+  const file = new File(["x"], filename, { type: mimeType });
   Object.defineProperty(file, "size", { value: sizeBytes });
   fireEvent.change(input, { target: { files: [file] } });
   return input;
@@ -62,7 +73,7 @@ describe("AttachFilesButton", () => {
       selectFile(MAX_ATTACHMENT_FILE_SIZE_BYTES + 1);
 
       expect(mockToastError).toHaveBeenCalledWith(
-        "Files must be 10 MiB or smaller"
+        `Files must be ${formatAttachmentSize(MAX_ATTACHMENT_FILE_SIZE_BYTES)} or smaller`
       );
       expect(mockRequestUploadMutate).not.toHaveBeenCalled();
       // The input is cleared so the same file can be re-selected.
@@ -83,5 +94,54 @@ describe("AttachFilesButton", () => {
 
     expect(mockToastError).not.toHaveBeenCalled();
     expect(mockRequestUploadMutate).toHaveBeenCalledTimes(1);
+  });
+
+  // ISS-10415 / operator ruling 2026-09-17: the API accepts media up to the
+  // media ceiling, and this picker is the only way a user reaches it. The
+  // contract is PER TYPE, so the fixture runs every media MIME — one format
+  // cannot tell a media allowance from a blanket ceiling raise, and the
+  // non-media case below is what kills the blanket-raise mutation.
+  test.each([...MEDIA_MIME_TYPES])(
+    "requests an upload for a %s file far above the document ceiling",
+    (mimeType) => {
+      selectFile(MAX_ATTACHMENT_FILE_SIZE_BYTES + 1, mimeType, "capture.bin");
+
+      expect(mockToastError).not.toHaveBeenCalled();
+      expect(mockRequestUploadMutate).toHaveBeenCalledTimes(1);
+      expect(mockRequestUploadMutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mimeType,
+          sizeBytes: MAX_ATTACHMENT_FILE_SIZE_BYTES + 1,
+        }),
+        expect.anything()
+      );
+    }
+  );
+
+  test.each([...MEDIA_MIME_TYPES])(
+    "rejects a %s file above the media ceiling and names that ceiling",
+    (mimeType) => {
+      selectFile(MAX_MEDIA_FILE_SIZE_BYTES + 1, mimeType, "capture.bin");
+
+      expect(mockToastError).toHaveBeenCalledWith(
+        `Video and audio files must be ${formatAttachmentSize(MAX_MEDIA_FILE_SIZE_BYTES)} or smaller`
+      );
+      expect(mockRequestUploadMutate).not.toHaveBeenCalled();
+    }
+  );
+
+  test("offers every media extension in the picker alongside the documents", () => {
+    const accept = renderPicker().getAttribute("accept") ?? "";
+    const offered = accept.split(",");
+
+    for (const extension of [".mov", ".mp4", ".mp3"]) {
+      expect(offered).toContain(extension);
+    }
+    // Positive control on the same locator: the pre-existing document
+    // extensions are still offered, so a match here is not an empty `accept`.
+    for (const extension of [".pdf", ".png", ".docx"]) {
+      expect(offered).toContain(extension);
+    }
+    expect(accept).toBe(ALLOWED_EXTENSIONS);
   });
 });

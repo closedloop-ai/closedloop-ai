@@ -25,7 +25,10 @@ import type {
   PackDistributionTarget,
   PackView,
 } from "../../lib/pack-view";
-import { MemberView } from "../member-view";
+import { MemberView, YOUR_PACKS_EMPTY_TITLE } from "../member-view";
+
+const REQUIRED_GROUP_LABEL = "Required by your org";
+const LOAD_FAILED_TITLE = "Couldn't load packs";
 
 function target(
   overrides: Partial<PackDistributionTarget> = {}
@@ -102,7 +105,7 @@ describe("MemberView", () => {
     expect(
       screen.getByRole("region", { name: "Your packs" })
     ).toBeInTheDocument();
-    expect(screen.getByText("Required by your org")).toBeInTheDocument();
+    expect(screen.getByText(REQUIRED_GROUP_LABEL)).toBeInTheDocument();
     expect(screen.getByText("Installed")).toBeInTheDocument();
     expect(screen.getByText("Security Baseline")).toBeInTheDocument();
     expect(screen.getByText("Release Notes Writer")).toBeInTheDocument();
@@ -150,14 +153,14 @@ describe("MemberView", () => {
     render(<MemberView isLoading packs={[]} />);
 
     expect(screen.getByTestId("member-packs-skeleton")).toBeInTheDocument();
-    expect(screen.queryByText("No packs yet")).toBeNull();
+    expect(screen.queryByText(YOUR_PACKS_EMPTY_TITLE)).toBeNull();
   });
 
   it("renders an honest error state (never a misleading empty) when the read fails", () => {
     render(<MemberView error={new Error("boom")} packs={[]} />);
 
-    expect(screen.getByText("Couldn't load packs")).toBeInTheDocument();
-    expect(screen.queryByText("No packs yet")).toBeNull();
+    expect(screen.getByText(LOAD_FAILED_TITLE)).toBeInTheDocument();
+    expect(screen.queryByText(YOUR_PACKS_EMPTY_TITLE)).toBeNull();
   });
 
   it("tells the same timeout story as the rest of the page on a client deadline", () => {
@@ -175,14 +178,16 @@ describe("MemberView", () => {
     );
 
     expect(screen.getByText("Packs took too long to load")).toBeInTheDocument();
-    expect(screen.queryByText("Couldn't load packs")).toBeNull();
+    expect(screen.queryByText(LOAD_FAILED_TITLE)).toBeNull();
   });
 
   it("renders the empty state inside the primary region when the member has no packs", () => {
     render(<MemberView packs={[]} />);
 
     const region = screen.getByRole("region", { name: "Your packs" });
-    expect(within(region).getByText("No packs yet")).toBeInTheDocument();
+    expect(
+      within(region).getByText(YOUR_PACKS_EMPTY_TITLE)
+    ).toBeInTheDocument();
   });
 
   it("renders the supplied availableSlot as the Available region body (member-owned edit path)", () => {
@@ -234,7 +239,7 @@ describe("MemberView", () => {
     );
 
     // The primary region owns the cloud error…
-    expect(screen.getByText("Couldn't load packs")).toBeInTheDocument();
+    expect(screen.getByText(LOAD_FAILED_TITLE)).toBeInTheDocument();
     // …and the local slot stays mounted alongside it.
     expect(
       screen.getByRole("region", { name: "Available" })
@@ -257,7 +262,7 @@ describe("MemberView", () => {
 
     // Not required for this member: no Required heading, and the pack surfaces
     // in Available instead.
-    expect(screen.queryByText("Required by your org")).toBeNull();
+    expect(screen.queryByText(REQUIRED_GROUP_LABEL)).toBeNull();
     const available = screen.getByRole("region", { name: "Available" });
     expect(within(available).getByText("Locale Pack")).toBeInTheDocument();
   });

@@ -62,16 +62,19 @@ describe("hasApiKeyScopes", () => {
       ["superuser"] as unknown as ApiKeyScope[],
       "all_unrecognized",
     ],
-  ])("fails closed and reports the monitored event for %s", (_label, scopes, expectedReason) => {
-    expect(hasApiKeyScopes(apiKeyContext(scopes), ["read"])).toBe(false);
-    expect(hasApiKeyScopes(apiKeyContext(scopes), ["delete"])).toBe(false);
+  ])(
+    "fails closed and reports the monitored event for %s",
+    (_label, scopes, expectedReason) => {
+      expect(hasApiKeyScopes(apiKeyContext(scopes), ["read"])).toBe(false);
+      expect(hasApiKeyScopes(apiKeyContext(scopes), ["delete"])).toBe(false);
 
-    expect(logError).toHaveBeenCalledWith(
-      API_KEY_SCOPES_UNRESOLVABLE_EVENT,
-      expect.objectContaining({
-        surface: "with_api_key_auth",
-        reason: expectedReason,
-      })
-    );
-  });
+      expect(logError).toHaveBeenCalledWith(
+        API_KEY_SCOPES_UNRESOLVABLE_EVENT,
+        expect.objectContaining({
+          surface: "with_api_key_auth",
+          reason: expectedReason,
+        })
+      );
+    }
+  );
 });

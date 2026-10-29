@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { createTracker } from "./helpers/ingest-progress-fixture.js";
 
 // ISS-4917. The first-pass lifecycle lines used to be gated behind a 50-source
@@ -22,6 +22,9 @@ const CODEX_STALL_RE = /session backfill \[codex\] NOT ADVANCING/;
 const SLOW_LAUNCH_HINT = "first launch can take a while";
 // ISS-5028: pulls the reported numerator/denominator out of the periodic line.
 const PROGRESS_COUNTS_RE = /: (\d+)\/(\d+) source file\(s\)/;
+// ISS-7306: the shortfall clause the settled completion line carries.
+const SHORTFALL_RE = /left unfinished/;
+const SHORTFALL_COUNT_RE = /4 left unfinished/;
 
 /** Lines matching `pattern`, for assertions that ignore the surrounding noise. */
 function matching(lines: string[], pattern: RegExp): string[] {
@@ -675,4 +678,55 @@ test("ISS-5808: abandonPass authorizes a BOUNDED number of in-session re-drives"
 
   // Budgets are per harness.
   assert.equal(tracker.abandonPass("claude", "db-host exited (code: 0)"), true);
+});
+
+/**
+ * ISS-7306 — a settled pass that left work behind must say so.
+ *
+ * `settlePass` deliberately overwrites `processed` with `total`, so after it
+ * runs the counters can no longer distinguish a clean pass from one that
+ * finished with a third of its input unimported. The shortfall it preserves
+ * gates `drained`, but nothing rendered it: on the populated-store run the log
+ * showed `2360/3352`, then `first pass complete: 3352 source file(s)`, and the
+ * 992 that never landed were named nowhere. That is a terminal state reporting
+ * completion over partial loss.
+ *
+ * MUTATION: drop the `shortfallNote` from the completion line in `settlePass`
+ * and the first assertion fails — the line reads exactly like the clean one.
+ */
+test("ISS-7306: the completion line names a shortfall, and stays quiet without one", () => {
+  const { tracker, lines } = createTracker();
+
+  tracker.beginPass("codex", 10);
+  for (let index = 0; index < 6; index += 1) {
+    tracker.advance("codex", 0, 0);
+  }
+  // Four sources ended non-durably (a folded child, an unsafe-token-count skip,
+  // a parse throw): terminal for this pass, absent from `processed`.
+  for (let index = 0; index < 4; index += 1) {
+    tracker.advance("codex", 0, 0, false);
+  }
+  tracker.settlePass("codex");
+
+  const settled = lines.filter((line) => line.includes("first pass complete"));
+  assert.equal(settled.length, 1, JSON.stringify(lines));
+  assert.match(
+    settled[0] ?? "",
+    SHORTFALL_COUNT_RE,
+    `the shortfall must be named, not settled away; saw ${JSON.stringify(settled)}`
+  );
+  // And the tracker's own answer agrees with the line it just printed.
+  assert.equal(tracker.snapshot().drained, false);
+
+  // A pass with nothing left behind must not grow a shortfall clause, or the
+  // clause stops meaning anything.
+  tracker.beginPass("claude", 2);
+  tracker.advance("claude", 0, 0);
+  tracker.advance("claude", 0, 0);
+  tracker.settlePass("claude");
+  const clean = lines.filter((line) =>
+    line.includes("[claude] first pass complete")
+  );
+  assert.equal(clean.length, 1, JSON.stringify(lines));
+  assert.doesNotMatch(clean[0] ?? "", SHORTFALL_RE);
 });

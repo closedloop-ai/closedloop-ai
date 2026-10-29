@@ -63,14 +63,17 @@ describe("sanitizeOperatorCliOutput endpoint redaction", () => {
       `Error: ${PrismaMigrateDeployErrorCode.UserDefinedInvariant}\nDatabase error:\nERROR: connection to server at "${ENDPOINT_HOST}" port ${ENDPOINT_PORT} failed`,
       PrismaMigrateDeployErrorCode.UserDefinedInvariant,
     ],
-  ])("redacts the endpoint %s reports, keeping the code", (_shape, stderr, code) => {
-    const sanitized = sanitizeStderr(stderr);
+  ])(
+    "redacts the endpoint %s reports, keeping the code",
+    (_shape, stderr, code) => {
+      const sanitized = sanitizeStderr(stderr);
 
-    expect(sanitized).not.toContain(ENDPOINT_HOST);
-    expect(sanitized).toContain(REDACTION_MARKER);
-    // The code is the diagnosis. Redaction, never erasure.
-    expect(sanitized).toContain(code);
-  });
+      expect(sanitized).not.toContain(ENDPOINT_HOST);
+      expect(sanitized).toContain(REDACTION_MARKER);
+      // The code is the diagnosis. Redaction, never erasure.
+      expect(sanitized).toContain(code);
+    }
+  );
 
   it("leaves diagnostic text that merely follows the word `at` alone", () => {
     // The reason the pattern anchors on `server at` rather than sweeping every

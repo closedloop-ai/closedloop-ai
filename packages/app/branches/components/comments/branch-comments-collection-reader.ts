@@ -1,7 +1,9 @@
 import type {
   BranchTraceCommentCollectionQuery,
+  TraceComment,
   TraceCommentTarget,
 } from "@repo/api/src/types/comment";
+import { CommentSurface, CommentTargetType } from "@repo/api/src/types/comment";
 import { isAbortError } from "@repo/app/shared/api/api-timeout";
 import { traceCommentKeys } from "@repo/app/shared/trace-comments/trace-comment-query";
 import {
@@ -142,7 +144,7 @@ export const BRANCH_COMMENTS_READ_CONCURRENCY = 4;
  * Deadline for ONE collection read in this fan-out (ISS-5110, whitlockk review).
  *
  * Deliberately NOT the Session rail's `TRACE_COMMENTS_READ_TIMEOUT_MS`, which is
- * derived from that rail's 2s poll cadence: this query has no poll, so borrowing
+ * sized against that rail's create-marker and delete-tombstone windows: borrowing
  * the number tied this surface's budget to a value that may be retuned for
  * reasons that have nothing to do with it.
  *
@@ -170,3 +172,41 @@ export const BRANCH_COMMENTS_READ_TIMEOUT_MS = 5000;
  * broken.
  */
 export const BRANCH_COMMENTS_ERROR_REFETCH_INTERVAL_MS = 30_000;
+
+/** ISS-12282: restore the exact per-target projection used by the workspace. */
+export function groupBranchSessionComments(
+  branchId: string,
+  comments: readonly TraceComment[]
+): BranchCommentCollectionResult[] {
+  const results = new Map<string, BranchCommentCollectionResult>();
+  for (const comment of comments) {
+    const isBranch = comment.target.type === CommentTargetType.Branch;
+    const collection: BranchCommentCollection = {
+      target: comment.target,
+      ...(isBranch
+        ? { collectionQuery: { surface: CommentSurface.BranchTimeline } }
+        : {}),
+    };
+    const key = branchCommentCollectionIdentity(collection);
+    let result = results.get(key);
+    if (!result) {
+      result = {
+        collection,
+        error: null,
+        read: { comments: [], rejectedCount: 0 },
+      };
+      results.set(key, result);
+    }
+    if (
+      isBranch
+        ? comment.target.id === branchId &&
+          comment.surface === CommentSurface.BranchTimeline
+        : comment.surface === CommentSurface.SessionDetail
+    ) {
+      result.read.comments.push(comment);
+    } else {
+      result.read.rejectedCount += 1;
+    }
+  }
+  return [...results.values()];
+}

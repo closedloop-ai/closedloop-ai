@@ -19,7 +19,6 @@ export type NavIconName =
   | "branches"
   | "agents"
   | "insights"
-  | "loops"
   | "agent-monitoring"
   | "judges";
 
@@ -53,7 +52,7 @@ export const artifactsNav: readonly NavItem[] = [
   { label: "Issues", icon: "issues" },
   { label: "Sessions", icon: "sessions" },
   { label: "Branches", icon: "branches" },
-  { label: "Agents", icon: "agents", isActive: true },
+  { label: "Agentic Components", icon: "agents", isActive: true },
 ];
 
 export const teams: readonly TeamItem[] = [
@@ -73,7 +72,6 @@ export const teams: readonly TeamItem[] = [
 
 export const labsNav: readonly NavItem[] = [
   { label: "Insights", icon: "insights" },
-  { label: "Loops", icon: "loops" },
   { label: "Agent Monitoring", icon: "agent-monitoring" },
   { label: "Judges", icon: "judges" },
 ];
@@ -206,7 +204,7 @@ export const mockComponents: readonly AgentComponent[] = [
     name: "ai-agent-orchestration-expert",
     kind: AgentComponentKind.Subagent,
     sourceType: SourceType.Repo,
-    source: "example-repo",
+    source: "closedloop-ai",
     harness: Harness.Claude,
     invocations: 1306,
     sessions: 81,
@@ -388,7 +386,7 @@ export const mockComponents: readonly AgentComponent[] = [
     name: "prototype",
     kind: AgentComponentKind.Skill,
     sourceType: SourceType.Repo,
-    source: "example-repo",
+    source: "closedloop-ai",
     harness: Harness.Claude,
     invocations: 642,
     sessions: 196,
@@ -400,7 +398,7 @@ export const mockComponents: readonly AgentComponent[] = [
     name: "vercel-react-best-practices",
     kind: AgentComponentKind.Skill,
     sourceType: SourceType.Repo,
-    source: "example-repo",
+    source: "closedloop-ai",
     harness: Harness.Codex,
     invocations: 188,
     sessions: 72,
@@ -455,18 +453,6 @@ export const mockComponents: readonly AgentComponent[] = [
     sessions: 360,
     locPerDollar: 6500,
     trend: [5, 5, 6, 6, 6, 7, 7, 7],
-  },
-  {
-    id: "mcp:closedloop/list-loops",
-    name: "list-loops",
-    kind: AgentComponentKind.Mcp,
-    sourceType: SourceType.Server,
-    source: "closedloop",
-    harness: Harness.Codex,
-    invocations: 540,
-    sessions: 230,
-    locPerDollar: 6100,
-    trend: [5, 5, 6, 6, 6, 6, 6, 6],
   },
   {
     id: "mcp:closedloop/list-documents",
@@ -534,7 +520,7 @@ export const mockComponents: readonly AgentComponent[] = [
     name: "desktop-release",
     kind: AgentComponentKind.Workflow,
     sourceType: SourceType.Repo,
-    source: "example-repo",
+    source: "closedloop-ai",
     harness: Harness.Both,
     invocations: 24,
     sessions: 19,
@@ -595,7 +581,7 @@ export const mockComponents: readonly AgentComponent[] = [
     name: "pre-commit-lint",
     kind: AgentComponentKind.Hook,
     sourceType: SourceType.Repo,
-    source: "example-repo",
+    source: "closedloop-ai",
     harness: Harness.Both,
     invocations: null,
     sessions: null,

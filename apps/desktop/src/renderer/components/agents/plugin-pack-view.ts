@@ -7,6 +7,7 @@
 
 import type { PackAnalyticsResponse } from "@repo/api/src/types/analytics";
 import type { Harness } from "@repo/app/agents/lib/session-types";
+import { packInstallersFromNames } from "@repo/app/packs/lib/pack-installers";
 import {
   type PackContentEntry,
   type PackPerformance,
@@ -14,7 +15,6 @@ import {
   type PackView,
   toPackContentKind,
 } from "@repo/app/packs/lib/pack-view";
-import { getInitials } from "@repo/app/shared/lib/user-utils";
 import type {
   CatalogContentItem,
   CatalogEntry,
@@ -29,11 +29,9 @@ export function packAnalyticsToBlocks(analytics: PackAnalyticsResponse): {
   performance: PackPerformance;
   teamUsage: PackTeamUsage;
 } {
-  const installers = analytics.owners.map((name) => ({
-    id: name,
-    name,
-    initials: getInitials(name),
-  }));
+  // ISS-6768: one roster mapping shared with the web adapter, which now reads
+  // the same cloud-produced roster off `AgentComponentDetail.installers`.
+  const installers = packInstallersFromNames(analytics.owners);
   return {
     performance: {
       locPerDollar: analytics.locPerDollar,
@@ -48,13 +46,17 @@ export function packAnalyticsToBlocks(analytics: PackAnalyticsResponse): {
       // ISS-6462: the desktop half of the same carry. An omitted flag stays
       // undefined (unknown coverage) rather than folding to "not truncated".
       mergedPrsTruncated: analytics.mergedPrsTruncated,
+      // ISS-9853: the desktop half of the same carry, with the same rule — an
+      // omitted sample size stays undefined rather than claiming a whole-window
+      // comparator.
+      baselineSampleSize: analytics.baselineSampleSize,
       qualityScore: analytics.qualityScore,
       qualityDelta: analytics.qualityDelta,
       usageTrend: [],
     },
     teamUsage: {
       installers,
-      installedCount: installers.length,
+      installedCount: analytics.installerCount ?? installers.length,
       deviceCount: analytics.deviceCount,
       installTrend: [],
     },
@@ -81,7 +83,7 @@ function contentsToEntries(
   return items.map((item) => ({
     name: item.name,
     kind: toPackContentKind(item.type),
-    description: item.description ?? null,
+    description: typeof item.description === "string" ? item.description : null,
     content: typeof item.content === "string" ? item.content : null,
   }));
 }

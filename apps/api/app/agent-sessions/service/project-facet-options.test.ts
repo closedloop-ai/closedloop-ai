@@ -3,12 +3,15 @@
  *
  * The number next to a project in the facet, and the number the project-detail
  * strip renders, are the same question as "how many rows does selecting this
- * project return". These pin the three ways that can silently go wrong: counting
- * LINKS instead of SESSIONS (a session linked to three documents in one project
- * is one session), offering an option that resolves to nothing, and issuing one
- * pooled query per project (the unbounded fan-out `apps/api/AGENTS.md` bans).
+ * project return". The counting itself is SQL (ISS-11895), so what it counts —
+ * sessions not links, RELATES_TO links to documents, projects named in this org
+ * — is pinned against Postgres in `project-facet-options.integration.test.ts`.
+ * These pin the read's shape around it: the population it reads, a fixed two
+ * queries however many projects are in play (never the per-project fan-out
+ * `apps/api/AGENTS.md` bans), and a total order over what the aggregate
+ * returns.
  */
-import { ArtifactType, LinkType } from "@repo/api/src/types/artifact";
+
 import type { Prisma } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installDb } from "@/__tests__/support/agent-sessions/service.test-harness";
@@ -33,24 +36,22 @@ const PROJECT_A = "019f8008-1969-74f9-b056-99c13cca9a07";
 const PROJECT_B = "019f8008-1969-74f9-b056-99c13cca9a08";
 const SESSION_WHERE: Prisma.SessionDetailWhereInput = { harness: "codex" };
 
-type LinkRow = { sourceId: string; projectId: string | null };
+type CountRow = {
+  projectId: string;
+  projectName: string;
+  sessionCount: number;
+};
 
 function installProjectDb(options: {
-  links: LinkRow[];
-  projects: { id: string; name: string }[];
+  sessionIds: string[];
+  counts: CountRow[];
 }) {
-  const linkFindMany = vi.fn().mockResolvedValue(
-    options.links.map((link) => ({
-      sourceId: link.sourceId,
-      target: { projectId: link.projectId },
-    }))
-  );
-  const projectFindMany = vi.fn().mockResolvedValue(options.projects);
-  installDb({
-    artifactLink: { findMany: linkFindMany },
-    project: { findMany: projectFindMany },
-  });
-  return { linkFindMany, projectFindMany };
+  const artifactFindMany = vi
+    .fn()
+    .mockResolvedValue(options.sessionIds.map((id) => ({ id })));
+  const queryRaw = vi.fn().mockResolvedValue(options.counts);
+  installDb({ artifact: { findMany: artifactFindMany }, $queryRaw: queryRaw });
+  return { artifactFindMany, queryRaw };
 }
 
 describe("buildProjectFacetOptions", () => {
@@ -58,66 +59,65 @@ describe("buildProjectFacetOptions", () => {
     vi.clearAllMocks();
   });
 
-  it("counts SESSIONS per project, not the links that reached them", async () => {
-    // One session linked to three documents in the project, plus a second
-    // session linked once. A link-level tally would report 4.
-    installProjectDb({
-      links: [
-        { sourceId: "session-1", projectId: PROJECT_A },
-        { sourceId: "session-1", projectId: PROJECT_A },
-        { sourceId: "session-1", projectId: PROJECT_A },
-        { sourceId: "session-2", projectId: PROJECT_A },
-      ],
-      projects: [{ id: PROJECT_A, name: "ClosedLoop AI" }],
+  it("reads the population through the session where, scoped to the org", async () => {
+    const { artifactFindMany } = installProjectDb({
+      sessionIds: ["session-1"],
+      counts: [],
     });
 
-    const options = await buildProjectFacetOptions(ORG_ID, SESSION_WHERE);
+    await buildProjectFacetOptions(ORG_ID, SESSION_WHERE);
 
-    expect(options).toEqual([
-      { projectId: PROJECT_A, projectName: "ClosedLoop AI", sessionCount: 2 },
-    ]);
+    expect(artifactFindMany).toHaveBeenCalledWith({
+      where: { organizationId: ORG_ID, session: { is: SESSION_WHERE } },
+      select: { id: true },
+    });
   });
 
-  it("issues ONE aggregate read regardless of how many projects are in play", async () => {
+  it("hands the aggregate exactly the population's session ids and the org", async () => {
+    const { queryRaw } = installProjectDb({
+      sessionIds: ["session-1", "session-2"],
+      counts: [],
+    });
+
+    await buildProjectFacetOptions(ORG_ID, SESSION_WHERE);
+
+    const [statement] = queryRaw.mock.calls[0] ?? [];
+    expect(statement.values).toContainEqual(["session-1", "session-2"]);
+    expect(statement.values).toContain(ORG_ID);
+  });
+
+  it("issues two reads regardless of how many projects are in play", async () => {
     // The banned shape was a `count` per candidate project inside a
     // `Promise.all`, so the query count scaled with tenant-controlled project
     // cardinality and starved the pg pool. Twelve projects — more than the
     // 10-connection `DATABASE_URL` pool — must still be two queries total.
-    const projectIds = Array.from(
-      { length: 12 },
-      (_, index) =>
-        `019f8008-1969-74f9-b056-99c13cca9a${(index + 10).toString(16).padStart(2, "0")}`
-    );
-    const { linkFindMany, projectFindMany } = installProjectDb({
-      links: projectIds.map((projectId, index) => ({
-        sourceId: `session-${index}`,
-        projectId,
-      })),
-      projects: projectIds.map((id, index) => ({
-        id,
-        name: `Project ${index}`,
-      })),
+    const counts = Array.from({ length: 12 }, (_, index) => ({
+      projectId: `019f8008-1969-74f9-b056-99c13cca9a${(index + 10).toString(16).padStart(2, "0")}`,
+      projectName: `Project ${index}`,
+      sessionCount: 1,
+    }));
+    const { artifactFindMany, queryRaw } = installProjectDb({
+      sessionIds: counts.map((_, index) => `session-${index}`),
+      counts,
     });
 
     const options = await buildProjectFacetOptions(ORG_ID, SESSION_WHERE);
 
     expect(options).toHaveLength(12);
-    expect(linkFindMany).toHaveBeenCalledTimes(1);
-    expect(projectFindMany).toHaveBeenCalledTimes(1);
+    expect(artifactFindMany).toHaveBeenCalledTimes(1);
+    expect(queryRaw).toHaveBeenCalledTimes(1);
   });
 
   it("orders by session count descending", async () => {
     installProjectDb({
-      links: [
-        { sourceId: "session-1", projectId: PROJECT_A },
-        { sourceId: "session-2", projectId: PROJECT_A },
-        { sourceId: "session-3", projectId: PROJECT_B },
-        { sourceId: "session-4", projectId: PROJECT_B },
-        { sourceId: "session-5", projectId: PROJECT_B },
-      ],
-      projects: [
-        { id: PROJECT_A, name: "ClosedLoop AI" },
-        { id: PROJECT_B, name: "Relay Host" },
+      sessionIds: ["session-1"],
+      counts: [
+        {
+          projectId: PROJECT_A,
+          projectName: "ClosedLoop AI",
+          sessionCount: 2,
+        },
+        { projectId: PROJECT_B, projectName: "Relay Host", sessionCount: 3 },
       ],
     });
 
@@ -129,72 +129,67 @@ describe("buildProjectFacetOptions", () => {
     ]);
   });
 
-  it("drops a project row that no longer resolves to a name", async () => {
-    // Labelling it with a raw id would put a value on screen matching no project
-    // the reader can recognize.
-    installProjectDb({
-      links: [
-        { sourceId: "session-1", projectId: PROJECT_A },
-        { sourceId: "session-2", projectId: PROJECT_B },
-      ],
-      projects: [{ id: PROJECT_A, name: "ClosedLoop AI" }],
-    });
-
-    const options = await buildProjectFacetOptions(ORG_ID, SESSION_WHERE);
-
-    expect(options.map((option) => option.projectId)).toEqual([PROJECT_A]);
-  });
-
-  it("returns no options and issues no name lookup when nothing is linked", async () => {
-    const { projectFindMany } = installProjectDb({ links: [], projects: [] });
+  it("returns no options and issues no aggregate when the population is empty", async () => {
+    const { queryRaw } = installProjectDb({ sessionIds: [], counts: [] });
 
     const options = await buildProjectFacetOptions(ORG_ID, SESSION_WHERE);
 
     expect(options).toEqual([]);
-    expect(projectFindMany).not.toHaveBeenCalled();
+    expect(queryRaw).not.toHaveBeenCalled();
   });
 
-  it("ignores unparented linked documents", async () => {
-    // A null projectId link is "linked to a document in no project" — not a
-    // selectable facet value.
+  // ISS-10851 — the two cases the session-count case above cannot reach. It
+  // feeds distinct counts, so both tiebreak clauses could be deleted and it
+  // would stay green. These feed EQUAL counts with the aggregate answering in
+  // the reverse of the published order, which is the real hazard: it carries
+  // no `ORDER BY`, so its row order is the planner's to choose and is not the
+  // order the SQL candidate's `UNION ALL` emits.
+  it("orders an equal-count tie by project name", async () => {
     installProjectDb({
-      links: [{ sourceId: "session-1", projectId: null }],
-      projects: [],
-    });
-
-    const options = await buildProjectFacetOptions(ORG_ID, SESSION_WHERE);
-
-    expect(options).toEqual([]);
-  });
-
-  it("scopes the edge read to the org, RELATES_TO, and DOCUMENT targets", async () => {
-    // The linked-artifacts projection the facet claims parity with selects only
-    // RELATES_TO edges (`records.ts`). A PRODUCES/BLOCKS edge to a document in
-    // the project is reachable on `artifact_links` and would count a session the
-    // projection never shows, so the link type belongs in the predicate.
-    const { linkFindMany } = installProjectDb({
-      links: [{ sourceId: "session-1", projectId: PROJECT_A }],
-      projects: [{ id: PROJECT_A, name: "ClosedLoop AI" }],
-    });
-
-    await buildProjectFacetOptions(ORG_ID, SESSION_WHERE);
-
-    expect(linkFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          organizationId: ORG_ID,
-          linkType: LinkType.RelatesTo,
-          target: {
-            is: {
-              type: ArtifactType.Document,
-              projectId: { not: null },
-            },
-          },
-          source: {
-            is: { organizationId: ORG_ID, session: { is: SESSION_WHERE } },
-          },
+      sessionIds: ["session-1", "session-2"],
+      counts: [
+        { projectId: PROJECT_B, projectName: "Relay Host", sessionCount: 1 },
+        {
+          projectId: PROJECT_A,
+          projectName: "Alpha Symphony",
+          sessionCount: 1,
         },
-      })
-    );
+      ],
+    });
+
+    const options = await buildProjectFacetOptions(ORG_ID, SESSION_WHERE);
+
+    expect(options.map((option) => option.projectName)).toEqual([
+      "Alpha Symphony",
+      "Relay Host",
+    ]);
+  });
+
+  it("falls through to projectId when two tied projects share a name", async () => {
+    // `Project` carries only `@@unique([organizationId, slug])`, so nothing
+    // stops one org holding two projects of the same name — and a name-only
+    // tiebreak then leaves the order to whatever the aggregate returned.
+    installProjectDb({
+      sessionIds: ["session-1", "session-2"],
+      counts: [
+        {
+          projectId: PROJECT_B,
+          projectName: "Duplicate Name",
+          sessionCount: 1,
+        },
+        {
+          projectId: PROJECT_A,
+          projectName: "Duplicate Name",
+          sessionCount: 1,
+        },
+      ],
+    });
+
+    const options = await buildProjectFacetOptions(ORG_ID, SESSION_WHERE);
+
+    expect(options.map((option) => option.projectId)).toEqual([
+      PROJECT_A,
+      PROJECT_B,
+    ]);
   });
 });

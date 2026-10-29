@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Production flag snapshot a $vibe preview schema pins (ISS-12048), written by its own preview-schemas route rather than the seed."
+}

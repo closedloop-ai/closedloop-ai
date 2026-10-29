@@ -10,9 +10,9 @@ import { MemberInstallControl } from "./member-install-control";
  * it deliberately does not overwrite.
  */
 const meta = {
-  title: "App Core/Packs/Member Install Control",
+  title: "Composites v1.0/Packs/Member Install Control",
   component: MemberInstallControl,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     state: PackInstallState.NotInstalled,
     packName: "release-captain",

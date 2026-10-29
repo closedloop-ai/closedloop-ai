@@ -10,7 +10,7 @@ import type http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
-import { afterEach, beforeEach, test } from "node:test";
+import { afterEach, beforeEach, test } from "vitest";
 import type {
   OperationHandler,
   OperationRequestContext,

@@ -15,10 +15,19 @@ type BlogIndexProps = {
   }>;
 };
 
+// No `og:url`: `/blog` is not a URL this host serves. `proxy.ts` matches it in
+// `OLD_SITE_PAGES` and 302s it to `www.gethealthy.com/blog` before the i18n
+// middleware runs, so the canonical form of this page redirects off-site.
+// Measured on production 2026-08-28: `/blog` -> 302
+// `https://www.gethealthy.com/blog`, and `/en/blog` -> 307 `/blog` -> that same
+// 302. Advertising it would hand crawlers and unfurlers a foreign URL, which is
+// worse than no `og:url` at all. Restore a path here in whichever change makes
+// `/blog` serve this page again.
 export const generateMetadata = async () =>
   createPageMetadata(
     "Blog",
-    "Essays about coordination, team-based agentic development, and how Closedloop.ai is built."
+    "Essays about coordination, team-based agentic development, and how Closedloop.ai is built.",
+    null
   );
 
 const BlogIndexPage = async ({ params }: BlogIndexProps) => {

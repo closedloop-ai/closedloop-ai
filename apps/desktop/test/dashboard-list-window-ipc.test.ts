@@ -14,7 +14,7 @@
  * degrade path, since the payload arrives untrusted from the renderer.
  */
 import assert from "node:assert/strict";
-import { after, afterEach, before, describe, it } from "node:test";
+import { afterAll, afterEach, beforeAll, describe, it } from "vitest";
 import type { WithDb } from "../src/main/dashboard/agent-dashboard-ipc-handler-wrappers.js";
 import type { DbHostAgentDatabase } from "../src/main/database/sqlite.js";
 import {
@@ -31,7 +31,7 @@ const TRUSTED_EVENT = { sender: {} };
 let mock: ElectronModuleMock;
 let registerLocalDashboardReadIpcHandlers: (deps: { withDb: WithDb }) => void;
 
-before(async () => {
+beforeAll(async () => {
   mock = registerElectronModuleMock();
   // Dynamic, because the redirect must be installed before the registrar
   // evaluates its module-scope `import { ipcMain } from "electron"`.
@@ -42,7 +42,7 @@ before(async () => {
     local.registerLocalDashboardReadIpcHandlers as typeof registerLocalDashboardReadIpcHandlers;
 });
 
-after(() => {
+afterAll(() => {
   mock.deregister();
 });
 

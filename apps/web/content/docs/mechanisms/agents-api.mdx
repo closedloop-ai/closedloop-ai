@@ -7,7 +7,7 @@ The agents API is the durable home for the expert agents that the `code` and `ju
 
 ## What an agent record holds
 
-Each agent is org-scoped and identified by a stable slug. The current version's prompt is the canonical text the loop runtime reads when assembling context.
+Each agent is org-scoped and identified by a stable slug.
 
 | Field | Meaning |
 |---|---|
@@ -19,7 +19,7 @@ Each agent is org-scoped and identified by a stable slug. The current version's 
 | `currentVersion` | Pointer to the live `AgentVersion`. |
 | `versions[]` | Full history of every prompt and metadata change. |
 
-Every prompt edit creates a new `AgentVersion` automatically. Versions are append-only — older versions remain queryable so loops in flight can continue to use the version they were started with.
+Every prompt edit creates a new `AgentVersion` automatically. Versions are append-only — older versions remain queryable.
 
 ## Endpoints
 
@@ -59,7 +59,7 @@ This makes bootstrap re-runs idempotent: running `/bootstrap:start` against a re
 1. `bootstrap` produces `.claude/agents/<name>.md` files on disk and a `critic-gates.json`.
 2. The desktop client (or a CI harness) calls `POST /agents/bulk-ingest` with the same roster so the org-level store stays in sync.
 3. When a loop starts, the orchestrator loads agents from the file system for execution; the platform pulls org-level agents into the [context pack](./context-packs) and into [judge](./judges) prompts.
-4. If the prompt for `payments-domain` is sharpened in the web app, the change is captured as a new version and propagates to subsequent loops the next time bootstrap or the runtime refreshes context.
+4. If the prompt for `payments-domain` is sharpened in the web app, the change is captured as a new version.
 
 See [Bootstrap a repo](../workflows/bootstrap-a-repo) for the end-to-end flow.
 

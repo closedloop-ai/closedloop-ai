@@ -2,43 +2,54 @@
  * @file agent-dashboard-local-read-ipc.ts
  * @description ISS-4771: the local-SQLite dashboard read channels
  * (`desktop:db:get-*`) — sessions, agents, events, the dashboard rollups,
- * insights, analytics, and diagnostics. Extracted verbatim out of the shrink-only
- * grandfathered `agent-dashboard-design-system-runtime.ts`; every handler body,
+ * insights, analytics, and diagnostics. Extracted verbatim out of
+ * `agent-dashboard-design-system-runtime.ts`; every handler body,
  * coercion, and clamp is unchanged.
  */
 import { ipcMain } from "electron";
+import { AgentDashboardDbIpcChannel } from "../../shared/agent-dashboard-db-ipc-channel.js";
+import { parseBranchListSnapshot } from "../database/branch-list-snapshot-read.js";
 import { coerceDbId } from "../database/ipc-validation.js";
 import {
   coerceDashboardWindowRequest,
+  coerceDiagnosticsRequest,
   coerceInsightsPeriod,
   coerceInsightsSection,
   coerceLookbackDays,
   coerceSessionPageRequest,
+  toBranchSyncSource,
 } from "./agent-dashboard-ipc-coercion.js";
 import {
   DB_HOST_EXIT_REDRIVE_READ,
   type WithDb,
 } from "./agent-dashboard-ipc-handler-wrappers.js";
+import type { InvokeStoreOp } from "./agent-dashboard-runtime-options.js";
+import {
+  isDeliveryInsights,
+  withLocalBranchCoverage,
+} from "./local-insights-branch-coverage.js";
 
 /** Register the local dashboard read channels. */
 export function registerLocalDashboardReadIpcHandlers(deps: {
   withDb: WithDb;
+  /** ISS-12256: the Branches page's list snapshot, for the Delivery chart. */
+  invokeStoreOp: InvokeStoreOp;
 }): void {
-  const { withDb } = deps;
+  const { withDb, invokeStoreOp } = deps;
   ipcMain.handle(
-    "desktop:db:get-sessions",
+    AgentDashboardDbIpcChannel.GetSessions,
     withDb((agentDatabase) => agentDatabase.sessions.getAll())
   );
 
   ipcMain.handle(
-    "desktop:db:get-sessions-page",
+    AgentDashboardDbIpcChannel.GetSessionsPage,
     withDb((agentDatabase, request: unknown) =>
       agentDatabase.sessions.getPage(coerceSessionPageRequest(request))
     )
   );
 
   ipcMain.handle(
-    "desktop:db:get-kanban-pages",
+    AgentDashboardDbIpcChannel.GetKanbanPages,
     withDb((agentDatabase, statuses: unknown, limit: unknown) => {
       const safeStatuses = Array.isArray(statuses)
         ? statuses.filter((s): s is string => typeof s === "string")
@@ -52,7 +63,7 @@ export function registerLocalDashboardReadIpcHandlers(deps: {
   );
 
   ipcMain.handle(
-    "desktop:db:get-session",
+    AgentDashboardDbIpcChannel.GetSession,
     withDb((agentDatabase, id: unknown) => {
       const sessionId = coerceDbId(id);
       if (sessionId === null) {
@@ -63,7 +74,7 @@ export function registerLocalDashboardReadIpcHandlers(deps: {
   );
 
   ipcMain.handle(
-    "desktop:db:get-session-details",
+    AgentDashboardDbIpcChannel.GetSessionDetails,
     withDb((agentDatabase, id: unknown) => {
       const sessionId = coerceDbId(id);
       if (sessionId === null) {
@@ -74,7 +85,7 @@ export function registerLocalDashboardReadIpcHandlers(deps: {
   );
 
   ipcMain.handle(
-    "desktop:db:get-agents",
+    AgentDashboardDbIpcChannel.GetAgents,
     withDb((agentDatabase, sessionId: unknown) => {
       const id = coerceDbId(sessionId);
       if (id === null) {
@@ -85,7 +96,7 @@ export function registerLocalDashboardReadIpcHandlers(deps: {
   );
 
   ipcMain.handle(
-    "desktop:db:get-events",
+    AgentDashboardDbIpcChannel.GetEvents,
     withDb((agentDatabase, sessionId: unknown, agentId?: unknown) => {
       const sid = coerceDbId(sessionId);
       if (sid === null) {
@@ -100,22 +111,22 @@ export function registerLocalDashboardReadIpcHandlers(deps: {
   );
 
   ipcMain.handle(
-    "desktop:db:get-dashboard-summary",
+    AgentDashboardDbIpcChannel.GetDashboardSummary,
     withDb((agentDatabase) => agentDatabase.getSummary())
   );
 
   ipcMain.handle(
-    "desktop:db:get-sessions-with-details",
+    AgentDashboardDbIpcChannel.GetSessionsWithDetails,
     withDb((agentDatabase) => agentDatabase.sessions.getAllWithDetails())
   );
 
   ipcMain.handle(
-    "desktop:db:get-event-feed",
+    AgentDashboardDbIpcChannel.GetEventFeed,
     withDb((agentDatabase) => agentDatabase.events.getAll())
   );
 
   ipcMain.handle(
-    "desktop:db:get-events-with-session",
+    AgentDashboardDbIpcChannel.GetEventsWithSession,
     withDb((agentDatabase, sessionId: unknown) => {
       const id = coerceDbId(sessionId);
       if (id === null) {
@@ -126,43 +137,71 @@ export function registerLocalDashboardReadIpcHandlers(deps: {
   );
 
   ipcMain.handle(
-    "desktop:db:get-event-count-by-type",
+    AgentDashboardDbIpcChannel.GetEventCountByType,
     withDb((agentDatabase) => agentDatabase.events.getCountByType())
   );
 
   ipcMain.handle(
-    "desktop:db:get-token-analytics",
+    AgentDashboardDbIpcChannel.GetTokenAnalytics,
     withDb((agentDatabase) => agentDatabase.dashboard.getTokenAnalytics())
   );
 
   ipcMain.handle(
-    "desktop:db:get-insights",
-    withDb(async (agentDatabase, section: unknown, period: unknown) => {
-      const parsedSection = coerceInsightsSection(section);
-      const parsedPeriod = coerceInsightsPeriod(period);
-      // PLN-1138 Phase 3: this handler is the LOCAL (own-data) insights read
-      // only. Authenticated cloud reads (`me` and `org`) now flow through the
-      // renderer's shared HTTP insights source over the D-G IPC fetch bridge,
-      // not through a bespoke main-process cloud fetch. The renderer only
-      // dispatches here in Local mode (signed out / offline), which is
-      // personal-scope by construction, so scope no longer reaches this handler.
-      //
-      // Concurrency is bounded on the db-host side: this call dispatches to the
-      // worker's `dashboard.getInsights` op, which runs behind the FEA-2055
-      // `InsightsResultCache` (see insights-cache.ts). That gate caps how many
-      // heavy metadata scans compute at once (default 1) at the compute-miss
-      // boundary — AFTER its fresh/stale-serve fast returns — so a burst of
-      // section widgets can't stampede the worker's heap, while cache hits
-      // during backfill still return immediately.
-      return await agentDatabase.dashboard.getInsights(
-        parsedSection,
-        parsedPeriod
-      );
-    }, DB_HOST_EXIT_REDRIVE_READ)
+    AgentDashboardDbIpcChannel.GetInsights,
+    withDb(
+      async (
+        agentDatabase,
+        section: unknown,
+        period: unknown,
+        // Ignored — see the scope note below.
+        _scope: unknown
+      ) => {
+        const parsedSection = coerceInsightsSection(section);
+        const parsedPeriod = coerceInsightsPeriod(period);
+        // PLN-1138 Phase 3: this handler is the LOCAL (own-data) insights read
+        // only. Authenticated cloud reads (`me` and `org`) now flow through the
+        // renderer's shared HTTP insights source over the D-G IPC fetch bridge,
+        // not through a bespoke main-process cloud fetch. The renderer only
+        // dispatches here in Local mode (signed out / offline), which is
+        // personal-scope by construction, so scope no longer reaches this handler.
+        //
+        // Concurrency is bounded on the db-host side: this call dispatches to the
+        // worker's `dashboard.getInsights` op, which runs behind the FEA-2055
+        // `InsightsResultCache` (see insights-cache.ts). That gate caps how many
+        // heavy metadata scans compute at once (default 1) at the compute-miss
+        // boundary — AFTER its fresh/stale-serve fast returns — so a burst of
+        // section widgets can't stampede the worker's heap, while cache hits
+        // during backfill still return immediately.
+        // No fixed clock from this path — the store's own clock is the default
+        // (ISS-9279). ISS-10541 removed the date-basis argument that used to
+        // follow it: the renderer can no longer choose a column.
+        const insights = await agentDatabase.dashboard.getInsights(
+          parsedSection,
+          parsedPeriod
+        );
+        // ISS-12256: the Delivery Branch coverage chart counts the local
+        // Branches list's own population for the range, read here in main
+        // where the list's read lives.
+        return isDeliveryInsights(insights)
+          ? await withLocalBranchCoverage(
+              insights,
+              toBranchSyncSource(agentDatabase),
+              parsedPeriod,
+              async (snapshotRequest) =>
+                parseBranchListSnapshot(
+                  await invokeStoreOp("branches.listSnapshot", [
+                    snapshotRequest,
+                  ])
+                )
+            )
+          : insights;
+      },
+      DB_HOST_EXIT_REDRIVE_READ
+    )
   );
 
   ipcMain.handle(
-    "desktop:db:get-agent-hierarchy",
+    AgentDashboardDbIpcChannel.GetAgentHierarchy,
     withDb((agentDatabase, sessionId: unknown) => {
       const id = coerceDbId(sessionId);
       if (id === null) {
@@ -173,7 +212,7 @@ export function registerLocalDashboardReadIpcHandlers(deps: {
   );
 
   ipcMain.handle(
-    "desktop:db:get-analytics",
+    AgentDashboardDbIpcChannel.GetAnalytics,
     withDb((agentDatabase, lookbackDays: unknown) =>
       // FEA-3722: forward the renderer's selected date range (or default/all-time
       // sentinel) so the Coding Wrap windows to the same 7d/30d/90d/All selector.
@@ -185,32 +224,32 @@ export function registerLocalDashboardReadIpcHandlers(deps: {
   );
 
   ipcMain.handle(
-    "desktop:db:get-workflow-data",
+    AgentDashboardDbIpcChannel.GetWorkflowData,
     withDb((agentDatabase) => agentDatabase.dashboard.getWorkflowData())
   );
 
   ipcMain.handle(
-    "desktop:db:get-core-features",
+    AgentDashboardDbIpcChannel.GetCoreFeatures,
     withDb((agentDatabase) => agentDatabase.dashboard.getCoreFeatures())
   );
 
   ipcMain.handle(
-    "desktop:db:get-packs",
+    AgentDashboardDbIpcChannel.GetPacks,
     withDb((agentDatabase) => agentDatabase.dashboard.getPacks())
   );
 
   ipcMain.handle(
-    "desktop:db:get-skills",
+    AgentDashboardDbIpcChannel.GetSkills,
     withDb((agentDatabase) => agentDatabase.dashboard.getSkills())
   );
 
   ipcMain.handle(
-    "desktop:db:get-tools",
+    AgentDashboardDbIpcChannel.GetTools,
     withDb((agentDatabase) => agentDatabase.dashboard.getTools())
   );
 
   ipcMain.handle(
-    "desktop:db:get-subagents",
+    AgentDashboardDbIpcChannel.GetSubagents,
     withDb((agentDatabase) => agentDatabase.dashboard.getSubAgents())
   );
 
@@ -219,7 +258,7 @@ export function registerLocalDashboardReadIpcHandlers(deps: {
   // (`coerceDashboardListWindow`), so a renderer cannot request the whole plan
   // corpus — every plan's full markdown `content` — in one IPC response.
   ipcMain.handle(
-    "desktop:db:get-plans",
+    AgentDashboardDbIpcChannel.GetPlans,
     withDb((agentDatabase, opts: unknown) =>
       agentDatabase.dashboard.getPlans(coerceDashboardWindowRequest(opts))
     )
@@ -229,7 +268,7 @@ export function registerLocalDashboardReadIpcHandlers(deps: {
   // each fired the unwindowed read on one Workflow screen load, so the whole
   // PR corpus crossed the db-host IPC boundary twice.
   ipcMain.handle(
-    "desktop:db:get-pull-requests",
+    AgentDashboardDbIpcChannel.GetPullRequests,
     withDb((agentDatabase, opts: unknown) =>
       agentDatabase.dashboard.getPullRequests(
         coerceDashboardWindowRequest(opts)
@@ -239,7 +278,9 @@ export function registerLocalDashboardReadIpcHandlers(deps: {
 
   // --- Diagnostics (FEA-1959) ---
   ipcMain.handle(
-    "desktop:db:get-diagnostics",
-    withDb((agentDatabase) => agentDatabase.diagnostics.getData())
+    AgentDashboardDbIpcChannel.GetDiagnostics,
+    withDb((agentDatabase, request: unknown) =>
+      agentDatabase.diagnostics.getData(coerceDiagnosticsRequest(request))
+    )
   );
 }

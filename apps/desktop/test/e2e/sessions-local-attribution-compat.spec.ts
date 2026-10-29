@@ -20,8 +20,20 @@ import os from "node:os";
 import path from "node:path";
 import { createClient } from "@libsql/client";
 import { expect, test } from "@playwright/test";
-import { gotoNav, launchDesktopApp } from "./helpers/desktop-app";
-import { AGENT_DB_FILENAME } from "./helpers/desktop-seed-core";
+import { TOTAL_TOKENS_METRIC_CARD_LABEL } from "@repo/app/agents/components/sessions/sessions-summary-card-labels.ts";
+import {
+  clickDesktopDateRange,
+  DesktopDateRangeLabel,
+  gotoNav,
+  gotoNavSettled,
+  launchDesktopApp,
+} from "./helpers/desktop-app";
+import {
+  AGENT_DB_FILENAME,
+  applyDesktopBusyTimeout,
+  applyDesktopSeedPragmas,
+  isSqliteBusyError,
+} from "./helpers/desktop-seed-core";
 
 const SEEDED_SESSION = {
   branchName: "feat/desktop-attribution-compat-e2e",
@@ -30,11 +42,17 @@ const SEEDED_SESSION = {
   model: "claude-opus-4-5",
   name: "Desktop attribution compatibility session",
   prNumber: 2384,
-  repoFullName: "closedloop-ai/example-repo",
+  repoFullName: "closedloop-ai/closedloop-ai",
   // FEA-3937: the shared summary bar abbreviates token counts with
-  // `formatTokenCount` ("1.65k"), matching every other token display in the
-  // product, instead of the old inline card's raw `.toLocaleString()` grouping.
-  tokenTotal: "1.65k",
+  // `formatTokenCount`, matching every other token display in the product,
+  // instead of the old inline card's raw `.toLocaleString()` grouping.
+  //
+  // ISS-7175: 1.75k, not the 1.65k this asserted before. The tile summed
+  // `input + output` (1200 + 450 = 1650) while calling itself "Total"; the
+  // COMPUTATION moved to match the label, so it now sums all four counters the
+  // seed writes — 1200 + 450 + 80 cache-read + 20 cache-write = 1750. The
+  // expectation changed because the measured quantity did, not to go green.
+  tokenTotal: "1.75k",
 } as const;
 
 test.describe("Desktop local attribution compatibility", () => {
@@ -69,19 +87,33 @@ test.describe("Desktop local attribution compatibility", () => {
       });
 
       try {
-        await gotoNav(page, "sessions");
-        await expect(
-          page.locator("header").getByText("Sessions", { exact: true })
-        ).toBeVisible({ timeout: 30_000 });
-        await page
-          .getByRole("group", { name: "Date range" })
-          .getByLabel("All time")
-          .click();
+        // The COMMITTED Sessions panel. Every element query below is scoped to
+        // it, because the shell's keep-alive leaves Dashboard mounted (it is the
+        // canonical landing, so always the first view mounted) and Dashboard
+        // renders its own `SessionsSummaryCards` — the same `[data-slot="card"]`
+        // with the same "Sessions" and "Total Tokens" descriptions. Page-global,
+        // every card assertion below is a strict-mode violation against that
+        // hidden twin. The old `header` check does not substitute: the Topbar
+        // follows the IMMEDIATE nav id, so it says "Sessions" while the body is
+        // still the outgoing view.
+        const sessions = await gotoNavSettled(page, "sessions");
+        // The shared helper, not a hand-rolled locator: it chooses and clicks
+        // inside ONE browser task, which is the only shape that survives the
+        // deferred route commit. Its docstring carries the full reasoning and
+        // the ISS-7995 history — every bare
+        // `page.locator('[aria-label="…"]:visible').click()` in this suite has
+        // failed this way, including in the Date range group Dashboard now
+        // always renders alongside this one.
+        await clickDesktopDateRange(page, DesktopDateRangeLabel.AllTime);
 
+        // Page-rooted on purpose: a `filter({ has })` locator is re-rooted at
+        // each candidate row, so it must NOT already be scoped to the panel —
+        // that would look for the panel INSIDE a row. The row locator carries
+        // the scoping instead, which is what keeps this off Dashboard's grid.
         const sessionLink = page.getByRole("link", {
           name: SEEDED_SESSION.name,
         });
-        const sessionRow = page.locator(".group.grid").filter({
+        const sessionRow = sessions.locator(".group.grid").filter({
           has: sessionLink,
         });
         await expect(sessionRow).toBeVisible({ timeout: 30_000 });
@@ -90,7 +122,7 @@ test.describe("Desktop local attribution compatibility", () => {
         // on the exact card-description label so the substring "Sessions" can't
         // also catch a sibling card whose copy mentions "sessions".
         await expect(
-          page
+          sessions
             .locator('[data-slot="card"]')
             .filter({
               has: page
@@ -100,12 +132,12 @@ test.describe("Desktop local attribution compatibility", () => {
             .locator('[data-slot="card-title"]')
         ).toHaveText("1", { timeout: 30_000 });
         await expect(
-          page
+          sessions
             .locator('[data-slot="card"]')
             .filter({
               has: page
                 .locator('[data-slot="card-description"]')
-                .getByText("Total Tokens", { exact: true }),
+                .getByText(TOTAL_TOKENS_METRIC_CARD_LABEL, { exact: true }),
             })
             .locator('[data-slot="card-title"]')
         ).toHaveText(SEEDED_SESSION.tokenTotal, { timeout: 30_000 });
@@ -114,18 +146,28 @@ test.describe("Desktop local attribution compatibility", () => {
         // ISS-5315 made PR one of `SESSIONS_DEFAULT_HIDDEN_COLUMN_IDS`, so the
         // PR chip is no longer in the default view — the column is one View-menu
         // switch away, exactly as a user reaches it. The claim under test is
-        // unchanged (the seeded local session still attributes its PR number and
-        // merge state with no PR/branch usage arrays), so the spec drives the
+        // unchanged (the seeded local session still attributes its PR number
+        // with no PR/branch usage arrays), so the spec drives the
         // column back on rather than dropping the assertion.
-        await page
-          .getByRole("button", { name: "View" })
-          .locator("visible=true")
-          .first()
+        // ISS-8909: the column switches moved. The retired v1 toolbar carried a
+        // always-visible "View" menu; the shared v2 toolbar folds that control
+        // into "Options" → "Show / hide columns" at `md` and up, and the "View"
+        // button that remains belongs to the COMPACT row, which is
+        // `display:none` at this width. The claim is unchanged — the spec still
+        // drives the PR column back on exactly as a user reaches it.
+        await sessions
+          .getByRole("button", { exact: true, name: "Options" })
           .click();
-        await page.getByRole("switch", { exact: true, name: "PR" }).click();
+        await page
+          .getByRole("menu")
+          .getByRole("menuitem", { exact: true, name: "PR" })
+          .click();
         await page.keyboard.press("Escape");
+        // ISS-12709 (#8970): Desktop stores no GitHub PR state, so the seed no
+        // longer writes one and the merge state is no longer local evidence;
+        // the PR number attribution is the claim that remains.
         await expect(
-          sessionRow.getByText(`#${SEEDED_SESSION.prNumber} Merged`)
+          sessionRow.getByText(`#${SEEDED_SESSION.prNumber}`)
         ).toBeVisible();
         await expect(
           sessionRow.getByText(SEEDED_SESSION.branchName)
@@ -187,8 +229,6 @@ const REQUIRED_AGENT_SESSION_COLUMNS = {
   sessions: ["last_activity_at"],
 } as const;
 const AGENT_SCHEMA_POLL_INTERVAL_MS = 250;
-const SQLITE_BUSY_ERROR = "SQLITE_BUSY";
-const SQLITE_LOCKED_MESSAGE = "database is locked";
 
 async function waitForAgentSessionsSchema(
   userDataDir: string,
@@ -224,13 +264,7 @@ async function seedDesktopAttributionCompatibilitySession(
   });
 
   try {
-    for (const pragma of [
-      "PRAGMA journal_mode=WAL",
-      "PRAGMA busy_timeout=15000",
-      "PRAGMA foreign_keys=ON",
-    ]) {
-      await client.execute(pragma);
-    }
+    await applyDesktopSeedPragmas(client);
     await waitForTables(client, REQUIRED_AGENT_SESSION_TABLES, 30_000);
 
     const branchArtifactId = `artifact-branch-${SEEDED_SESSION.id}`;
@@ -285,9 +319,9 @@ async function seedDesktopAttributionCompatibilitySession(
           ],
           sql: `INSERT INTO artifacts
                   (id, identity_key, kind, repo_full_name, branch_name,
-                   pr_number, url, title, pr_state, last_seen_at, created_at,
+                   pr_number, url, title, last_seen_at, created_at,
                    observed_at)
-                VALUES (?, ?, 'pull_request', ?, ?, ?, ?, ?, 'MERGED', ?, ?, ?)`,
+                VALUES (?, ?, 'pull_request', ?, ?, ?, ?, ?, ?, ?, ?)`,
         },
         {
           args: [
@@ -354,16 +388,14 @@ async function seedDesktopAttributionCompatibilitySession(
             SEEDED_SESSION.repoFullName,
             SEEDED_SESSION.branchName,
             endedAt,
-            endedAt,
-            `Seeded PR #${SEEDED_SESSION.prNumber}`,
             observedAt,
             observedAt,
           ],
           sql: `INSERT INTO pull_requests
                   (id, session_id, pr_url, pr_number, repo_full_name,
-                   branch_name, state, closed_at, merged_at, title,
+                   branch_name, closed_at,
                    observed_at, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'closed', ?, ?, ?, ?, ?)`,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         },
       ],
       "write"
@@ -445,20 +477,8 @@ async function waitForColumns(
   }
 }
 
-async function applyDesktopBusyTimeout(client: LibsqlClient): Promise<void> {
-  await client.execute("PRAGMA busy_timeout=15000");
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isSqliteBusyError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return (
-    message.includes(SQLITE_BUSY_ERROR) ||
-    message.includes(SQLITE_LOCKED_MESSAGE)
-  );
 }
 
 function agentDashboardDbPath(userDataDir: string): string {

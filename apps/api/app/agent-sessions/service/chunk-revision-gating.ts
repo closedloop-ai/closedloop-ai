@@ -53,10 +53,11 @@
  * why staging-without-replacing is the repair, and why replacing would trade the
  * livelock for the destruction of a complete committed snapshot.
  *
- * The ingest schema bounds `dataRevision` at `MAX_SUPPORTED_DATA_REVISION`
- * (`@repo/api/src/types/agent-session`) so a malformed or hostile payload
- * cannot plant an unreachable high-water mark that permanently strands every
- * subsequent real revision as stale.
+ * The apply bounds `dataRevision` to `[1, MAX_SUPPORTED_DATA_REVISION]` before
+ * it reaches this gate (`wire-data-revision.ts`, ISS-8271 — out-of-window
+ * values are folded or held per session and never gated on or committed) so a
+ * malformed or hostile payload cannot plant an unreachable high-water mark
+ * that permanently strands every subsequent real revision as stale.
  *
  * Unchunked sessions carry no `chunk` marker (implicitly chunk 0 of 1): they
  * delete-replace AND commit in the same apply, exactly as before, and never
@@ -78,6 +79,13 @@ export type ChunkGatingInput = {
   /** The staged sequence's `chunk.total`; with the revision, its identity. */
   existingPendingTotal: number | null | undefined;
   existingPendingReceived: number | null | undefined;
+  /**
+   * ISS-11427: the stored children no longer equal the committed revision —
+   * the sequence-assembling hold ceiling applied a revision-less payload on top
+   * of them. A payload AT the committed revision must then replace rather than
+   * re-open (see `repairsDivergedRevision`).
+   */
+  existingRevisionDiverged?: boolean | null;
 };
 
 /**
@@ -89,6 +97,8 @@ export type PendingChunkPatch = {
   pendingChunkRevision?: number | null;
   pendingChunkTotal?: number | null;
   pendingChunkReceived?: number | null;
+  /** ISS-11427: set by the hold ceiling, cleared by a delete-replace. */
+  dataRevisionDiverged?: boolean;
 };
 
 export type ChunkGatingDecision = {
@@ -123,6 +133,24 @@ export type ChunkGatingDecision = {
    * last chunk, a last chunk with a gap, or any stale payload never commits.
    */
   shouldCommitRevision: boolean;
+  /**
+   * ISS-8131: a payload carrying NO revision arrived while a sequence is staged.
+   * It owns no sequence, so it may not end one — and it must not write children
+   * either. `shouldReplace` is false for a revision-less payload, so its events
+   * apply ADDITIVELY on top of the partial set the real sequence has landed so
+   * far; the tail then acks and seals the union of two derivations as one
+   * authoritative `dataRevision`, which nothing later heals.
+   *
+   * This is the same hazard `isForeignChunk` exists to stop (see its docstring:
+   * "appending its events would contaminate the set the real sequence is
+   * assembling") — but a revision-less payload is never foreign, because every
+   * arm of `resolveRevisionStanding` shorts on `incoming != null`. It is a
+   * SEPARATE flag rather than a widening of `isForeignChunk` because the caller
+   * must branch on client capability: a foreign chunk is refused
+   * unconditionally, while this hold can only be EXPRESSED to a client that
+   * echoes accepted ids.
+   */
+  revisionlessMidSequence: boolean;
   /** The pending-sequence columns to stage / advance / clear on this apply. */
   pendingChunkPatch: PendingChunkPatch;
 };
@@ -137,7 +165,7 @@ export function resolveChunkGating(
   const chunkIndex = input.chunk?.index ?? 0;
   const chunkTotal = input.chunk?.total ?? 1;
   const isFirstChunk = chunkIndex === 0;
-  const isLastChunk = chunkIndex === chunkTotal - 1;
+  const isLastChunk = isFinalChunkDelivery(input.chunk);
   const isUnchunked = isFirstChunk && isLastChunk;
 
   const { opensSequence, isStaleRevision, reopensCommittedSequence } =
@@ -211,19 +239,39 @@ export function resolveChunkGating(
     isLastChunk &&
     (isUnchunked ? opensSequence : matchesStagedSequence && sequenceComplete);
 
+  // ISS-8131: null-revision AND a sequence staged AND not already refused as
+  // foreign. `existingPendingRevision` is the whole test for "a sequence is
+  // assembling" — the marker is written by chunk 0 and cleared on commit, so a
+  // non-null value means the set is mid-flight. Deliberately NOT restricted to
+  // the unchunked shape: a revision-less CHUNK 0 lands on the same additive
+  // path (it cannot open a sequence, since `opensSequence` shorts on a null
+  // revision), so one condition closes both. A revision-less FOLLOWING chunk is
+  // already foreign and returns above.
+  const revisionlessMidSequence =
+    input.incomingRevision == null &&
+    input.existingPendingRevision != null &&
+    !isForeignChunk;
+
   return {
     shouldReplace,
     isForeignChunk,
     shouldCommitRevision,
-    pendingChunkPatch: resolvePendingChunkPatch({
-      isForeignChunk,
-      isUnchunked,
-      startsSequence,
-      shouldCommitRevision,
-      incomingRevision: input.incomingRevision ?? null,
-      chunkTotal,
-      receivedAfter,
-    }),
+    revisionlessMidSequence,
+    pendingChunkPatch: {
+      ...resolvePendingChunkPatch({
+        isForeignChunk,
+        isUnchunked,
+        startsSequence,
+        shouldCommitRevision,
+        incomingRevision: input.incomingRevision ?? null,
+        chunkTotal,
+        receivedAfter,
+      }),
+      // The delete-replace removes whatever the divergence added.
+      ...(shouldReplace && input.existingRevisionDiverged === true
+        ? { dataRevisionDiverged: false }
+        : {}),
+    },
   };
 }
 
@@ -292,21 +340,33 @@ function resolveRevisionStanding(
   // The tiling lane loses nothing by this: `persistSessionActivitySegments`
   // routes chunk 0 through the REPLACE lane on `chunk.index === 0`, not on
   // `shouldReplace`, which there gates only whether an explicitly-EMPTY chunk-0
-  // slice may clear. Letting it clear would delete the stored tiling and leave
-  // the later slices to hit `appendActivityTilingSlice`'s no-stored-tiling
-  // guard, which skips them — losing the tiling AND its predecessor rather than
-  // just re-deriving it (`main/sync/AGENTS.md` invariant 3).
-  const reopensCommittedSequence =
-    !isUnchunked &&
+  // slice may clear. Not clearing keeps the committed tiling readable while the
+  // re-send is in flight, and its slices re-insert the same rows on the unique
+  // `(agentSessionId, startMs)` key, so no reader sees a gap
+  // (`main/sync/AGENTS.md` invariant 3). ISS-10259 removed the append lane's
+  // no-stored-tiling refusal, so a clear here would no longer STRAND those
+  // slices — but it would still expose a complete session as a partial one for
+  // the width of the sequence.
+  const atCommittedRevision =
     incoming != null &&
     input.existingRevision != null &&
     incoming === input.existingRevision;
+  // ISS-11427: the premise above — the children ALREADY hold this exact
+  // revision — is false once the hold ceiling applied a revision-less payload
+  // on top of them. A payload at the committed revision then OPENS a replacing
+  // sequence (chunked or not), so the extra events go and the commit seals only
+  // this revision's own.
+  const repairsDivergedRevision =
+    atCommittedRevision && input.existingRevisionDiverged === true;
+  const reopensCommittedSequence =
+    !isUnchunked && atCommittedRevision && !repairsDivergedRevision;
 
   return {
     opensSequence:
       (revisionAdvances ||
         restartsStagedSequence ||
-        reopensCommittedSequence) &&
+        reopensCommittedSequence ||
+        repairsDivergedRevision) &&
       !isStaleRevision,
     isStaleRevision,
     // A marker staged AT the committed revision can only have come from an
@@ -370,8 +430,10 @@ function resolveReceivedAfter(args: {
 /**
  * The pending-sequence columns to persist. Chunk 0 of a multi-chunk sequence
  * stages the marker; each in-sequence chunk advances the received-count; the
- * committing apply clears all three back to NULL; a foreign chunk or an interior
- * replay omits every field so the marker is left exactly as it was.
+ * committing apply clears all three back to NULL; a foreign chunk and a
+ * revision-less unchunked payload omit every field, leaving the marker exactly
+ * as it was. An interior REPLAY re-emits `pendingChunkReceived` at its unchanged
+ * value — the marker is untouched in effect, not by omission.
  */
 function resolvePendingChunkPatch(args: {
   isForeignChunk: boolean;
@@ -388,6 +450,24 @@ function resolvePendingChunkPatch(args: {
   // the newer sequence still assembling — stranding its remaining chunks as
   // foreign no-ops, which is the failure this gate exists to prevent.
   if (args.isForeignChunk) {
+    return {};
+  }
+  // ISS-8131: a payload carrying NO revision owns no sequence, so it may not
+  // end one. `dataRevision` is `.nullish()` on the wire — an older desktop
+  // sends none, and `wire-data-revision.ts` folds the unchunked
+  // MAINTENANCE_STALE sentinel to the same thing.
+  //
+  // Such a payload reaches here because it is not foreign: `isStaleRevision`
+  // shorts on `incoming != null`, and the following-chunk arm cannot apply to an
+  // UNCHUNKED payload, which is chunk 0 by definition. (A revision-less
+  // FOLLOWING chunk is a different story — `matchesStagedSequence` fails on the
+  // null revision, so it IS foreign and returns above.) Before this guard it
+  // therefore fell into the clear below and wiped the marker of a sequence still
+  // assembling; the remaining chunks then read a null `stagedRevision`, came
+  // back FOREIGN, and stranded, while chunk 0 had already delete-replaced the
+  // live rows — the same erase-the-assembling-marker failure the foreign-first
+  // ordering above exists to prevent.
+  if (args.isUnchunked && args.incomingRevision == null) {
     return {};
   }
   // A committing apply (unchunked, or the completing last chunk) clears the
@@ -410,4 +490,26 @@ function resolvePendingChunkPatch(args: {
   }
   // An in-sequence non-first, non-final chunk advances only the received-count.
   return { pendingChunkReceived: args.receivedAfter };
+}
+
+/**
+ * Is this payload the LAST delivery of its session — an unchunked whole session
+ * (implicitly chunk 0 of 1), or the final chunk of a split?
+ *
+ * A SHAPE question about the payload, deliberately weaker than
+ * {@link ChunkGatingDecision.shouldCommitRevision}, which additionally demands a
+ * non-null revision, a matching staged sequence, and no interior gap. Callers
+ * that must know "did the session's assembly complete" want that one. Callers
+ * that only need "is anything further coming for this session in this delivery"
+ * — the ISS-7265 strip report, which must fire once per stripped session rather
+ * than once per chunk of its fallback split — want this one, because tying a
+ * degradation report to a revision the payload may legitimately not carry would
+ * silence it for exactly the older producers most likely to strip.
+ *
+ * Exported so the strip report and the gate cannot drift on what "final" means.
+ */
+export function isFinalChunkDelivery(
+  chunk: { index: number; total: number } | null | undefined
+): boolean {
+  return (chunk?.index ?? 0) === (chunk?.total ?? 1) - 1;
 }

@@ -5,22 +5,26 @@ import {
   type BranchPageDetail,
   type BranchRow,
 } from "@repo/api/src/types/branch";
-import type {
-  BranchAssociatedPullRequestSelection,
-  BranchSelectedPullRequestIdentity,
+import {
+  BranchAssociatedPullRequestProvenance,
+  type BranchAssociatedPullRequestSelection,
+  BranchAssociatedPullRequestSelectionReason,
+  type BranchSelectedPullRequestIdentity,
+  selectBranchAssociatedPullRequests,
 } from "@repo/api/src/types/branch-associated-pull-request";
+import { normalizeRepoFullName } from "@repo/api/src/types/branch-repository";
 import {
   BranchSelectedPullRequestChecksAvailability,
   BranchSelectedPullRequestChecksUnavailableSource,
 } from "@repo/api/src/types/branch-selected-pull-request-checks";
 import { SelectedPullRequestEvidenceUnavailableReason } from "@repo/api/src/types/selected-pull-request-evidence";
+import { PR_INT_MAX } from "@repo/api/src/types/session-artifact-link";
 import { deriveLinkedArtifactsFromBranchName } from "@repo/lib/branches/linked-artifacts";
 import type { SharedBranchesDetailRequest } from "../../shared/shared-branches-contract.js";
 import type { BranchPrRow } from "../database/branch-reads.js";
 import {
   type DesktopAssociatedPullRequestCandidate,
-  projectDesktopBranchAssociatedPullRequests,
-  resolveDesktopBranchAssociatedPullRequest,
+  desktopAssociatedPullRequestCandidates,
   selectedDesktopPullRequestFields,
   statusForSelectedDesktopPullRequest,
 } from "./branch-associated-pull-request-projection.js";
@@ -39,7 +43,6 @@ export type DesktopDetailPullRequestSelection = {
     | "deletions"
     | "filesChanged"
   >;
-  requested: BranchSelectedPullRequestIdentity | undefined;
 };
 
 type CompleteArtifactLoc = {
@@ -48,23 +51,43 @@ type CompleteArtifactLoc = {
   filesChanged: number;
 };
 
-/** Resolve a Desktop detail request against persisted local associated PRs. */
+/** Select the requested or default pull request from the Branch's local rows. */
 export function selectDesktopDetailPullRequest(
   rows: readonly BranchPrRow[],
-  options: Omit<SharedBranchesDetailRequest, "id">,
-  branchArtifactLoc: CompleteArtifactLoc | null
+  options: Omit<SharedBranchesDetailRequest, "id">
 ): DesktopDetailPullRequestSelection | null {
   const requested = selectedPullRequestIdentityFromOptions(options);
-  const associatedPullRequests = resolveDesktopBranchAssociatedPullRequest(
-    rows,
-    projectDesktopBranchAssociatedPullRequests(rows),
+  const localCandidates = desktopAssociatedPullRequestCandidates(rows);
+  const localSelection = selectCandidateSet(
+    localCandidates,
+    BranchAssociatedPullRequestProvenance.PersistedDesktop,
     requested
   );
-  if (!associatedPullRequests) {
+  if (localSelection?.selected) {
+    return detailPullRequestSelection(localSelection);
+  }
+  if (requested) {
     return null;
   }
+  return detailPullRequestSelection(
+    localCandidates.length > 0
+      ? selectCandidateSet(
+          localCandidates,
+          BranchAssociatedPullRequestProvenance.PersistedDesktop,
+          undefined
+        )!
+      : selectBranchAssociatedPullRequests(
+          [],
+          BranchAssociatedPullRequestProvenance.PersistedDesktop
+        )
+  );
+}
+
+function detailPullRequestSelection(
+  associatedPullRequests: BranchAssociatedPullRequestSelection<DesktopAssociatedPullRequestCandidate>
+): DesktopDetailPullRequestSelection {
   const selected = associatedPullRequests.selected;
-  const selectedLoc = branchArtifactLoc ?? completeArtifactLoc(selected);
+  const selectedLoc = completeArtifactLoc(selected);
   return {
     associatedPullRequests,
     selectedRowFields: {
@@ -74,10 +97,45 @@ export function selectDesktopDetailPullRequest(
       deletions: selectedLoc?.linesRemoved ?? null,
       filesChanged: selectedLoc?.filesChanged ?? null,
     },
-    requested,
   };
 }
 
+function selectCandidateSet(
+  candidates: readonly DesktopAssociatedPullRequestCandidate[],
+  provenance: BranchAssociatedPullRequestProvenance,
+  requested: BranchSelectedPullRequestIdentity | undefined
+): BranchAssociatedPullRequestSelection<DesktopAssociatedPullRequestCandidate> | null {
+  const selection = selectBranchAssociatedPullRequests(candidates, provenance);
+  if (!requested) {
+    return selection;
+  }
+  const selectedId = `${normalizeRepoFullName(requested.repositoryFullName)}#${requested.pullRequestNumber}`;
+  if (!selection.collection.items.some((item) => item.id === selectedId)) {
+    return null;
+  }
+  const explicit = selectBranchAssociatedPullRequests(
+    candidates.filter(
+      (candidate) =>
+        normalizeRepoFullName(candidate.repositoryFullName ?? "") ===
+          normalizeRepoFullName(requested.repositoryFullName) &&
+        candidate.number === requested.pullRequestNumber
+    ),
+    provenance
+  ).selected;
+  if (!explicit) {
+    return null;
+  }
+  return {
+    collection: {
+      ...selection.collection,
+      selectedId,
+      selectionReason: BranchAssociatedPullRequestSelectionReason.Explicit,
+    },
+    selected: explicit,
+  };
+}
+
+/** Return one all-or-nothing selected-PR LOC triple; partial or bad data is absent. */
 function completeArtifactLoc(
   candidate: {
     linesAdded: number | null;
@@ -86,17 +144,27 @@ function completeArtifactLoc(
   } | null
 ): CompleteArtifactLoc | null {
   if (
-    candidate?.linesAdded == null ||
-    candidate.linesRemoved == null ||
-    candidate.filesChanged == null
+    candidate &&
+    isBoundedCount(candidate.linesAdded) &&
+    isBoundedCount(candidate.linesRemoved) &&
+    isBoundedCount(candidate.filesChanged)
   ) {
-    return null;
+    return {
+      linesAdded: candidate.linesAdded,
+      linesRemoved: candidate.linesRemoved,
+      filesChanged: candidate.filesChanged,
+    };
   }
-  return {
-    linesAdded: candidate.linesAdded,
-    linesRemoved: candidate.linesRemoved,
-    filesChanged: candidate.filesChanged,
-  };
+  return null;
+}
+
+function isBoundedCount(value: number | null): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= PR_INT_MAX
+  );
 }
 
 /** Project the selected local PR and its explicit immutable-evidence gap. */
@@ -116,6 +184,10 @@ export function selectedPullRequestDetailFields(
       body: null,
       headRefOid: null,
       mergeCommitSha: null,
+      // ISS-8241: `BranchPrRow` carries neither, so the local lane has nothing
+      // measured to report.
+      baseRefName: null,
+      authorLogin: null,
       changedFiles: selected?.filesChanged ?? null,
       additions: selected?.linesAdded ?? null,
       deletions: selected?.linesRemoved ?? null,

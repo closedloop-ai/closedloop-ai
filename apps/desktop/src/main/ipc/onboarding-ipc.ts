@@ -1,7 +1,13 @@
+import type { DataSyncLevel } from "@repo/api/src/types/data-sync-level";
 import { shell } from "electron";
+import { z } from "zod";
 import { CLI_BINARY_TOOLS } from "../../shared/cli-binary-tools.js";
-import type { DataSyncLevel } from "../../shared/contracts.js";
-import { normalizeDataSyncLevel } from "../../shared/data-sync-level.js";
+import {
+  normalizeDataSyncLevel,
+  syncObservabilityTierToDataSyncLevel,
+} from "../../shared/data-sync-level.js";
+import { DesktopRendererEventChannel } from "../../shared/desktop-renderer-event-channel.js";
+import { OnboardingIpcChannel } from "../../shared/onboarding-ipc-channel.js";
 import {
   SANDBOX_REQUIRED_MESSAGE,
   SANDBOX_RISKY_ROOT_MESSAGE,
@@ -10,6 +16,7 @@ import {
   isRiskyAllowedDirectory,
   normalizeScopePath,
 } from "../../shared/sandbox-policy.js";
+import { normalizeSyncObservabilityTier } from "../../shared/sync-observability-tier.js";
 import { ONBOARDING_WIZARD_PATH } from "../onboarding/onboarding-popup.js";
 import type { DesktopOnboardingState } from "../onboarding/onboarding-state.js";
 import type { ApiKeyStore } from "../settings/api-key-store.js";
@@ -29,36 +36,38 @@ import {
   readSyncConsentRecord,
   type SyncConsentApplyDeps,
 } from "./sync-consent-apply.js";
-import { applySyncObservabilityTier } from "./sync-observability-tier-apply.js";
 
-export const OnboardingIpcChannel = {
-  GetOnboardingState: "desktop:get-onboarding-state",
-  MarkDashboardWelcomeSeen: "desktop:mark-dashboard-welcome-seen",
-  CompleteOnboarding: "desktop:complete-onboarding",
-  StartDeviceOnboarding: "desktop:start-device-onboarding",
-  DismissOnboardingPopup: "desktop:dismiss-onboarding-popup",
-  OnboardingPopupCta: "desktop:onboarding-popup-cta",
-  SetSyncObservabilityTier: "desktop:set-sync-observability-tier",
-  GetDataSyncLevel: "desktop:get-data-sync-level",
-  SetDataSyncLevel: "desktop:set-data-sync-level",
-  GetSyncConsentRecord: "desktop:get-sync-consent-record",
-  RecordSyncConsent: "desktop:record-sync-consent",
-} as const;
+/**
+ * Push channel: main → renderer whenever this device's sync-consent answer is
+ * (re)written, carrying the post-write consent record.
+ *
+ * ISS-5489. The renderer's consent snapshot is shared by the read-source
+ * decision, the takeover gate and the arrival nudge; before this channel existed
+ * a write reached only the surface that made it, so answering "Full" left the
+ * app reading local and saying sync was off until the next launch.
+ */
+export const DESKTOP_SYNC_CONSENT_CHANGED_CHANNEL =
+  DesktopRendererEventChannel.SyncConsentChanged;
 
-export type OnboardingIpcChannel =
-  (typeof OnboardingIpcChannel)[keyof typeof OnboardingIpcChannel];
+const onboardingBinaryPathShape = Object.fromEntries(
+  CLI_BINARY_TOOLS.map((tool) => [tool, z.string().optional()])
+) as Record<CliBinaryTool, z.ZodOptional<z.ZodString>>;
 
 /** Renderer-supplied payload for `desktop:complete-onboarding`. */
-type CompleteOnboardingPayload = {
-  relayOrigin?: string;
-  apiOrigin?: string;
-  webAppOrigin: string;
-  sandboxBaseDirectory: string;
-  apiKey?: string;
-  onboardingAttemptId?: string;
-  bootstrapToken?: string;
-  binaryPaths?: Partial<Record<CliBinaryTool, string>>;
-};
+const completeOnboardingPayloadSchema = z.object({
+  relayOrigin: z.string().optional(),
+  apiOrigin: z.string().optional(),
+  webAppOrigin: z.string(),
+  sandboxBaseDirectory: z.string(),
+  apiKey: z.string().optional(),
+  onboardingAttemptId: z.string().optional(),
+  bootstrapToken: z.string().optional(),
+  binaryPaths: z.object(onboardingBinaryPathShape).optional(),
+});
+
+type CompleteOnboardingPayload = z.infer<
+  typeof completeOnboardingPayloadSchema
+>;
 
 type IpcMainLike = {
   handle: (
@@ -92,6 +101,14 @@ type OnboardingIpcDeps = {
    */
   onSyncObservabilityTierChanged?: () => void;
   /**
+   * ISS-5489 — best-effort push to the renderer window (the crash-safe
+   * `DesktopWindow.sendToRenderer`, which already guards every teardown state).
+   * Optional so a caller that has no window — the `test:node` harness, a
+   * version-skewed composition root — degrades to no push rather than throwing;
+   * the renderer's own `refresh()` is the fallback either way.
+   */
+  sendToRenderer?: (channel: string, ...args: unknown[]) => void;
+  /**
    * FEA-3907 — persist the graduated data sync level and apply its derived
    * connectivity/sync side effects (in-memory app state + cloud socket/presence
    * updates) in one place. Implemented in app.ts (`applyDataSyncLevel`) so the
@@ -104,6 +121,11 @@ type OnboardingIpcDeps = {
    * the sync-consent binding instead of the renderer-supplied value.
    */
   getSessionOrganizationId: () => string | null;
+  /**
+   * ISS-10890: re-read the analysis consent gate after the Welcome Start
+   * agreement is recorded, so a boot import parked on it starts now.
+   */
+  onSessionAnalysisAgreed: () => void;
 };
 
 /** Normalize an optional cloud origin, or undefined when absent/blank. */
@@ -156,13 +178,30 @@ export function registerOnboardingIpcHandlers(
   ipcMainLike: IpcMainLike,
   deps: OnboardingIpcDeps
 ): void {
-  ipcMainLike.handle(OnboardingIpcChannel.GetOnboardingState, () =>
-    deps.getOnboardingState()
-  );
+  // ISS-5489: the ONE post-write notification, shared by all three
+  // renderer-originated consent writes (`SetSyncObservabilityTier`,
+  // `SetDataSyncLevel`, `RecordSyncConsent`). Each of them already called the
+  // lane kick; the broadcast rides the same call so a fourth write path cannot
+  // acquire one without the other. The record is READ here, after the write, so
+  // the renderer receives what was actually committed rather than what was
+  // requested — and it comes from `readSyncConsentRecord`, so the pushed shape
+  // cannot drift from the pulled one.
+  const notifySyncConsentChanged = () => {
+    deps.onSyncObservabilityTierChanged?.();
+    deps.sendToRenderer?.(
+      DESKTOP_SYNC_CONSENT_CHANGED_CHANNEL,
+      readSyncConsentRecord(syncConsentDeps(deps))
+    );
+  };
+  ipcMainLike.handle(OnboardingIpcChannel.GetOnboardingState, (event) => {
+    assertTrustedIpcSender(deps.isTrustedSender, event);
+    return deps.getOnboardingState();
+  });
   // FEA-1333: mark the one-time Agent Dashboard welcome as seen so it does
   // not show again. Separate from desktop:complete-onboarding, which owns
   // the gateway "Setup Required" flow.
-  ipcMainLike.handle(OnboardingIpcChannel.MarkDashboardWelcomeSeen, () => {
+  ipcMainLike.handle(OnboardingIpcChannel.MarkDashboardWelcomeSeen, (event) => {
+    assertTrustedIpcSender(deps.isTrustedSender, event);
     deps.settingsStore.setDashboardWelcomeSeen(true);
     return { ok: true };
   });
@@ -175,7 +214,10 @@ export function registerOnboardingIpcHandlers(
       // that keeps a compromised/secondary renderer from bootstrapping
       // attacker-controlled configuration.
       assertTrustedIpcSender(deps.isTrustedSender, event);
-      const payload = rawPayload as CompleteOnboardingPayload;
+      if (deps.settingsStore.getSignOutCleanupState().isPending()) {
+        throw new Error("onboarding is unavailable during sign-out cleanup");
+      }
+      const payload = completeOnboardingPayloadSchema.parse(rawPayload);
       const relayOrigin = resolveOptionalOrigin(payload.relayOrigin);
       const apiOrigin = resolveOptionalOrigin(payload.apiOrigin);
       const webAppOrigin = normalizeWebAppOrigin(payload.webAppOrigin);
@@ -194,7 +236,6 @@ export function registerOnboardingIpcHandlers(
       }
 
       const trimmedApiKey = resolveOnboardingApiKey(payload);
-
       deps.cancelManagedOnboardingForUserChange("manual onboarding completed");
       // ISS-6243: commit the origins BEFORE the credential. Storing the key
       // announces a credential change, and every listener resolves the account
@@ -265,32 +306,19 @@ export function registerOnboardingIpcHandlers(
     await shell.openExternal(targetUrl);
     return { opened: targetUrl };
   });
-  // PRD-532 (M4) → FEA-4103: legacy sync-consent tier setter, retained as a
-  // BACKWARD-COMPAT alias for any older renderer build that still invokes it (the
-  // current onboarding + Settings both persist through `setDataSyncLevel`). It no
-  // longer writes `syncObservabilityTier` in isolation — that was the last
-  // independent consent-tier setter, and writing the tier alone left the other
-  // derived flags (transcript lane, connectivity) untouched, so the canonical
-  // `DataSyncLevel` the "Data & Sync" UI reads could disagree with the actual
-  // enforced egress (a lying UI). The mapping + canonical write lives in the
-  // electron-free `applySyncObservabilityTier` helper (so the wiring is unit-
-  // testable without booting Electron): the tier is mapped to its canonical level
-  // via the SSOT inverse and routed through the SAME `applyDataSyncLevel` path
-  // every other consent surface uses, so all four derived booleans are written
-  // together and no surface can set a sub-flag out of agreement. Sender trust is
-  // the boundary; the tier is additionally validated against the closed literal
-  // set as defense-in-depth. `local → off · metadata → metadata · full → full`
-  // never widens exposure — but because it routes through the level, the legacy
-  // `local` tier now intentionally also tears down cloud connectivity (Off
-  // disables the connection), where the old isolated write left it untouched.
-  // That teardown is the point: the tier can no longer desync the enforced
-  // egress. The response echoes the tier the caller sent (contract-compatible)
-  // even though we persist by level.
+  // PRD-532 (M4) / ISS-8353: legacy sync-consent tier setter, retained as a
+  // BACKWARD-COMPAT alias for older renderer builds. It now records active-org
+  // consent through the same writer as the takeover and Settings v2, then echoes
+  // the legacy tier shape the caller expects.
   ipcMainLike.handle(
     OnboardingIpcChannel.SetSyncObservabilityTier,
     (event, rawTier) => {
       assertTrustedIpcSender(deps.isTrustedSender, event);
-      return applySyncObservabilityTier(deps, rawTier);
+      const tier = normalizeSyncObservabilityTier(rawTier);
+      applySyncConsent(syncConsentDeps(deps, notifySyncConsentChanged), {
+        level: syncObservabilityTierToDataSyncLevel(tier),
+      });
+      return { tier };
     }
   );
   // FEA-3907: read the current graduated data sync level for the Settings
@@ -300,26 +328,25 @@ export function registerOnboardingIpcHandlers(
     assertTrustedIpcSender(deps.isTrustedSender, event);
     return { level: deps.settingsStore.getDataSyncLevel() };
   });
-  // FEA-3907: persist a new data sync level. Sender trust is the boundary; the
-  // level is additionally validated against the closed literal set as
-  // defense-in-depth. `applyDataSyncLevel` (app.ts) persists the level + derived
-  // booleans and applies the connectivity/sync side effects.
+  // FEA-3907 / ISS-8353: persist a new data sync level as active-org consent.
+  // The shared writer still reaches `applyDataSyncLevel`, but current Settings
+  // writes can no longer produce a legacy unbound record.
   ipcMainLike.handle(
     OnboardingIpcChannel.SetDataSyncLevel,
     (event, rawLevel) => {
       assertTrustedIpcSender(deps.isTrustedSender, event);
       const level = normalizeDataSyncLevel(rawLevel);
-      deps.applyDataSyncLevel(level);
-      // The level can reopen a suppressed sync lane just like a tier change, so
-      // kick discovery now instead of waiting for the next periodic sweep.
-      deps.onSyncObservabilityTierChanged?.();
-      return { level };
+      const committed = applySyncConsent(
+        syncConsentDeps(deps, notifySyncConsentChanged),
+        { level }
+      );
+      return { level: committed.level };
     }
   );
   // ISS-5489: the post-auth consent takeover's read and write. Both are thin
   // trusted-sender guards over the electron-free `sync-consent-apply` module,
-  // matching the FEA-4103 `applySyncObservabilityTier` shape, so the logic is
-  // exercisable in the `test:node` slice without booting Electron.
+  // so the logic is exercisable in the `test:node` slice without booting
+  // Electron.
   ipcMainLike.handle(OnboardingIpcChannel.GetSyncConsentRecord, (event) => {
     assertTrustedIpcSender(deps.isTrustedSender, event);
     return readSyncConsentRecord(syncConsentDeps(deps));
@@ -328,13 +355,38 @@ export function registerOnboardingIpcHandlers(
     OnboardingIpcChannel.RecordSyncConsent,
     (event, rawPayload) => {
       assertTrustedIpcSender(deps.isTrustedSender, event);
-      return applySyncConsent(syncConsentDeps(deps), rawPayload);
+      return applySyncConsent(
+        syncConsentDeps(deps, notifySyncConsentChanged),
+        rawPayload
+      );
+    }
+  );
+  // ISS-10890: Welcome's Start is this device's agreement to local analysis
+  // (operator decision, 2026-09-24). Takes no payload; egress is not touched.
+  ipcMainLike.handle(
+    OnboardingIpcChannel.RecordSessionAnalysisAgreement,
+    (event) => {
+      assertTrustedIpcSender(deps.isTrustedSender, event);
+      deps.settingsStore.recordSessionAnalysisAgreement();
+      deps.onSessionAnalysisAgreed();
+      return { ok: true };
     }
   );
 }
 
-/** Project the onboarding IPC deps onto the consent module's narrower needs. */
-function syncConsentDeps(deps: OnboardingIpcDeps): SyncConsentApplyDeps {
+/**
+ * Project the onboarding IPC deps onto the consent module's narrower needs.
+ *
+ * `onSyncObservabilityTierChanged` is a PARAMETER rather than a projection of
+ * the dep with the same name: the read path passes none, and the write path
+ * passes the post-write notifier, which itself calls this projection to read the
+ * committed record. Threading the notifier through the returned object would
+ * make that read reachable from the write it is reporting on.
+ */
+function syncConsentDeps(
+  deps: OnboardingIpcDeps,
+  onSyncObservabilityTierChanged?: () => void
+): SyncConsentApplyDeps {
   return {
     applyDataSyncLevel: deps.applyDataSyncLevel,
     clearSyncObservabilityTier: () =>
@@ -346,7 +398,7 @@ function syncConsentDeps(deps: OnboardingIpcDeps): SyncConsentApplyDeps {
       deps.settingsStore.getSyncObservabilityTier(),
     hasSyncConsentOrganizationBinding: () =>
       deps.settingsStore.hasSyncConsentOrganizationBinding(),
-    onSyncObservabilityTierChanged: deps.onSyncObservabilityTierChanged,
+    onSyncObservabilityTierChanged,
     setSyncConsentOrganizationId: (organizationId) =>
       deps.settingsStore.setSyncConsentOrganizationId(organizationId),
   };

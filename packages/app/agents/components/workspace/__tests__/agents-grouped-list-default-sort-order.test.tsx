@@ -96,6 +96,7 @@ const FIXTURE: AgentComponent[] = [
 function testDataSource(items: AgentComponent[]): AgentComponentsDataSource {
   return {
     scope: "test",
+    honorsDateWindow: false,
     list: () =>
       Promise.resolve({
         items,

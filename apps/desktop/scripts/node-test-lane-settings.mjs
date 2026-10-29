@@ -3,7 +3,7 @@
 /**
  * ISS-4933 — the two knobs both desktop main-process lanes must agree on.
  *
- * `test:node` now runs two pools: Vitest for the shim-compatible files and
+ * `test:node` now runs two pools: Vitest for the census's Vitest set and
  * `tsx --test` for the remainder. They are configured in different files —
  * `vitest.node.config.ts` and `run-node-tests.mjs` — and each knob below was
  * briefly declared in both, which is the SSOT-drift-by-copy defect the repo
@@ -12,7 +12,6 @@
  */
 
 import { availableParallelism } from "node:os";
-import { TRACER_PRELOAD_TOKENS } from "../../../scripts/tracer-preload-tokens.mjs";
 
 /**
  * The 120s per-test cap FEA-2399 set, or `NODE_TEST_TIMEOUT_MS`.
@@ -32,61 +31,81 @@ export function resolveTestTimeoutMs(env = process.env) {
 }
 
 /**
- * How many test files either pool may run at once.
+ * How many test files a desktop lane may run at once.
+ *
+ * Read by all three: both main-process pools (`vitest.node.config.ts` and
+ * `run-node-tests.mjs`) and the renderer lane (`vitest.renderer.config.ts`,
+ * ISS-9275 — it previously declared no width at all and took one worker per
+ * core, which is what made its `asyncUtilTimeout` budgets unreliable).
  *
  * node:test isolates each file in its own child process and Vitest's `forks`
  * pool with `isolate: true` does the same, so concurrent files do not share
  * mutable state; the pre-ISS-4638 `--test-concurrency=1` pin serialized the
  * whole suite for no correctness benefit (verified: identical pass/fail at 1
- * vs N). The desktop PR gate is a 4-core runner, and higher local widths create
- * resource pressure without improving the serialized renderer/build floor
- * documented in pr-test.yml.
+ * vs N).
+ *
+ * Width per host is {@link laneConcurrencyFor}.
  *
  * @returns {number}
  */
 export function resolveLaneConcurrency() {
-  return Math.min(availableParallelism(), 4);
+  return laneConcurrencyFor(availableParallelism());
 }
 
 /**
- * `NODE_OPTIONS` with the dd-trace preload tokens removed.
+ * ISS-7085 — whether the Vitest pool collects its own coverage this run.
  *
- * The `desktop-node` step sets the preload so the tracer instruments VITEST.
- * dd-trace has no `node:test` integration at any version, so forwarding it to
- * the legacy pool buys nothing and costs a module preload on every one of its
- * files — and, worse, any of them that spawns a child with a temp `cwd` gets
- * `Cannot find module 'dd-trace/ci/init'` from a variable it never set. The
- * Vitest lane strips the same tokens inside its workers via
- * `scripts/vitest-setup-strip-tracer.ts`; this is that rule applied one process
- * earlier, for the pool that has no setup file to do it in. Both read the token
- * list from `scripts/tracer-preload-tokens.mjs`, so a token added there reaches
- * every stripper — this file used to hold its own copy, kept in step only by a
- * comment claiming byte-identity, which nothing failed on when it stopped
- * being true.
+ * The node lane is one c8 invocation wrapping BOTH pools, and c8 attributes
+ * only what runs outside a Vite-transformed worker: the `tsx --test` pool, this
+ * runner's own module graph, and any child process a test spawns. Everything
+ * the Vitest pool executes IN-WORKER is invisible to it — 1079 of the suite's
+ * 1107 files — so that pool has to report its own map, the way the renderer
+ * lane already does.
  *
- * Deliberately narrow: only the tracer tokens go, and everything else in
- * `NODE_OPTIONS` (`--max-old-space-size`, load-bearing on some lanes) stays.
+ * It lives beside the other two knobs for the reason this module exists: the
+ * flag is SET by `test:node:coverage` in package.json and READ by
+ * `vitest.node.config.ts`, so a second copy of the string is exactly the drift
+ * the docstring above warns about.
  *
- * @param {NodeJS.ProcessEnv} env
- * @returns {NodeJS.ProcessEnv} A copy; the caller's env is not mutated.
+ * Presence is not enough, and the negative spellings are enumerated rather than
+ * left to truthiness: a shell that exports the name unconditionally, or a
+ * developer who writes `DESKTOP_NODE_COVERAGE=false` to turn it off, must not
+ * silently turn the lane ON. That matters more than it looks — this value now
+ * feeds `nodeLaneSelectionHash`, so a truthy-by-accident setting would change
+ * what the node partitions measure while the method identity still claimed the
+ * runs were comparable.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {boolean}
  */
-export function withoutTracerPreload(env) {
-  const nodeOptions = env.NODE_OPTIONS;
-  if (nodeOptions === undefined || nodeOptions.length === 0) {
-    return { ...env };
+export function resolveNodeCoverageEnabled(env = process.env) {
+  const raw = env.DESKTOP_NODE_COVERAGE?.trim().toLowerCase();
+  if (raw === undefined || raw === "") {
+    return false;
   }
-  let stripped = nodeOptions;
-  for (const token of TRACER_PRELOAD_TOKENS) {
-    stripped = stripped.replaceAll(token, "");
-  }
-  stripped = stripped.replace(WHITESPACE_RUN, " ").trim();
-  const next = { ...env };
-  if (stripped.length > 0) {
-    next.NODE_OPTIONS = stripped;
-  } else {
-    Reflect.deleteProperty(next, "NODE_OPTIONS");
-  }
-  return next;
+  return !NODE_COVERAGE_OFF_VALUES.has(raw);
 }
 
-const WHITESPACE_RUN = /\s+/g;
+const NODE_COVERAGE_OFF_VALUES = new Set(["0", "false", "off", "no"]);
+
+/**
+ * {@link resolveLaneConcurrency} with the host passed in, so the per-host width
+ * is assertable on any machine.
+ *
+ * At least 4 (or every core, below 4), half the machine above 8 cores, and
+ * never more than 8. The desktop PR gate is a 4-core runner and an 8-core host
+ * still gets 4, so every CI lane keeps its width. ISS-12047: on a 10-core host
+ * a 4-wide `test:node` took 551s alone and crossed the 900s whole-runner cap
+ * beside one other turbo lane; 5 wide it finished at 59-68% of the cap in a full
+ * `pnpm test`. Half, not all, because `pnpm test` runs this lane beside one
+ * Vitest lane that also takes half (`resolveLaneWorkers` in
+ * `@repo/vitest-config`). Capped at 8, the widest width measured: the renderer
+ * lane shares this width, and each of its workers mounts the whole desktop shell
+ * against a 15s `asyncUtilTimeout` (ISS-6732, ISS-9275).
+ *
+ * @param {number} cores
+ * @returns {number}
+ */
+export function laneConcurrencyFor(cores) {
+  return Math.max(Math.min(cores, 4), Math.min(Math.floor(cores / 2), 8));
+}

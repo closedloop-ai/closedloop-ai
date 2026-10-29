@@ -5,8 +5,10 @@ import {
   BranchPersonProvider,
 } from "@repo/api/src/types/branch-identity";
 import { BranchMetricAvailability } from "@repo/api/src/types/branch-metrics";
-import { GitHubBackfillMode } from "@repo/api/src/types/github";
-import { LONG_RUNNING_API_TIMEOUT_MS } from "@repo/app/shared/api/api-timeout";
+import { BRANCHES_COHORT_TRANSPARENCY_FLAG_KEY } from "@repo/api/src/types/branches-cohort-transparency-flag";
+import { MY_TASKS_RECENCY_SHOW_ALL_LABEL } from "@repo/app/my-tasks/lib/my-tasks-recency-window";
+import { LIST_TOOLBAR_FILTER_LABEL } from "@repo/app/shared/components/list-toolbar-copy";
+import { SUMMARY_CARD_STRETCH_CLASS } from "@repo/app/shared/components/summary-card-row";
 import {
   ArtifactFlag,
   SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY,
@@ -18,7 +20,7 @@ import {
   themeBackground,
 } from "@repo/app/test/a11y/contrast";
 import { A11yThemeRoot } from "@repo/app/test/a11y/react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React, { type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,12 +28,12 @@ import BranchesPage from "../page";
 import {
   cardText,
   makeAnalytics,
-  makeAnalyticsWithCanonicalSpend,
   makeBranchRow,
   makeCanonicalMetrics,
   makeCohortRows,
   makeListResponse,
   pageDataResult,
+  renderBranchesPage as render,
   renderHeaderMock,
 } from "./branches-page-fixtures";
 
@@ -64,11 +66,17 @@ const REFRESH_BUTTON_NAME_PATTERN = /refresh/i;
 const ALICE_OWNER_PATTERN = /alice/i;
 const HIDDEN_TEXT_PATTERN = /hidden/;
 const SUMMARY_METRICS_ERROR_PATTERN = /couldn't load the summary metrics/i;
+const COHORT_CLAIM_PATTERN =
+  /Updating Branches for|Couldn't update Branches for/i;
 const RETRY_BUTTON_NAME_PATTERN = /retry/i;
 const FIXED_SUMMARY_COLUMN_TIER_PATTERN = /(?:^|\s)\w+:grid-cols-\d/;
 const PINNED_SUMMARY_CARD_SIZE_PATTERN = /(?:min-w|basis)-\[1[12]rem\]/;
-const SUMMARY_DERIVED_TRACKS_CLASS =
-  "md:grid-cols-[repeat(auto-fit,minmax(var(--summary-card-min),1fr))]";
+/**
+ * `SummaryCardRow`'s `wrapBelow` grid, which this page must NOT render: its band
+ * is a non-shrinking flex item beside the table's scroll region, so a wrapped
+ * second rank comes straight out of the rows (#7544).
+ */
+const SUMMARY_WRAPPING_GRID_PATTERN = /(?:^|\s)grid(?:$|\s)/;
 // FEA-4004 retired this flag; the string is kept only so this regression can
 // force the pre-PR default-hide branch on. If the removal ever regressed, the
 // old code would still gate on this key and hide the merged/agent rows below,
@@ -129,7 +137,13 @@ vi.mock("@repo/app/shared/api/use-api-client", () => {
 });
 
 vi.mock("@repo/app/github/hooks/use-github-integration", () => ({
-  githubKeys: { all: ["github"] },
+  // ISS-7408: `usePostConnectBackfill` reads `backfill()` on every render, so a
+  // stub without it throws before any assertion in this file runs.
+  githubKeys: { all: ["github"], backfill: () => ["github", "backfill"] },
+  // ISS-5958: the page reads the GitHub status to decide whether its gated CTA
+  // says connect or reconnect. This suite is about the list, so the status stays
+  // unresolved — which the resolver reports as "unknown".
+  useGitHubIntegrationStatus: () => ({ data: undefined, isPending: false }),
 }));
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
@@ -143,6 +157,8 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
   return {
     ...actual,
     useQueryClient: () => queryClient,
+    // ISS-7408: the hook's suite covers polling; page tests isolate its read.
+    useQuery: () => ({ data: undefined, dataUpdatedAt: 0 }),
   };
 });
 
@@ -154,7 +170,18 @@ vi.mock("@/app/(authenticated)/components/header", () => ({
 // hook. Default-off for any flag-gated child; a hoisted `vi.fn()` so a test can
 // opt a specific flag on.
 vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
+  // ISS-9692: `useTablePageSizeOptions` reads the ladder gate through the
+  // provider-optional port. Ready by default, so suites written before the gate
+  // keep their synchronous behaviour.
+  useFeatureFlagGateOptional: (flag: string) => ({
+    enabled: featureFlagEnabledMock(flag),
+    isReady: true,
+  }),
   useFeatureFlagEnabled: (flag: string) => featureFlagEnabledMock(flag),
+  useFeatureFlagGate: (flag: string) => ({
+    enabled: featureFlagEnabledMock(flag),
+    isReady: true,
+  }),
   // ISS-4887: `SummaryCardRow` — which the Branches KPI strip renders — reads
   // its gate OPTIONALLY, so this module mock must expose both hooks or the
   // subtree throws on the missing export. Routed to the same mock so a test can
@@ -201,6 +228,22 @@ describe("BranchesPage", () => {
     vi.useRealTimers();
   });
 
+  it("does not announce a cohort notice during initial loading or failure", () => {
+    featureFlagEnabledMock.mockImplementation(
+      (flag: string) => flag === BRANCHES_COHORT_TRANSPARENCY_FLAG_KEY
+    );
+    useBranchesPageDataMock.mockReturnValue(
+      pageDataResult({ isPending: true })
+    );
+    const pending = render(<BranchesPage />);
+    expect(screen.queryByText(COHORT_CLAIM_PATTERN)).not.toBeInTheDocument();
+    pending.unmount();
+
+    useBranchesPageDataMock.mockReturnValue(pageDataResult({ isError: true }));
+    render(<BranchesPage />);
+    expect(screen.queryByText(COHORT_CLAIM_PATTERN)).not.toBeInTheDocument();
+  });
+
   // ISS-5574: every Sessions/Branches page reported the app-wide "Closedloop.ai",
   // so several open tabs were indistinguishable. Asserts the REAL document.title
   // for this route, and that the flag-off default is untouched.
@@ -229,7 +272,14 @@ describe("BranchesPage", () => {
     expect(
       screen.getByText("feature/web-branches").closest("a")
     ).toHaveAttribute("href", "/acme/branches/branch-1");
-    expect(screen.getByText("app")).toBeInTheDocument();
+    // ISS-7362 split the PR chip's label so a tail ellipsis can no longer reach
+    // the number, so the short repo name now renders in two places: the
+    // Repository cell and the chip's own truncating prefix. The chip still reads
+    // as one `repo#number` token.
+    expect(screen.getAllByText("app")).toHaveLength(2);
+    expect(
+      screen.getByText("#123").closest('[data-slot="chip"]')
+    ).toHaveTextContent("app#123");
     expect(screen.getByText("Active branches")).toBeInTheDocument();
     expect(useBranchesPageDataMock).toHaveBeenCalledWith(
       expect.objectContaining({ startDate: expect.any(String) }),
@@ -244,7 +294,7 @@ describe("BranchesPage", () => {
   it("binds filtered cards to the landed exact-cohort producer", async () => {
     const producerMetrics = {
       ...makeCanonicalMetrics(),
-      aiSpendUsd: {
+      medianPrSize: {
         current: {
           state: BranchMetricAvailability.Complete,
           value: 321,
@@ -295,7 +345,7 @@ describe("BranchesPage", () => {
     expect(Date.parse(request.startDate)).toBeLessThan(
       Date.parse(request.endDate)
     );
-    await waitFor(() => expect(cardText("AI spend")).toContain("$321"));
+    await waitFor(() => expect(cardText("Median PR size")).toContain("321"));
   });
 
   // FEA-4155 regression: the P0 blank-render bug was the page gating its entire
@@ -335,6 +385,8 @@ describe("BranchesPage", () => {
     ).toEqual([
       "Name",
       "Owner",
+      // ISS-10332: shown by default (operator ruling 5, 2026-09-21).
+      "Priority",
       "Collaborators",
       "Linked sessions",
       "Changes",
@@ -343,18 +395,30 @@ describe("BranchesPage", () => {
       "Last active",
       "Repository",
       "Tags",
+      "Project",
     ]);
   });
 
   // FEA-4177 — independent failure domains: an analytics-only failure degrades
   // the summary cards to "Unavailable" but the branches table still renders.
-  it("renders the table when only the analytics half fails and retries every Branches query", () => {
-    useBranchesPageDataMock.mockReturnValue(
-      pageDataResult({
+  it("keeps visible rows while summary retry reruns only analytics + cohort reads", () => {
+    const refetchAnalyticsMock = vi.fn().mockResolvedValue(undefined);
+    useBranchesPageDataMock.mockReturnValue({
+      ...pageDataResult({
         list: makeListResponse([makeBranchRow()]),
         analyticsError: true,
-      })
-    );
+      }),
+      refetch: vi.fn(),
+      refetchAnalytics: refetchAnalyticsMock,
+      analyticsPending: false,
+      analyticsError: true,
+      analyticsQuery: {
+        data: undefined,
+        isPending: false,
+        isError: true,
+      },
+      isSuccess: true,
+    });
 
     render(<BranchesPage />);
 
@@ -372,10 +436,17 @@ describe("BranchesPage", () => {
     fireEvent.click(
       screen.getByRole("button", { name: RETRY_BUTTON_NAME_PATTERN })
     );
-    expect(invalidateQueriesMock).toHaveBeenCalledWith(
+    expect(refetchAnalyticsMock).toHaveBeenCalledTimes(1);
+    expect(cohortRefetchMock).toHaveBeenCalledTimes(1);
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith(
+      { queryKey: ["branches", "cohort-analytics"] },
+      { throwOnError: true }
+    );
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith(
       { queryKey: ["branches", "page-data"] },
       { throwOnError: true }
     );
+    expect(screen.getByText("feature/web-branches")).toBeInTheDocument();
   });
 
   // FEA-3560 regression: navigating into a branch detail unmounts the list;
@@ -457,24 +528,46 @@ describe("BranchesPage", () => {
     ).not.toBeInTheDocument();
   });
 
+  /**
+   * ISS-10301 re-pointed this at the surface arm of the same band; ISS-11472
+   * then collapsed the two arms into the one band this asserts against.
+   *
+   * The assertions this case was written against — `grid grid-cols-2` plus the
+   * `md:` auto-fit tracks — were `SummaryCardRow`'s `wrapBelow` grid, which this
+   * page reached only through the deleted v1 host, whose `layout="stacked"` arm
+   * ISS-11472 removed along with the prop. The one band left spreads
+   * `SUMMARY_CARD_SURFACE_BAND_PROPS`, and #7544 is explicit that it must
+   * stay ONE non-wrapping rank: `GridTableListSurface` seats it as a
+   * non-shrinking flex item beside the table's scroll region, so a rank the strip
+   * gains is a rank the table loses.
+   *
+   * Everything the name promises is still asserted, against the operands that are
+   * live here: the shared per-card minimum this row publishes, the absence of a
+   * fixed column tier, the five-card canonical row, and cards that ABSORB the
+   * band's spare width rather than pinning to the floor. The `wrapBelow` grid
+   * itself is still pinned where it is still reachable, by
+   * `packages/app/shared/components/__tests__/summary-card-row.test.tsx`.
+   */
   it("derives the summary grid from the shared per-card minimum", () => {
     const { container } = render(<BranchesPage />);
-    const grid = container.querySelector<HTMLElement>(
-      `[class~="${SUMMARY_DERIVED_TRACKS_CLASS}"]`
+    const grid = [...container.querySelectorAll<HTMLElement>("div")].find(
+      (node) => node.style.getPropertyValue("--summary-card-min") !== ""
     );
 
-    expect(grid).not.toBeNull();
-    expect(grid).toHaveClass(
-      "grid-cols-2",
-      "gap-4",
-      "max-md:[&>*:last-child:nth-child(odd)]:col-span-2"
-    );
+    expect(grid).not.toBeUndefined();
+    // One rank, sized from the published floor — never the wrapping grid.
+    expect(grid).toHaveClass("flex", "gap-4");
+    expect(grid?.className).not.toMatch(SUMMARY_WRAPPING_GRID_PATTERN);
     expect(grid?.style.getPropertyValue("--summary-card-min")).toBe("192px");
     expect(grid?.className).not.toMatch(FIXED_SUMMARY_COLUMN_TIER_PATTERN);
     const cards = [...(grid?.querySelectorAll('[data-slot="card"]') ?? [])];
+    // ISS-9970 retired the AI spend card; ISS-10636 then made ISS-9957's
+    // canonical row unconditional, which puts Total LOC pushed in that slot and
+    // moves LOC per $ last. Five, not four — the gate that used to select the
+    // four-card row is gone, so there is no reader who sees four.
     expect(cards).toHaveLength(5);
     for (const card of cards) {
-      expect(card).toHaveClass("w-full");
+      expect(card).toHaveClass(...SUMMARY_CARD_STRETCH_CLASS.split(" "));
       expect(card.className).not.toMatch(PINNED_SUMMARY_CARD_SIZE_PATTERN);
     }
   });
@@ -527,7 +620,7 @@ describe("BranchesPage", () => {
     rerender(<BranchesPage />);
     expect(screen.getByText("No matching branches")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Show all time" })
+      screen.getByRole("button", { name: MY_TASKS_RECENCY_SHOW_ALL_LABEL })
     ).toBeInTheDocument();
   });
 
@@ -543,28 +636,30 @@ describe("BranchesPage", () => {
     expect(screen.getByText("No matching branches")).toBeInTheDocument();
     expect(screen.queryByText("No branches yet")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show all time" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: MY_TASKS_RECENCY_SHOW_ALL_LABEL })
+    );
 
     expect(screen.getByText("No branches yet")).toBeInTheDocument();
     expect(screen.queryByText("No matching branches")).not.toBeInTheDocument();
   });
 
-  it.each([
-    A11yTheme.Light,
-    A11yTheme.Dark,
-  ])("keeps branches route critical a11y and contrast clean in %s theme", async (theme) => {
-    const { container } = render(
-      <A11yThemeRoot theme={theme}>
-        <BranchesPage />
-      </A11yThemeRoot>
-    );
+  it.each([A11yTheme.Light, A11yTheme.Dark])(
+    "keeps branches route critical a11y and contrast clean in %s theme",
+    async (theme) => {
+      const { container } = render(
+        <A11yThemeRoot theme={theme}>
+          <BranchesPage />
+        </A11yThemeRoot>
+      );
 
-    await expectCriticalAxeClean(container);
-    expectElementContrast(screen.getByText("Active branches"), {
-      background: themeBackground(theme),
-      label: `branches populated row ${theme}`,
-    });
-  });
+      await expectCriticalAxeClean(container);
+      expectElementContrast(screen.getByText("Active branches"), {
+        background: themeBackground(theme),
+        label: `branches populated row ${theme}`,
+      });
+    }
+  );
 
   it.each([
     [
@@ -605,81 +700,28 @@ describe("BranchesPage", () => {
       "No matching branches",
     ],
     ["populated", () => undefined, "Active branches"],
-  ])("keeps branches %s state a11y and contrast clean", async (_state, setup, expectedText) => {
-    for (const theme of A11Y_THEMES) {
-      setup();
+  ])(
+    "keeps branches %s state a11y and contrast clean",
+    async (_state, setup, expectedText) => {
+      for (const theme of A11Y_THEMES) {
+        setup();
 
-      const { container, unmount } = render(
-        <A11yThemeRoot theme={theme}>
-          <BranchesPage />
-        </A11yThemeRoot>
-      );
+        const { container, unmount } = render(
+          <A11yThemeRoot theme={theme}>
+            <BranchesPage />
+          </A11yThemeRoot>
+        );
 
-      const target = screen.getByText(expectedText);
-      await expectCriticalAxeClean(container);
-      expectElementContrast(target, {
-        background: themeBackground(theme),
-        label: `branches ${expectedText} ${theme}`,
-      });
-      unmount();
+        const target = screen.getByText(expectedText);
+        await expectCriticalAxeClean(container);
+        expectElementContrast(target, {
+          background: themeBackground(theme),
+          label: `branches ${expectedText} ${theme}`,
+        });
+        unmount();
+      }
     }
-  });
-
-  it("starts backfill and invalidates branches after a connected return", async () => {
-    searchParamsMock.mockReturnValue(new URLSearchParams("github=connected"));
-
-    render(<BranchesPage />);
-
-    expect(
-      screen.getByText("GitHub is connected. Branch data is refreshing.")
-    ).toBeInTheDocument();
-    await waitFor(() =>
-      expect(apiPostMock).toHaveBeenCalledWith(
-        "/integrations/github/backfill",
-        { mode: GitHubBackfillMode.Apply },
-        // ISS-5013: Apply mode runs the backfill synchronously, so it opts out
-        // of the default client deadline with an explicit longer one.
-        { timeoutMs: LONG_RUNNING_API_TIMEOUT_MS }
-      )
-    );
-    expect(invalidateQueriesMock).toHaveBeenCalledWith({
-      queryKey: ["github"],
-    });
-    expect(invalidateQueriesMock).toHaveBeenCalledWith({
-      queryKey: ["branches"],
-    });
-  });
-
-  // ISS-5013 (tamsinb): the abandon path the `.finally()` was added for. The
-  // effect invalidates `branchesKeys.all` eagerly BEFORE the POST, so a bare
-  // `toHaveBeenCalledWith` cannot tell `.finally()` from `.then()` — only the
-  // SECOND branches invalidation proves the settle-path fired. Before the client
-  // deadline the POST hung and nothing settled, so this path did not exist; now
-  // it rejects at LONG_RUNNING_API_TIMEOUT_MS with rows possibly written
-  // server-side, and a success-only invalidation would leave the list asserting
-  // "nothing here" about an org that has branches.
-  it("invalidates branches even when the backfill is abandoned at the deadline", async () => {
-    searchParamsMock.mockReturnValue(new URLSearchParams("github=connected"));
-    apiPostMock.mockRejectedValue(new Error("timed out"));
-    // `invalidateQueriesMock` is hoisted and not reset in `beforeEach`, so clear
-    // the calls this assertion counts.
-    invalidateQueriesMock.mockClear();
-
-    render(<BranchesPage />);
-
-    await waitFor(() =>
-      expect(
-        invalidateQueriesMock.mock.calls.filter(
-          ([arg]) => arg?.queryKey?.[0] === "branches"
-        )
-      ).toHaveLength(2)
-    );
-    expect(
-      screen.queryByText(
-        "Branch refresh failed. Retry from the Refresh button."
-      )
-    ).not.toBeInTheDocument();
-  });
+  );
 });
 
 // FEA-3629 v2 — the #3281 gap. #3281 wired the top-bar summary cards to
@@ -690,7 +732,7 @@ describe("BranchesPage", () => {
 // The fix re-projects over `selectVisibleWireRows`, so this test drives a REAL
 // facet with a windowed-out row present in `data.items` and asserts every card
 // reflects only the visible rows. It FAILS against #3281's wiring (the
-// windowed-out row's $1000 leaks into AI spend) and passes with the fix.
+// windowed-out row leaks into the re-derived cohort) and passes with the fix.
 describe("BranchesPage summary cards reflect the filtered, VISIBLE table (FEA-3629 v2)", () => {
   const VISIBLE_OPEN = makeBranchRow({
     id: "visible-open",
@@ -704,8 +746,8 @@ describe("BranchesPage summary cards reflect the filtered, VISIBLE table (FEA-36
   });
   // Same owner, but its activity is far OUTSIDE the default 30-day window, so the
   // client-side window drops it from the visible table while it still rides in
-  // `data.items`. A raw-corpus derivation would fold its $1000 into the
-  // owner-filtered AI spend.
+  // `data.items`. A raw-corpus derivation would fold it into the
+  // owner-filtered cohort.
   const OUT_OF_WINDOW = makeBranchRow({
     id: "out-of-window",
     branchName: "feature/out-of-window",
@@ -736,8 +778,8 @@ describe("BranchesPage summary cards reflect the filtered, VISIBLE table (FEA-36
           [VISIBLE_OPEN, VISIBLE_OTHER_OWNER, OUT_OF_WINDOW],
           { "s-open": 40, "s-other": 20, "s-out": 1000 }
         ),
-        // Full-corpus base: AI spend 999 (all-time), so a card still showing it
-        // after filtering proves the cards never re-derived at all.
+        // Full-corpus base (all-time), so a card still showing it after
+        // filtering proves the cards never re-derived at all.
         analytics: makeAnalytics(),
       })
     );
@@ -745,7 +787,7 @@ describe("BranchesPage summary cards reflect the filtered, VISIBLE table (FEA-36
 
   afterEach(() => vi.clearAllMocks());
 
-  it("re-derives AI spend over the visible rows only, excluding a windowed-out row", async () => {
+  it("scopes the cohort to the visible rows only, excluding a windowed-out row", async () => {
     const user = userEvent.setup();
     mockExactCohortSpend(40);
     render(<BranchesPage />);
@@ -756,7 +798,9 @@ describe("BranchesPage summary cards reflect the filtered, VISIBLE table (FEA-36
 
     // Apply an owner = alice facet (both rows are alice; only the in-window one
     // is visible). #3281 would sum $40 + $1000 = $1,040 over the raw corpus.
-    await user.click(screen.getByRole("button", { name: "Filter" }));
+    await user.click(
+      screen.getByRole("button", { name: LIST_TOOLBAR_FILTER_LABEL })
+    );
     await user.hover(screen.getByRole("menuitem", { name: "Owner" }));
     await waitFor(() =>
       expect(screen.getByPlaceholderText("Filter...")).toBeVisible()
@@ -765,14 +809,16 @@ describe("BranchesPage summary cards reflect the filtered, VISIBLE table (FEA-36
       screen.getByRole("menuitem", { name: ALICE_OWNER_PATTERN })
     );
 
-    // AI spend must equal the visible $40 (→ "$40"), never the all-time $999
-    // base and never the raw-corpus $1,040 that #3281 shipped.
-    await waitFor(() => expect(cardText("AI spend")).toContain("$40"));
-    expect(cardText("AI spend")).not.toContain("999");
-    expect(cardText("AI spend")).not.toContain("1,040");
+    // ISS-9970 retired the AI spend card, so a rendered dollar figure is no
+    // longer available as the probe. What #3281 actually broke is the SCOPE of
+    // the cohort, and that is still live: the request must carry only the
+    // visible row, never the windowed-out one it used to fold in.
+    await waitFor(() =>
+      expect(latestCohortRequest()?.branchIds).toEqual(["visible-open"])
+    );
   });
 
-  it("uses exact producer spend for a 101-branch filtered cohort", async () => {
+  it("requests the exact 101-branch filtered cohort", async () => {
     const aliceRows = makeCohortRows(101, "alice");
     const bobRow = makeBranchRow({
       id: "bob-only",
@@ -793,7 +839,9 @@ describe("BranchesPage summary cards reflect the filtered, VISIBLE table (FEA-36
 
     const user = userEvent.setup();
     render(<BranchesPage />);
-    await user.click(screen.getByRole("button", { name: "Filter" }));
+    await user.click(
+      screen.getByRole("button", { name: LIST_TOOLBAR_FILTER_LABEL })
+    );
     await user.hover(screen.getByRole("menuitem", { name: "Owner" }));
     await waitFor(() =>
       expect(screen.getByPlaceholderText("Filter...")).toBeVisible()
@@ -805,9 +853,7 @@ describe("BranchesPage summary cards reflect the filtered, VISIBLE table (FEA-36
     await waitFor(() => {
       const request = latestCohortRequest();
       expect(request?.branchIds).toHaveLength(101);
-      expect(cardText("AI spend")).toContain("$321");
     });
-    expect(cardText("AI spend")).not.toContain("$101");
   }, 15_000);
 
   it("surfaces an exact-cohort transport failure as unavailable", async () => {
@@ -822,7 +868,9 @@ describe("BranchesPage summary cards reflect the filtered, VISIBLE table (FEA-36
     );
 
     render(<BranchesPage />);
-    await user.click(screen.getByRole("button", { name: "Filter" }));
+    await user.click(
+      screen.getByRole("button", { name: LIST_TOOLBAR_FILTER_LABEL })
+    );
     await user.hover(screen.getByRole("menuitem", { name: "Owner" }));
     await waitFor(() =>
       expect(screen.getByPlaceholderText("Filter...")).toBeVisible()
@@ -837,71 +885,6 @@ describe("BranchesPage summary cards reflect the filtered, VISIBLE table (FEA-36
       ).toBeInTheDocument()
     );
     expect(screen.getAllByText("Unavailable").length).toBeGreaterThan(0);
-  });
-});
-
-// ISS-4737 — a filtered subset whose priced sessions sum to exactly $0 must
-// render the AI-spend card's no-data state, not "$0". The client re-projection
-// used to gate availability on "the subset holds at least one priced session",
-// so a zero-priced session produced an Available $0 that told the user the work
-// was free while the server producer reported the same corpus as no-data. This
-// drives the real page → real summary cards, so it asserts what the user sees.
-describe("BranchesPage AI spend renders no-data for a zero-sum priced subset (ISS-4737)", () => {
-  const ZERO_PRICED = makeBranchRow({
-    id: "zero-priced",
-    branchName: "feature/zero-priced",
-    owner: "alice",
-    status: BranchStatus.Open,
-    estimatedCostUsd: 0,
-    sessionIds: ["s-zero"],
-  });
-
-  beforeEach(() => {
-    vi.useRealTimers();
-    headerMock.mockImplementation(renderHeaderMock);
-    apiPostMock.mockResolvedValue({});
-    searchParamsMock.mockReturnValue(new URLSearchParams());
-    featureFlagEnabledMock.mockReturnValue(true);
-  });
-
-  afterEach(() => vi.clearAllMocks());
-
-  it("renders 'No data' when the authoritative per-session cost map prices the subset at zero", async () => {
-    useBranchesPageDataMock.mockReturnValue(
-      pageDataResult({
-        // s-zero IS priced — it carries an authoritative entry — but its cost is
-        // exactly zero, so the subset has no spend figure to report.
-        list: makeListResponse([ZERO_PRICED], { "s-zero": 0 }),
-        analytics: makeAnalyticsWithCanonicalSpend({
-          state: BranchMetricAvailability.NoData,
-          value: null,
-        }),
-      })
-    );
-
-    render(<BranchesPage />);
-
-    await waitFor(() => expect(cardText("AI spend")).toContain("No data"));
-    expect(cardText("AI spend")).not.toContain("$0");
-    // Never the unfiltered corpus figure either — the card IS re-derived.
-    expect(cardText("AI spend")).not.toContain("999");
-  });
-
-  it("renders a real positive total for the same subset once a session prices above zero", async () => {
-    useBranchesPageDataMock.mockReturnValue(
-      pageDataResult({
-        list: makeListResponse([ZERO_PRICED], { "s-zero": 12 }),
-        analytics: makeAnalyticsWithCanonicalSpend({
-          state: BranchMetricAvailability.Complete,
-          value: 12,
-        }),
-      })
-    );
-
-    render(<BranchesPage />);
-
-    await waitFor(() => expect(cardText("AI spend")).toContain("$12"));
-    expect(cardText("AI spend")).not.toContain("No data");
   });
 });
 

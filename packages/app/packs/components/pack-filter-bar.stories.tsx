@@ -7,9 +7,9 @@ const harnesses = Array.from(
 ).sort();
 
 const meta = {
-  title: "App Core/Packs/Pack Filter Bar",
+  title: "Composites v1.0/Packs/Pack Filter Bar",
   component: PackFilterBar,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     harnesses,
     query: "agent",

@@ -1,8 +1,8 @@
 /**
  * @file parse-claude-model-switch-label.ts
  * @description FEA-4376: extract the human-readable model NAME echoed by a
- * `/model` slash-command switch, split out of the grandfathered
- * `parse-claude.ts` (PR #3903 review) so that over-ceiling file shrinks rather
+ * `/model` slash-command switch, split out of
+ * `parse-claude.ts` (PR #3903 review) so that file shrinks rather
  * than grows. Pure string helper — no transcript state, no I/O.
  */
 

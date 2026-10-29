@@ -49,8 +49,8 @@ describe("MilestonesSection (FEA-4108)", () => {
           earnedAt: new Date("2026-06-15T00:00:00.000Z"),
         },
         {
-          kind: MilestoneKind.TokensUsed,
-          threshold: 1_000_000_000,
+          kind: MilestoneKind.DocumentsCreated,
+          threshold: 100,
           earnedAt: new Date("2026-05-01T00:00:00.000Z"),
         },
       ],
@@ -68,7 +68,7 @@ describe("MilestonesSection (FEA-4108)", () => {
     ).toBeInTheDocument();
     // Titles derive from kind + threshold via the canonical display map.
     expect(screen.getByText("500 PRs landed")).toBeInTheDocument();
-    expect(screen.getByText("1.00B tokens")).toBeInTheDocument();
+    expect(screen.getByText("100 documents created")).toBeInTheDocument();
     // Lifetime detail line is read from the canonical map, not the payload.
     expect(
       screen.getByText("Lifetime merged pull requests")

@@ -14,6 +14,27 @@ import { githubService } from "../../../service";
  * Get branches for a GitHub repository.
  * Optionally accepts a `limit` query parameter (default 20).
  * Returns branches sorted by committedDate descending, with the default branch pinned at position 0.
+ *
+ * ISS-8156: this read is NOT served from the Postgres projection, and that is a
+ * decision rather than an omission — the written reason PRD-683 Decision 5 asks
+ * for. The gap is the branch LIST, not the default branch. No projection carries
+ * a complete, recency-ordered view of a repository's refs: BranchDetail holds
+ * only the branches Symphony has observed (webhook / desktop sync / backfill),
+ * has no per-ref committedDate to order by, and marks no ref as default. This
+ * route owes callers the top-N refs by commit date with the default pinned at
+ * position 0, and the job-repositories picker consumes that whole list —
+ * use-default-branches feeds both the submit gate and the per-row branch
+ * override Select — so a projection read would quietly serve a short,
+ * arbitrarily-ordered list. The repository's default branch on its own IS
+ * persisted (repository-sync writes GitHubInstallationRepository
+ * .defaultBranchName with its availability/completeness provenance), so do not
+ * cite that field as the missing piece.
+ * PLN-1535 M3 also scoped the cutover to PRs alone because this route is not the
+ * GraphQL cost driver its sibling was.
+ *
+ * No projection-read flag gates this route. `public-github-repos` below is a
+ * feature-availability gate on the public-repo fallback, not a projection-vs-live
+ * switch: off means that fallback is unavailable, not that the read goes live.
  */
 export const GET = withAnyAuth<
   GetBranchesResponse,
@@ -49,7 +70,8 @@ export const GET = withAnyAuth<
       id,
       user.organizationId,
       limit,
-      publicReposEnabled
+      publicReposEnabled,
+      user.id
     );
 
     return successResponse(response);

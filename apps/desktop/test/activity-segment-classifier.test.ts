@@ -7,11 +7,10 @@
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { test } from "node:test";
-import {
-  COMPONENT_INVOCATION_STORED_REBUILD_REVISION,
-  DATA_REVISION,
-} from "../src/main/collectors/engine/data-revision.js";
+import { ACTIVITY_PHASE } from "@repo/api/src/types/activity-phase";
+import { test } from "vitest";
+import { COMPONENT_INVOCATION_STORED_REBUILD_REVISION } from "../src/main/collectors/engine/data-revision.js";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import {
   ACTIVITY_CLASSIFIER_VERSION,
   ACTIVITY_IDLE_GAP_MS,
@@ -21,7 +20,6 @@ import {
   deriveSessionBoundsMs,
   segmentIndexForMs,
 } from "../src/main/collectors/parsing/activity-segment-classifier.js";
-import { ACTIVITY_PHASE } from "../src/main/collectors/parsing/activity-taxonomy.js";
 import { BUILTIN_TRANSCRIPT_SOURCES } from "../src/main/collectors/parsing/transcript-sources.js";
 import {
   Harness,
@@ -660,7 +658,7 @@ test("FEA-4184: the classifier re-tiles Copilot/OpenCode sessions at the current
   }
 });
 
-test("FEA-4184: Copilot/OpenCode are absent from the segment-backfill source list (the gap the DATA_REVISION bump covers)", () => {
+test("FEA-4184: Copilot/OpenCode are absent from the segment-backfill source list (the gap the effectiveDataRevision() bump covers)", () => {
   const backfillHarnesses = new Set(
     BUILTIN_TRANSCRIPT_SOURCES.map((s) => s.harness)
   );
@@ -676,7 +674,7 @@ test("FEA-4184: Copilot/OpenCode are absent from the segment-backfill source lis
   // the collector rebuild (which reprocesses every harness). Guard that the bump
   // advanced past the last rebuild-worthy revision, so the rebuild actually runs.
   assert.ok(
-    DATA_REVISION > COMPONENT_INVOCATION_STORED_REBUILD_REVISION,
-    "DATA_REVISION advanced so the collector rebuild reprocesses Copilot/OpenCode to the new classifier version"
+    effectiveDataRevision() > COMPONENT_INVOCATION_STORED_REBUILD_REVISION,
+    "effectiveDataRevision() advanced so the collector rebuild reprocesses Copilot/OpenCode to the new classifier version"
   );
 });

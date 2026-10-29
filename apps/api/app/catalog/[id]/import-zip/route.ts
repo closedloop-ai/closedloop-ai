@@ -1,8 +1,15 @@
 import "server-only";
 
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import type { ImportPackZipResponse } from "@repo/api/src/types/distribution";
-import { isOrgAdmin } from "@/lib/auth/org-admin";
+import { requireOrgAdmin } from "@/lib/auth/org-admin";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { isUuid } from "@/lib/is-uuid";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
+import { recordOrganizationWrite } from "@/lib/organization-write-receipt";
 import {
   badRequestResponse,
   errorResponse,
@@ -34,38 +41,47 @@ export const maxDuration = 300;
 export const POST = withAnyAuth<
   ImportPackZipResponse,
   "/catalog/[id]/import-zip"
->(async ({ user, clerkOrgId, clerkUserId }, _request, params) => {
-  const adminCheck = await isOrgAdmin(clerkOrgId, clerkUserId);
-  if (!adminCheck) {
-    return forbiddenResponse();
-  }
-
-  const { id } = await params;
-
-  try {
-    const result = await importPackZipComponents({
-      id,
-      organizationId: user.organizationId,
-      userId: user.id,
-    });
-
-    if (!result.ok) {
-      if (result.error === 404) {
-        return notFoundResponse("Pack");
+>(
+  withOperationReceipts(
+    OperationKind.OrganizationWrite,
+    async ({ user, clerkOrgId, clerkUserId }, _request, params, receipts) => {
+      const denial = await requireOrgAdmin(clerkOrgId, clerkUserId);
+      if (denial) {
+        return denial;
       }
-      if (result.error === 400) {
-        return badRequestResponse("No zip uploaded for this Pack");
+
+      const { id } = await params;
+      // `CatalogItem.id` is `@db.Uuid`; refusing a malformed segment here also
+      // avoids burning one of this route's 300s `maxDuration` slots on it.
+      if (!isUuid(id)) {
+        return notFoundResponse("Catalog item");
       }
-      if (result.error === 413) {
-        return payloadTooLargeResponse(
-          "Pack zip exceeds the decompressed-size or entry-count limit"
+
+      try {
+        const result = await importPackZipComponents(
+          { id, organizationId: user.organizationId, userId: user.id },
+          recordOrganizationWrite(receipts)
         );
-      }
-      return forbiddenResponse();
-    }
 
-    return successResponse(result.value);
-  } catch (error) {
-    return errorResponse("Failed to import Pack zip", error);
-  }
-});
+        if (!result.ok) {
+          if (result.error === 404) {
+            return notFoundResponse("Pack");
+          }
+          if (result.error === 400) {
+            return badRequestResponse("No zip uploaded for this Pack");
+          }
+          if (result.error === 413) {
+            return payloadTooLargeResponse(
+              "Pack zip exceeds the decompressed-size or entry-count limit"
+            );
+          }
+          return forbiddenResponse();
+        }
+
+        return successResponse(withOperationReceipt(result.value, receipts));
+      } catch (error) {
+        return errorResponse("Failed to import Pack zip", error);
+      }
+    }
+  )
+);

@@ -39,6 +39,9 @@
 
 import "server-only";
 
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   computeDefinitionHash,
   NORMALIZER_CONTRACT_VERSION,
@@ -568,8 +571,8 @@ async function main(): Promise<void> {
 
 // Only run when invoked directly (not when imported by the test).
 if (
-  typeof process !== "undefined" &&
-  import.meta.url === `file://${process.argv[1]}`
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(realpathSync(resolve(process.argv[1]))).href
 ) {
   main().catch((error) => {
     console.error("[backfill-definition-versions] failed:", error);

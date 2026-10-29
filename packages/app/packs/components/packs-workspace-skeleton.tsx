@@ -135,9 +135,7 @@ export const PacksWorkspaceSkeleton = ({
           </div>
           <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,350px),1fr))] gap-4">
             {Array.from({ length: cards }, (_, index) => (
-              // Placeholder cards are a fixed, never-reordered, data-less list,
-              // so a positional key is correct and stable here.
-              // biome-ignore lint/suspicious/noArrayIndexKey: static placeholder grid
+              // biome-ignore lint/suspicious/noArrayIndexKey: placeholder cards are a fixed, never-reordered, data-less list, so a positional key is stable
               <PackCardSkeleton key={index} />
             ))}
           </div>

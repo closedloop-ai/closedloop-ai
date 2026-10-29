@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { afterEach, describe, test } from "vitest";
 import { ClaudeCodeOtelEnvVar } from "../src/server/otel/claude-code-env.js";
 import {
   _setKnownBinaryLocationsForResolverTest,

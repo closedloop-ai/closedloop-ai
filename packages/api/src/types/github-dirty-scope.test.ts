@@ -14,7 +14,7 @@ describe("parseGitHubResyncNudgeBody", () => {
         {
           kind: GitHubDirtyScopeKind.Branch,
           repositoryId: "repo-1",
-          repositoryFullName: "closedloop-ai/example-repo",
+          repositoryFullName: "closedloop-ai/closedloop-ai",
           branchName: "feat/nudge",
         },
       ],
@@ -28,7 +28,7 @@ describe("parseGitHubResyncNudgeBody", () => {
         {
           kind: GitHubDirtyScopeKind.Branch,
           repositoryId: "repo-1",
-          repositoryFullName: "closedloop-ai/example-repo",
+          repositoryFullName: "closedloop-ai/closedloop-ai",
           branchName: "feat/nudge",
         },
       ],

@@ -11,7 +11,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { SourceFile } from "typescript6";
 import {
@@ -22,6 +21,7 @@ import {
   ScriptKind,
   ScriptTarget,
 } from "typescript6";
+import { test } from "vitest";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(testDir, "..");

@@ -12,13 +12,14 @@ import {
   CommentPermalinkProvider,
   useCommentPermalink,
 } from "../comment-permalink-context";
+import { eraseFeedSource } from "../erase-feed-source";
 import {
   FeedFilterProvider,
   FeedFilterSort,
   useFeedFilter,
 } from "../feed-filter-context";
 import { FeedItemKind } from "../feed-item";
-import type { FeedSource } from "../feed-source";
+import type { AnyFeedSource, FeedSource } from "../feed-source";
 import { FeedSourcesProvider } from "../feed-sources-context";
 import { FeedStream } from "../feed-stream";
 import { FeedRuntime } from "../source-items-registry";
@@ -48,8 +49,8 @@ function makeStubSource(
     Footer?: () => ReactNode;
     stateCopy?: FeedSource<StubItem, StubFilterState>["stateCopy"];
   }> = {}
-): FeedSource<StubItem, StubFilterState> {
-  return {
+): AnyFeedSource {
+  return eraseFeedSource<StubItem, StubFilterState>({
     id,
     kind,
     label: id,
@@ -68,7 +69,7 @@ function makeStubSource(
     renderItem: (item) => (
       <span data-testid={`row-${item.sourceId}-${item.id}`}>{item.label}</span>
     ),
-  };
+  });
 }
 
 type ForceSortProps = Readonly<{
@@ -87,7 +88,7 @@ function ForceSort({ sort, children }: ForceSortProps) {
 }
 
 function renderWith(
-  sources: readonly FeedSource<StubItem, StubFilterState>[],
+  sources: readonly AnyFeedSource[],
   sort: FeedFilterSort = FeedFilterSort.Newest,
   scrollToThreadId?: string
 ) {

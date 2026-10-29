@@ -2,17 +2,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import {
-  detectSessionOrigin,
-  parseApiKeySource,
   parseHarnessResult,
-  parseRateLimitEvent,
-  parseTokenUsage,
-  RateLimitEventStatus,
-  RateLimitWindowType,
   resolveClaudeOutputPath,
-  SessionOrigin,
 } from "../src/main/cost/token-usage.js";
 
 const tempDirs: string[] = [];
@@ -37,240 +30,6 @@ function writeJsonl(
   const content = `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`;
   fs.writeFileSync(path.join(dir, filename), content, "utf-8");
 }
-
-test("(a) normal case: accumulates all four token types and deduplicates models", () => {
-  const dir = makeTempDir();
-  writeJsonl(dir, [
-    {
-      type: "assistant",
-      message: {
-        model: "claude-opus-4",
-        usage: {
-          input_tokens: 100,
-          output_tokens: 50,
-          cache_creation_input_tokens: 200,
-          cache_read_input_tokens: 300,
-        },
-      },
-    },
-    {
-      type: "assistant",
-      message: {
-        model: "claude-opus-4",
-        usage: {
-          input_tokens: 10,
-          output_tokens: 5,
-          cache_creation_input_tokens: 20,
-          cache_read_input_tokens: 30,
-        },
-      },
-    },
-    {
-      type: "assistant",
-      message: {
-        model: "claude-sonnet-4",
-        usage: {
-          input_tokens: 1,
-          output_tokens: 2,
-          cache_creation_input_tokens: 3,
-          cache_read_input_tokens: 4,
-        },
-      },
-    },
-  ]);
-
-  const result = parseTokenUsage(dir);
-  assert.equal(result.inputTokens, 111);
-  assert.equal(result.outputTokens, 57);
-  assert.equal(result.cacheCreationInputTokens, 223);
-  assert.equal(result.cacheReadInputTokens, 334);
-  assert.equal(result.turns, 3);
-  assert.deepEqual(result.models.sort(), ["claude-opus-4", "claude-sonnet-4"]);
-});
-
-test("(b) cache tokens absent defaults to 0", () => {
-  const dir = makeTempDir();
-  writeJsonl(dir, [
-    {
-      type: "assistant",
-      message: {
-        model: "claude-haiku-4",
-        usage: { input_tokens: 50, output_tokens: 25 },
-      },
-    },
-  ]);
-
-  const result = parseTokenUsage(dir);
-  assert.equal(result.inputTokens, 50);
-  assert.equal(result.outputTokens, 25);
-  assert.equal(result.cacheCreationInputTokens, 0);
-  assert.equal(result.cacheReadInputTokens, 0);
-  assert.equal(result.turns, 1);
-  assert.deepEqual(result.models, ["claude-haiku-4"]);
-});
-
-test("(c) missing JSONL file returns zero values and empty arrays", () => {
-  const dir = makeTempDir();
-  // No claude-output.jsonl written
-
-  const result = parseTokenUsage(dir);
-  assert.equal(result.inputTokens, 0);
-  assert.equal(result.outputTokens, 0);
-  assert.equal(result.cacheCreationInputTokens, 0);
-  assert.equal(result.cacheReadInputTokens, 0);
-  assert.equal(result.turns, 0);
-  assert.deepEqual(result.models, []);
-});
-
-test("(d) malformed lines are skipped", () => {
-  const dir = makeTempDir();
-  const content = `${[
-    '{"type":"assistant","message":{"model":"claude-opus-4","usage":{"input_tokens":10,"output_tokens":5}}}',
-    "not-valid-json{{{",
-    '{"type":"assistant","message":{"model":"claude-opus-4","usage":{"input_tokens":20,"output_tokens":10}}}',
-  ].join("\n")}\n`;
-  fs.writeFileSync(path.join(dir, "claude-output.jsonl"), content, "utf-8");
-
-  const result = parseTokenUsage(dir);
-  assert.equal(result.inputTokens, 30);
-  assert.equal(result.outputTokens, 15);
-  assert.equal(result.turns, 2);
-});
-
-test("(e) duplicate model names are deduplicated", () => {
-  const dir = makeTempDir();
-  writeJsonl(dir, [
-    {
-      type: "assistant",
-      message: {
-        model: "claude-opus-4",
-        usage: { input_tokens: 1, output_tokens: 1 },
-      },
-    },
-    {
-      type: "assistant",
-      message: {
-        model: "claude-opus-4",
-        usage: { input_tokens: 2, output_tokens: 2 },
-      },
-    },
-    {
-      type: "assistant",
-      message: {
-        model: "claude-opus-4",
-        usage: { input_tokens: 3, output_tokens: 3 },
-      },
-    },
-  ]);
-
-  const result = parseTokenUsage(dir);
-  assert.equal(result.models.length, 1);
-  assert.deepEqual(result.models, ["claude-opus-4"]);
-});
-
-test("(f) tokensByModel: single model accumulates per-model counts", () => {
-  const dir = makeTempDir();
-  writeJsonl(dir, [
-    {
-      type: "assistant",
-      message: {
-        model: "claude-opus-4",
-        usage: {
-          input_tokens: 100,
-          output_tokens: 50,
-          cache_creation_input_tokens: 200,
-          cache_read_input_tokens: 300,
-        },
-      },
-    },
-    {
-      type: "assistant",
-      message: {
-        model: "claude-opus-4",
-        usage: {
-          input_tokens: 10,
-          output_tokens: 5,
-          cache_creation_input_tokens: 20,
-          cache_read_input_tokens: 30,
-        },
-      },
-    },
-  ]);
-
-  const result = parseTokenUsage(dir);
-  assert.deepEqual(result.tokensByModel, {
-    "claude-opus-4": {
-      input: 110,
-      output: 55,
-      cacheCreation: 220,
-      cacheRead: 330,
-    },
-  });
-});
-
-test("(g) tokensByModel: multiple models have independent counts", () => {
-  const dir = makeTempDir();
-  writeJsonl(dir, [
-    {
-      type: "assistant",
-      message: {
-        model: "claude-opus-4",
-        usage: {
-          input_tokens: 100,
-          output_tokens: 50,
-          cache_creation_input_tokens: 200,
-          cache_read_input_tokens: 300,
-        },
-      },
-    },
-    {
-      type: "assistant",
-      message: {
-        model: "claude-sonnet-4",
-        usage: {
-          input_tokens: 1,
-          output_tokens: 2,
-          cache_creation_input_tokens: 3,
-          cache_read_input_tokens: 4,
-        },
-      },
-    },
-    {
-      type: "assistant",
-      message: {
-        model: "claude-opus-4",
-        usage: {
-          input_tokens: 10,
-          output_tokens: 5,
-          cache_creation_input_tokens: 20,
-          cache_read_input_tokens: 30,
-        },
-      },
-    },
-  ]);
-
-  const result = parseTokenUsage(dir);
-  assert.deepEqual(result.tokensByModel, {
-    "claude-opus-4": {
-      input: 110,
-      output: 55,
-      cacheCreation: 220,
-      cacheRead: 330,
-    },
-    "claude-sonnet-4": {
-      input: 1,
-      output: 2,
-      cacheCreation: 3,
-      cacheRead: 4,
-    },
-  });
-});
-
-test("(h) tokensByModel: missing JSONL returns empty object", () => {
-  const dir = makeTempDir();
-  const result = parseTokenUsage(dir);
-  assert.deepEqual(result.tokensByModel, {});
-});
 
 test("resolveClaudeOutputPath uses sidecar-selected renamed output", () => {
   const dir = makeTempDir();
@@ -298,8 +57,6 @@ test("resolveClaudeOutputPath uses sidecar-selected renamed output", () => {
     resolveClaudeOutputPath(dir),
     path.join(dir, "claude-output-run-1.jsonl")
   );
-  assert.equal(parseTokenUsage(dir).inputTokens, 7);
-  assert.equal(parseApiKeySource(dir), "ANTHROPIC_API_KEY");
 });
 
 test("resolveClaudeOutputPath treats an empty sidecar as legacy-only", () => {
@@ -332,7 +89,6 @@ test("resolveClaudeOutputPath treats an empty sidecar as legacy-only", () => {
     resolveClaudeOutputPath(dir),
     path.join(dir, "claude-output.jsonl")
   );
-  assert.equal(parseTokenUsage(dir).inputTokens, 5);
 });
 
 test("resolveClaudeOutputPath falls back from stale sidecar to newest renamed output", () => {
@@ -374,7 +130,6 @@ test("resolveClaudeOutputPath falls back from stale sidecar to newest renamed ou
   );
 
   assert.equal(resolveClaudeOutputPath(dir), newer);
-  assert.equal(parseTokenUsage(dir).inputTokens, 11);
 });
 
 test("resolveClaudeOutputPath preserves legacy fixed-path fallback", () => {
@@ -393,14 +148,12 @@ test("resolveClaudeOutputPath preserves legacy fixed-path fallback", () => {
     resolveClaudeOutputPath(dir),
     path.join(dir, "claude-output.jsonl")
   );
-  assert.equal(parseTokenUsage(dir).inputTokens, 13);
 });
 
 test("resolveClaudeOutputPath returns null when no output files exist", () => {
   const dir = makeTempDir();
 
   assert.equal(resolveClaudeOutputPath(dir), null);
-  assert.equal(parseTokenUsage(dir).turns, 0);
 });
 
 test("resolveClaudeOutputPath rejects sidecar path traversal", () => {
@@ -481,9 +234,6 @@ test("parseHarnessResult: captures Claude Code's authoritative result envelope",
   assert.equal(result.usage?.webSearchRequests, 3);
   assert.equal(result.modelUsage["claude-opus-4-8"]?.costUsd, 1.2345);
   assert.equal(result.modelUsage["claude-opus-4-8"]?.cacheCreation, 200);
-
-  // Provenance: a result envelope means harness stdout capture.
-  assert.equal(detectSessionOrigin(result), SessionOrigin.HarnessStdout);
 });
 
 test("parseHarnessResult: captures permission denials, dropping the raw tool input", () => {
@@ -739,9 +489,6 @@ test("parseHarnessResult: null for a persistent transcript (no result envelope)"
 
   const result = parseHarnessResult(dir);
   assert.equal(result, null);
-  // Provenance: absence of a result envelope means an imported/interactive
-  // transcript — derived reconstruction only.
-  assert.equal(detectSessionOrigin(result), SessionOrigin.PersistentTranscript);
 });
 
 test("parseHarnessResult: tolerates a result envelope with missing fields", () => {
@@ -759,183 +506,41 @@ test("parseHarnessResult: tolerates a result envelope with missing fields", () =
   assert.deepEqual(result.modelUsage, {});
 });
 
-test("parseRateLimitEvent: extracts the latest event's status/reset/type/utilization", () => {
+/**
+ * ISS-8565: `parseHarnessModelUsage` folded Claude Code's own
+ * `claude-output.jsonl` `modelUsage` envelope onto a plain `{}`, so a model
+ * literally named `__proto__` lost its whole row — and that map is serialized
+ * onto the cloud reconciliation event.
+ *
+ * The fixture builds the key with `Object.create(null)`, not a literal: a
+ * quoted `"__proto__"` in an object LITERAL is the prototype-setter form and
+ * creates no own key, so `JSON.stringify` would never emit it and the test
+ * would silently prove nothing.
+ */
+test("ISS-8565: harness modelUsage keeps a __proto__ model", () => {
   const dir = makeTempDir();
-  // resetsAt is a Unix epoch in SECONDS: 2026-07-20T00:00:00Z.
-  const resetEpochSeconds = 1_784_505_600;
-  writeJsonl(dir, [
-    {
-      type: "rate_limit_event",
-      rate_limit_info: {
-        status: "allowed",
-        rateLimitType: "five_hour",
-        resetsAt: 1_784_000_000,
-      },
-    },
-    {
-      type: "assistant",
-      message: {
-        model: "claude-opus-4-8",
-        usage: { input_tokens: 10, output_tokens: 5 },
-      },
-    },
-    // The LATEST event wins — a later warning on the weekly window.
-    {
-      type: "rate_limit_event",
-      rate_limit_info: {
-        status: "allowed_warning",
-        rateLimitType: "seven_day",
-        resetsAt: resetEpochSeconds,
-        utilization: 82,
-      },
-    },
-  ]);
+  const modelUsage: Record<string, unknown> = Object.create(null);
+  // biome-ignore lint/suspicious/noProto: ISS-8565 regression — the hostile key IS the subject under test
+  modelUsage.__proto__ = {
+    inputTokens: 1000,
+    outputTokens: 500,
+    cacheReadInputTokens: 40,
+    cacheCreationInputTokens: 7,
+    costUSD: 1.25,
+  };
+  writeJsonl(dir, [{ type: "result", subtype: "success", modelUsage }]);
 
-  const snapshot = parseRateLimitEvent(dir);
-  assert.ok(snapshot, "expected a rate-limit snapshot to be parsed");
-  assert.equal(snapshot.status, RateLimitEventStatus.AllowedWarning);
-  assert.equal(snapshot.rateLimitType, RateLimitWindowType.SevenDay);
-  assert.equal(snapshot.resetsAt, "2026-07-20T00:00:00.000Z");
-  assert.equal(snapshot.utilization, 82);
-});
+  const result = parseHarnessResult(dir);
 
-test("parseRateLimitEvent: null when no rate_limit_event is present", () => {
-  const dir = makeTempDir();
-  writeJsonl(dir, [
-    { type: "system", subtype: "init", apiKeySource: "none" },
-    {
-      type: "assistant",
-      message: {
-        model: "claude-opus-4-8",
-        usage: { input_tokens: 100, output_tokens: 50 },
-      },
-    },
-    { type: "result", subtype: "success", is_error: false },
-  ]);
-
-  assert.equal(parseRateLimitEvent(dir), null);
-});
-
-test("parseRateLimitEvent: null (never throws) when the JSONL file is missing", () => {
-  const dir = makeTempDir();
-  assert.equal(parseRateLimitEvent(dir), null);
-});
-
-test("parseRateLimitEvent: utilization is null when the event omits it", () => {
-  const dir = makeTempDir();
-  writeJsonl(dir, [
-    {
-      type: "rate_limit_event",
-      rate_limit_info: {
-        status: "rejected",
-        rateLimitType: "seven_day_opus",
-        resetsAt: 1_784_505_600,
-      },
-    },
-  ]);
-
-  const snapshot = parseRateLimitEvent(dir);
-  assert.ok(snapshot);
-  assert.equal(snapshot.status, RateLimitEventStatus.Rejected);
-  assert.equal(snapshot.rateLimitType, RateLimitWindowType.SevenDayOpus);
-  assert.equal(snapshot.utilization, null);
-});
-
-test("parseRateLimitEvent: skips status-less events but keeps a status-only (window-less) one", () => {
-  const dir = makeTempDir();
-  writeJsonl(dir, [
-    {
-      type: "rate_limit_event",
-      rate_limit_info: {
-        status: "allowed",
-        rateLimitType: "overage",
-        resetsAt: 1_784_505_600,
-        utilization: 40,
-      },
-    },
-    // Unknown status — the only required field is unusable, must be skipped.
-    {
-      type: "rate_limit_event",
-      rate_limit_info: { status: "throttled", rateLimitType: "five_hour" },
-    },
-    // Missing rate_limit_info entirely — must be skipped.
-    { type: "rate_limit_event" },
-    // Valid, but rateLimitType absent (version-gated / optional on the CLI union).
-    // A status-only event still carries usable state — it must be KEPT with a
-    // null window, not dropped.
-    {
-      type: "rate_limit_event",
-      rate_limit_info: { status: "allowed_warning", utilization: 55 },
-    },
-  ]);
-
-  const snapshot = parseRateLimitEvent(dir);
-  assert.ok(snapshot, "expected the status-only event to be preserved");
-  assert.equal(snapshot.status, RateLimitEventStatus.AllowedWarning);
-  assert.equal(snapshot.rateLimitType, null);
-  assert.equal(snapshot.utilization, 55);
-  assert.equal(snapshot.resetsAt, null);
-});
-
-test("parseRateLimitEvent: an unrecognized window type narrows to null, snapshot survives", () => {
-  const dir = makeTempDir();
-  writeJsonl(dir, [
-    {
-      type: "rate_limit_event",
-      rate_limit_info: {
-        status: "rejected",
-        // Not a member of RateLimitWindowType — narrows to null rather than
-        // dropping the (otherwise valid) snapshot.
-        rateLimitType: "one_hour",
-        utilization: 100,
-      },
-    },
-  ]);
-
-  const snapshot = parseRateLimitEvent(dir);
-  assert.ok(snapshot, "expected the snapshot to survive an unknown window");
-  assert.equal(snapshot.status, RateLimitEventStatus.Rejected);
-  assert.equal(snapshot.rateLimitType, null);
-  assert.equal(snapshot.utilization, 100);
-});
-
-test("parseRateLimitEvent: recognizes the seven_day_overage_included window", () => {
-  const dir = makeTempDir();
-  writeJsonl(dir, [
-    {
-      type: "rate_limit_event",
-      rate_limit_info: {
-        status: "allowed_warning",
-        rateLimitType: "seven_day_overage_included",
-        resetsAt: 1_784_505_600,
-        utilization: 91,
-      },
-    },
-  ]);
-
-  const snapshot = parseRateLimitEvent(dir);
-  assert.ok(snapshot);
-  assert.equal(
-    snapshot.rateLimitType,
-    RateLimitWindowType.SevenDayOverageIncluded
-  );
-  assert.equal(snapshot.utilization, 91);
-});
-
-test("parseRateLimitEvent: guards a non-positive epoch to a null reset", () => {
-  const dir = makeTempDir();
-  writeJsonl(dir, [
-    {
-      type: "rate_limit_event",
-      rate_limit_info: {
-        status: "allowed",
-        rateLimitType: "five_hour",
-        resetsAt: 0,
-      },
-    },
-  ]);
-
-  const snapshot = parseRateLimitEvent(dir);
-  assert.ok(snapshot);
-  assert.equal(snapshot.resetsAt, null);
+  assert.ok(result, "expected a result envelope to be parsed");
+  assert.ok(Object.keys(result.modelUsage).includes("__proto__"));
+  // biome-ignore lint/suspicious/noProto: ISS-8565 regression — the hostile key IS the subject under test
+  assert.deepEqual(result.modelUsage.__proto__, {
+    input: 1000,
+    output: 500,
+    cacheRead: 40,
+    cacheCreation: 7,
+    costUsd: 1.25,
+  });
+  assert.equal(Object.getPrototypeOf(result.modelUsage), Object.prototype);
 });

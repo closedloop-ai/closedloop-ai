@@ -40,6 +40,7 @@ import os from "node:os";
 import path from "node:path";
 import { Harness } from "@repo/api/src/types/agent-component";
 import { normalizeCommandComponentKey } from "@repo/lib/sessions/command-user-turn-id";
+import { isTccProtectedPath } from "../../shared/sandbox-policy.js";
 import { isImportableSourcePath } from "../collectors/engine/source-admission.js";
 import { getOpenCodeConfigHome } from "../collectors/opencode/opencode-home.js";
 import { resolveClaudeHome, resolveCodexHome } from "./claude-home.js";
@@ -51,7 +52,7 @@ import {
   findSkillFiles,
   parseSkillFrontmatter,
   safeReadFile,
-} from "./pack-scanner.js";
+} from "./skill-files.js";
 
 /**
  * A scan root, optionally tagged with the project root it belongs to and the
@@ -160,7 +161,14 @@ export function normalizeScanRoot(root: DefinitionScanRoot): {
   return typeof root === "string" ? { dir: root } : root;
 }
 
+// ISS-11914: the two readers below return nothing for a TCC-protected path,
+// where listing or reading raises a macOS permission prompt. Project roots are
+// filtered before they get here; these also cover a Claude or OpenCode home
+// that resolves into a protected folder.
 function listMarkdownFiles(dir: string): string[] {
+  if (isTccProtectedPath(dir)) {
+    return [];
+  }
   try {
     return readdirSync(dir, { withFileTypes: true })
       .filter((e) => e.isFile() && LEADING_DOT_MD.test(e.name))
@@ -188,6 +196,9 @@ export function readContainedDefinition(
   candidatePath: string,
   rootDir: string
 ): { content: string; stat: Stats } | null {
+  if (isTccProtectedPath(candidatePath)) {
+    return null;
+  }
   // Pre-check so the common out-of-root case is rejected without opening the
   // file at all; the post-read check below is the authoritative one.
   if (!isImportableSourcePath(candidatePath, [rootDir])) {
@@ -387,8 +398,13 @@ export function discoverDefinitions(
  * different set.
  */
 export function resolveDefaultDefinitionScanRoots(
-  projectRoots: readonly string[]
+  recentProjectRoots: readonly string[]
 ): DefinitionCollectorRoots {
+  // ISS-11914: walking a project inside a TCC-protected folder raises a macOS
+  // permission prompt.
+  const projectRoots = recentProjectRoots.filter(
+    (root) => !isTccProtectedPath(root)
+  );
   return {
     // Home skill roots carry no projectPath (their scope is derived from the
     // `<home>/.claude` shape) but ARE harness-tagged by the home they resolve to

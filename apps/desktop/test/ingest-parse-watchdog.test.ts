@@ -22,19 +22,13 @@
  * itself, which is what is under test).
  */
 import assert from "node:assert/strict";
-import {
-  existsSync,
-  mkdtempSync,
-  rmSync,
-  utimesSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { CollectorManager } from "../src/main/collectors/engine/collector-manager.js";
-import { parseQuarantinePath } from "../src/main/collectors/engine/parse-quarantine.js";
 import { deferred } from "./deferred.js";
+import { createMemoryIngestStoreProvider } from "./ingest-store-test-utils.js";
 import { fakeCollector, makeSession } from "./normalized-session-test-utils.js";
 
 // A tiny parse bound keeps the test fast: the wedged parse never settles, so the
@@ -75,7 +69,6 @@ test("ISS-4444: a parse that never settles is bounded and dead-lettered; the loo
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -99,7 +92,7 @@ test("ISS-4444: a parse that never settles is bounded and dead-lettered; the loo
     // The loop must reach and complete the GOOD source despite the wedged first
     // parse — the whole point of the bound.
     await goodImported.promise;
-    manager.stop();
+    await manager.stop();
     wedged.resolve([]); // let the abandoned parse settle harmlessly
 
     assert.deepEqual(completedImports, ["good-session"]);
@@ -112,7 +105,7 @@ test("ISS-4444: after N wedging passes the source is quarantined (persisted) and
   const dir = mkdtempSync(join(tmpdir(), "iss-4444-quarantine-persist-"));
   const wedgedSource = join(dir, "wedged.jsonl");
   writeFileSync(wedgedSource, "{}\n");
-  const persistPath = parseQuarantinePath(dir, "claude");
+  const ingestStores = createMemoryIngestStoreProvider();
 
   const wedged = deferred<ReturnType<typeof makeSession>[]>();
   let parseAttempts = 0;
@@ -125,8 +118,8 @@ test("ISS-4444: after N wedging passes the source is quarantined (persisted) and
       importer: {
         importSession: () => ({ skipped: false, reactivated: false }),
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
+      ingestStores: ingestStores.provider,
       emit: () => {},
       getCollectionMode: () => "watcher",
       cooperativeDelay: noopCooperativeDelay,
@@ -150,7 +143,7 @@ test("ISS-4444: after N wedging passes the source is quarantined (persisted) and
     // The boot import settles to complete despite the wedged source — it is
     // dead-lettered, then quarantined, so the pass finishes.
     await firstComplete.promise;
-    manager.stop();
+    await manager.stop();
     wedged.resolve([]);
 
     const progress = manager.getIngestProgress();
@@ -164,7 +157,10 @@ test("ISS-4444: after N wedging passes the source is quarantined (persisted) and
       1,
       "the wedged source was quarantined and surfaced in the count"
     );
-    assert.ok(existsSync(persistPath), "the quarantine was persisted to disk");
+    assert.ok(
+      ingestStores.parseQuarantine("claude").peek(),
+      "the quarantine was persisted to the ingest store"
+    );
     assert.equal(
       parseAttempts,
       1,
@@ -179,8 +175,8 @@ test("ISS-4444: after N wedging passes the source is quarantined (persisted) and
       importer: {
         importSession: () => ({ skipped: false, reactivated: false }),
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
+      ingestStores: ingestStores.provider,
       emit: () => {},
       getCollectionMode: () => "watcher",
       cooperativeDelay: noopCooperativeDelay,
@@ -201,7 +197,7 @@ test("ISS-4444: after N wedging passes the source is quarantined (persisted) and
 
     secondManager.start();
     await secondComplete.promise;
-    secondManager.stop();
+    await secondManager.stop();
 
     assert.equal(
       secondPassParses,
@@ -226,7 +222,7 @@ test("ISS-4444: a wedging BATCH collector (OpenCode) is quarantined so it stops 
   const dir = mkdtempSync(join(tmpdir(), "iss-4444-opencode-quarantine-"));
   const wedgedDb = join(dir, "opencode.db");
   writeFileSync(wedgedDb, "{}\n");
-  const persistPath = parseQuarantinePath(dir, "opencode");
+  const ingestStores = createMemoryIngestStoreProvider();
 
   const wedged = deferred<ReturnType<typeof makeSession>[]>();
   let parseAttempts = 0;
@@ -237,8 +233,8 @@ test("ISS-4444: a wedging BATCH collector (OpenCode) is quarantined so it stops 
       importer: {
         importSession: () => ({ skipped: false, reactivated: false }),
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
+      ingestStores: ingestStores.provider,
       emit: () => {},
       getCollectionMode: () => "watcher",
       cooperativeDelay: noopCooperativeDelay,
@@ -259,7 +255,7 @@ test("ISS-4444: a wedging BATCH collector (OpenCode) is quarantined so it stops 
 
     manager.start();
     await firstComplete.promise;
-    manager.stop();
+    await manager.stop();
     wedged.resolve([]);
 
     const progress = manager.getIngestProgress();
@@ -270,7 +266,7 @@ test("ISS-4444: a wedging BATCH collector (OpenCode) is quarantined so it stops 
       "the wedging opencode.db was quarantined"
     );
     assert.ok(
-      existsSync(persistPath),
+      ingestStores.parseQuarantine("opencode").peek(),
       "the batch-collector quarantine was persisted"
     );
     assert.equal(parseAttempts, 1);
@@ -282,8 +278,8 @@ test("ISS-4444: a wedging BATCH collector (OpenCode) is quarantined so it stops 
       importer: {
         importSession: () => ({ skipped: false, reactivated: false }),
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
+      ingestStores: ingestStores.provider,
       emit: () => {},
       getCollectionMode: () => "watcher",
       cooperativeDelay: noopCooperativeDelay,
@@ -304,7 +300,7 @@ test("ISS-4444: a wedging BATCH collector (OpenCode) is quarantined so it stops 
 
     secondManager.start();
     await secondComplete.promise;
-    secondManager.stop();
+    await secondManager.stop();
 
     assert.equal(
       secondPassParses,
@@ -338,7 +334,6 @@ test("ISS-4444: boot import settles to complete with a good source imported and 
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -361,7 +356,7 @@ test("ISS-4444: boot import settles to complete with a good source imported and 
 
     manager.start();
     await bootComplete.promise;
-    manager.stop();
+    await manager.stop();
     wedged.resolve([]);
 
     const progress = manager.getIngestProgress();

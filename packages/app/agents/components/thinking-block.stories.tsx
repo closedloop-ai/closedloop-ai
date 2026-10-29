@@ -2,9 +2,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { ThinkingBlock } from "./thinking-block";
 
 const meta = {
-  title: "App Core/Agents/Thinking Block",
+  title: "Composites v1.0/Agents/General/Thinking Block",
   component: ThinkingBlock,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     text: "The right merge boundary is a shared card primitive plus page-level composition, not another monitor-only wrapper.",

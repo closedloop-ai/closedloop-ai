@@ -1,10 +1,17 @@
 import { GitHubPRState } from "@repo/api/src/types/github";
 import {
+  GitHubActorType,
+  type GitHubActorType as GitHubActorTypeValue,
+} from "@repo/api/src/types/github-actor";
+import {
   GitHubFetchCredentialType,
   GitHubFetchMechanism,
   GitHubFetchTrigger,
 } from "@repo/api/src/types/github-read-model";
-import type { CreatePrArtifactInput } from "@repo/api/src/types/pull-request-artifact-link";
+import type {
+  CreatePrArtifactInput,
+  PullRequestArtifactLinkResult,
+} from "@repo/api/src/types/pull-request-artifact-link";
 import { PullRequestLabelSyncStatus } from "@repo/api/src/types/pull-request-label-sync-status";
 import {
   type RepositoryDefaultAuthority,
@@ -20,6 +27,7 @@ import type * as GitHubModule from "@repo/github";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   findAssertionMismatch,
+  PullRequestAssertionField,
   pullRequestArtifactLinkService,
 } from "./pull-request-artifact-service";
 import {
@@ -191,6 +199,8 @@ type LivePR = {
   mergedAt: string | null;
   closedAt: string | null;
   authorLogin: string | null;
+  authorProviderUserId?: string;
+  authorActorType?: GitHubActorTypeValue;
   isDraft: boolean;
   headSha: string;
   baseSha: string;
@@ -211,6 +221,8 @@ function makeLivePr(overrides: Partial<LivePR> = {}): LivePR {
     mergedAt: null,
     closedAt: null,
     authorLogin: "alice",
+    authorProviderUserId: "123",
+    authorActorType: GitHubActorType.User,
     isDraft: false,
     headSha: "deadbeef",
     baseSha: "cafebabe",
@@ -303,7 +315,6 @@ describe("findAssertionMismatch", () => {
 
   it("returns null when optional headSha is undefined (not asserted)", () => {
     const body = makeBody();
-    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
     const { headSha: _removed, ...bodyWithoutHeadSha } = body;
     expect(
       findAssertionMismatch(
@@ -374,7 +385,7 @@ describe("pullRequestArtifactLinkService", () => {
       },
     ]);
     mockBranchService.upsertBranchArtifact.mockResolvedValue(
-      Result.ok({ id: "branch-artifact-1" })
+      Result.ok(branchUpsertValue())
     );
   });
 
@@ -459,7 +470,7 @@ describe("pullRequestArtifactLinkService label propagation", () => {
     ]);
     mockGetSinglePullRequest.mockResolvedValue(makeLivePr());
     mockBranchService.upsertBranchArtifact.mockResolvedValue(
-      Result.ok({ id: "branch-artifact-1" })
+      Result.ok(branchUpsertValue())
     );
   }
 
@@ -508,6 +519,35 @@ describe("pullRequestArtifactLinkService label propagation", () => {
     );
   });
 
+  /**
+   * ISS-10995: `body.projectId` is the project the USER picked in the Select-PR
+   * dialog, so this producer files the branch unconditionally — the fill-only
+   * rule the 2026-10-12 ruling set is the SYNC's. With `projectFillOnly` here,
+   * selecting a PR whose head branch is already filed elsewhere would answer
+   * 200 for a move the service dropped.
+   */
+  it("asks for an unconditional project write, never the sync's fill", async () => {
+    installHappyPath();
+
+    const result =
+      await pullRequestArtifactLinkService.createPullRequestArtifact({
+        body: makeBody(),
+        createdById: "user-1",
+        organizationId: "org-1",
+      });
+
+    expect(result.ok).toBe(true);
+    expect(mockBranchService.upsertBranchArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "00000000-0000-0000-0000-000000000001",
+      }),
+      undefined
+    );
+    expect(
+      mockBranchService.upsertBranchArtifact.mock.calls[0]?.[0]
+    ).not.toHaveProperty("projectFillOnly");
+  });
+
   it("uses fork-head authority for Branch identity while retaining base PR context", async () => {
     installHappyPath();
     const forkAuthority = repositoryAuthority({
@@ -532,7 +572,13 @@ describe("pullRequestArtifactLinkService label propagation", () => {
         repositoryFullName: "contributor/repo",
         pullRequestRepositoryId: "repo-1",
         repositoryDefaultObservation: { authority: forkAuthority },
-      })
+        pullRequest: expect.objectContaining({
+          authorLogin: "alice",
+          authorProviderUserId: "123",
+          authorActorType: GitHubActorType.User,
+        }),
+      }),
+      undefined
     );
   });
 
@@ -605,6 +651,12 @@ describe("pullRequestArtifactLinkService label propagation", () => {
   // not by a second client request that can simply never happen.
   it("passes the link owner into the branch transaction and echoes it back", async () => {
     installHappyPath();
+    // ISS-10169: the echo now follows the WRITE's report, so the branch upsert
+    // has to actually report the edge. Before this change the mock could return
+    // no link at all and the echo appeared anyway, which is the defect.
+    mockBranchService.upsertBranchArtifact.mockResolvedValue(
+      Result.ok(branchUpsertValue({ linkedArtifacts: [WRITTEN_LINK] }))
+    );
 
     const result =
       await pullRequestArtifactLinkService.createPullRequestArtifact({
@@ -617,11 +669,14 @@ describe("pullRequestArtifactLinkService label propagation", () => {
       });
 
     expect(mockBranchService.upsertBranchArtifact).toHaveBeenCalledWith(
-      expect.objectContaining({ sourceArtifactId: LINK_SOURCE_ARTIFACT_ID })
+      expect.objectContaining({ sourceArtifactId: LINK_SOURCE_ARTIFACT_ID }),
+      undefined
     );
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.linkedSourceArtifactId).toBe(LINK_SOURCE_ARTIFACT_ID);
+      // The per-input result array is the half a caller can verify against.
+      expect(result.value.linkedArtifacts).toEqual([WRITTEN_LINK]);
     }
   });
 
@@ -658,7 +713,8 @@ describe("pullRequestArtifactLinkService label propagation", () => {
       });
 
     expect(mockBranchService.upsertBranchArtifact).toHaveBeenCalledWith(
-      expect.objectContaining({ sourceArtifactId: null })
+      expect.objectContaining({ sourceArtifactId: null }),
+      undefined
     );
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -703,3 +759,229 @@ describe("pullRequestArtifactLinkService label propagation", () => {
     expect(mockSyncPullRequestLabelsFromArtifactTags).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// ISS-10169 — the response reports the write, not the request
+// ---------------------------------------------------------------------------
+
+describe("pullRequestArtifactLinkService write reporting", () => {
+  const LINK_SOURCE_ARTIFACT_ID = "00000000-0000-0000-0000-0000000000bb";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("does NOT echo a link the branch write did not report", async () => {
+    installLinkReportingHappyPath();
+    // A branch transaction that committed the branch but wrote no edge. This is
+    // the exact shape the endpoint used to report as a success carrying
+    // `linkedSourceArtifactId` — the caller's own request, handed back.
+    mockBranchService.upsertBranchArtifact.mockResolvedValue(
+      Result.ok(branchUpsertValue({ linkedArtifacts: [] }))
+    );
+
+    const result =
+      await pullRequestArtifactLinkService.createPullRequestArtifact({
+        body: makeBody({ linkSourceArtifactId: LINK_SOURCE_ARTIFACT_ID }),
+        createdById: "user-1",
+        organizationId: "org-1",
+      });
+
+    // Asserted on the OUTCOME, not on a mock: a write that linked zero rows
+    // must not return success at all.
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.metadata?.code).toBe(
+        "pull_request_source_link_not_written"
+      );
+    }
+  });
+
+  it("omits the echo when the write reported an edge for a DIFFERENT owner", async () => {
+    installLinkReportingHappyPath();
+    // The discriminating case for where the echo comes FROM. The write reported
+    // an edge, so the zero-link guard does not fire — but it is not the owner
+    // this request asked for. An echo built from the request would still name
+    // LINK_SOURCE_ARTIFACT_ID here and read as "committed"; one built from the
+    // write cannot. Nothing else in this file can tell those two apart.
+    mockBranchService.upsertBranchArtifact.mockResolvedValue(
+      Result.ok(
+        branchUpsertValue({
+          linkedArtifacts: [
+            {
+              sourceArtifactId: "00000000-0000-0000-0000-0000000000dd",
+              linkId: "00000000-0000-0000-0000-0000000000ee",
+            },
+          ],
+        })
+      )
+    );
+
+    const result =
+      await pullRequestArtifactLinkService.createPullRequestArtifact({
+        body: makeBody({ linkSourceArtifactId: LINK_SOURCE_ARTIFACT_ID }),
+        createdById: "user-1",
+        organizationId: "org-1",
+      });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Absent, never null — an older client must see the previous shape.
+      expect("linkedSourceArtifactId" in result.value).toBe(false);
+      // And the edge that WAS written is still reported, truthfully.
+      // One entry, carrying that id — asserted as the whole array rather than
+      // by index, which pins the same two facts without indexing a field the
+      // response type now declares optional for version skew (ISS-10169).
+      expect(result.value.linkedArtifacts).toEqual([
+        expect.objectContaining({
+          sourceArtifactId: "00000000-0000-0000-0000-0000000000dd",
+        }),
+      ]);
+    }
+  });
+
+  it("reports a REUSED branch artifact and the pull request it carries", async () => {
+    installLinkReportingHappyPath();
+    // The mode-6 shape: a branch that predates this pull request, returned by
+    // the identity upsert. Legitimate, and indistinguishable from a fresh one
+    // in the old `{ id }` response.
+    mockBranchService.upsertBranchArtifact.mockResolvedValue(
+      Result.ok(
+        branchUpsertValue({
+          created: false,
+          pullRequest: {
+            number: 42,
+            htmlUrl: "https://github.com/acme/repo/pull/42",
+          },
+        })
+      )
+    );
+
+    const result =
+      await pullRequestArtifactLinkService.createPullRequestArtifact({
+        body: makeBody(),
+        createdById: "user-1",
+        organizationId: "org-1",
+      });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.branchArtifactCreated).toBe(false);
+      // Number AND url: the identifying pair a caller can confirm the returned
+      // entity against without a second request.
+      expect(result.value.currentPullRequest).toEqual({
+        number: 42,
+        htmlUrl: "https://github.com/acme/repo/pull/42",
+      });
+      // Present and empty, never absent: the emptiness is the answer to "did
+      // you link anything", and omitting it would restore the ambiguity.
+      expect(result.value.linkedArtifacts).toEqual([]);
+    }
+  });
+
+  it("names the project and the remedy when no primary repository is configured", async () => {
+    mockWithDb.mockResolvedValueOnce({
+      id: "project-1",
+      name: "Observability 2.0",
+      settings: {},
+    });
+    mockLoadProjectPrLinkRepositories.mockResolvedValue([]);
+
+    const result =
+      await pullRequestArtifactLinkService.createPullRequestArtifact({
+        body: makeBody(),
+        createdById: "user-1",
+        organizationId: "org-1",
+      });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // The project, so a caller holding several knows WHICH one is
+      // unconfigured, and the remedy, so the message can be acted on.
+      expect(result.error.message).toContain("Observability 2.0");
+      expect(result.error.message).toContain("project-1");
+      expect(result.error.message).toContain("primary");
+      expect(result.error.metadata?.code).toBe(
+        "project_primary_repository_missing"
+      );
+    }
+    expect(mockBranchService.upsertBranchArtifact).not.toHaveBeenCalled();
+  });
+
+  it("names the expected FORM of githubId when the assertion fails", async () => {
+    installLinkReportingHappyPath();
+    // A GraphQL node id where the numeric REST id is expected — the mismatch
+    // two lanes hit, which used to come back as a bare "did not match".
+    mockGetSinglePullRequest.mockResolvedValue(
+      makeLivePr({ githubId: "2847113905" })
+    );
+
+    const result =
+      await pullRequestArtifactLinkService.createPullRequestArtifact({
+        body: makeBody({ githubId: "PR_kwDOAbCdEf6XyZ12" }),
+        createdById: "user-1",
+        organizationId: "org-1",
+      });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.metadata?.details).toEqual({
+        field: PullRequestAssertionField.GithubId,
+      });
+      // The actionable half: which field, and what it should have looked like.
+      expect(result.error.message).toContain(
+        PullRequestAssertionField.GithubId
+      );
+      expect(result.error.message).toContain("NUMERIC REST id");
+    }
+    expect(mockBranchService.upsertBranchArtifact).not.toHaveBeenCalled();
+  });
+});
+
+/** The branch upsert's real return shape, with only the fields under test set. */
+function branchUpsertValue(
+  overrides: {
+    created?: boolean;
+    linkedArtifacts?: PullRequestArtifactLinkResult[];
+    pullRequest?: { number: number; htmlUrl: string | null } | null;
+  } = {}
+) {
+  return {
+    id: "branch-artifact-1",
+    created: overrides.created ?? true,
+    linkedArtifacts: overrides.linkedArtifacts ?? [],
+    pullRequest: overrides.pullRequest ?? null,
+  };
+}
+
+/** The repository + live-PR path, for the ISS-10169 reporting cases. */
+function installLinkReportingHappyPath() {
+  const repositoryDb = {
+    gitHubInstallationRepository: {
+      findFirst: vi.fn().mockResolvedValue({
+        id: "repo-1",
+        githubRepoId: "123",
+        fullName: "acme/repo",
+        owner: "acme",
+        name: "repo",
+        installation: { installationId: "install-9" },
+      }),
+    },
+  };
+  mockWithDb
+    .mockResolvedValueOnce({ id: "project-1", name: "Acme", settings: {} })
+    .mockImplementationOnce((callback) => callback(repositoryDb));
+  mockLoadProjectPrLinkRepositories.mockResolvedValue([
+    { installationRepositoryId: "repo-1", fullName: "acme/repo" },
+  ]);
+  mockGetSinglePullRequest.mockResolvedValue(makeLivePr());
+  mockBranchService.upsertBranchArtifact.mockResolvedValue(
+    Result.ok(branchUpsertValue())
+  );
+}
+
+/** The one edge the ISS-4759 happy path writes. */
+const WRITTEN_LINK: PullRequestArtifactLinkResult = {
+  sourceArtifactId: "00000000-0000-0000-0000-0000000000bb",
+  linkId: "00000000-0000-0000-0000-0000000000cc",
+};

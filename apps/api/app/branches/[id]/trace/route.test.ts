@@ -85,16 +85,19 @@ describe("GET /branches/[id]/trace", () => {
     expect(body.success).toBe(false);
   });
 
-  it("rejects the unbounded complete query before service work", async () => {
-    const response = await GET(
-      request(
-        `https://api.example.test/branches/${branchId}/trace?complete=true`
-      ),
-      routeContext(branchId)
+  it("forwards the complete trace query", async () => {
+    const traceRequest = request(
+      `https://api.example.test/branches/${branchId}/trace?complete=true`
     );
+    const response = await GET(traceRequest, routeContext(branchId));
 
-    expect(response.status).toBe(400);
-    expect(mocks.getBranchTrace).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(mocks.getBranchTrace).toHaveBeenCalledWith(
+      "org-1",
+      branchId,
+      { complete: true },
+      traceRequest.signal
+    );
   });
 
   it("returns not found when the trace service has no scoped branch match", async () => {

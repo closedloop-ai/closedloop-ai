@@ -48,7 +48,6 @@ const STALE_SPAN_NOW = new Date(
  * Any `Nh Nm` span. The strip must print NO such span for a folded run — an
  * assertion on one exact string would pass against a different wrong number.
  */
-const RUNNING_SPAN_PATTERN = /\d+h \d+m/;
 /** Accessible names of the explanation triggers, by the unit word they carry. */
 const TOKENS_TRIGGER_NAME = /tokens/i;
 const COST_TRIGGER_NAME = /cost/i;
@@ -141,7 +140,11 @@ describe("the summary never states a number it cannot back", () => {
     });
 
     const header = timelineHeader();
-    expect(header).toHaveTextContent(EM_DASH);
+    // ISS-12665: scoped to the cost fact, because the header's peak-column fact
+    // can be a dash of its own and would satisfy a header-wide match.
+    expect(
+      within(header).getByRole("button", { name: COST_TRIGGER_NAME })
+    ).toHaveTextContent(EM_DASH);
     expect(header).not.toHaveTextContent("$0.00");
   });
 
@@ -159,7 +162,9 @@ describe("the summary never states a number it cannot back", () => {
     });
 
     const header = timelineHeader();
-    expect(header).toHaveTextContent(EM_DASH);
+    expect(
+      within(header).getByRole("button", { name: TOKENS_TRIGGER_NAME })
+    ).toHaveTextContent(EM_DASH);
     /*
      * The dash carries its reason on a FOCUSABLE trigger, not a native `title`
      * (#design review): a mouse-only explanation is no explanation for a
@@ -197,7 +202,9 @@ describe("the summary never states a number it cannot back", () => {
 
     const header = timelineHeader();
     // Never the raw corrupt figure, and never a fabricated `0`.
-    expect(header).toHaveTextContent(EM_DASH);
+    expect(
+      within(header).getByRole("button", { name: TOKENS_TRIGGER_NAME })
+    ).toHaveTextContent(EM_DASH);
     expect(header).not.toHaveTextContent("-1");
     expect(header).not.toHaveTextContent("NaN");
 
@@ -233,7 +240,11 @@ describe("the summary never states a number it cannot back", () => {
     const header = timelineHeader();
     expect(header).toHaveTextContent("1.50M");
     expect(header).toHaveTextContent("$0.00");
-    expect(header).not.toHaveTextContent(EM_DASH);
+    // ISS-12665: the cost fact, not the whole header. This run's bars are
+    // synthesized, so the peak-column fact beside it is correctly a dash.
+    expect(
+      within(header).getByRole("button", { name: COST_TRIGGER_NAME })
+    ).not.toHaveTextContent(EM_DASH);
     /*
      * A covered run still owes the reader WHY it was free (#design review).
      * The explanation used to be dropped for every non-dash cost, so this
@@ -272,12 +283,17 @@ describe("the summary agrees with the rest of the page", () => {
     expect(timelineHeader()).toHaveTextContent(expected as string);
   });
 
-  it("shows no span for a stored-active run the list has folded to Stale", () => {
-    // ISS-5575: the strip resolves the SAME displayed-status window the
-    // Properties Duration row and the Sessions list cell do, so it cannot report
-    // a span for a run the rest of the screen has stopped timing. Reverting the
-    // component to `resolveSessionDurationWindow(session.status, …)` reds this —
-    // the raw `active` reads as running and the strip prints a climbing number.
+  it("ISS-10364: keeps reporting a span for a long-silent stored-active run", () => {
+    // COUNTERFACTUAL. The strip used to show NO span here, because the list had
+    // folded this row to Stale and the strip resolves the same window. The
+    // operator ruled on 2026-09-23 that active and stale are not to be
+    // distinguished, so the row is Active and the strip keeps timing it.
+    //
+    // The INVARIANT this case actually guards is unchanged and is why it is kept
+    // rather than deleted: the strip must report whatever the Properties Duration
+    // row and the Sessions list cell report, never its own answer. That is
+    // asserted directly below against the shared resolver, so pointing the
+    // component at a different window still reds this.
     vi.useFakeTimers();
     vi.setSystemTime(STALE_SPAN_NOW);
     renderDetail({
@@ -289,6 +305,14 @@ describe("the summary agrees with the rest of the page", () => {
       status: SESSION_STATUS.ACTIVE,
     });
 
-    expect(timelineHeader()).not.toHaveTextContent(RUNNING_SPAN_PATTERN);
+    const expected = resolveSessionWallClockLabel(
+      STALE_SPAN_STARTED_AT,
+      resolveSessionDetailDurationWindow({
+        endedAt: null,
+        status: SESSION_STATUS.ACTIVE,
+      }),
+      STALE_SPAN_NOW.getTime()
+    );
+    expect(timelineHeader()).toHaveTextContent(expected as string);
   });
 });

@@ -4,8 +4,8 @@ import type {
 } from "../types/desktop-api";
 
 /**
- * User-facing copy for the active browser sign-in step, shared by the Settings
- * Account tab and the app-wide session-expired banner so the two stay in sync.
+ * User-facing copy for the active browser sign-in step, read by the app-wide
+ * session-expired banner.
  * Only the in-flight statuses (`opening_browser` → `awaiting_redirect` →
  * `exchanging`) are distinguished; any other status falls back to the opening
  * copy, which covers the brief tick before the browser launch resolves.
@@ -22,10 +22,9 @@ export function signInPendingMessage(status: DesktopAuthStatus): string {
 }
 
 /**
- * User-facing, secret-free message for a begin-sign-in FAILURE reason, shared by
- * the Settings Account tab and the Sessions KPI-card sign-in CTA (FEA-3574
- * review) so a failed browser sign-in surfaces the same retryable copy wherever
- * it is triggered. `cancelled` is intentionally NOT mapped — callers treat an
+ * User-facing, secret-free message for a begin-sign-in FAILURE reason, read
+ * through `useDesktopSignIn` (FEA-3574 review) so a failed browser sign-in
+ * surfaces the same retryable copy wherever it is triggered. `cancelled` is intentionally NOT mapped — callers treat an
  * explicit cancel as a non-error and suppress it before reaching here.
  */
 export function signInFailureMessage(
@@ -53,3 +52,16 @@ export function signInFailureMessage(
       return "Sign-in isn't available right now. Try again.";
   }
 }
+
+/**
+ * ISS-11345: the account confirmation a confirmation-gated sign-in shows before
+ * it adopts the browser's session. `title` and `confirmLabel` are Marisol
+ * Ashgrove's copy (ISS-11345 v3, 2026-09-28), which adds no description
+ * sentence: the User and Organization rows are the dialog's description.
+ * `cancelLabel` reuses the "Cancel" the pending sign-in row already ships.
+ */
+export const DESKTOP_SIGN_IN_ACCOUNT_CONFIRM_COPY = {
+  title: "Connect with this account?",
+  confirmLabel: "Confirm",
+  cancelLabel: "Cancel",
+} as const;

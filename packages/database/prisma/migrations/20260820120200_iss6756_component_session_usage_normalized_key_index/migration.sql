@@ -1,0 +1,107 @@
+-- ISS-6756 (3 of 3): the index the two org-scoped identity reads exist to use.
+--
+-- SHAPE: `(component_kind, component_key_normalized)`, in that order. Both reads
+-- bind `component_kind` to a scalar and the folded key to an equality (or a small
+-- `OR`/`IN` over the alias names a content hash is installed under), and neither
+-- binds `agent_component_id` or `agent_session_id` at all, so kind-then-key is
+-- the only prefix either can prove. Before this index the widest thing they could
+-- match was `(component_kind, last_invoked_at)`, whose kind prefix admits the
+-- same-kind partition of EVERY TENANT — this table has no `organization_id`
+-- column, org arrives through the `session.artifact` join — and the rest was
+-- discarded by a post-scan filter.
+--
+-- NOT `(component_kind, component_key_normalized, last_invoked_at)`: the detail
+-- lane does not filter on `last_invoked_at` at all, and the token-trend lane
+-- windows on the RELATION (`session.sessionStartedAt`), not on this table. A
+-- third key column would only widen every entry for no arm's benefit.
+--
+-- The `(component_kind, last_invoked_at)` index stays: it still serves the
+-- kind+range reads (the org child-usage rollup, the plugin child lane) that
+-- carry no key EQUALITY. The plugin child lane does bind a key predicate, but a
+-- substring `contains` (`plugin-child-usage.ts`), which no btree serves in
+-- either spelling — so the folded column would not help it and this index is
+-- still the best it can reach.
+--
+-- MEASURED (EXPLAIN ANALYZE against this schema on a throwaway database with
+-- every migration applied. 12 organizations, so the tenant under test is a
+-- production-like slice of the table rather than all of it; 164,002 usage rows;
+-- the tenant has 6,000 sessions x 20 usage rows over a 400-identity long tail,
+-- and the identity probed sits on 334 of them. The SQL is `fetchTokenTrendUsageRows`
+-- verbatim from the Prisma query log, relation `orderBy` join and `take` included):
+--
+--   before  Parallel Seq Scan on agent_component_session_usage
+--             Filter: ((component_key ~~* 'tail-7') AND (component_kind = 'subagent'))
+--             Rows Removed by Filter: 81834      <- per worker, x2: the whole table
+--           Buffers: shared hit=5297      Execution Time: 41.0 ms
+--   after   Index Scan using agent_component_session_usage_kind_key_norm_idx
+--             Index Cond: ((component_kind = 'subagent')
+--                          AND (component_key_normalized = 'tail-7'))
+--             no post-scan filter on this node at all
+--           Buffers: shared hit=1794      Execution Time: 2.4 ms
+--
+-- The work becomes O(rows for this identity ACROSS ALL TENANTS) instead of
+-- O(every tenant's rows of this kind). Two honest bounds on that, because the
+-- numbers above were measured on the case the index is good at:
+--
+--   • NOT org-selective. This table has no `organization_id` to lead with, so
+--     for a GLOBALLY COMMON identity — `tool::read`, `subagent::explore`,
+--     `skill::code-review` — the index scan still returns every tenant's rows
+--     for that key and the `session.artifact` join discards the rest. The index
+--     helps in proportion to how rare the identity is; on the hottest keys it
+--     buys correspondingly less. Denormalising `organization_id` onto the usage
+--     row and leading with it is the fix for that, and it is deliberately NOT in
+--     this change: it is a write-path change to the ingest hot path, not a read
+--     one, and it wants its own measurement.
+--   • NOT better on a SMALL tenant. There the planner already had a good route
+--     (drive from `artifacts(organization_id)` into
+--     `(agent_session_id, component_kind)`) and still prefers it; measured at
+--     200 sessions the plan is unchanged either way.
+--
+-- So: this index is for the case where the identity is more selective than the
+-- tenant, which is the case that hurts, and it is not a claim to have closed the
+-- cross-tenant scan in general.
+--
+-- ONE ARM IS KNOWINGLY LEFT OUT. `tokenTrendComponentKeyWhere`'s ROLLED-UP
+-- `subagent::general-purpose` route keeps a raw-column `OR` — an exact key plus
+-- a `startsWith "claude subagent "` prefix probe for the instance-unique
+-- spelling — so that identity still scans. Serving the prefix arm needs
+-- `text_pattern_ops` on the folded column, which is a real option (it serves `=`
+-- too, and the JS post-filter `componentKeyRollsUpToGeneralPurpose` re-checks the
+-- exact pattern, so widening the SQL arm cannot change the returned set) but it
+-- changes the opclass of the index every other identity uses. Out of scope here;
+-- recorded so the next reader knows it was considered, not missed.
+--
+-- CONCURRENTLY, AND THEREFORE ALONE AND BARE IN THIS FILE.
+-- `agent_component_session_usage` is written on every desktop session sync, so a
+-- plain `CREATE INDEX` would hold ACCESS EXCLUSIVE for the whole build and stall
+-- that ingest at production size. `CREATE INDEX CONCURRENTLY` takes only SHARE
+-- UPDATE EXCLUSIVE. It cannot run inside a transaction block (SQLSTATE 25001),
+-- and `prisma migrate deploy` only splits a migration file into per-statement
+-- simple queries when it can do so confidently — a `DO $$ … $$` block, embedded
+-- semicolons or a `DROP INDEX CONCURRENTLY` push the whole file onto the
+-- single-transaction fallback where every CONCURRENTLY statement fails 25001. So
+-- this file is ONE bare statement: do not add BEGIN/COMMIT, a `DO` block, or the
+-- column DDL and backfill from the two sibling migrations.
+--
+-- AFTER THE BACKFILL ON PURPOSE (20260820120100 runs first): a build over a
+-- column that is still mostly the `''` default would be a correct index over
+-- values the backfill then rewrites row by row, paying the write amplification
+-- twice.
+--
+-- NO `IF NOT EXISTS`: required by the concurrent-index lint
+-- (scripts/lint/destructive-migrations/index-ddl.ts) so a retry after a cancelled
+-- or crashed build fails closed on SQLSTATE 42P07 against the same-named INVALID
+-- remnant instead of recording the migration APPLIED over a permanently-unusable
+-- index. Recovery is operator-driven: `DROP INDEX CONCURRENTLY` the remnant in
+-- psql autocommit, then re-run migrate deploy.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations-core.mjs) — a pure
+-- non-unique perf-only index, and CONCURRENTLY's instance-wide transaction wait
+-- is the ISS-4437 P1002 advisory-lock amplifier on ephemeral `preview_*` schemas.
+-- CI-enforced by packages/database/__tests__/preview-heavy-migrations.test.ts.
+--
+-- Purely additive: a non-unique index changes plan choice only, never results.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "agent_component_session_usage_kind_key_norm_idx" ON "agent_component_session_usage"("component_kind", "component_key_normalized");

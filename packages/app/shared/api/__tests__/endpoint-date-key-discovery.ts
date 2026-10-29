@@ -1,6 +1,6 @@
 import { basename, dirname, join, relative } from "node:path";
 import ts from "typescript6";
-import type { EndpointStringOnlyDateKeys } from "../endpoint-date-revival";
+import type { EndpointStringOnlyDateKeys } from "../endpoint-date-revival-table";
 import {
   collectRoutePayloadTypes,
   indexContractDeclarations,

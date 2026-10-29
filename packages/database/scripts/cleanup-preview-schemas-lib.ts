@@ -110,8 +110,10 @@ export function buildSummary(counters: CategoryCounters): string {
     const { dropped, kept, errored } = counters[cat];
     return `${cat}[dropped=${dropped} kept=${kept} errored=${errored}]`;
   });
-  parts.push(`registry-read[errored=${counters.registryReadErrored}]`);
-  parts.push(`deferred=${counters.deferredDrops}`);
+  parts.push(
+    `registry-read[errored=${counters.registryReadErrored}]`,
+    `deferred=${counters.deferredDrops}`
+  );
 
   return `summary: ${parts.join(" ")}`;
 }

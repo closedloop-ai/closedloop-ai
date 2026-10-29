@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
 import {
   AGENT_COMPONENT_INVOCATION_SYNC_PROTOCOL_VERSION,
   AGENT_COMPONENT_INVOCATION_SYNC_TELEMETRY_PROTOCOL_VERSION,
@@ -7,6 +6,8 @@ import {
   type AgentComponentInvocationSyncPart,
   AgentComponentInvocationSyncRejectReason,
 } from "@repo/api/src/types/agent-component-invocation";
+import { DesktopAgentComponentInvocationSyncRestErrorCode } from "@repo/api/src/types/desktop-write-lane";
+import { describe, it } from "vitest";
 import { createDesktopAgentComponentInvocationsClient } from "../src/main/dashboard/desktop-agent-component-invocations-client.js";
 
 describe("desktop agent component invocations client", () => {
@@ -49,7 +50,7 @@ describe("desktop agent component invocations client", () => {
     );
   });
 
-  it("treats an old API endpoint as unavailable and retains retry ownership", async () => {
+  it("treats a bare 404 as an environmental retry and retains retry ownership", async () => {
     const client = createDesktopAgentComponentInvocationsClient({
       fetch: () => Promise.resolve(new Response(null, { status: 404 })),
       getAccessToken: async () => null,
@@ -59,8 +60,9 @@ describe("desktop agent component invocations client", () => {
     });
 
     assert.deepEqual(await client.syncPart(part()), {
-      kind: "unavailable",
+      kind: "retry",
       status: 404,
+      error: "invocation sync returned HTTP 404",
     });
   });
 
@@ -78,36 +80,127 @@ describe("desktop agent component invocations client", () => {
     });
   });
 
-  it("maps permanent HTTP validation failures to an exact rejected ack", async () => {
+  it("invalidates only the rejected access token on HTTP 401", async () => {
+    const rejectedTokens: string[] = [];
     const client = createDesktopAgentComponentInvocationsClient({
-      fetch: () => Promise.resolve(new Response(null, { status: 413 })),
+      fetch: () => Promise.resolve(new Response(null, { status: 401 })),
       getAccessToken: async () => "session-token",
       getApiOrigin: () => "https://api.example.test",
-      getComputeTargetId: () => "wrong-target",
+      getComputeTargetId: () => "target-1",
+      onUnauthorized: (token) => rejectedTokens.push(token),
     });
-    const pending = part();
 
-    const result = await client.syncPart(pending, "bound-target");
+    const result = await client.syncPart(part());
 
     assert.deepEqual(result, {
-      kind: "ack",
-      ack: {
-        accepted: false,
-        protocolVersion: AGENT_COMPONENT_INVOCATION_SYNC_PROTOCOL_VERSION,
-        externalGenerationId: pending.externalGenerationId,
-        partIndex: pending.partIndex,
-        partHash: pending.partHash,
-        reason: AgentComponentInvocationSyncRejectReason.ValidationFailed,
-      },
+      kind: "retry",
+      status: 401,
+      error: "invocation sync returned HTTP 401",
+    });
+    assert.deepEqual(rejectedTokens, ["session-token"]);
+  });
+
+  it("does not invalidate the session token on API-key 401 or HTTP 403", async () => {
+    const rejectedTokens: string[] = [];
+    const apiKeyClient = createDesktopAgentComponentInvocationsClient({
+      fetch: () => Promise.resolve(new Response(null, { status: 401 })),
+      getAccessToken: async () => null,
+      getApiKey: () => "sk_live_test",
+      getApiOrigin: () => "https://api.example.test",
+      getComputeTargetId: () => "target-1",
+      onUnauthorized: (token) => rejectedTokens.push(token),
+    });
+    const forbiddenClient = createDesktopAgentComponentInvocationsClient({
+      fetch: () => Promise.resolve(new Response(null, { status: 403 })),
+      getAccessToken: async () => "session-token",
+      getApiOrigin: () => "https://api.example.test",
+      getComputeTargetId: () => "target-1",
+      onUnauthorized: (token) => rejectedTokens.push(token),
+    });
+
+    assert.equal((await apiKeyClient.syncPart(part())).kind, "retry");
+    assert.equal((await forbiddenClient.syncPart(part())).kind, "retry");
+    assert.deepEqual(rejectedTokens, []);
+  });
+
+  it("carries Retry-After on retryable HTTP failures", async () => {
+    const client = createDesktopAgentComponentInvocationsClient({
+      fetch: () =>
+        Promise.resolve(
+          new Response(null, {
+            status: 429,
+            headers: { "Retry-After": "1800" },
+          })
+        ),
+      getAccessToken: async () => "session-token",
+      getApiOrigin: () => "https://api.example.test",
+      getComputeTargetId: () => "target-1",
+    });
+
+    assert.deepEqual(await client.syncPart(part()), {
+      kind: "retry",
+      status: 429,
+      error: "invocation sync returned HTTP 429",
+      retryAfterMs: 30 * 60_000,
     });
   });
+
+  it("omits Retry-After when the retryable HTTP header is malformed", async () => {
+    const client = createDesktopAgentComponentInvocationsClient({
+      fetch: () =>
+        Promise.resolve(
+          new Response(null, {
+            status: 503,
+            headers: { "Retry-After": "soon" },
+          })
+        ),
+      getAccessToken: async () => "session-token",
+      getApiOrigin: () => "https://api.example.test",
+      getComputeTargetId: () => "target-1",
+    });
+
+    assert.deepEqual(await client.syncPart(part()), {
+      kind: "retry",
+      status: 503,
+      error: "invocation sync returned HTTP 503",
+    });
+  });
+
+  // ISS-9174: 400 is what the API answers when the shared schema rejects a part
+  // (a NUL, a lone surrogate, a below-floor timestamp). The older-desktop
+  // remediation claim rests on THIS mapping: 400 must class as the permanent
+  // `validation_failed` so the part dead-letters instead of retrying forever.
+  for (const status of [400, 413]) {
+    it(`maps a permanent HTTP ${status} validation failure to an exact rejected ack`, async () => {
+      const client = createDesktopAgentComponentInvocationsClient({
+        fetch: () => Promise.resolve(new Response(null, { status })),
+        getAccessToken: async () => "session-token",
+        getApiOrigin: () => "https://api.example.test",
+        getComputeTargetId: () => "wrong-target",
+      });
+      const pending = part();
+
+      const result = await client.syncPart(pending, "bound-target");
+
+      assert.deepEqual(result, {
+        kind: "ack",
+        ack: {
+          accepted: false,
+          protocolVersion: AGENT_COMPONENT_INVOCATION_SYNC_PROTOCOL_VERSION,
+          externalGenerationId: pending.externalGenerationId,
+          partIndex: pending.partIndex,
+          partHash: pending.partHash,
+          reason: AgentComponentInvocationSyncRejectReason.ValidationFailed,
+        },
+      });
+    });
+  }
 
   // ISS-5789: THIS is the live cross-repo boundary for a rejection reason. A cloud
   // newer than this desktop build can name a reason this build has never heard of,
   // and `isRejectReason` is what keeps it from reaching the budget classifier. The
   // required degradation is a plain retry: an unrecognized rejection is not one we
-  // can attribute to this part, so it must never become a dead-letter — this lane
-  // has no dead-letter recovery, so mis-classifying here loses the data outright.
+  // can attribute to this part, so it must never become a permanent dead-letter.
   it("ISS-5789: degrades a rejection reason this build does not know to a retry", async () => {
     const client = createDesktopAgentComponentInvocationsClient({
       fetch: () =>
@@ -243,6 +336,105 @@ describe("telemetry protocol version skew", () => {
     assert.equal(result.kind, "retry");
   });
 });
+
+describe("ISS-11426 coded 403", () => {
+  it("carries the server's ownership code onto the retry result", async () => {
+    const result = await client(
+      Response.json(
+        {
+          success: false,
+          error: "Forbidden",
+          code: DesktopAgentComponentInvocationSyncRestErrorCode.TargetNotOwned,
+        },
+        { status: 403 }
+      )
+    ).syncPart(part());
+
+    assert.equal(result.kind, "retry");
+    assert.equal(
+      result.kind === "retry" ? result.forbiddenCode : undefined,
+      DesktopAgentComponentInvocationSyncRestErrorCode.TargetNotOwned
+    );
+  });
+
+  it("carries the org-policy code, which the status alone could never say", async () => {
+    const result = await client(
+      Response.json(
+        {
+          success: false,
+          error: "Forbidden",
+          code: DesktopAgentComponentInvocationSyncRestErrorCode.FeatureDisabled,
+        },
+        { status: 403 }
+      )
+    ).syncPart(part());
+
+    assert.equal(
+      result.kind === "retry" ? result.forbiddenCode : undefined,
+      DesktopAgentComponentInvocationSyncRestErrorCode.FeatureDisabled
+    );
+  });
+
+  it("leaves the code absent for an UNCODED 403 from an older server", async () => {
+    // Skew in the other direction: the pre-ISS-11426 API sends a bare 403, and
+    // absent must stay absent so the reason fold keeps the status behaviour.
+    const result = await client(
+      Response.json({ success: false, error: "Forbidden" }, { status: 403 })
+    ).syncPart(part());
+
+    assert.equal(result.kind, "retry");
+    assert.equal(
+      result.kind === "retry" ? result.forbiddenCode : undefined,
+      undefined
+    );
+    assert.equal(
+      result.kind === "retry"
+        ? Object.hasOwn(result, "forbiddenCode")
+        : undefined,
+      false
+    );
+  });
+
+  it("reads an unrecognized code as absent rather than guessing", async () => {
+    const result = await client(
+      Response.json(
+        { success: false, error: "Forbidden", code: "some_future_denial" },
+        { status: 403 }
+      )
+    ).syncPart(part());
+
+    assert.equal(
+      result.kind === "retry" ? result.forbiddenCode : undefined,
+      undefined
+    );
+  });
+
+  it("leaves the code absent on a non-403 failure", async () => {
+    const result = await client(
+      Response.json(
+        {
+          success: false,
+          code: DesktopAgentComponentInvocationSyncRestErrorCode.TargetNotOwned,
+        },
+        { status: 500 }
+      )
+    ).syncPart(part());
+
+    assert.equal(
+      result.kind === "retry" ? result.forbiddenCode : undefined,
+      undefined
+    );
+  });
+});
+
+function client(response: Response) {
+  return createDesktopAgentComponentInvocationsClient({
+    fetch: () => Promise.resolve(response),
+    getAccessToken: async () => "session-token",
+    getApiOrigin: () => "https://api.example.test",
+    getComputeTargetId: () => "target-1",
+  });
+}
 
 function telemetryPart(): AgentComponentInvocationSyncPart {
   return {

@@ -1,19 +1,21 @@
 import {
+  CommentTargetType,
   ThreadSource,
   TRACE_COMMENT_METADATA_KIND,
   TraceCommentKind,
-  TraceCommentTargetType,
   traceCommentKindSchema,
-  traceTextAnchorSchema,
 } from "@repo/api/src/types/comment";
 import {
   GOLDEN_CANDIDATE_LIST_DEFAULT_LIMIT,
   GOLDEN_CANDIDATE_LIST_MAX_LIMIT,
+  GOLDEN_CANDIDATE_LIST_MAX_OFFSET,
   type GoldenCandidateListResponse,
   type GoldenDatasetCandidate,
 } from "@repo/api/src/types/golden-candidate";
 import { Prisma, withDb } from "@repo/database";
 import { z } from "zod";
+import { readStoredTraceTextAnchor } from "@/app/comments/service/trace-comment-anchor-json";
+import { nextOffsetCursor } from "@/lib/offset-cursor";
 import { formatUserFullName } from "@/lib/user-display-name";
 
 /**
@@ -65,8 +67,11 @@ export const goldenCandidatesService = {
     // Advance the offset by DB rows consumed (not `limit`, not the mapped count)
     // so a defensively dropped row never desyncs paging and a short final page
     // reports `null`.
-    const nextCursor =
-      offset + rows.length < total ? String(offset + rows.length) : null;
+    const nextCursor = nextOffsetCursor(
+      offset + rows.length,
+      total,
+      GOLDEN_CANDIDATE_LIST_MAX_OFFSET
+    );
     return { items, total, nextCursor };
   },
 };
@@ -75,6 +80,7 @@ const goldenCandidateThreadSelect = {
   id: true,
   artifactId: true,
   metadata: true,
+  anchor: true,
   createdAt: true,
   comments: {
     where: { deletedAt: null },
@@ -90,8 +96,9 @@ const goldenCandidateThreadSelect = {
 
 type GoldenCandidateRow = {
   id: string;
-  artifactId: string | null;
+  artifactId: string;
   metadata: unknown;
+  anchor: unknown;
   createdAt: Date;
   comments: {
     id: string;
@@ -105,7 +112,6 @@ const goldenCandidateMetadataSchema = z.object({
   kind: z.literal(TRACE_COMMENT_METADATA_KIND),
   targetType: z.string(),
   commentKind: traceCommentKindSchema,
-  anchor: traceTextAnchorSchema,
 });
 
 /**
@@ -126,7 +132,7 @@ function buildGoldenCandidateWhere(
     organizationId,
     source: ThreadSource.Native,
     comments: { some: { deletedAt: null } },
-    artifactId: filters.sessionId ? filters.sessionId : { not: null },
+    ...(filters.sessionId ? { artifactId: filters.sessionId } : {}),
     // Prisma disallows repeating the `metadata` key in one object literal, so the
     // discriminator + classification + target JSON-path filters live in an AND
     // array.
@@ -141,7 +147,7 @@ function buildGoldenCandidateWhere(
       {
         metadata: {
           path: ["targetType"],
-          equals: TraceCommentTargetType.Session,
+          equals: CommentTargetType.Session,
         },
       },
     ],
@@ -162,7 +168,14 @@ async function mapGoldenCandidateRows(
   return rows.flatMap((row) => {
     const metadata = parseGoldenCandidateMetadata(row.metadata);
     const rootComment = row.comments[0];
-    if (!(metadata && rootComment && row.artifactId)) {
+    if (!(metadata && rootComment)) {
+      return [];
+    }
+    const anchor = readStoredTraceTextAnchor(row.anchor, {
+      organizationId,
+      threadId: row.id,
+    });
+    if (!anchor) {
       return [];
     }
     return [
@@ -170,11 +183,11 @@ async function mapGoldenCandidateRows(
         commentId: rootComment.id,
         threadId: row.id,
         target: {
-          type: metadata.targetType as TraceCommentTargetType,
+          type: metadata.targetType as CommentTargetType,
           id: row.artifactId,
         },
         sessionId: row.artifactId,
-        anchor: metadata.anchor,
+        anchor,
         notedExpectedValue: rootComment.plainText ?? "",
         authorId: rootComment.authorId,
         authorName: authorNameById.get(rootComment.authorId) ?? null,

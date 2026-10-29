@@ -6,8 +6,8 @@
 
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { test } from "node:test";
 import { Harness } from "@repo/api/src/types/agent-component";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { PackScanComputeResult } from "../src/main/packs/pack-scanner.js";
 import { createUtilityProcessPackScanRunner } from "../src/main/packs/utility-process-pack-scan-runner.js";
 
@@ -267,4 +267,52 @@ test("a computed reply to a definitions request rejects instead of resolving the
   // db-host a payload of the wrong shape to apply.
   await assert.rejects(promise, MISMATCHED_REPLY);
   runner.stop();
+});
+
+describe("pack scan runner idle teardown", () => {
+  const IDLE_MS = 1000;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("kills the worker once it has been idle for the idle delay, then respawns it on the next scan", async () => {
+    const children: FakeUtilityProcess[] = [];
+    const runner = createUtilityProcessPackScanRunner({
+      idleTeardownMs: IDLE_MS,
+      forkWorker: () => {
+        const child = new FakeUtilityProcess();
+        children.push(child);
+        return child;
+      },
+    });
+    const scanAndReply = async () => {
+      const scan = runner.computeScan(["/proj/a"]);
+      const child = children.at(-1)!;
+      child.emit("message", {
+        type: "computed",
+        requestId: child.messages.at(-1)!.requestId,
+        result: computeResult(),
+      });
+      await scan;
+      await Promise.resolve();
+      return child;
+    };
+
+    const first = await scanAndReply();
+    vi.advanceTimersByTime(IDLE_MS - 1);
+    assert.equal(first.killed, false);
+    vi.advanceTimersByTime(1);
+    assert.equal(first.killed, true);
+
+    const second = await scanAndReply();
+    assert.equal(children.length, 2);
+    assert.notEqual(second, first);
+    runner.stop();
+    assert.equal(vi.getTimerCount(), 0);
+  });
 });

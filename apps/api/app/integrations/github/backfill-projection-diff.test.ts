@@ -1,7 +1,15 @@
 import {
+  BranchActivityAtomVersion,
+  BranchActivityAttributionKind,
+  BranchActivityEvidenceCompleteness,
+  BranchActivitySource,
+} from "@repo/api/src/types/branch-activity";
+import {
   ChecksStatus,
   ReviewDecision,
 } from "@repo/api/src/types/branch-checks";
+import { GitHubPRState } from "@repo/api/src/types/github";
+import type { GitHubReadModelPullRequest } from "@repo/api/src/types/github-read-model";
 import { StatusCheckRollupFailureReason } from "@repo/api/src/types/github-status";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -32,6 +40,7 @@ import {
  */
 
 const dbMock = {
+  branchActivityAtom: { findMany: vi.fn() },
   branchDetail: { findMany: vi.fn() },
   pullRequestDetail: { findMany: vi.fn() },
 };
@@ -73,12 +82,6 @@ vi.mock("@/app/comments/github-diff-side", () => ({
   normalizeGitHubDiffSide: (side: string | null | undefined) => side ?? null,
 }));
 
-vi.mock("@/app/comments/github-projection", () => ({
-  softDeleteGitHubCommentProjection: vi.fn(),
-  upsertGitHubIssueCommentThread: vi.fn(),
-  upsertGitHubReviewCommentThread: vi.fn(),
-}));
-
 vi.mock("@/lib/review-decision-utils", () => ({
   recomputeAndUpdateAggregate: vi.fn(),
 }));
@@ -94,21 +97,28 @@ const { githubBackfillProjectionWriter } = await import(
 const ORGANIZATION_ID = "org-1";
 const REPOSITORY = {
   id: "repo-1",
-  fullName: "closedloop-ai/example-repo",
+  fullName: "closedloop-ai/closedloop-ai",
 };
 
 /** A branch row already fully reconciled against {@link existingPullRequest}. */
 function reconciledBranchRow() {
+  const pullRequest = existingPullRequest();
   return {
     artifactId: "branch-artifact-1",
     branchName: "feature/test",
-    currentPullRequestDetailId: "pr-detail-1",
+    currentPullRequestDetailId: pullRequest.id,
     checksStatus: ChecksStatus.Passing,
-    currentPullRequestDetail: existingPullRequest(),
+    lastActivityAt: new Date("2026-07-05T00:00:00.000Z"),
+    currentPullRequestDetail: pullRequest,
   };
 }
 
-function runDiff(over: { pullRequestMetadata?: unknown[] } = {}) {
+function runDiff(
+  over: {
+    pullRequestMetadata?: unknown[];
+    pullRequests?: GitHubReadModelPullRequest[];
+  } = {}
+) {
   return githubBackfillProjectionWriter.diff({
     organizationId: ORGANIZATION_ID,
     repository: REPOSITORY,
@@ -123,8 +133,21 @@ function runDiff(over: { pullRequestMetadata?: unknown[] } = {}) {
  * exactly one input and asserts the single counter that must move.
  */
 function seedFullyReconciled() {
+  const pullRequest = existingPullRequest();
   dbMock.branchDetail.findMany.mockResolvedValue([reconciledBranchRow()]);
-  dbMock.pullRequestDetail.findMany.mockResolvedValue([existingPullRequest()]);
+  dbMock.pullRequestDetail.findMany.mockResolvedValue([pullRequest]);
+  dbMock.branchActivityAtom.findMany.mockResolvedValue([
+    {
+      version: BranchActivityAtomVersion.V1,
+      branchArtifactId: "branch-artifact-1",
+      source: BranchActivitySource.PullRequestLifecycle,
+      sourceEventId: `${pullRequest.id}:opened`,
+      occurredAt: new Date("2026-07-05T00:00:00.000Z"),
+      attributionKind: BranchActivityAttributionKind.PullRequest,
+      pullRequestDetailId: pullRequest.id,
+      completeness: BranchActivityEvidenceCompleteness.Complete,
+    },
+  ]);
   txMock.gitHubCommentProjection.findMany.mockResolvedValue([]);
   txMock.gitHubCommentThreadProjection.findMany.mockResolvedValue([
     existingReviewThreadProjectionRow(),
@@ -151,6 +174,39 @@ describe("githubBackfillProjectionWriter.diff — reconciled baseline", () => {
     expect(diff.reviewThreadProjectionChangeCount).toBe(0);
     expect(diff.reviewProjectionChangeCount).toBe(0);
     expect(diff.statusCheckProjectionChangeCount).toBe(0);
+    expect(diff.lifecycleAtomProjectionChangeCount).toBe(0);
+    expect(diff.branchLastActivityProjectionChangeCount).toBe(0);
+  });
+
+  it("predicts missing lifecycle atoms and Last-active advancement on an otherwise reconciled PR", async () => {
+    const terminalAt = "2026-07-06T00:00:00.000Z";
+    const pullRequest = {
+      ...readModelPullRequest(),
+      state: GitHubPRState.Merged,
+      closedAt: terminalAt,
+      mergedAt: terminalAt,
+      mergeCommitSha: "merge-sha",
+    };
+    dbMock.pullRequestDetail.findMany.mockResolvedValue([
+      {
+        ...existingPullRequest(),
+        prState: pullRequest.state,
+        closedAt: new Date(terminalAt),
+        mergedAt: new Date(terminalAt),
+        mergeCommitSha: pullRequest.mergeCommitSha,
+      },
+    ]);
+    dbMock.branchDetail.findMany.mockResolvedValue([
+      { ...reconciledBranchRow(), lastActivityAt: null },
+    ]);
+    dbMock.branchActivityAtom.findMany.mockResolvedValue([]);
+
+    const diff = await runDiff({ pullRequests: [pullRequest] });
+
+    expect(diff.pullRequestProjectionChangeCount).toBe(0);
+    expect(diff.branchProjectionChangeCount).toBe(0);
+    expect(diff.lifecycleAtomProjectionChangeCount).toBe(2);
+    expect(diff.branchLastActivityProjectionChangeCount).toBe(1);
   });
 
   it("counts no branch or PR change for an already-linked, already-matching PR", async () => {
@@ -213,6 +269,7 @@ describe("githubBackfillProjectionWriter.diff — review-thread drift", () => {
     ["reviewId", { reviewId: "9999" }],
     ["path", { path: "other.ts" }],
     ["line", { line: 11 }],
+    ["originalLine", { originalLine: 11 }],
     ["side", { side: "LEFT" }],
     ["startLine", { startLine: 3 }],
     ["startSide", { startSide: "LEFT" }],

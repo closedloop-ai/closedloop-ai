@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Rate-limit buckets for the MCP OAuth, attachment upload and branch refresh endpoints."
+}

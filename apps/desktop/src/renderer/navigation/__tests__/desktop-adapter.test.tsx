@@ -16,48 +16,11 @@ import type { ReactNode } from "react";
 import { describe, expect, it } from "vitest";
 import {
   createDesktopNavigation,
-  type DesktopHashHost,
   type DesktopNavigation,
 } from "../desktop-adapter";
+import { createFakeHashHost, createQueuedHashHost } from "./hash-host-fixture";
 
-type FakeHashHost = DesktopHashHost & {
-  /** Simulate an external hash change (user-typed, main-process, legacy). */
-  externallySetHash: (rawHash: string) => void;
-  getWrites: () => readonly string[];
-};
-
-function createFakeHashHost(initialHash = ""): FakeHashHost {
-  let hash = initialHash;
-  const writes: string[] = [];
-  const listeners = new Set<() => void>();
-  return {
-    getHash: () => hash,
-    setHash: (href) => {
-      if (hash.slice(1) === href) {
-        return;
-      }
-      hash = `#${href}`;
-      writes.push(href);
-      // Mirrors the browser: programmatic hash writes also fire hashchange.
-      for (const listener of listeners) {
-        listener();
-      }
-    },
-    onHashChange: (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    externallySetHash: (rawHash) => {
-      hash = rawHash;
-      for (const listener of listeners) {
-        listener();
-      }
-    },
-    getWrites: () => [...writes],
-  };
-}
-
-function createWrapper(navigation: DesktopNavigation) {
+function navigationWrapper(navigation: DesktopNavigation) {
   return ({ children }: { children: ReactNode }) => (
     <NavigationProvider adapter={navigation.adapter}>
       {children}
@@ -66,21 +29,23 @@ function createWrapper(navigation: DesktopNavigation) {
 }
 
 describe("createDesktopNavigation", () => {
-  it("starts at the sessions view for an empty hash and persists the canonical form", () => {
+  it("starts at the landing view for an empty hash and persists the canonical form", () => {
     const host = createFakeHashHost();
     const navigation = createDesktopNavigation(host);
 
-    expect(navigation.getHref()).toBe("/sessions");
-    expect(host.getHash()).toBe("#/sessions");
+    expect(navigation.getHref()).toBe("/dashboard");
+    expect(navigation.initialHashWasEmpty).toBe(true);
+    expect(host.getHash()).toBe("#/dashboard");
   });
 
   it("restores the view from a path-scheme hash", () => {
     const host = createFakeHashHost("#/sessions/s-1?tab=events");
     const navigation = createDesktopNavigation(host);
 
+    expect(navigation.initialHashWasEmpty).toBe(false);
     const { result } = renderHook(
       () => ({ path: usePath(), params: useRouteParams() }),
-      { wrapper: createWrapper(navigation) }
+      { wrapper: navigationWrapper(navigation) }
     );
     expect(result.current.path).toBe("/sessions/s-1");
     expect(result.current.params.id).toBe("s-1");
@@ -96,13 +61,19 @@ describe("createDesktopNavigation", () => {
 
     const { result } = renderHook(
       () => ({ actions: useNavigation(), path: usePath() }),
-      { wrapper: createWrapper(navigation) }
+      { wrapper: navigationWrapper(navigation) }
     );
     act(() => {
       result.current.actions.back();
     });
     expect(result.current.path).toBe("/settings");
     expect(host.getHash()).toBe("#/settings");
+
+    act(() => {
+      result.current.actions.forward();
+    });
+    expect(result.current.path).toBe("/sessions/s-9");
+    expect(host.getHash()).toBe("#/sessions/s-9");
   });
 
   it("navigate updates path, params, and the persisted hash", () => {
@@ -115,7 +86,7 @@ describe("createDesktopNavigation", () => {
         path: usePath(),
         params: useRouteParams(),
       }),
-      { wrapper: createWrapper(navigation) }
+      { wrapper: navigationWrapper(navigation) }
     );
 
     act(() => {
@@ -132,7 +103,7 @@ describe("createDesktopNavigation", () => {
 
     const { result } = renderHook(
       () => ({ actions: useNavigation(), path: usePath() }),
-      { wrapper: createWrapper(navigation) }
+      { wrapper: navigationWrapper(navigation) }
     );
 
     act(() => {
@@ -152,7 +123,7 @@ describe("createDesktopNavigation", () => {
 
     const { result } = renderHook(
       () => ({ actions: useNavigation(), path: usePath() }),
-      { wrapper: createWrapper(navigation) }
+      { wrapper: navigationWrapper(navigation) }
     );
     act(() => {
       result.current.actions.navigate("/users/123");
@@ -168,6 +139,57 @@ describe("createDesktopNavigation", () => {
     expect(anchor.getAttribute("href")).toBe("#/users/123");
     fireEvent.click(anchor);
     expect(navigation.getHref()).toBe("/dashboard");
+  });
+
+  // A Settings subpath has no route-table entry of its own, so without the
+  // guard's normalization it is unmapped and the navigation is DROPPED. These
+  // two cover navigate and replace independently: each fails on its own
+  // normalization being removed, so neither action can be reverted silently.
+  it("normalizes a Settings subpath passed to navigate, preserving non-tab query fields", () => {
+    const host = createFakeHashHost("#/dashboard");
+    const navigation = createDesktopNavigation(host);
+
+    const { result } = renderHook(
+      () => ({ actions: useNavigation(), path: usePath() }),
+      { wrapper: navigationWrapper(navigation) }
+    );
+
+    act(() => {
+      result.current.actions.navigate(
+        "/settings/security?returnTo=/branches?owner=grace"
+      );
+    });
+
+    expect(navigation.getHref()).toBe(
+      "/settings?returnTo=%2Fbranches%3Fowner%3Dgrace&panel=desktop-app"
+    );
+    expect(result.current.path).toBe("/settings");
+    expect(host.getHash()).toBe(
+      "#/settings?returnTo=%2Fbranches%3Fowner%3Dgrace&panel=desktop-app"
+    );
+  });
+
+  it("normalizes a Settings subpath passed to replace, preserving non-tab query fields", () => {
+    const host = createFakeHashHost("#/dashboard");
+    const navigation = createDesktopNavigation(host);
+
+    const { result } = renderHook(
+      () => ({ actions: useNavigation(), path: usePath() }),
+      { wrapper: navigationWrapper(navigation) }
+    );
+
+    act(() => {
+      result.current.actions.replace("/settings/cli-tools?from=command");
+    });
+
+    expect(navigation.getHref()).toBe(
+      "/settings?from=command&panel=desktop-app"
+    );
+    expect(result.current.path).toBe("/settings");
+    expect(host.getHash()).toBe("#/settings?from=command&panel=desktop-app");
+    // replace swaps the current entry rather than pushing, so the landing
+    // entry it replaced is gone and there is nothing to go back to.
+    expect(navigation.canGoBack()).toBe(false);
   });
 
   it("renders port Link hrefs hash-prefixed so browser-deferred clicks stay in-app, while plain left-click navigates the internal path (FEA-4018)", () => {
@@ -199,32 +221,71 @@ describe("createDesktopNavigation", () => {
     expect(host.getHash()).toBe("#/sessions/s-3");
   });
 
+  it("correlates queued internal hashchange events by their event hash", () => {
+    const host = createQueuedHashHost("#/dashboard");
+    const navigation = createDesktopNavigation(host);
+    const { result } = renderHook(
+      () => ({ actions: useNavigation(), path: usePath() }),
+      { wrapper: navigationWrapper(navigation) }
+    );
+
+    act(() => {
+      result.current.actions.navigate("/settings");
+      result.current.actions.navigate("/branches");
+      host.flushHashChanges();
+    });
+    expect(result.current.path).toBe("/branches");
+
+    act(() => {
+      host.externallySetHash("#/settings");
+      host.flushHashChanges();
+    });
+    expect(result.current.path).toBe("/settings");
+  });
+
+  it("ignores stale external hashchange events that no longer match the current hash", () => {
+    const host = createQueuedHashHost("#/dashboard");
+    const navigation = createDesktopNavigation(host);
+    const { result } = renderHook(() => usePath(), {
+      wrapper: navigationWrapper(navigation),
+    });
+
+    act(() => {
+      host.externallySetHash("#/settings");
+      host.externallySetHash("#/branches");
+      host.flushHashChanges();
+    });
+
+    expect(result.current).toBe("/branches");
+    expect(navigation.getHistory()).toEqual(["/dashboard", "/branches"]);
+  });
+
   it("does not throw on malformed percent-encoded hashes (startup, external, navigate)", () => {
     // Startup: malformed persisted hash falls back to the default view.
     const host = createFakeHashHost("#/sessions/%");
     const navigation = createDesktopNavigation(host);
-    expect(navigation.getHref()).toBe("/sessions");
+    expect(navigation.getHref()).toBe("/dashboard");
 
     // External hashchange: ignored, view stays put.
     host.externallySetHash("#/sessions/%");
-    expect(navigation.getHref()).toBe("/sessions");
+    expect(navigation.getHref()).toBe("/dashboard");
 
     // Programmatic navigation: dropped by the unmapped guard.
     const { result } = renderHook(() => useNavigation(), {
-      wrapper: createWrapper(navigation),
+      wrapper: navigationWrapper(navigation),
     });
     act(() => {
       result.current.navigate("/sessions/%");
     });
-    expect(navigation.getHref()).toBe("/sessions");
+    expect(navigation.getHref()).toBe("/dashboard");
   });
 
-  it("falls back to the sessions view for an unmapped persisted hash", () => {
+  it("falls back to the landing view for an unmapped persisted hash", () => {
     const host = createFakeHashHost("#/users/123");
     const navigation = createDesktopNavigation(host);
 
-    expect(navigation.getHref()).toBe("/sessions");
-    expect(host.getHash()).toBe("#/sessions");
+    expect(navigation.getHref()).toBe("/dashboard");
+    expect(host.getHash()).toBe("#/dashboard");
   });
 
   it("ignores external hash changes to unmapped paths", () => {
@@ -238,7 +299,7 @@ describe("createDesktopNavigation", () => {
   it("returns org-relative paths unchanged from useOrgPath", () => {
     const navigation = createDesktopNavigation(createFakeHashHost());
     const { result } = renderHook(() => useOrgPath(), {
-      wrapper: createWrapper(navigation),
+      wrapper: navigationWrapper(navigation),
     });
     expect(result.current("/sessions/s-1")).toBe("/sessions/s-1");
   });

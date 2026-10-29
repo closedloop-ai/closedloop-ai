@@ -15,31 +15,26 @@ describe("seed profiles", () => {
       projects: 1,
       artifacts: 10,
       comments: 20,
-      loops: 5,
     });
     expect(SEED_PROFILES[SeedProfileName.Local]).toEqual({
       projects: 8,
       artifacts: 60,
       comments: 150,
-      loops: 45,
     });
     expect(SEED_PROFILES[SeedProfileName.E2e]).toEqual({
       projects: 3,
       artifacts: 24,
       comments: 48,
-      loops: 12,
     });
     expect(SEED_PROFILES[SeedProfileName.CiPreview]).toEqual({
       projects: 10,
       artifacts: 100,
       comments: 500,
-      loops: 75,
     });
     expect(SEED_PROFILES[SeedProfileName.Perf]).toEqual({
       projects: 100,
       artifacts: 8000,
       comments: 75_000,
-      loops: 1500,
     });
   });
 
@@ -52,7 +47,6 @@ describe("seed profiles", () => {
       projects: 2,
       artifacts: 24,
       comments: 48,
-      loops: 12,
     });
     expect(getSeedTargetRanges({ ...scaled, projects: 10 }).projects).toEqual({
       min: 8,

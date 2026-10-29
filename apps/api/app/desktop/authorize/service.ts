@@ -2,6 +2,7 @@ import "server-only";
 
 import { randomBytes } from "node:crypto";
 import type { DesktopAuthorizeMintResult } from "@repo/api/src/types/desktop-authorize";
+import { isAllowedDesktopLoopbackRedirectUri } from "@repo/api/src/types/desktop-loopback-redirect";
 import { Result } from "@repo/api/src/types/result";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
@@ -9,7 +10,6 @@ import {
   type DesktopSessionTokens,
   issueDesktopSessionCredentials,
 } from "@/app/desktop/session/service";
-import { isAllowedDesktopLoopbackRedirectUri } from "@/lib/auth/desktop-loopback-redirect";
 import { verifyDesktopSessionPop } from "@/lib/auth/desktop-session-pop";
 import {
   isSupportedPkceMethod,
@@ -92,8 +92,7 @@ export const desktopAuthorizeService = {
 
     await withDb.tx(async (tx) => {
       // Opportunistic eviction keeps this one-time-code table bounded to the
-      // live TTL window without a dedicated cron (mirrors the
-      // local-gateway-jti-registry precedent). A redeemed code is safely reaped
+      // live TTL window without a dedicated cron. A redeemed code is safely reaped
       // once expired: a later replay then finds no row and is rejected
       // identically to an expired code.
       await tx.desktopAuthorizationCode.deleteMany({
@@ -110,6 +109,7 @@ export const desktopAuthorizeService = {
           redirectUri: input.redirectUri,
           expiresAt,
         },
+        select: { id: true },
       });
     });
 
@@ -129,6 +129,8 @@ export const desktopAuthorizeService = {
     const code = await withDb((db) =>
       db.desktopAuthorizationCode.findUnique({
         where: { codeHash: hashToken(input.code) },
+        // `codeHash` is the lookup predicate, not a value redeem reads back.
+        select: AUTHORIZATION_CODE_REDEEM_SELECT,
       })
     );
 
@@ -205,3 +207,28 @@ export const desktopAuthorizeService = {
     return Result.ok(tokens);
   },
 };
+
+/** The columns `redeem` reads off the stored authorization code. */
+type AuthorizationCodeRedeemRow = {
+  id: string;
+  userId: string;
+  organizationId: string;
+  gatewayId: string;
+  boundPublicKey: string;
+  codeChallenge: string;
+  redirectUri: string;
+  expiresAt: Date;
+  redeemedAt: Date | null;
+};
+
+const AUTHORIZATION_CODE_REDEEM_SELECT = {
+  id: true,
+  userId: true,
+  organizationId: true,
+  gatewayId: true,
+  boundPublicKey: true,
+  codeChallenge: true,
+  redirectUri: true,
+  expiresAt: true,
+  redeemedAt: true,
+} as const satisfies Record<keyof AuthorizationCodeRedeemRow, true>;

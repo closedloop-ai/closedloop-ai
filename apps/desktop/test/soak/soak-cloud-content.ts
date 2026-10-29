@@ -33,7 +33,7 @@
  * reading — re-run the producer's queries in SQL and demand equality — would be
  * a false-alarm generator, because the payload builder applies documented caps
  * and slices on the way out (`eventRowCap`, `MAX_SYNCED_ARTIFACT_REFS_PRODUCER`,
- * `MAX_SYNCED_SESSION_PR_REFS_PRODUCER`, `SESSION_TRACE_SOURCE_LIMITS`,
+ * `SESSION_TRACE_SOURCE_LIMITS`,
  * `ACTIVITY_SEGMENT_SYNC_MAX_ROWS`). A cap is not a drop, and an oracle that
  * cannot tell them apart is worse than no oracle.
  *
@@ -183,8 +183,10 @@ export const ContentViolationKind = {
    */
   ChunkTotalInvalid: "chunk_total_invalid",
   /**
-   * `dataRevision` was present but not a usable revision. Production bounds it
-   * with `.int().min(1).max(MAX_SUPPORTED_DATA_REVISION)`, and a `NaN` here is
+   * `dataRevision` was present but not a usable revision. Production commits
+   * only `[1, MAX_SUPPORTED_DATA_REVISION]` (since ISS-8271 out-of-window
+   * values fold or hold at the apply instead of rejecting the batch), and a
+   * `NaN` here is
    * worse than a wrong number: it makes the redelivery digest comparison, which
    * is keyed on revision equality, permanently unable to fire.
    */
@@ -771,8 +773,9 @@ function finishAssembly(
  * a redelivery at a `NaN` revision could NEVER report a digest divergence — the
  * check silently unable to fire, which is the thing this harness exists to stop.
  *
- * Production bounds the field with `.int().min(1).max(MAX_SUPPORTED_DATA_REVISION)`
- * and `.nullish()`, so absent is legal but an unusable value is not. An unusable
+ * Production accepts any integer on the wire since ISS-8271 but commits only
+ * `[1, MAX_SUPPORTED_DATA_REVISION]` (unusable values fold or hold at the
+ * apply), so absent is legal but an unusable value never lands. An unusable
  * one is recorded AND folded to `null`, which is the honest "unknown" and, unlike
  * `NaN`, compares equal to itself so the divergence check keeps working.
  */

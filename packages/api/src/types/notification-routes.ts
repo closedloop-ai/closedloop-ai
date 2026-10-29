@@ -3,6 +3,7 @@
 // so backend dispatchers never hardcode frontend paths inline.
 
 import {
+  DOCUMENT_ROUTE_PREFIX,
   getRoutePrefixForType,
   LEGACY_TYPE_ROUTE_PREFIXES,
   TYPE_ROUTE_PREFIX,
@@ -11,7 +12,6 @@ import {
 export const NotificationEntityKind = {
   Artifact: "artifact",
   Project: "project",
-  Loop: "loop",
   Session: "session",
   Branch: "branch",
 } as const;
@@ -51,10 +51,6 @@ export type NotificationEntityRouteParams =
       projectId: string;
     }
   | {
-      kind: typeof NotificationEntityKind.Loop;
-      loopId: string;
-    }
-  | {
       kind: typeof NotificationEntityKind.Session;
       sessionId: string;
     }
@@ -69,21 +65,17 @@ export type NotificationEntityRouteParams =
       tab?: BranchDetailTabParam;
     };
 
-const ARTIFACT_FALLBACK_PREFIX = "documents";
-
 export function getNotificationEntityPath(
   params: NotificationEntityRouteParams
 ): string {
   switch (params.kind) {
     case NotificationEntityKind.Artifact: {
       const prefix =
-        getRoutePrefixForType(params.subtype) ?? ARTIFACT_FALLBACK_PREFIX;
+        getRoutePrefixForType(params.subtype) ?? DOCUMENT_ROUTE_PREFIX;
       return `/${prefix}/${params.slug}`;
     }
     case NotificationEntityKind.Project:
       return `/teams/${params.teamId}/projects/${params.projectId}`;
-    case NotificationEntityKind.Loop:
-      return `/loops/${params.loopId}`;
     case NotificationEntityKind.Session:
       return `/sessions/${params.sessionId}`;
     case NotificationEntityKind.Branch: {
@@ -102,20 +94,22 @@ export function getNotificationEntityPath(
 }
 
 /**
- * Every URL path prefix an Artifact deep-link can use, derived from the canonical
- * `TYPE_ROUTE_PREFIX` (`prds`, `implementation-plans`, `issues`) plus the retired
- * `LEGACY_TYPE_ROUTE_PREFIXES` aliases (`features`, FEA-4137) and the `documents`
- * fallback. Consumers that need to recognize an artifact-detail href (e.g. the
- * mobile navigation adapter's `resolveRouteFromHref`) read this instead of
- * re-hardcoding the prefixes, so the set cannot drift from the emitter above.
- * The legacy aliases are kept so old `/features/[slug]` deep-links (external
- * bookmarks, push notifications minted before the rename) still resolve to the
- * artifact-detail screen — do NOT drop them without human approval.
+ * Every URL path prefix an Artifact deep-link can use: the canonical
+ * `documents` plus the legacy `prds`, `implementation-plans`, `issues` and
+ * `features` (ISS-12855), derived from `TYPE_ROUTE_PREFIX` and
+ * `LEGACY_TYPE_ROUTE_PREFIXES`. Consumers that need to recognize an
+ * artifact-detail href (e.g. the mobile navigation adapter's
+ * `resolveRouteFromHref`) read this instead of re-hardcoding the prefixes, so
+ * the set cannot drift from the emitter above. The legacy prefixes are kept so
+ * notifications minted before the move still resolve to the artifact-detail
+ * screen — do NOT drop them without human approval.
  */
 export const ARTIFACT_ROUTE_PREFIXES: readonly string[] = [
-  ...Object.values(TYPE_ROUTE_PREFIX),
-  ...Object.values(LEGACY_TYPE_ROUTE_PREFIXES).flat(),
-  ARTIFACT_FALLBACK_PREFIX,
+  ...new Set([
+    ...Object.values(TYPE_ROUTE_PREFIX),
+    ...Object.values(LEGACY_TYPE_ROUTE_PREFIXES).flat(),
+    DOCUMENT_ROUTE_PREFIX,
+  ]),
 ];
 
 /**

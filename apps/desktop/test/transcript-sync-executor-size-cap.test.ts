@@ -6,19 +6,17 @@
  * dead-letter reason prefix the force-revive matches on, and the FEA-3583
  * raised cap plus its runaway backstop.
  *
- * #4150: split out of `transcript-sync-executor.test.ts` (a shrink-only
- * grandfathered file) so the size-cap policy has one owner and that suite
+ * #4150: split out of `transcript-sync-executor.test.ts` so the size-cap
+ * policy has one owner and that suite
  * finishes below its pinned base instead of growing with the ISS-4647
  * source-recovery cluster. Shares the executor fakes with its siblings via
  * `./helpers/transcript-sync-executor-fixtures.js`.
  */
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { test } from "node:test";
-import {
-  TranscriptSkipReason,
-  TranscriptUploadStatus,
-} from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptUploadStatus } from "@repo/api/src/types/desktop-transcripts";
+import { TranscriptSkipReason } from "@repo/api/src/types/transcript-skip-reason-constants";
+import { test } from "vitest";
 import { createTranscriptSyncExecutor } from "../src/main/transcript-sync/transcript-sync-executor.js";
 import {
   TRANSCRIPT_OVERSIZED_DEAD_LETTER_PREFIX,
@@ -63,6 +61,11 @@ test("an oversize file is dead-lettered before any read or upload", async () => 
   assert.equal(store.dead[0].id, "sess-1");
   assert.equal(store.dead[0].key, "main");
   assert.ok(store.dead[0].reason.includes("exceeds"));
+  assert.equal(
+    store.dead[0].terminalSkipComputeTargetId,
+    "ct-1",
+    "scoped to the target whose cloud acknowledged the skip"
+  );
   assert.equal(client.planRequests.length, 0);
   assert.equal(client.puts.length, 0);
   assert.equal(client.parts.length, 0);

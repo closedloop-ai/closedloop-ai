@@ -20,21 +20,17 @@ describe("selected pull-request checks deadline", () => {
     vi.useRealTimers();
   });
 
-  it.each([
-    0,
-    -1,
-    1.5,
-    120_001,
-    Number.NaN,
-    Number.POSITIVE_INFINITY,
-  ])("rejects invalid timeout %s before provider I/O", async (timeoutMs) => {
-    await expect(acquire({ timeoutMs })).resolves.toEqual({
-      status: SelectedPullRequestEvidenceAvailability.Unavailable,
-      reason: SelectedPullRequestEvidenceUnavailableReason.MalformedRequest,
-    });
-    expect(mockGet).not.toHaveBeenCalled();
-    expect(mockGraphql).not.toHaveBeenCalled();
-  });
+  it.each([0, -1, 1.5, 120_001, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid timeout %s before provider I/O",
+    async (timeoutMs) => {
+      await expect(acquire({ timeoutMs })).resolves.toEqual({
+        status: SelectedPullRequestEvidenceAvailability.Unavailable,
+        reason: SelectedPullRequestEvidenceUnavailableReason.MalformedRequest,
+      });
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(mockGraphql).not.toHaveBeenCalled();
+    }
+  );
 
   it("rejects a pre-aborted caller before provider I/O and clears its timer", async () => {
     vi.useFakeTimers();

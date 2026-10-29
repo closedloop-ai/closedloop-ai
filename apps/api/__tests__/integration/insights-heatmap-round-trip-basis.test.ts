@@ -33,168 +33,21 @@
  *     mix, interactive entrypoint, prompts stay Human.
  */
 
-import { InsightsPeriod, InsightsScope } from "@repo/api/src/types/insights";
-import { ArtifactType, type Prisma, withDb } from "@repo/database";
-import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
-import { insightsService } from "@/app/insights/service";
 import {
-  autoRollbackTransaction,
-  createTestOrganization,
-  createTestProject,
-  createTestUser,
-} from "../utils/db-helpers";
-
-const env = keys();
-const hasDatabase = !!env.DATABASE_URL;
-
-// A fixed "now" inside the seeded turns' window so the capped trend range covers
-// them regardless of when the suite runs.
-const NOW = new Date("2026-06-15T12:00:00.000Z");
-const SESSION_STARTED_AT = new Date("2026-06-10T09:00:00.000Z");
-const SESSION_UPDATED_AT = new Date("2026-06-10T13:00:00.000Z");
-const DAY = "2026-06-10";
-// Every seeded round-trip lands in this hour so the assertion is a single cell.
-const AGENT_HOUR = 11;
-const HUMAN_HOUR = 10;
-
-/**
- * The ISS-5395 delegation shape, scaled down but keeping the ratio: one
- * produce-loop session measured 13,589 of 14,226 round-trips attributed to
- * folded sub-agents (~95.5%). A live desktop store showed the same shape at
- * 18,052 round-trips against 786 parent-only turn buckets (95.6% delegated).
- */
-const TOTAL_ROUND_TRIPS = 1000;
-const PARENT_ROUND_TRIPS = 44;
-const SUBAGENT_ROUND_TRIPS = TOTAL_ROUND_TRIPS - PARENT_ROUND_TRIPS;
-
-async function createComputeTarget(organizationId: string, userId: string) {
-  const target = await withDb((db) =>
-    db.computeTarget.create({
-      data: {
-        machineName: "heatmap-round-trip-basis-machine",
-        organizationId,
-        platform: "darwin",
-        userId,
-      },
-      select: { id: true },
-    })
-  );
-  return target.id;
-}
-
-async function seedSession(input: {
-  organizationId: string;
-  projectId: string;
-  userId: string;
-  computeTargetId: string;
-  messages: Array<{ role: string; timestamp: string }>;
-  /** Count of synced billable round-trips. Zero ⇒ an older/OTel-only desktop. */
-  roundTrips: number;
-  /**
-   * `metadata.entrypoint`. Defaults to the interactive CLI; pass a headless one
-   * (`codex exec` matches `HEADLESS_ENTRYPOINT_TOKENS`) to exercise the headless
-   * classifier.
-   */
-  entrypoint?: string;
-}) {
-  const artifact = await withDb((db) =>
-    db.artifact.create({
-      data: {
-        createdById: input.userId,
-        name: "Round-trip basis session",
-        organizationId: input.organizationId,
-        projectId: input.projectId,
-        status: "completed",
-        type: ArtifactType.SESSION,
-      },
-      select: { id: true },
-    })
-  );
-  await withDb((db) =>
-    db.sessionDetail.create({
-      data: {
-        artifactId: artifact.id,
-        computeTargetId: input.computeTargetId,
-        externalSessionId: `session-${artifact.id}`,
-        harness: "claude",
-        model: "claude-opus-4",
-        sessionStartedAt: SESSION_STARTED_AT,
-        sessionUpdatedAt: SESSION_UPDATED_AT,
-        userId: input.userId,
-        // Cast to the Prisma JSON input type — the array-of-objects shape is
-        // valid JSON but TS can't infer the structural index signature.
-        metadata: {
-          entrypoint: input.entrypoint ?? "cli",
-          messages: input.messages,
-        } as Prisma.InputJsonValue,
-      },
-    })
-  );
-  if (input.roundTrips > 0) {
-    await withDb((db) =>
-      db.agentSessionTokenEvent.createMany({
-        data: Array.from({ length: input.roundTrips }, (_, i) => ({
-          agentSessionId: artifact.id,
-          // Mirrors the desktop transport identity: stable and unique per
-          // round-trip. The cloud carries NO subagent discriminator — the
-          // desktop `token_events` table has no such column — so a folded
-          // sub-agent's round-trip is an ordinary row here, which is exactly
-          // why the cloud can count the session's true billable total.
-          externalEventId: `token-event-${i}`,
-          model: "claude-opus-4",
-          eventCreatedAt: new Date(`${DAY}T${AGENT_HOUR}:00:00.000Z`),
-        })),
-      })
-    );
-  }
-  return artifact.id;
-}
-
-/** One assistant `$.messages` row per content block — the OLD, inflated basis. */
-function assistantRows(count: number) {
-  return Array.from({ length: count }, () => ({
-    role: "assistant",
-    timestamp: `${DAY}T${AGENT_HOUR}:00:00.000Z`,
-  }));
-}
-
-function humanRows(count: number) {
-  return Array.from({ length: count }, () => ({
-    role: "human",
-    timestamp: `${DAY}T${HUMAN_HOUR}:00:00.000Z`,
-  }));
-}
-
-async function readHeatmapTotals(organizationId: string, userId: string) {
-  const result = await insightsService.getUtilization(
-    {
-      organizationId,
-      userId,
-      scope: InsightsScope.Org,
-      // Bucket in UTC so the seeded hours are deterministic.
-      timeZone: "UTC",
-    },
-    InsightsPeriod.Month,
-    NOW
-  );
-  const cells = (result.charts.activityHeatmap?.cells ?? []).filter(
-    (cell) => cell.day === DAY
-  );
-  return {
-    agent: cells.reduce((sum, cell) => sum + cell.agent, 0),
-    human: cells.reduce((sum, cell) => sum + cell.human, 0),
-    cells,
-  };
-}
-
-async function seedScope() {
-  const organizationId = await createTestOrganization();
-  const user = await createTestUser(organizationId);
-  const projectId = await createTestProject(organizationId, user.id);
-  const computeTargetId = await createComputeTarget(organizationId, user.id);
-  return { organizationId, projectId, userId: user.id, computeTargetId };
-}
+  assistantRows,
+  DAY,
+  HUMAN_HOUR,
+  hasDatabase,
+  humanRows,
+  PARENT_ROUND_TRIPS,
+  readHeatmapTotals,
+  SUBAGENT_ROUND_TRIPS,
+  seedScope,
+  seedSession,
+  TOTAL_ROUND_TRIPS,
+} from "@/__tests__/support/insights/heatmap-round-trip-basis.test-helpers";
+import { autoRollbackTransaction } from "../utils/db-helpers";
 
 describe.skipIf(!hasDatabase)(
   "insights utilization heatmap — Agent turns are billable round-trips (ISS-5408)",
@@ -395,6 +248,190 @@ describe.skipIf(!hasDatabase)(
 
         expect(agent).toBe(8);
         expect(human).toBe(0);
+      });
+    });
+    // ISS-7896 — the HUMAN half is now two disjoint per-session arms. Arm 1 reads
+    // `metadata.humanTurnTimestamps` (derived by the desktop from the FULL local
+    // messages array, so it is not bounded by MAX_METADATA_MESSAGES); arm 2 is
+    // the pre-existing `$.messages` path. `hasTurnTimestampsSql` is the one
+    // expression that splits them.
+    describe("human-turn basis (ISS-7896)", () => {
+      const stamps = (count: number) =>
+        Array.from({ length: count }, () => `${DAY}T${HUMAN_HOUR}:00:00.000Z`);
+
+      it("counts the derived key and ignores the $.messages rows it displaces", async () => {
+        await autoRollbackTransaction(async () => {
+          const scope = await seedScope();
+          // The real shape of the bug: `messages` reaches the cloud capped, the
+          // derived key carries the true count. Arm 1 must not also add the 3
+          // rows arm 2 would have counted.
+          await seedSession({
+            ...scope,
+            roundTrips: 0,
+            messages: humanRows(3),
+            humanTurnTimestamps: stamps(9),
+          });
+
+          const { human } = await readHeatmapTotals(
+            scope.organizationId,
+            scope.userId
+          );
+
+          expect(human).toBe(9);
+        });
+      });
+
+      it("falls back to $.messages when the key is absent", async () => {
+        await autoRollbackTransaction(async () => {
+          const scope = await seedScope();
+          await seedSession({
+            ...scope,
+            roundTrips: 0,
+            messages: humanRows(3),
+          });
+
+          const { human } = await readHeatmapTotals(
+            scope.organizationId,
+            scope.userId
+          );
+
+          expect(human).toBe(3);
+        });
+      });
+
+      it("treats an EMPTY array as an authoritative zero and ignores $.messages", async () => {
+        await autoRollbackTransaction(async () => {
+          const scope = await seedScope();
+          // The version-skew case that separates the two readings: the producer
+          // derived `[]` (it classified this session headless) while the rows
+          // it left in `messages` are that session's INJECTED prompts. The
+          // desktop chart renders no human cells for it, so counting the 3 rows
+          // here would report MORE human activity than the oracle.
+          await seedSession({
+            ...scope,
+            roundTrips: 0,
+            messages: humanRows(3),
+            humanTurnTimestamps: [],
+          });
+
+          const { human } = await readHeatmapTotals(
+            scope.organizationId,
+            scope.userId
+          );
+
+          expect(human).toBe(0);
+          expect(human).not.toBe(3);
+        });
+      });
+
+      it("falls back when the key is present but not an array", async () => {
+        for (const notAnArray of [
+          "2026-06-10T10:00:00.000Z",
+          5,
+          null,
+          { a: 1 },
+        ]) {
+          await autoRollbackTransaction(async () => {
+            const scope = await seedScope();
+            await seedSession({
+              ...scope,
+              roundTrips: 0,
+              messages: humanRows(3),
+              humanTurnTimestamps: notAnArray,
+            });
+
+            const { human } = await readHeatmapTotals(
+              scope.organizationId,
+              scope.userId
+            );
+
+            expect(
+              human,
+              `humanTurnTimestamps=${JSON.stringify(notAnArray)}`
+            ).toBe(3);
+          });
+        }
+      });
+
+      it("keeps the two arms disjoint across a mixed population", async () => {
+        await autoRollbackTransaction(async () => {
+          const scope = await seedScope();
+          // One old session and one new one in the SAME query. If the arms
+          // overlapped, the new session would be counted twice (9 + 4 = 13).
+          await seedSession({
+            ...scope,
+            roundTrips: 0,
+            messages: humanRows(4),
+            humanTurnTimestamps: stamps(9),
+          });
+          await seedSession({
+            ...scope,
+            roundTrips: 0,
+            messages: humanRows(3),
+          });
+
+          const { human } = await readHeatmapTotals(
+            scope.organizationId,
+            scope.userId
+          );
+
+          expect(human).toBe(12);
+        });
+      });
+
+      it("excludes a headless session on the derived arm too", async () => {
+        await autoRollbackTransaction(async () => {
+          const scope = await seedScope();
+          // The producer already excludes headless sessions, but this side does
+          // not depend on that agreement — the two classifiers run on different
+          // machines and different versions.
+          await seedSession({
+            ...scope,
+            roundTrips: 0,
+            messages: [],
+            entrypoint: "codex exec",
+            humanTurnTimestamps: stamps(5),
+          });
+
+          const { human } = await readHeatmapTotals(
+            scope.organizationId,
+            scope.userId
+          );
+
+          expect(human).toBe(0);
+        });
+      });
+
+      it("drops malformed entries without failing the request", async () => {
+        await autoRollbackTransaction(async () => {
+          const scope = await seedScope();
+          // Arm 1 is a SECOND jsonb_array_elements -> ::timestamp path. A bad
+          // value must drop out of the buckets, never 500 /insights/utilization.
+          // `20260101` is PostgreSQL-valid and so is the value that kills a
+          // missing `jsonb_typeof(t) = 'string'` guard; an epoch string is not.
+          await seedSession({
+            ...scope,
+            roundTrips: 0,
+            messages: [],
+            humanTurnTimestamps: [
+              `${DAY}T${HUMAN_HOUR}:00:00.000Z`,
+              "not-a-date",
+              "2026-02-30T00:00:00.000Z",
+              "",
+              20_260_101,
+              null,
+              { at: `${DAY}T${HUMAN_HOUR}:00:00.000Z` },
+              [`${DAY}T${HUMAN_HOUR}:00:00.000Z`],
+            ],
+          });
+
+          const { human } = await readHeatmapTotals(
+            scope.organizationId,
+            scope.userId
+          );
+
+          expect(human).toBe(1);
+        });
       });
     });
   }

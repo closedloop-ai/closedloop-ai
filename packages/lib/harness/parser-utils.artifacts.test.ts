@@ -1,3 +1,4 @@
+import { PR_INT_MAX } from "@repo/api/src/types/session-artifact-link";
 import { describe, expect, it } from "vitest";
 import {
   collectArtifacts,
@@ -72,6 +73,46 @@ describe("extractPrReferences — non-PR non-Bash tool (Branch 65[1] FALSE path)
     expect(refs[0].url).toBe(
       "https://github.com/closedloop-ai/symphony/pull/42"
     );
+  });
+
+  it("extracts PR links from valid diff and patch URL suffixes", () => {
+    const input = {
+      body: [
+        "https://github.com/closedloop-ai/symphony/pull/41.diff",
+        "https://github.com/closedloop-ai/symphony/pull/42.patch?plain=1",
+      ].join(" "),
+    };
+    const refs = extractPrReferences("Read", input);
+
+    expect(refs).toEqual([
+      {
+        number: "41",
+        repo: "closedloop-ai/symphony",
+        url: "https://github.com/closedloop-ai/symphony/pull/41",
+      },
+      {
+        number: "42",
+        repo: "closedloop-ai/symphony",
+        url: "https://github.com/closedloop-ai/symphony/pull/42",
+      },
+    ]);
+  });
+
+  it("drops PR URLs above the shared Int4-backed PR number domain", () => {
+    const input = {
+      body: [
+        `https://github.com/closedloop-ai/symphony/pull/${PR_INT_MAX + 1}`,
+        "https://github.com/closedloop-ai/symphony/pull/42",
+      ].join(" "),
+    };
+
+    expect(extractPrReferences("Read", input)).toEqual([
+      {
+        number: "42",
+        repo: "closedloop-ai/symphony",
+        url: "https://github.com/closedloop-ai/symphony/pull/42",
+      },
+    ]);
   });
 });
 
@@ -156,6 +197,44 @@ describe("extractPrReferences — PR tool pending path (Branch 65[0])", () => {
     expect(refs[0].url).toBe(url);
     // Ensure no pending ref was also added
     expect(refs.every((r) => r.number !== "pending")).toBe(true);
+  });
+});
+
+describe("extractPrReferences — shell-through-MCP gh pr create (ISS-8268)", () => {
+  it("mints the pending hint for an MCP-shell gh pr create", () => {
+    const refs = extractPrReferences("mcp__lc__bash", {
+      command: "gh pr create --fill",
+    });
+    expect(refs).toEqual([{ number: "pending" }]);
+  });
+
+  it("mints the pending hint for an argv-shaped shell gh pr create", () => {
+    const refs = extractPrReferences("shell", {
+      command: ["gh", "pr", "create", "--fill"],
+    });
+    expect(refs).toEqual([{ number: "pending" }]);
+  });
+
+  it("does not mint for a non-shell tool carrying the words in a command field", () => {
+    expect(
+      extractPrReferences("Read", { command: "gh pr create --fill" })
+    ).toEqual([]);
+  });
+
+  it("mints for a Codex-form MCP shell via the mcp metadata parameter", () => {
+    const refs = extractPrReferences(
+      "bash",
+      { command: "gh pr create --fill" },
+      undefined,
+      { mcpMethod: "bash" }
+    );
+    expect(refs).toEqual([{ number: "pending" }]);
+  });
+
+  it("does not mint for the same unprefixed name without mcp metadata", () => {
+    expect(
+      extractPrReferences("bash", { command: "gh pr create --fill" })
+    ).toEqual([]);
   });
 });
 

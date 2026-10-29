@@ -4,7 +4,7 @@ import {
 } from "@repo/api/src/types/document";
 import { z } from "zod";
 import { documentService } from "@/app/documents/document-service";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   badRequestResponse,
   errorResponse,
@@ -32,7 +32,7 @@ const batchMetaQueryValidator = z.object({
  * Slugs not found in the org are omitted from the response.
  * Authentication required.
  */
-export const GET = withAuth<DocumentMetaMap, "/documents/batch-meta">(
+export const GET = withAnyAuth<DocumentMetaMap, "/documents/batch-meta">(
   async ({ user }, request) => {
     try {
       const rawSlugs = request.nextUrl.searchParams.get("slugs");

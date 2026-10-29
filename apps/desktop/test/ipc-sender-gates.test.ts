@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
-import { vi } from "vitest";
+import { describe, test, vi } from "vitest";
 import {
-  AgentMonitorIpcChannel,
   type AgentMonitorIpcDeps,
   registerAgentMonitorIpcHandlers,
 } from "../src/main/ipc/agent-monitor-ipc.js";
 import {
-  RuntimeInfoIpcChannel,
   type RuntimeInfoIpcDeps,
   registerRuntimeInfoIpcHandlers,
 } from "../src/main/ipc/runtime-info-ipc.js";
+import { AgentMonitorIpcChannel } from "../src/shared/agent-monitor-ipc-channel.js";
+import { RuntimeInfoIpcChannel } from "../src/shared/runtime-info-ipc-channel.js";
 
 // FEA-3639 review: both new IPC gates (GetRuntimeStatus, which exposes
 // file-access-block paths; ReimportAgentSessions, which restarts collectors)
@@ -76,6 +75,45 @@ describe("runtime-info IPC sender gate (FEA-3639)", () => {
     assert.throws(() => handler(UNTRUSTED_EVENT), UNTRUSTED_SENDER_ERROR);
     assert.equal(getFileAccessBlocks.mock.calls.length, 0);
     assert.equal(getAppVersion.mock.calls.length, 0);
+  });
+
+  test("GetTranscriptSyncStatus rejects an untrusted sender before reading per-file status", () => {
+    const getTranscriptSyncStatus = vi.fn(() => Promise.resolve({}));
+    const handlers = registerHandler((registrar) =>
+      registerRuntimeInfoIpcHandlers(
+        registrar,
+        makeRuntimeInfoDeps({
+          getTranscriptSyncStatus:
+            getTranscriptSyncStatus as RuntimeInfoIpcDeps["getTranscriptSyncStatus"],
+        })
+      )
+    );
+
+    const handler = handlers.get(RuntimeInfoIpcChannel.GetTranscriptSyncStatus);
+    assert.ok(handler, "GetTranscriptSyncStatus handler must be registered");
+    assert.throws(() => handler(UNTRUSTED_EVENT), UNTRUSTED_SENDER_ERROR);
+    assert.equal(getTranscriptSyncStatus.mock.calls.length, 0);
+  });
+
+  test("GetTranscriptSyncStatus returns the trusted status promise", async () => {
+    const snapshot = { files: [], phase: "idle" } as Awaited<
+      ReturnType<RuntimeInfoIpcDeps["getTranscriptSyncStatus"]>
+    >;
+    const getTranscriptSyncStatus = vi.fn(() => Promise.resolve(snapshot));
+    const handlers = registerHandler((registrar) =>
+      registerRuntimeInfoIpcHandlers(
+        registrar,
+        makeRuntimeInfoDeps({
+          getTranscriptSyncStatus,
+          isTrustedSender: () => true,
+        })
+      )
+    );
+
+    const handler = handlers.get(RuntimeInfoIpcChannel.GetTranscriptSyncStatus);
+    assert.ok(handler, "GetTranscriptSyncStatus handler must be registered");
+    assert.equal(await handler(UNTRUSTED_EVENT), snapshot);
+    assert.equal(getTranscriptSyncStatus.mock.calls.length, 1);
   });
 });
 

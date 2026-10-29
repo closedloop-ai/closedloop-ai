@@ -20,12 +20,18 @@ import { stat } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import type { Config } from "@libsql/client";
 import { PrismaLibSql } from "@prisma/adapter-libsql";
+import {
+  createStorageExhaustionTally,
+  type StorageExhaustionHealth,
+} from "../../shared/storage-exhaustion.js";
 import { WalProbeAnomalyReason } from "../telemetry/telemetry-protocol.js";
 import {
   connectionPragmaStatements,
   DEFAULT_READER_POOL_SIZE,
+  IDLE_SHRINK_MEMORY_INTERVAL_MS,
   SQLITE_DEFAULT_PAGE_SIZE_BYTES,
   SQLITE_PAGE_SIZE_SQL,
+  SQLITE_SHRINK_MEMORY_SQL,
   WAL_FILE_HEADER_BYTES,
   WAL_FRAME_HEADER_BYTES,
   WAL_TRUNCATE_CHECKPOINT_SQL,
@@ -34,6 +40,17 @@ import {
   WAL_TRUNCATE_WRITE_COUNT,
 } from "./connection-pragmas.js";
 import { PrismaClient } from "./generated/client.js";
+import {
+  wrapRawCoercion,
+  wrapWriterActivity,
+} from "./prisma-client-proxies.js";
+import {
+  type CapturedStatement,
+  hasStatementObserver,
+  isThenable,
+  type StatementObservers,
+  withStatementSpy,
+} from "./prisma-statement-observers.js";
 import type { WriteQueueRunOptions } from "./write-queue.js";
 
 /**
@@ -110,9 +127,8 @@ export type DesktopPrisma = {
    * The typed client narrowed to reads (see {@link DesktopPrismaReader}), bound
    * to the PRIMARY (writer) connection. Use for light reads co-located with
    * writes (read-your-writes). Mutations are a compile error here — route them
-   * through {@link DesktopPrisma.write}. For heavy or independent reads that
-   * must run CONCURRENTLY with the first-launch backfill writer, use
-   * {@link DesktopPrisma.read}, which dispatches to the reader pool.
+   * through {@link DesktopPrisma.write}. Reads that must not block on the backfill
+   * writer's LOCKS go to {@link DesktopPrisma.read}, which defines "concurrent".
    */
   readonly client: DesktopPrismaReader;
   /**
@@ -138,13 +154,13 @@ export type DesktopPrisma = {
     opts?: WriteQueueRunOptions
   ): Promise<T>;
   /**
-   * Run a READ against the reader pool: the call is dispatched round-robin to
-   * one of the dedicated `query_only` reader connections, which read a committed
-   * WAL snapshot CONCURRENTLY with the writer (no serialization behind the
-   * backfill). Each reader connection self-serializes its own statements via the
-   * adapter's per-connection mutex, so concurrent `read()` calls fan out across
-   * the pool without ever running two statements on one connection. The callback
-   * receives a read-only client (see {@link DesktopPrismaReadClient}).
+   * Run a READ against the reader pool: round-robin to a dedicated `query_only`
+   * reader connection, each reading a committed WAL snapshot that never waits on
+   * the writer's locks and self-serializing its statements via the adapter's
+   * per-connection mutex. Callback gets a {@link DesktopPrismaReadClient}.
+   * ISS-8246 M4 — that is lock-freedom, NOT concurrent execution: one JS thread
+   * drives every connection and libSQL is synchronous, so a read runs AFTER the
+   * owning statement. The FEA-2264 yields interleave; see the AGENTS.md here.
    */
   read<T>(fn: (client: DesktopPrismaReadClient) => Promise<T>): Promise<T>;
   /**
@@ -156,6 +172,30 @@ export type DesktopPrisma = {
    * comment for why a lifetime tally would make the health state unrecoverable.
    */
   readWalProbeHealth(): WalProbeHealth;
+  /**
+   * ISS-6337: write failures classified as an out-of-space condition, for the
+   * window SINCE THE PREVIOUS CALL. Same consuming-read contract (and the same
+   * reason for it) as {@link readWalProbeHealth}; see
+   * {@link createStorageExhaustionTally}.
+   */
+  readStorageExhaustionHealth(): StorageExhaustionHealth;
+  /**
+   * ISS-12023 (PRD-785): run `PRAGMA shrink_memory` on every connection this
+   * client owns — the writer plus each reader — releasing the page cache
+   * `connection-pragmas.ts` sizes at 16 MiB per connection. Skips any connection
+   * with work in flight, since a shrink there would free nothing it is not about
+   * to re-read.
+   *
+   * Clone-safe (no args, no result), so it is callable as the dotted db-host op
+   * `prisma.shrinkMemory` — which is how the dispatcher reclaims after a
+   * heavy-gate op. The idle path needs no caller: this client runs its own timer
+   * (see `IDLE_SHRINK_MEMORY_INTERVAL_MS`).
+   *
+   * Best-effort by design: a connection whose pragma fails is left alone and the
+   * next pass retries it, so in production wiring this never rejects — the only
+   * throw path is the test-only `onShrinkMemory` hook.
+   */
+  shrinkMemory(): Promise<void>;
   /**
    * Release every Prisma client's pooled state (writer + reader pool). The
    * boot-time migration handle is owned and closed separately by
@@ -200,108 +240,12 @@ export type _DesktopPrismaReaderIsReadOnly = AssertTrue<
   DelegateHasNoMutations<DesktopPrismaReader["packCatalog"]>
 >;
 
-/**
- * Coerce a single raw-SQL bind argument to a libSQL-bindable value (mirrors the
- * boot connection's `coerceArg` in `migration-executor.ts`). The Prisma libSQL
- * adapter binds args straight through to the driver, which only accepts numbers,
- * strings, bigints, buffers, and null — so without this, a `boolean`/`Date`/plain
- * object/`undefined` bound by a `$executeRawUnsafe`/`$queryRawUnsafe` call throws
- * "SQLite3 can only bind numbers, strings, bigints, buffers, and null" and rolls
- * back the whole transaction. Booleans become 0/1 (the adapter doesn't accept
- * booleans directly), Dates become ISO strings, plain objects become their JSON
- * form (json/jsonb columns are TEXT in SQLite), and `undefined` becomes null.
- */
-function coerceRawArg(value: unknown): unknown {
-  if (value === undefined || value === null) {
-    return null;
-  }
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-  if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
-    return value;
-  }
-  if (typeof value === "boolean") {
-    return value ? 1 : 0;
-  }
-  if (typeof value === "object") {
-    // json/jsonb columns are TEXT in SQLite. A value read back through the
-    // Prisma raw path surfaces `BIGINT`-declared columns (e.g. the token-count
-    // columns) as `bigint`, so an object built from such a read can carry
-    // bigints that plain JSON.stringify rejects
-    // ("Do not know how to serialize a BigInt"). Token-count-scale bigints fit
-    // in a JS number, so coerce them.
-    return JSON.stringify(value, (_key, nested) =>
-      typeof nested === "bigint" ? Number(nested) : nested
-    );
-  }
-  return value;
-}
-
-const RAW_UNSAFE_METHODS = new Set(["$executeRawUnsafe", "$queryRawUnsafe"]);
-
-/**
- * Translate Postgres-style `$1` placeholders to SQLite numbered `?1` ones,
- * mirroring `migration-executor.ts`'s `translateParams`. This is NOT
- * cosmetic: SQLite treats `$1` as a *named* parameter bound by order of first
- * appearance, so a query whose params appear out of numeric order (e.g.
- * `updateSessionCostRollup`, where `$2`/`$3` appear in the SELECT before `$1`
- * in the WHERE) binds the positional args to the wrong placeholders and
- * silently returns wrong results. `?1`/`?2` are numbered and bound by the
- * explicit index regardless of textual order, which is what the converted
- * `$N`-style SQL assumes.
- */
-function translateNumberedParams(sql: string): string {
-  return sql.replace(/\$(\d+)/g, "?$1");
-}
-
-/**
- * Wrap a Prisma client (or interactive-transaction client) so the positional
- * raw escape hatches coerce their bind args via {@link coerceRawArg}, applying
- * the coercion contract at the single point the stores reach raw SQL.
- * `$transaction(callback)` is re-wrapped so the `tx` the callback receives
- * carries the same coercion; the array form and every typed delegate pass
- * straight through (Prisma binds those itself).
- */
-function wrapRawCoercion<T extends object>(target: T): T {
-  return new Proxy(target, {
-    get(obj, prop) {
-      const original = Reflect.get(obj, prop);
-      if (typeof prop === "string" && RAW_UNSAFE_METHODS.has(prop)) {
-        return (sql: string, ...args: unknown[]) =>
-          (original as (sql: string, ...a: unknown[]) => unknown).call(
-            obj,
-            translateNumberedParams(sql),
-            ...args.map(coerceRawArg)
-          );
-      }
-      if (prop === "$transaction") {
-        return (arg: unknown, ...rest: unknown[]) => {
-          const run = original as (...a: unknown[]) => unknown;
-          if (typeof arg === "function") {
-            const callback = arg as (tx: object) => unknown;
-            return run.call(
-              obj,
-              (tx: object) => callback(wrapRawCoercion(tx)),
-              ...rest
-            );
-          }
-          return run.call(obj, arg, ...rest);
-        };
-      }
-      if (typeof original === "function") {
-        return original.bind(obj);
-      }
-      return original;
-    },
-  });
-}
-
 /** Open one PrismaClient over its OWN libSQL connection and apply the role's
  * PRAGMAs. Each PrismaClient = one adapter = one libSQL connection = one
  * per-connection mutex, so a writer and N readers are genuinely independent
  * connections over the same WAL file (verified: a reader reads a committed
- * snapshot while the writer holds an open write transaction). */
+ * snapshot while the writer holds an open write transaction) — but independent
+ * CONNECTIONS, not independent execution: one JS thread drives them all. */
 // Prisma's interactive `$transaction` defaults (maxWait 2s, timeout 5s) would
 // kill exactly the backfill-concurrent analytics GROUP BY scans this pool exists
 // to serve (and the importer's write transactions), so we use a generous ceiling
@@ -309,7 +253,12 @@ function wrapRawCoercion<T extends object>(target: T): T {
 // bounded by the 15s busy_timeout). Applies to every `$transaction` on the
 // client — the reader snapshot aggregations and the writer import txs.
 const TRANSACTION_MAX_WAIT_MS = 30_000;
-const TRANSACTION_TIMEOUT_MS = 120_000;
+/**
+ * Exported so a caller layering its OWN deadline on top can compare against the
+ * real value rather than a copy — `db-store-deadlines.ts` derives
+ * `STORE_INVOKE_DEADLINE_MS` from it, and its test asserts the ordering.
+ */
+export const TRANSACTION_TIMEOUT_MS = 120_000;
 
 // FEA-3132 (D4/D5): how often to recycle IDLE reader connections. Each reader in
 // WAL mode holds a committed snapshot; a reader that finished a query but hasn't
@@ -325,7 +274,7 @@ const DEFAULT_READER_RECYCLE_INTERVAL_MS = 30_000;
 async function openPrismaConnection(
   config: Config,
   role: "writer" | "reader",
-  onStatement?: (statement: CapturedStatement) => void
+  observers: StatementObservers = {}
 ): Promise<PrismaClient> {
   // The adapter's `@libsql/client` is PATCHED (patches/@libsql__client@0.17.3.patch):
   // stock `transaction()` detaches the native connection and never closes it, so
@@ -337,7 +286,9 @@ async function openPrismaConnection(
   // lifetime, which the per-connection mutex already serializes.
   const factory = new PrismaLibSql(config);
   const client = new PrismaClient({
-    adapter: onStatement ? withStatementSpy(factory, onStatement) : factory,
+    adapter: hasStatementObserver(observers)
+      ? withStatementSpy(factory, observers)
+      : factory,
     transactionOptions: {
       maxWait: TRANSACTION_MAX_WAIT_MS,
       timeout: TRANSACTION_TIMEOUT_MS,
@@ -384,6 +335,26 @@ export type CreateDesktopPrismaOptions = {
   readerPoolSize?: number;
   readerRecycleIntervalMs?: number;
   /**
+   * ISS-12023: override for BOTH halves of the idle shrink cadence — how long
+   * the store must be quiet before its connections release their caches, and how
+   * often that idleness is re-checked. One knob, as
+   * {@link IDLE_SHRINK_MEMORY_INTERVAL_MS} explains; a test shortens it so the
+   * idle path is exercised without a long wait.
+   */
+  idleShrinkIntervalMs?: number;
+  /**
+   * ISS-12023: test/observability hook fired when a `PRAGMA shrink_memory` pass
+   * has fully settled, with the NUMBER OF CONNECTIONS whose pragma succeeded
+   * (mirrors {@link onReaderRecycle} / {@link onWalTruncate}). Fires on every
+   * pass, including one that shrank nothing because every connection was busy.
+   *
+   * The count is the assertion that makes "each connection" testable: a pass
+   * over a writer plus a 2-reader pool reports 3, and a pragma the engine
+   * rejected on one of them — the real risk, since readers are `query_only` —
+   * reports fewer instead of failing silently. Not used in production wiring.
+   */
+  onShrinkMemory?: (shrunk: number) => void;
+  /**
    * ISS-5336: test/observability hook fired with each statement a connection
    * hands the driver adapter's `queryRaw`, JUST BEFORE it runs. The planner
    * guard (`test/import-pending-sentinel-scan.test.ts`) captures the
@@ -393,14 +364,33 @@ export type CreateDesktopPrismaOptions = {
    * production probe drifts back onto a table scan.
    *
    * Scope is the adapter's `queryRaw` entry point — every statement the engine
-   * plans as a row-returning query outside an interactive transaction. NOT
-   * `executeRaw` (PRAGMAs and row-count-only statements) and NOT a transaction's
-   * own statements, which the adapter serves through its `Transaction` object.
-   * The spy reaches the factory through a Proxy's default traps, so an adapter
-   * or Prisma upgrade that changes how the client consumes the factory should
-   * re-verify it still fires. Not used in production wiring.
+   * plans as a row-returning query, INCLUDING the ones an interactive
+   * transaction serves through its own `Transaction` object (ISS-9117: a read
+   * that takes a snapshot to bound what it materializes would otherwise go
+   * invisible here, and "0 statements" is indistinguishable from "the read never
+   * ran"). NOT `executeRaw` — PRAGMAs and row-count-only statements — and not
+   * the `BEGIN`/`COMMIT` the adapter issues around a transaction, which are not
+   * row-returning queries. The spy reaches the factory through a Proxy's default
+   * traps, so an adapter or Prisma upgrade that changes how the client consumes
+   * the factory should re-verify it still fires. Not used in production wiring.
    */
   onStatement?: (statement: CapturedStatement) => void;
+  /**
+   * ISS-6339: production observability hook fired when a statement SETTLES —
+   * the same adapter `queryRaw` boundary {@link onStatement} watches, but after
+   * the driver has resolved or rejected it, with the elapsed milliseconds.
+   *
+   * Deliberately `(sql, durationMs)` and NOT a {@link CapturedStatement}: this
+   * one IS wired in production, on every statement the store runs, so it must
+   * not allocate an object and a copy of the bindings per query the way the
+   * before-hook does. The recorder behind it classifies `sql` into a bounded
+   * statement FAMILY and drops the text — nothing keeps a reference to it.
+   *
+   * Fires for a REJECTED statement too, with the time spent before the failure.
+   * A query that took four seconds and then threw is exactly the query a
+   * slow-query signal exists to show.
+   */
+  onStatementSettled?: (sql: string, durationMs: number) => void;
   /**
    * Test/observability hook fired AFTER a reader slot has been successfully
    * recycled (idle reader swapped for a fresh `query_only` connection). Lets a
@@ -466,12 +456,16 @@ export async function createDesktopPrisma(
   // already-opened writer/readers — their handles + WAL/-shm files would stay
   // pinned. Disconnect them all before rethrowing.
   const opened: PrismaClient[] = [];
+  // ISS-6339: built ONCE and reused by every connection this factory opens —
+  // including a recycled reader. Rebuilding it per call site is how the ISS-5336
+  // before-hook ended up on the initial readers but not on their replacements,
+  // so a recycled slot ran unobserved for the rest of the process.
+  const observers: StatementObservers = {
+    onStatement: options?.onStatement,
+    onStatementSettled: options?.onStatementSettled,
+  };
   const open = async (role: "writer" | "reader"): Promise<PrismaClient> => {
-    const client = await openPrismaConnection(
-      config,
-      role,
-      options?.onStatement
-    );
+    const client = await openPrismaConnection(config, role, observers);
     opened.push(client);
     return client;
   };
@@ -523,11 +517,7 @@ export async function createDesktopPrisma(
           // grabs this slot. A transient open failure keeps the existing reader.
           let fresh: PrismaClient;
           try {
-            fresh = await openPrismaConnection(
-              config,
-              "reader",
-              options?.onStatement
-            );
+            fresh = await openPrismaConnection(config, "reader", observers);
           } catch {
             continue;
           }
@@ -809,8 +799,147 @@ export async function createDesktopPrisma(
       }
     };
 
+    // ISS-6337 — disk-full tally for this client lifetime, kept next to the
+    // write boundary that produces the failures (the layer with the actionable
+    // detail). Bounded by construction: two scalars, never a per-error map.
+    const storageExhaustion = createStorageExhaustionTally();
+
+    // ISS-12023 (PRD-785) — page-cache reclaim. `cache_size=-16384` gives every
+    // connection a 16 MiB page cache, and nothing ever gave it back: an idle
+    // reader loses its cache only as a side effect of the FEA-3132 recycle
+    // (reopening the connection drops it), and the WRITER is never recycled, so
+    // it held whatever the last backfill or aggregation touched for the life of
+    // the db-host. `PRAGMA shrink_memory` releases it on all of them without
+    // closing anything.
+    //
+    // Two triggers, both from the ticket: a quiet-store timer here, and the
+    // dispatcher's post-heavy-gate call into `shrinkMemory` (the dotted
+    // `prisma.shrinkMemory` op). The timer is what PRD-785's "minimal in the
+    // background" asks for; the heavy-gate call is what stops a whole-corpus scan
+    // from leaving its cache resident until the app happens to go idle.
+    //
+    // `writerInFlight` counts work the writer connection has accepted but not
+    // settled: writes the queue holds (queued ones included) AND reads issued
+    // through the exposed `client`, which is bound to this same connection and is
+    // the store's dominant read path. Shrinking under either frees almost nothing
+    // (the pages it holds are pinned or about to be re-read) while taking the
+    // writer's per-connection mutex, so a busy writer is simply skipped and the
+    // next pass takes it.
+    let writerInFlight = 0;
+    let lastStoreActivityAt = now();
+    // Fires at most once per idle stretch: the timer sets it, the next read or
+    // write clears it. Without it a store nobody touches pays a pragma per
+    // connection every interval forever, for nothing left to release.
+    let shrunkSinceActivity = false;
+    let shrinkTail: Promise<unknown> = Promise.resolve();
+    const markStoreActivity = (): void => {
+      lastStoreActivityAt = now();
+      shrunkSinceActivity = false;
+    };
+    // 1 when the pragma ran, 0 when the engine refused it. Swallowed for the same
+    // reason `fireWalTruncate` swallows a BUSY TRUNCATE: this is reclaim, never
+    // correctness, and the next pass retries. The count is what makes a chronic
+    // refusal visible to a test instead of silent (see `onShrinkMemory`).
+    const shrinkConnection = async (client: PrismaClient): Promise<number> => {
+      try {
+        await client.$executeRawUnsafe(SQLITE_SHRINK_MEMORY_SQL);
+        return 1;
+      } catch {
+        return 0;
+      }
+    };
+    const runOneShrinkPass = async (): Promise<void> => {
+      let shrunk = 0;
+      if (!closed && writerInFlight === 0) {
+        shrunk += await shrinkConnection(writerRaw);
+      }
+      for (let slot = 0; slot < readerRaws.length; slot++) {
+        if (closed || inFlight[slot] !== 0) {
+          continue;
+        }
+        // Claim the slot the same way `read` does, BEFORE the await: an idle slot
+        // is exactly what the recycler disconnects, and a recycle landing inside
+        // this pragma would reject it against a closed handle. Marking it
+        // in-flight makes the recycler skip the slot instead.
+        const reader = readerRaws[slot];
+        inFlight[slot] += 1;
+        try {
+          shrunk += await shrinkConnection(reader);
+        } finally {
+          inFlight[slot] -= 1;
+        }
+      }
+      options?.onShrinkMemory?.(shrunk);
+    };
+    // One pass at a time. Two exclusive ops back to back, or a heavy-gate op
+    // settling while an idle pass is suspended, would otherwise start a second
+    // pass and leave `shrinkTail` tracking only that one — `disconnect()` would
+    // then drain the second while `$disconnect`ing a reader the first is still
+    // inside, which is exactly the case the drain comment claims cannot happen.
+    // A second caller joins the running pass instead.
+    let activeShrinkPass: Promise<void> | null = null;
+    const runShrinkPass = (): Promise<void> => {
+      activeShrinkPass ??= runOneShrinkPass().finally(() => {
+        activeShrinkPass = null;
+      });
+      return activeShrinkPass;
+    };
+    // Every call the exposed `client` issues runs on the writer connection, so it
+    // is both store activity and writer work in flight. `write` keeps its own
+    // increment: a QUEUED write holds the writer before any statement exists.
+    const trackWriterActivity = <T>(run: () => T): T => {
+      writerInFlight += 1;
+      markStoreActivity();
+      let released = false;
+      const release = (): void => {
+        if (released) {
+          return;
+        }
+        released = true;
+        writerInFlight -= 1;
+        markStoreActivity();
+      };
+      try {
+        const result = run();
+        if (isThenable(result)) {
+          // The caller's own promise is returned unchanged, so its rejection and
+          // its error ownership are untouched; `release` cannot throw, so this
+          // observer promise cannot become an unhandled rejection.
+          result.then(release, release);
+          return result;
+        }
+        release();
+        return result;
+      } catch (error) {
+        release();
+        throw error;
+      }
+    };
+    const idleShrinkIntervalMs =
+      options?.idleShrinkIntervalMs ?? IDLE_SHRINK_MEMORY_INTERVAL_MS;
+    const shrinkTimer = setInterval(() => {
+      if (closed || shrunkSinceActivity) {
+        return;
+      }
+      const at = now();
+      // Re-anchor a clock that moved backward, for the reason `runWalMaintenance`
+      // does: the production clock is monotonic, but a regression would make
+      // every elapsed span negative and the gate below would never open again.
+      if (at < lastStoreActivityAt) {
+        lastStoreActivityAt = at;
+        return;
+      }
+      if (at - lastStoreActivityAt < idleShrinkIntervalMs) {
+        return;
+      }
+      shrunkSinceActivity = true;
+      shrinkTail = runShrinkPass().catch(() => undefined);
+    }, idleShrinkIntervalMs);
+    // Don't keep the process alive solely to reclaim memory.
+    shrinkTimer.unref?.();
+
     return {
-      client: writer,
+      client: wrapWriterActivity(writer, trackWriterActivity),
       // CONSUMING read: returns the window SINCE THE PREVIOUS CALL, then marks
       // that window consumed. The store-integrity probe is the single consumer
       // and calls this once per run, so each run sees "what happened since the
@@ -840,13 +969,47 @@ export async function createDesktopPrisma(
           lastAnomalyReason: anomalies > 0 ? lastWalProbeAnomalyReason : null,
         };
       },
+      // ISS-6337 — the same CONSUMING-read contract, for the same reason: a
+      // cleared disk must be able to read healthy again.
+      readStorageExhaustionHealth: () => storageExhaustion.read(),
       write: (fn, token, opts) => {
+        // ISS-12023: a write in the queue is store activity, and it holds the
+        // writer connection the shrink pass would otherwise take.
+        writerInFlight += 1;
+        markStoreActivity();
         const result = queue.run(() => fn(writer), token, opts);
         // Track the whole maintenance continuation (probe + any TRUNCATE) so
         // disconnect() can drain an in-flight PASSIVE probe, not just a fired
         // TRUNCATE. Swallow inside — maintenance failures never surface to the
         // write's own result.
-        walMaintenanceTail = result.then(maybeTruncateWal, maybeTruncateWal);
+        //
+        // ISS-6337 — the disk-full tally rides THIS handler rather than a second
+        // `result.catch(...)`. A separate handler's promise would be tracked by
+        // nothing, so a throw while classifying would surface as an unhandled
+        // rejection and take the app down: the exact crash this feature removes.
+        // Here the failure is already delivered, `walMaintenanceTail` already
+        // covers the continuation, and each write costs one fewer promise on the
+        // backfill hot path. Observation only — `result` is returned unchanged,
+        // so the caller's rejection and the engine's rollback are untouched.
+        walMaintenanceTail = result.then(
+          () => {
+            // A write that SUCCEEDED is the only proof the store can accept one,
+            // and so the only thing that clears the exhaustion latch — see
+            // `createStorageExhaustionTally`. Without this arm a probe that read
+            // one failure would report `recovered` off nothing but an idle
+            // interval, on a disk that is still full.
+            storageExhaustion.recordSuccess();
+            writerInFlight -= 1;
+            markStoreActivity();
+            return maybeTruncateWal();
+          },
+          (error: unknown) => {
+            storageExhaustion.record(error);
+            writerInFlight -= 1;
+            markStoreActivity();
+            return maybeTruncateWal();
+          }
+        );
         return result;
       },
       read: (fn) => {
@@ -857,15 +1020,33 @@ export async function createDesktopPrisma(
         readerCursor += 1;
         inFlight[slot] += 1;
         const reader = readers[slot];
+        // ISS-12023: a read is store activity, so it re-arms the idle gate.
+        markStoreActivity();
         return Promise.resolve()
           .then(() => fn(reader))
           .finally(() => {
             inFlight[slot] -= 1;
+            markStoreActivity();
           });
+      },
+      // ISS-12023: the dispatcher's post-heavy-gate reclaim. Tracked in
+      // `shrinkTail` on the same grounds as `walTruncateTail` — the caller
+      // fire-and-forgets it, so `disconnect()` is the only thing that can
+      // guarantee the pragma is not still in flight against a closing handle.
+      shrinkMemory: () => {
+        const pass = runShrinkPass();
+        shrinkTail = pass.catch(() => undefined);
+        return pass;
       },
       disconnect: async () => {
         closed = true;
         clearInterval(recycleTimer);
+        clearInterval(shrinkTimer);
+        // ISS-12023: a shrink pass suspended inside a connection's pragma must
+        // finish before that connection is disconnected under it. `closed` stops
+        // the pass from taking any FURTHER connection; this drains the one it is
+        // already on.
+        await shrinkTail;
         // Drain a recycle tick that may be paused mid-open: with `closed` set it
         // now closes its spare instead of swapping it into the pool, so no fresh
         // reader handle survives this teardown.
@@ -900,7 +1081,7 @@ const LIBSQL_FILE_URL_PREFIX = "file:";
 /** libSQL's in-memory URL, which has no `-wal` sidecar to measure. */
 const LIBSQL_MEMORY_URL_PATH = ":memory:";
 /** SQLite's write-ahead-log sidecar suffix, appended to the database path. */
-const WAL_SIDECAR_SUFFIX = "-wal";
+export const WAL_SIDECAR_SUFFIX = "-wal";
 /** Node's error code for "no such file or directory". */
 const MISSING_FILE_ERROR_CODE = "ENOENT";
 
@@ -1028,76 +1209,3 @@ export type WalProbeHealth = {
   /** The window's most recent failure mode, or null when the window was clean. */
   lastAnomalyReason: WalProbeAnomalyReason | null;
 };
-
-/**
- * ISS-5336: one statement exactly as a connection handed it to the driver
- * adapter — the SQL string Prisma emitted plus a copy of the bindings that go
- * with it. See {@link CreateDesktopPrismaOptions.onStatement}.
- */
-export type CapturedStatement = {
-  sql: string;
-  args: readonly unknown[];
-};
-
-/**
- * ISS-5336: wrap the libSQL adapter factory so every read statement a
- * connection issues is reported to `onStatement` before it runs. The adapter
- * boundary is the LAST place the statement is still the one Prisma built — a
- * capture here is the real SQL and the real bindings, whatever version of the
- * query engine produced them.
- *
- * A Proxy, not a subclass or a spread copy: the factory carries private fields,
- * so every forwarded member has to keep the original as its `this` (same reason
- * {@link wrapRawCoercion} is a Proxy). Only `connect` is intercepted; the
- * migration/shadow-db entry points pass straight through.
- */
-function withStatementSpy(
-  factory: PrismaLibSql,
-  onStatement: (statement: CapturedStatement) => void
-): PrismaLibSql {
-  return new Proxy(factory, {
-    get(target, prop) {
-      const original = Reflect.get(target, prop);
-      if (prop === "connect") {
-        const connect = original as (...args: unknown[]) => Promise<object>;
-        return async (...args: unknown[]) =>
-          spyOnAdapterQueries(await connect.call(target, ...args), onStatement);
-      }
-      if (typeof original === "function") {
-        return original.bind(target);
-      }
-      return original;
-    },
-  });
-}
-
-/**
- * Wrap one connected adapter so `queryRaw` reports its statement. Structurally
- * typed against the driver-adapter contract (`{ sql, args }`) rather than
- * importing `@prisma/driver-adapter-utils`, which this module does not depend
- * on directly. See {@link withStatementSpy}.
- */
-function spyOnAdapterQueries<T extends object>(
-  adapter: T,
-  onStatement: (statement: CapturedStatement) => void
-): T {
-  return new Proxy(adapter, {
-    get(target, prop) {
-      const original = Reflect.get(target, prop);
-      if (prop === "queryRaw" && typeof original === "function") {
-        const queryRaw = original as (query: CapturedStatement) => unknown;
-        return (query: CapturedStatement) => {
-          // Copy the bindings: `args` is the live array the driver is about to
-          // bind, and an observer must not be able to reach into the statement
-          // it is watching.
-          onStatement({ sql: query.sql, args: [...query.args] });
-          return queryRaw.call(target, query);
-        };
-      }
-      if (typeof original === "function") {
-        return original.bind(target);
-      }
-      return original;
-    },
-  });
-}

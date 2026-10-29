@@ -35,9 +35,15 @@ vi.mock("@/lib/artifact-adapters", () => ({
   branchArtifactToInfo: vi.fn(() => null),
 }));
 
+vi.mock("@/app/branches/branch-product-eligibility-service", () => ({
+  branchProductEligibilityService: { findByIds: vi.fn() },
+}));
+
 import { LinkType } from "@repo/api/src/types/artifact";
+import { BranchProductEligibility } from "@repo/api/src/types/branch-product-eligibility";
 import { withDb } from "@repo/database";
 import { artifactLinksService } from "@/app/artifact-links/service";
+import { branchProductEligibilityService } from "@/app/branches/branch-product-eligibility-service";
 import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import { branchArtifactToInfo } from "@/lib/artifact-adapters";
 import { buildPullRequestInfo } from "../../../__tests__/fixtures/pull-request-info";
@@ -45,6 +51,7 @@ import { buildPullRequestInfo } from "../../../__tests__/fixtures/pull-request-i
 const mockWithDb = withDb as unknown as Mock;
 const mockFindTargetLinks = artifactLinksService.findTargetLinks as Mock;
 const mockPrToInfo = branchArtifactToInfo as Mock;
+const mockEligibilityByIds = branchProductEligibilityService.findByIds as Mock;
 
 function buildBranchInfoForPr(info: ReturnType<typeof buildPullRequestInfo>) {
   return {
@@ -126,7 +133,10 @@ function mockPrArtifactsDb(
 }
 
 describe("documentPullRequestService.getDocumentPullRequests", () => {
-  beforeEach(() => vi.resetAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockEligibilityByIds.mockResolvedValue(new Map());
+  });
 
   it("returns [] when the artifact is not a document", async () => {
     mockWithDb.mockImplementationOnce((fn: (db: object) => unknown) =>
@@ -181,6 +191,9 @@ describe("documentPullRequestService.getDocumentPullRequests", () => {
     mockFindTargetLinks.mockResolvedValue([
       { id: "link-1", sourceId: "doc-1", targetId: "pr-art-1" },
     ]);
+    mockEligibilityByIds.mockResolvedValue(
+      new Map([["pr-art-1", BranchProductEligibility.Eligible]])
+    );
     const expectedInfo = buildPullRequestInfo({ repoFullName: "owner/repo" });
     mockPrToInfo.mockReturnValue(buildBranchInfoForPr(expectedInfo));
 
@@ -193,7 +206,10 @@ describe("documentPullRequestService.getDocumentPullRequests", () => {
     expect(result[0].repoFullName).toBe("owner/repo");
     expect(mockPrToInfo).toHaveBeenCalledWith(
       expect.objectContaining({ id: "pr-art-1" }),
-      expect.objectContaining({ externalLinkId: "pr-art-1" })
+      expect.objectContaining({
+        externalLinkId: "pr-art-1",
+        productEligibility: BranchProductEligibility.Eligible,
+      })
     );
   });
 
@@ -255,7 +271,10 @@ describe("documentPullRequestService.getDocumentPullRequests", () => {
 });
 
 describe("documentPullRequestService.getDocumentPullRequest", () => {
-  beforeEach(() => vi.resetAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockEligibilityByIds.mockResolvedValue(new Map());
+  });
 
   it("returns a PullRequestInfo with repoFullName from row.pullRequest.repository.fullName", async () => {
     const prRow = makePrArtifactRow({

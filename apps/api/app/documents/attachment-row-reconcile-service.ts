@@ -12,7 +12,7 @@ const ROW_PAGE_SIZE = 200;
  * Max rows walked by the discovery phase per run (the confirm phase is bounded
  * separately, by the deletion cap). Each candidate row costs one HeadObject, so
  * this bounds both the S3 call volume and the wall clock of a single sweep; a
- * large backlog converges across nightly runs instead of one oversized pass.
+ * large backlog converges across runs instead of one oversized pass.
  */
 const MAX_ROWS_SCANNED_PER_RUN = 2000;
 
@@ -34,8 +34,7 @@ const MAX_DELETIONS_PER_RUN = 500;
  * later observation means an upload that was mid-transfer during the first one
  * has landed (and cleared its mark) before deletion is ever considered.
  *
- * The gap is a floor, not the expected spacing: the sweep runs nightly, so in
- * practice the two observations are ~24h apart. One hour is simply more than any
+ * The gap is a floor, not the expected spacing. One hour is simply more than any
  * attachment PUT can survive — `MAX_ATTACHMENT_FILE_SIZE_BYTES` caps an
  * attachment at 10 MB, which completes in under an hour at any throughput that
  * would not have already timed out the connection.

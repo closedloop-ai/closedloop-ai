@@ -1,40 +1,68 @@
+import { POSTGRES_INT4_MAX } from "@closedloop-ai/loops-api/column-limits";
 import { z } from "zod";
 import {
   BranchLifecycleBoundaryKind,
   BranchParticipationKind,
   normalizeBranchParticipationKind,
-  normalizeRepoFullName,
-} from "./branch";
-import { GitHubPRState } from "./github-status";
+} from "./branch.ts";
+import { Priority } from "./common.ts";
+import { GitHubPRState } from "./github-status.ts";
+import { isPriority } from "./priority-contract.ts";
 import { syncedMonitoredSessionActivitySchema } from "./session-monitored-activity.ts";
-import { buildSlugPrefixAlternation } from "./slug-prefix";
-import { syncTimestampSchema } from "./sync-timestamp.ts";
-
-// --- Const-object enums (no `enum` keyword per codebase conventions) ---
-
-export const SessionPrRelationType = {
-  Created: "CREATED",
-  Referenced: "REFERENCED",
-  // FEA-3585: the session REVIEWED this PR (e.g. `gh pr view/diff/review <n>`)
-  // rather than authoring it. Distinct from REFERENCED (a mere prose mention)
-  // so review sessions are not shown with an authoring state and are attributed
-  // to the PR they actually reviewed, not one merely named in the transcript.
-  Reviewed: "REVIEWED",
-} as const;
-export type SessionPrRelationType =
-  (typeof SessionPrRelationType)[keyof typeof SessionPrRelationType];
+import {
+  allowsUniqueBranchPrFallback as allowsUniqueBranchPrFallbackContract,
+  classifySessionPrMetadata as classifySessionPrMetadataContract,
+  deriveSessionPrPurposeFromRelationTypes as deriveSessionPrPurposeFromRelationTypesContract,
+  hasSessionPrLinkKind as hasSessionPrLinkKindContract,
+  type PersistedSessionPrRef as PersistedSessionPrRefContract,
+  type SessionArtifactLinkKind as SessionArtifactLinkKindContract,
+  type SessionPrMetadataClassification as SessionPrMetadataClassificationContract,
+  type SessionPrPurpose as SessionPrPurposeContract,
+  type SessionPrRelationType as SessionPrRelationTypeContract,
+  SessionArtifactLinkKind as sessionArtifactLinkKindContract,
+  sessionPrIdentityKey as sessionPrIdentityKeyContract,
+  sessionPrIdentityMetadataSchema,
+  SessionPrMetadataClassificationKind as sessionPrMetadataClassificationKindContract,
+  SessionPrPurpose as sessionPrPurposeContract,
+  SESSION_PR_PURPOSE_LABELS as sessionPrPurposeLabelsContract,
+  sessionPrRefsFromMetadata as sessionPrRefsFromMetadataContract,
+  SessionPrRelationType as sessionPrRelationTypeContract,
+  sessionPrRelationTypeSchema,
+} from "./session-pr-link-metadata.ts";
+import { buildSlugPrefixAlternation } from "./slug-prefix.ts";
+import { storableSyncTimestampSchema } from "./sync-timestamp.ts";
 
 /**
- * Metadata link-kind values used on ArtifactLink rows created from session
- * projections. Values are persisted, so new producers and readers must import
- * these constants instead of duplicating string literals.
+ * Wire bound on `repositoryFullName` across every ref schema below. The desktop
+ * emitter (`sync-source.ts`) reads the same constant so a stored slug past it is
+ * dropped before the batch, never rejected by it (ISS-8882).
  */
-export const SessionArtifactLinkKind = {
-  SessionPr: "session_pr",
-  SessionBranch: "session_branch",
-} as const;
-export type SessionArtifactLinkKind =
-  (typeof SessionArtifactLinkKind)[keyof typeof SessionArtifactLinkKind];
+export const REPOSITORY_FULL_NAME_MAX_LENGTH = 200;
+/** Wire bound on the ignored `prUrl`; the producer clamps to it (ISS-8882). */
+export const SYNCED_PR_URL_MAX_LENGTH = 200;
+
+export const allowsUniqueBranchPrFallback =
+  allowsUniqueBranchPrFallbackContract;
+export const classifySessionPrMetadata = classifySessionPrMetadataContract;
+export const deriveSessionPrPurposeFromRelationTypes =
+  deriveSessionPrPurposeFromRelationTypesContract;
+export const hasSessionPrLinkKind = hasSessionPrLinkKindContract;
+export type PersistedSessionPrRef = PersistedSessionPrRefContract;
+export const SESSION_PR_PURPOSE_LABELS = sessionPrPurposeLabelsContract;
+export const SessionArtifactLinkKind = sessionArtifactLinkKindContract;
+export type SessionArtifactLinkKind = SessionArtifactLinkKindContract;
+export const sessionPrIdentityKey = sessionPrIdentityKeyContract;
+export type SessionPrMetadataClassification =
+  SessionPrMetadataClassificationContract;
+export const SessionPrMetadataClassificationKind =
+  sessionPrMetadataClassificationKindContract;
+export const SessionPrPurpose = sessionPrPurposeContract;
+export type SessionPrPurpose = SessionPrPurposeContract;
+export const SessionPrRelationType = sessionPrRelationTypeContract;
+export type SessionPrRelationType = SessionPrRelationTypeContract;
+export const sessionPrRefsFromMetadata = sessionPrRefsFromMetadataContract;
+
+// --- Const-object enums (no `enum` keyword per codebase conventions) ---
 
 /**
  * Provenance marker stamped on session→artifact link metadata so readers can
@@ -46,26 +74,6 @@ export const SessionArtifactLinkMetadataSource = {
 } as const;
 export type SessionArtifactLinkMetadataSource =
   (typeof SessionArtifactLinkMetadataSource)[keyof typeof SessionArtifactLinkMetadataSource];
-
-export const SessionPrPurpose = {
-  Authored: "authored",
-  // FEA-3585: the session reviewed this PR (did not author it). Ranked between
-  // Authored and Referenced by chooseStrongerSessionPrPurpose — a review is a
-  // stronger, deliberate relationship than a bare prose mention (Referenced),
-  // but must NOT be counted as authoring output (preserves FEA-3584 gating).
-  Reviewed: "reviewed",
-  Referenced: "referenced",
-  Unknown: "unknown",
-} as const;
-export type SessionPrPurpose =
-  (typeof SessionPrPurpose)[keyof typeof SessionPrPurpose];
-
-export const SESSION_PR_PURPOSE_LABELS: Record<SessionPrPurpose, string> = {
-  [SessionPrPurpose.Authored]: "Authored PR",
-  [SessionPrPurpose.Reviewed]: "Reviewed PR",
-  [SessionPrPurpose.Referenced]: "Referenced PR",
-  [SessionPrPurpose.Unknown]: "Unknown PR purpose",
-};
 
 export const ArtifactRefMethod = {
   McpToolCall: "mcp_tool_call",
@@ -98,9 +106,9 @@ export type ArtifactRefMethod =
 
 /**
  * ISS-5764: the methods produced by the extractor's prose-mention pass — the
- * weakest evidence any ref can carry. Two consumers must treat them specially,
- * and BOTH are cases where admitting a mention as ordinary evidence would
- * DELETE a real PR rather than merely add a weak one:
+ * weakest evidence any ref can carry. Consumers treat them specially where
+ * admitting a mention as ordinary repository or PR evidence would overstate
+ * what the session actually worked on:
  *
  *  1. **The desktop producer budget** (`artifact-ref-budget.ts`) sheds these
  *     first, so a session that mentions hundreds of PRs cannot evict the
@@ -116,11 +124,56 @@ export type ArtifactRefMethod =
  *     documents as "absent evidence is incomplete, not exculpatory". The
  *     mention still reaches the cloud as a `pull_request` artifactRef, so the
  *     link is not lost; only the adjudicating carrier declines to speak for it.
+ *  3. **Observed-repository discovery** ignores them, so a dependency or fixture
+ *     PR named in transcript prose does not become evidence that the org works
+ *     in that repository.
  */
 export const PROSE_MENTION_REF_METHODS: ReadonlySet<string> = new Set<string>([
   ArtifactRefMethod.PrMentionInProse,
   ArtifactRefMethod.BranchMentionInProse,
 ]);
+
+/**
+ * ISS-5823: is this persisted PR identity backed only by a prose mention?
+ *
+ * A row written before ISS-5823 carries no `method`, and every such row came
+ * from the command-derived `prRefs` carrier — so an absent method is NOT
+ * "unknown, treat as weak", it is a positive statement that the identity is not
+ * prose-derived. Reading it the other way would retroactively evict every
+ * historical PR from the metric populations this discriminator gates.
+ */
+export function isProseDerivedSessionPrRef(
+  ref: Pick<PersistedSessionPrRef, "method">
+): boolean {
+  return ref.method !== undefined && PROSE_MENTION_REF_METHODS.has(ref.method);
+}
+
+/**
+ * The identities a link declares on evidence STRONGER than a prose mention.
+ *
+ * The sibling of {@link sessionPrRefsFromMetadata}, and the one every metric- or
+ * cost-bearing reader must use: a link that mixes a command-derived ref with a
+ * prose one keeps the strong `linkKind`, so the link-level predicate alone
+ * cannot separate them and the per-ref discriminator is what does.
+ */
+export function commandDerivedSessionPrRefsFromMetadata(
+  metadata: unknown
+): PersistedSessionPrRef[] {
+  return sessionPrRefsFromMetadata(metadata).filter(
+    (ref) => !isProseDerivedSessionPrRef(ref)
+  );
+}
+
+/**
+ * True when EVERY identity this link declares is prose-derived — the link-level
+ * twin of {@link isProseDerivedSessionPrRef}, derived from the refs rather than
+ * read off `linkKind` so the two gates cannot disagree. A link declaring no
+ * identity at all is not prose-derived (it is the legacy unique-branch shape).
+ */
+export function isProseDerivedSessionPrLink(metadata: unknown): boolean {
+  const refs = sessionPrRefsFromMetadata(metadata);
+  return refs.length > 0 && refs.every(isProseDerivedSessionPrRef);
+}
 
 export const ArtifactRefTargetKind = {
   ClosedloopArtifact: "closedloop_artifact",
@@ -222,16 +275,26 @@ const branchLifecycleBoundaryKindSchema = z
 
 export const syncedBranchLifecycleEventSchema = z.object({
   kind: branchLifecycleBoundaryKindSchema,
-  observedAt: syncTimestampSchema.optional(),
-  evidenceId: z.string().min(1).max(500).optional(),
+  observedAt: storableSyncTimestampSchema.optional(),
+  evidenceId: z.string().min(1).optional(),
 });
 export type SyncedBranchLifecycleEvent = z.infer<
   typeof syncedBranchLifecycleEventSchema
 >;
 
-const syncedBranchLifecycleEventsSchema = z
-  .array(syncedBranchLifecycleEventSchema)
-  .max(MAX_SYNCED_BRANCH_LIFECYCLE_EVENTS);
+// ISS-8070: unbounded — these live in `artifact_links.metadata` (jsonb) and key
+// no index, so the bound only cost the whole batch parse.
+// ISS-8247 removed the cloud-side newest-N merge window that used to clip this
+// accepted set back to `MAX_SYNCED_BRANCH_LIFECYCLE_EVENTS` in
+// `artifact-links/shared.ts`, so the stored set is now the accepted set. That
+// constant's ONLY remaining consumer is the desktop envelope validity predicate
+// in `apps/desktop/src/main/database/branch-activity-sql.ts`, which classifies
+// an over-count carrier as an invalid envelope and degrades that branch's local
+// activity evidence to `Partial` — it NAMES the degradation rather than
+// acknowledging a store it did not make, so it is deliberately left in place.
+const syncedBranchLifecycleEventsSchema = z.array(
+  syncedBranchLifecycleEventSchema
+);
 
 const artifactRefRelationSchema = z.enum([
   ArtifactRefRelation.Input,
@@ -247,30 +310,37 @@ const branchParticipationKindSchema = z.enum([
   BranchParticipationKind.Reviewed,
 ]);
 
-const sessionPrRelationTypeSchema = z.enum([
-  SessionPrRelationType.Created,
-  SessionPrRelationType.Referenced,
-  SessionPrRelationType.Reviewed,
-]);
+// Membership tests, not `safeParse`: a failed parse builds a `ZodError` for
+// every absent field, and that dominated the per-link parse cost of every
+// session-link reader (ISS-11895).
+const artifactRefRelations = new Set<unknown>(
+  artifactRefRelationSchema.options
+);
+const branchParticipationKinds = new Set<unknown>(
+  branchParticipationKindSchema.options
+);
 
-const persistedSessionPrRelationTypesSchema = z
-  .array(z.unknown())
-  .transform((values) =>
-    values.flatMap((value) => {
-      const parsed = sessionPrRelationTypeSchema.safeParse(value);
-      return parsed.success ? [parsed.data] : [];
-    })
-  );
+export const persistedArtifactRefRelationSchema = z.preprocess(
+  (value) => (artifactRefRelations.has(value) ? value : undefined),
+  artifactRefRelationSchema.optional()
+);
 
-const persistedArtifactRefRelationSchema = z.preprocess((value) => {
-  const parsed = artifactRefRelationSchema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
-}, artifactRefRelationSchema.optional());
+const persistedBranchParticipationKindSchema = z.preprocess(
+  (value) => (branchParticipationKinds.has(value) ? value : undefined),
+  branchParticipationKindSchema.optional()
+);
 
-const persistedBranchParticipationKindSchema = z.preprocess((value) => {
-  const parsed = branchParticipationKindSchema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
-}, branchParticipationKindSchema.optional());
+/**
+ * ISS-10332: a desktop-set priority on the sync payload (a session, or a branch
+ * ref). A value this contract does not know — a newer desktop's member, a
+ * `null`, anything else — degrades to ABSENT rather than failing the batch: the
+ * whole sync batch is one `safeParse`, and an absent priority is "no claim",
+ * which the cloud already tolerates.
+ */
+export const syncedPrioritySchema = z.preprocess(
+  (value) => (isPriority(value) ? value : undefined),
+  z.enum(Priority).optional()
+);
 
 /**
  * A ClosedLoop slug ref (PRD/FEA/PLN/…). This is the only kind older Desktop
@@ -280,11 +350,15 @@ const persistedBranchParticipationKindSchema = z.preprocess((value) => {
  */
 const closedloopArtifactRefSchema = z.object({
   kind: z.literal(ArtifactRefTargetKind.ClosedloopArtifact),
+  // ISS-8069 owns `slug`: it resolves `artifacts.slug`, keyed by
+  // @@unique([organizationId, slug]). Dropping the bound before that index is
+  // safe would trade a legible 400 for a poison batch retried forever.
   slug: z.string().regex(CLOSEDLOOP_SLUG_RE).max(200),
   isPrimary: z.boolean(),
-  method: z.string().min(1).max(200),
+  // ISS-8070: `method` lands only in `artifact_links.metadata` (jsonb).
+  method: z.string().min(1),
   relation: artifactRefRelationSchema.optional(),
-  observedAt: syncTimestampSchema.optional(),
+  observedAt: storableSyncTimestampSchema.optional(),
 });
 
 /**
@@ -296,12 +370,21 @@ const closedloopArtifactRefSchema = z.object({
  */
 const branchArtifactRefSchema = z.object({
   kind: z.literal(ArtifactRefTargetKind.Branch),
-  repositoryFullName: z.string().min(1).max(200),
+  // ISS-8069 owns this pair: `ensureBranchArtifactRow` writes both into
+  // `branch_details`, keyed by
+  // @@unique([organizationId, repositoryFullName, branchName]).
+  repositoryFullName: z.string().min(1).max(REPOSITORY_FULL_NAME_MAX_LENGTH),
   branchName: z.string().min(1).max(300),
-  method: z.string().min(1).max(200),
+  // ISS-8070: the one column-backed `method`. It lands in
+  // `artifact_links.branch_participation_method`, widened VARCHAR(200) → TEXT
+  // by the accompanying migration; that column keys no index.
+  method: z.string().min(1),
   relation: artifactRefRelationSchema,
   branchParticipation: persistedBranchParticipationKindSchema,
-  observedAt: syncTimestampSchema.optional(),
+  // ISS-10332: seeds the cloud branch's priority only while it holds none;
+  // omitted by an older desktop and whenever the desktop holds none.
+  priority: syncedPrioritySchema,
+  observedAt: storableSyncTimestampSchema.optional(),
   branchLifecycleEvents: syncedBranchLifecycleEventsSchema.optional(),
   monitoredSessionActivity: syncedMonitoredSessionActivitySchema.optional(),
   /** Internal transport-only target that must not create generic Session links. */
@@ -341,24 +424,61 @@ const pullRequestStateSchema = z.enum([
   GitHubPRState.Closed,
 ]);
 
-/** Postgres int4 max — the `PullRequestDetail` LOC columns are Prisma `Int`. */
-export const PR_INT_MAX = 2_147_483_647;
+/**
+ * Postgres int4 max — `PullRequestDetail.number` and LOC columns are Prisma `Int`.
+ *
+ * Derived rather than restated: ISS-8564 needed the same ceiling in
+ * `@closedloop-ai/loops-api`, which cannot import this package without a cycle, so the
+ * literal lives there and this keeps the PR-domain name its callers use.
+ */
+export const PR_INT_MAX = POSTGRES_INT4_MAX;
+
+const PR_NUMBER_DECIMAL_RE = /^\d+$/;
+const prNumberSchema = z.number().int().positive().max(PR_INT_MAX);
 
 const pullRequestArtifactRefSchema = z.object({
   kind: z.literal(ArtifactRefTargetKind.PullRequest),
-  repositoryFullName: z.string().min(1).max(200),
-  prNumber: z.number().int().positive(),
-  method: z.string().min(1).max(200),
+  // ISS-8069 owns this: the PR lane resolves its branch through the same
+  // `ensureBranchArtifactRow`, so the value reaches the `branch_details` unique
+  // index even though `pull_request_details.repository_full_name` is TEXT.
+  repositoryFullName: z.string().min(1).max(REPOSITORY_FULL_NAME_MAX_LENGTH),
+  prNumber: prNumberSchema,
+  // ISS-8070: `method` lands only in `artifact_links.metadata` (jsonb).
+  method: z.string().min(1),
   relation: artifactRefRelationSchema,
-  observedAt: syncTimestampSchema.optional(),
+  observedAt: storableSyncTimestampSchema.optional(),
   // The PR's HEAD branch — the cloud nests `PullRequestDetail` under this
   // branch's D2 artifact `(organizationId, repositoryFullName, branchName)`.
   // Optional: absent from older parses, in which case the cloud defers the PR
   // until the branch is resolvable (same late-target tolerance as branch refs).
+  // ISS-8069 owns this too — same `branch_details` unique index as above.
   branchName: z.string().min(1).max(300).optional(),
+  // ISS-8175: the PR's BASE ref as `gh` named it when the desktop OPENED this
+  // PR. Distinct evidence from a webhook's base (current at read time): this one
+  // is read once, locally, and can be stale by the time it syncs — hence its own
+  // `BranchBaseBranchSource.DesktopPullRequestBase`, ranked below HarnessInput.
+  // Optional and omission-preserving in both directions: an installed desktop
+  // that predates this field simply never sends it, and the cloud read then
+  // serves the same honest unknown it serves today (ISS-8155). Only a PR the
+  // desktop OPENED can originate one; it then rides that PR's artifact row, so a
+  // later session referencing the SAME PR carries the value this machine already
+  // read. A PR no session here created never gets one.
+  //
+  // `.catch(undefined)` for the same reason `state` below carries it: this whole
+  // batch is one `safeParse`, so a bound that REJECTS would 400 up to 200
+  // sessions on one bad value and keep 400ing them on every retry. The column is
+  // unbounded TEXT with no index, so nothing downstream holds a premise the
+  // `.max()` guarantees — degrade to absent, never reject.
+  //
+  // `.trim()` BEFORE `.min(1)` so a whitespace-only value takes that same absent
+  // path rather than becoming a branch base no git ref can ever match: this
+  // value outranks `McpInput`, so a blank one would pin the branch until a
+  // higher-priority source arrived.
+  baseRef: z.string().trim().min(1).max(300).optional().catch(undefined),
   // --- PR facts (FEA-2732), all optional enrichment; each maps to a
   // PullRequestDetail column the cloud upserts (webhook-wins / sole-source). ---
-  title: z.string().max(1024).optional(),
+  // ISS-8070: `pull_request_details.title` is unindexed TEXT, so unbounded.
+  title: z.string().optional(),
   // No client-supplied URL: `htmlUrl` is derived server-side from the trusted
   // repo + number (mirroring the sibling `prUrl` anti-forgery pattern) so a
   // compromised producer cannot plant an arbitrary href.
@@ -370,8 +490,14 @@ const pullRequestArtifactRefSchema = z.object({
   additions: z.number().int().nonnegative().max(PR_INT_MAX).optional(),
   deletions: z.number().int().nonnegative().max(PR_INT_MAX).optional(),
   changedFiles: z.number().int().nonnegative().max(PR_INT_MAX).optional(),
-  mergedAt: syncTimestampSchema.optional(),
-  closedAt: syncTimestampSchema.optional(),
+  // `storable…`, not the bare `syncTimestampSchema`, because these two reach a
+  // Postgres `timestamp`: an instant the column cannot hold degrades to absent
+  // instead of rejecting, for the reason `baseRef` and `state` above carry
+  // `.catch(undefined)` — the batch is one `safeParse`, so rejecting would 400
+  // up to 200 sessions on one bad date. Both write sites branch on
+  // `!== undefined`. Full rationale on the schema itself.
+  mergedAt: storableSyncTimestampSchema.optional(),
+  closedAt: storableSyncTimestampSchema.optional(),
   branchLifecycleEvents: syncedBranchLifecycleEventsSchema.optional(),
   monitoredSessionActivity: syncedMonitoredSessionActivitySchema.optional(),
   /** Internal transport-only target that must not create generic Session links. */
@@ -413,7 +539,7 @@ export const COMMIT_SHA_PATTERN = /^[0-9a-f]{7,40}$/;
  */
 const commitArtifactRefSchema = z.object({
   kind: z.literal(ArtifactRefTargetKind.Commit),
-  repositoryFullName: z.string().min(1).max(200),
+  repositoryFullName: z.string().min(1).max(REPOSITORY_FULL_NAME_MAX_LENGTH),
   branchName: z.string().min(1).max(300),
   // 7–40 lowercase hex (see COMMIT_SHA_PATTERN for the shared rule / rationale).
   sha: z.string().regex(COMMIT_SHA_PATTERN, "invalid_commit_sha"),
@@ -421,7 +547,7 @@ const commitArtifactRefSchema = z.object({
   // truncates to this bound before emitting so one long message can never
   // reject the whole batch (see MAX_SYNCED_ARTIFACT_REFS rationale).
   message: z.string().max(MAX_SYNCED_COMMIT_MESSAGE_LENGTH).optional(),
-  committedAt: syncTimestampSchema.optional(),
+  committedAt: storableSyncTimestampSchema.optional(),
   // Bounded to int4 so a corrupt/oversized count can't overflow the DB write
   // (mirrors pullRequestArtifactRefSchema's additions/deletions/changedFiles).
   linesAdded: z.number().int().nonnegative().max(PR_INT_MAX).optional(),
@@ -429,7 +555,7 @@ const commitArtifactRefSchema = z.object({
   filesChanged: z.number().int().nonnegative().max(PR_INT_MAX).optional(),
   method: z.string().min(1).max(200),
   relation: artifactRefRelationSchema,
-  observedAt: syncTimestampSchema.optional(),
+  observedAt: storableSyncTimestampSchema.optional(),
 });
 
 /**
@@ -450,12 +576,20 @@ export function isKnownArtifactRefKind(kind: unknown): boolean {
 }
 
 /**
- * FEA-2711 / ISS-4448+4449: the CLOUD wire-schema validator cap on a session's
- * `artifactRefs` array (the shared non-`prRefs` channel: `closedloop_artifact`
- * doc/slug refs, `branch` refs, `pull_request` refs, and `commit` refs).
+ * FEA-2711 / ISS-4448+4449: the historical CLOUD wire-schema validator cap on a
+ * session's `artifactRefs` array (the shared non-`prRefs` channel:
+ * `closedloop_artifact` doc/slug refs, `branch` refs, `pull_request` refs, and
+ * `commit` refs).
  *
- * ISS-4448+4449 raised this 100 → 500, mirroring the sibling
- * `MAX_SYNCED_SESSION_PR_REFS` (ISS-4445) receive-side raise. The old value of
+ * ISS-8051 REMOVED that `.max()`: the cloud no longer rejects an over-cap
+ * `artifactRefs` array, so nothing on the receive side enforces this number any
+ * more. It survives as a producer-side reference bound — notably the desktop's
+ * `SESSION_DOCUMENT_LINK_SCAN_LIMIT` — and the raise narrative below is kept
+ * because it explains the value, not because the validator still applies it.
+ *
+ * ISS-4448+4449 raised this 100 → 500, mirroring the receive-side raise the
+ * synced PR-ref channel got at the same time (ISS-4445; that channel's bounds
+ * were since removed outright by ISS-8051 and ISS-9859). The old value of
  * 100 was a single shared budget: on a session with, say, 88 PR refs ahead of
  * 23 document refs, the desktop producer's slice dropped 11 real document links
  * before they ever reached the cloud, and `linkedArtifactsTotal` (a post-persist
@@ -477,7 +611,8 @@ export const MAX_SYNCED_ARTIFACT_REFS = 500 as const;
  * (`MAX_SYNCED_ARTIFACT_REFS`, now 500) above.
  *
  * Why the producer stays at 100 while the validator rises to 500 (version-skew,
- * per AGENTS.md cross-repo rules, identical to `MAX_SYNCED_SESSION_PR_REFS`):
+ * per AGENTS.md cross-repo rules). This is a SEPARATE bound from the synced
+ * PR-ref channel, which no longer has one — do not conflate the two:
  *   - New desktop → OLD cloud: an old cloud still enforces `.max(100)`. If a new
  *     desktop sliced the total to 500 it could emit up to 500 refs, and the old
  *     server would reject the ENTIRE batch (up to 200 sessions) as
@@ -507,45 +642,6 @@ export const MAX_SYNCED_ARTIFACT_REFS_PRODUCER = 100 as const;
  * nothing they can't recover on the PR side.
  */
 export const MIN_SYNCED_DOCUMENT_REFS_PRODUCER = 50 as const;
-/**
- * ISS-4445 (PR1/4 of PLN-1536): the CLOUD wire-schema validator cap — raised
- * 100 → 500 so the server *accepts* a large session's real linked PRs instead of
- * rejecting the whole batch at ingest. This is the receive-side ceiling only;
- * the desktop PRODUCER slice bound is the separate, deliberately lower
- * `MAX_SYNCED_SESSION_PR_REFS_PRODUCER` below — see it for why the two differ.
- *
- * Cross-repo version-skew safety: raising the *validator* max is additive and
- * backward compatible — a payload that validated before (≤100 refs) still
- * validates against the higher `.max()`. Never reject an old ≤100 payload.
- *
- * A full chunked PR-ref sync (unbounded PR counts) is the deferred follow-up
- * (PLN-1536 later PRs); this constant raise is the smallest correct receive-side
- * fix.
- */
-export const MAX_SYNCED_SESSION_PR_REFS = 500 as const;
-/**
- * ISS-4445 (PR1/4 of PLN-1536): the DESKTOP PRODUCER cap — the bound the desktop
- * slices `prRefs` (and the derived legacy `prs`) to BEFORE emitting a sync
- * payload. Intentionally still 100 in PR1, decoupled from the raised validator
- * cap (`MAX_SYNCED_SESSION_PR_REFS`, now 500) above.
- *
- * Why the producer stays at 100 while the validator rises to 500 (version-skew,
- * per AGENTS.md cross-repo rules):
- *   - New desktop → OLD cloud: an old cloud still enforces `.max(100)`. If a new
- *     desktop sliced to 500 it would emit up to 500 refs, and the old server
- *     would reject the ENTIRE batch (up to 200 sessions) as `validation_failed`
- *     and the client would dead-letter every session in it after retries. Keeping
- *     the producer at 100 means a new desktop never emits a payload an old cloud
- *     can't accept — the raise is purely receive-side and deploy-order-safe.
- *   - Old desktop → new cloud: unchanged (old desktop already slices to ≤100; the
- *     raised validator accepts it).
- * A later PLN-1536 PR raises this producer bound (and adds the chunked/batched
- * PR-ref sync those higher counts require) only once the raised-cap cloud is
- * universally deployed, so no live client can talk to a cloud that still caps
- * at 100. Until then this stays 100 by design.
- */
-export const MAX_SYNCED_SESSION_PR_REFS_PRODUCER = 100 as const;
-
 /**
  * A session→artifact ref in the sync contract. Backward compatible: a ref with
  * no explicit `kind` is treated as a `closedloop_artifact` slug ref (the shape
@@ -580,11 +676,19 @@ export type SyncedPullRequestArtifactRef = z.infer<
 export type SyncedCommitArtifactRef = z.infer<typeof commitArtifactRefSchema>;
 
 export const syncedSessionPrRefSchema = z.object({
-  repositoryFullName: z.string().min(1).max(200),
-  prNumber: z.number().int().positive(),
+  repositoryFullName: z.string().min(1).max(REPOSITORY_FULL_NAME_MAX_LENGTH),
+  prNumber: prNumberSchema,
   // Accepted for backward compatibility but ignored — the server derives the
   // canonical prUrl from repositoryFullName + prNumber to prevent forgery.
-  prUrl: z.string().url().max(200).optional(),
+  // `.catch(undefined)` because the batch is one `safeParse` (see `baseRef`):
+  // an over-long or malformed value the server discards anyway must degrade to
+  // absent, not 400 up to 200 sessions on every retry (ISS-8882).
+  prUrl: z
+    .string()
+    .url()
+    .max(SYNCED_PR_URL_MAX_LENGTH)
+    .optional()
+    .catch(undefined),
   relationType: sessionPrRelationTypeSchema,
   branchLifecycleEvents: syncedBranchLifecycleEventsSchema.optional(),
 });
@@ -592,19 +696,21 @@ export type SyncedSessionPrRef = z.infer<typeof syncedSessionPrRefSchema>;
 
 export const sessionPrLinkMetadataSchema = z
   .object({
-    linkKind: z
-      .enum([
-        SessionArtifactLinkKind.SessionPr,
-        SessionArtifactLinkKind.SessionBranch,
-      ])
-      .optional(),
-    relationTypes: persistedSessionPrRelationTypesSchema.optional(),
     confidence: z.number().min(0).max(1).optional(),
-    method: z.string().min(1).max(200).optional(),
+    // ISS-8070: unbounded, and it MUST stay that way. This is a
+    // PERSISTED-READ validator over `artifact_links.metadata` (jsonb), not a
+    // wire guard: the branch writer already stored this `method`, so a bound
+    // here rejects a value the ingest lane accepted. Because the parse is
+    // whole-object, that failure returns `null` from
+    // `parseSessionPrLinkMetadata` and takes every SIBLING field with it —
+    // `branchLifecycleEvents`, `relation`, `branchParticipation` — for all six
+    // consumers of the parser.
+    method: z.string().min(1).optional(),
     relation: persistedArtifactRefRelationSchema,
     branchParticipation: persistedBranchParticipationKindSchema,
     branchLifecycleEvents: syncedBranchLifecycleEventsSchema.optional(),
   })
+  .extend(sessionPrIdentityMetadataSchema.shape)
   .passthrough();
 export type SessionPrLinkMetadata = z.infer<typeof sessionPrLinkMetadataSchema>;
 
@@ -692,17 +798,10 @@ export function deriveSessionPrPurposeFromMetadata(
   ) {
     return SessionPrPurpose.Unknown;
   }
-  const relationTypes = metadata.relationTypes ?? [];
-  if (relationTypes.includes(SessionPrRelationType.Created)) {
-    return SessionPrPurpose.Authored;
-  }
-  if (relationTypes.includes(SessionPrRelationType.Reviewed)) {
-    return SessionPrPurpose.Reviewed;
-  }
-  if (relationTypes.includes(SessionPrRelationType.Referenced)) {
-    return SessionPrPurpose.Referenced;
-  }
-  return SessionPrPurpose.Unknown;
+  return deriveSessionPrPurposeFromRelationTypes(
+    metadata.relationTypes ?? [],
+    metadata.confidence
+  );
 }
 
 // --- Cloud attribution-join query DTO ---
@@ -798,30 +897,6 @@ export type SessionPrEvidence = {
   authoredIdentities: Set<string>;
   authoredLegacyIdentities: Set<string>;
 };
-
-/**
- * The canonical repo-scoped PR identity `<repo>#<n>`, or the repo-unknown
- * `legacy#<n>` twin when the source carries no repository.
- *
- * The repo side goes through {@link normalizeRepoFullName} (ISS-4768), not a
- * bare lowercase: a producer can hand us `acme/web.git` or `/acme/web/` for the
- * same repository as the stored `acme/web`, and keying on the raw string would
- * mint two identities for one PR — so a genuinely authored PR would fail to
- * match its own blob entry and be dropped by the gate below.
- */
-export function sessionPrIdentityKey(
-  repositoryFullName: string | null | undefined,
-  prNumber: number | string
-): string {
-  const trimmedRepository = repositoryFullName?.trim();
-  const normalizedRepository = trimmedRepository
-    ? normalizeRepoFullName(trimmedRepository)
-    : null;
-  const normalizedNumber = String(prNumber).trim();
-  return normalizedRepository
-    ? `${normalizedRepository}#${normalizedNumber}`
-    : `legacy#${normalizedNumber}`;
-}
 
 /** Fold normalized evidence records into the identity sets the gate consults. */
 export function collectSessionPrEvidence(
@@ -996,4 +1071,25 @@ export function isHigherPrecedenceArtifactRole(
     (ARTIFACT_ROLE_PRECEDENCE[candidate] ?? 99) <
     (ARTIFACT_ROLE_PRECEDENCE[existing] ?? 99)
   );
+}
+
+/** Valid pull request number domain for Prisma `Int` identity columns. */
+export function isValidPullRequestNumber(prNumber: number): boolean {
+  return Number.isInteger(prNumber) && prNumber > 0 && prNumber <= PR_INT_MAX;
+}
+
+/** Parse a canonical decimal PR number without JavaScript prefix coercion. */
+export function parsePullRequestNumber(value: number | string): number | null {
+  const prNumber =
+    typeof value === "number" ? value : parseDecimalPullRequestNumber(value);
+  return prNumber !== null && isValidPullRequestNumber(prNumber)
+    ? prNumber
+    : null;
+}
+
+function parseDecimalPullRequestNumber(value: string): number | null {
+  if (!PR_NUMBER_DECIMAL_RE.test(value)) {
+    return null;
+  }
+  return Number(value);
 }

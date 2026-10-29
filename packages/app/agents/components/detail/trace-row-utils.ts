@@ -7,8 +7,9 @@ import { transcriptIdentityMatchesInvocationAnchor } from "../../lib/transcript-
  *
  * Extracted from `session-trace.tsx` (ISS-4767) so the event row could move to
  * its own module without either duplicating these or importing back into the
- * trace shell — a cycle. They are pure and row-agnostic: a clock label, the
- * invocation-anchor data attribute, and the event dot's modifier class.
+ * trace shell — a cycle. They are pure and row-agnostic: a clock label and the
+ * invocation-anchor data attribute. (The event dot's class moved to
+ * `SessionTimelineMarkSwatch` in ISS-12117, so it matches the timeline rail.)
  */
 
 /** `10:04am` / `10am` for a trace timestamp, or `null` when unrenderable. */
@@ -48,15 +49,4 @@ export function invocationAnchorTarget(
   return transcriptIdentityMatchesInvocationAnchor(identity, anchor)
     ? "true"
     : undefined;
-}
-
-/** Modifier class for an event row's status dot; blue is the unstyled default. */
-export function getEventDotClassName(dot: "b" | "g" | "r"): string | null {
-  if (dot === "g") {
-    return "d-g";
-  }
-  if (dot === "r") {
-    return "d-r";
-  }
-  return null;
 }

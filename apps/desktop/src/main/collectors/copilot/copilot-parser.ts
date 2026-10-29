@@ -14,8 +14,15 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import readline from "node:readline";
 import { isRecord } from "../../../shared/type-guards.js";
+import {
+  createParseQualityScan,
+  readJsonlLinesWithQuality,
+} from "../engine/parse-quality-scan.js";
+import {
+  fileCreatedAtFromStats,
+  stampFileCreatedAt,
+} from "../file-created-at.js";
 import { coldReadGate } from "../parsing/cold-read-gate.js";
 import {
   collectArtifacts,
@@ -28,16 +35,14 @@ import {
   toIso,
   truncateText,
 } from "../parsing/parser-utils.js";
-import type {
-  NormalizedApiError,
-  NormalizedMessage,
-  NormalizedSession,
-  NormalizedTokenRecord,
-  NormalizedToolUse,
-  NormalizedTurnDuration,
-} from "../types.js";
+import type { NormalizedSession } from "../types.js";
 import { createNormalizedSession } from "../types.js";
-import type { TokenFields } from "./copilot-token-fields.js";
+import {
+  CLI_EVENT_HANDLERS,
+  type CliEventAccumulator,
+} from "./copilot-cli-events.js";
+import type { BaseSessionAccumulator } from "./copilot-session-accumulator.js";
+import { extractText } from "./copilot-text.js";
 import {
   addTokenFields,
   hasTokenFields,
@@ -166,58 +171,6 @@ type ChatEntry = {
   /** CR-3: Tool result content keyed by tool call index/name. */
   toolResults?: Array<{ name: string; content: unknown; isError?: boolean }>;
 };
-
-/** CR-1: Best-effort extraction of displayable text from a Copilot message payload. */
-function extractText(payload: unknown): string | null {
-  if (payload == null) {
-    return null;
-  }
-  if (typeof payload === "string") {
-    return payload;
-  }
-  if (typeof payload !== "object") {
-    return null;
-  }
-  const obj = payload as Record<string, unknown>;
-  // Direct text/content fields
-  for (const key of [
-    "text",
-    "content",
-    "markdown",
-    "body",
-    "value",
-    "message",
-  ]) {
-    const v = obj[key];
-    if (typeof v === "string" && v.trim().length > 0) {
-      return v;
-    }
-  }
-  // Array of content parts (OpenAI-style)
-  if (Array.isArray(obj.content)) {
-    const parts = obj.content
-      .map((p: unknown) => {
-        if (typeof p === "string") {
-          return p;
-        }
-        if (p && typeof p === "object") {
-          const po = p as Record<string, unknown>;
-          if (typeof po.text === "string") {
-            return po.text;
-          }
-          if (typeof po.content === "string") {
-            return po.content;
-          }
-        }
-        return null;
-      })
-      .filter(Boolean);
-    if (parts.length > 0) {
-      return parts.join("\n");
-    }
-  }
-  return null;
-}
 
 /** CR-3: Collect tool result entries from a request's response flow. */
 function collectToolResults(
@@ -367,27 +320,6 @@ function normalizeChatMessages(data: Record<string, unknown>): unknown[] {
  * the raw-request loop. Bundling the running state lets each handler be a small
  * named function instead of an inline branch in `parseChatSessionFile`.
  */
-/**
- * Running state common to every per-session accumulator. Both the chat-loop
- * accumulator (`ChatAccumulator`) and the CLI-event accumulator
- * (`CliEventAccumulator`) extend this with their format-specific fields.
- */
-type BaseSessionAccumulator = {
-  firstTimestamp: string | null;
-  lastTimestamp: string | null;
-  userMessageCount: number;
-  assistantMessageCount: number;
-  thinkingBlockCount: number;
-  pendingTurnStartedAt: string | null;
-  messageTimestamps: string[];
-  toolUses: NormalizedToolUse[];
-  turnDurations: NormalizedTurnDuration[];
-  apiErrors: NormalizedApiError[];
-  toolResultErrors: NormalizedSession["toolResultErrors"];
-  tokenFields: TokenFields;
-  normalizedMessages: NormalizedMessage[];
-  tokenSeries: NormalizedTokenRecord[];
-};
 
 type ChatAccumulator = BaseSessionAccumulator & {
   /** Session-level model used as the tokenSeries fallback. */
@@ -757,8 +689,10 @@ export function parseChatSessionFile(
     // Fall back to file mtime
     try {
       const stat = fs.statSync(filePath);
-      acc.firstTimestamp =
-        stat.birthtime?.toISOString() || stat.mtime.toISOString();
+      // ISS-12251: an unusable (epoch-0) birth time falls back to mtime, not 1970.
+      acc.firstTimestamp = new Date(
+        fileCreatedAtFromStats(stat) ?? stat.mtimeMs
+      ).toISOString();
       acc.lastTimestamp = stat.mtime.toISOString();
     } catch {
       return null;
@@ -777,9 +711,9 @@ export function parseChatSessionFile(
     ].find((candidate): candidate is string => isMeaningfulCwd(candidate)) ??
     null;
 
-  let fileModifiedAt: number | null = null;
+  let fileStats: fs.Stats | undefined;
   try {
-    fileModifiedAt = fs.statSync(filePath).mtimeMs;
+    fileStats = fs.statSync(filePath);
   } catch {
     /* non-fatal */
   }
@@ -788,7 +722,10 @@ export function parseChatSessionFile(
     ? path.basename(cwd)
     : `Copilot Chat ${sessionId.slice(0, 8)}`;
 
-  const tokensByModel: NormalizedSession["tokensByModel"] = {};
+  // ISS-8565: null-prototype container so a key literally named `__proto__`
+  // becomes an own property instead of hitting the inherited `__proto__`
+  // setter, which creates no own key and silently drops the entry.
+  const tokensByModel: NormalizedSession["tokensByModel"] = Object.create(null);
   if (hasTokenFields(acc.tokenFields)) {
     const key = model || "copilot-default";
     tokensByModel[key] = {
@@ -800,7 +737,7 @@ export function parseChatSessionFile(
   }
 
   // Unset fields are filled by createNormalizedSession's defaults.
-  return createNormalizedSession({
+  const session = createNormalizedSession({
     sessionId: `copilot-chat-${sessionId}`,
     name: projectName,
     cwd,
@@ -809,11 +746,13 @@ export function parseChatSessionFile(
     endedAt: acc.lastTimestamp,
     userMessages: acc.userMessageCount,
     assistantMessages: acc.assistantMessageCount,
-    tokensByModel,
+    // ISS-8565: spread restores a normal prototype (spread defines, so an
+    // own `__proto__` key survives the copy) for downstream consumers.
+    tokensByModel: { ...tokensByModel },
     messageTimestamps: acc.messageTimestamps,
     toolUses: acc.toolUses,
     apiErrors: acc.apiErrors,
-    fileModifiedAt,
+    fileModifiedAt: fileStats?.mtimeMs ?? null,
     turnDurations: acc.turnDurations,
     entrypoint: "copilot",
     thinkingBlockCount: acc.thinkingBlockCount,
@@ -825,6 +764,8 @@ export function parseChatSessionFile(
     // CR-13: Artifact references extracted from tool calls
     artifacts: collectArtifacts(acc.toolUses, cwd),
   });
+  stampFileCreatedAt(session, fileStats);
+  return session;
 }
 
 /**
@@ -845,242 +786,6 @@ export function parseChatSessionFileGated(
 }
 
 /**
- * Mutable per-session accumulator shared by the Copilot CLI event handlers.
- * Mirrors the chat-loop accumulator pattern: bundling the running state lets each
- * event handler be a small named function instead of an inline `if (type === …)`
- * branch in `parseCliEventFile`.
- */
-type CliEventAccumulator = BaseSessionAccumulator & {
-  cwd: string | null;
-  model: string | null;
-  version: string | null;
-};
-
-/** Per-event context resolved once and passed to each CLI event handler. */
-type CliEventContext = {
-  type: string;
-  payload: Record<string, unknown>;
-  iso: string | null;
-  /** CR-5: Per-event model override (`payload.model ?? rec.model`), null if absent. */
-  eventModel: string | null;
-  /** Synthetic-model flag for the resolved per-event model. */
-  synthetic: true | undefined;
-};
-
-/** Capture session metadata (cwd/version/model) from a session-start event. */
-function handleCliSessionMeta(
-  acc: CliEventAccumulator,
-  { payload }: CliEventContext
-): void {
-  if (!acc.cwd) {
-    const candidate = (payload.cwd || payload.workdir || null) as string | null;
-    if (isMeaningfulCwd(candidate)) {
-      acc.cwd = candidate;
-    }
-  }
-  if (!acc.version) {
-    acc.version = (payload.version || payload.cli_version || null) as
-      | string
-      | null;
-  }
-  if (!acc.model) {
-    acc.model = (payload.model || null) as string | null;
-  }
-}
-
-/** Handle a user/prompt event: count it, open a turn, emit the human message. */
-function handleCliUserMessage(
-  acc: CliEventAccumulator,
-  { payload, iso, eventModel, synthetic }: CliEventContext
-): void {
-  acc.userMessageCount++;
-  if (iso) {
-    acc.pendingTurnStartedAt = iso;
-  }
-  // CR-1: User message with text content
-  const userText = extractText(
-    payload.content ??
-      payload.message ??
-      payload.text ??
-      payload.prompt ??
-      payload
-  );
-  acc.normalizedMessages.push({
-    role: "human",
-    timestamp: iso,
-    text: truncateText(userText),
-    model: eventModel,
-    ...(synthetic ? { isSynthetic: true } : {}),
-  });
-}
-
-/** Handle an assistant/response event: count it, close the turn, emit the message. */
-function handleCliAssistantMessage(
-  acc: CliEventAccumulator,
-  { payload, iso, eventModel, synthetic }: CliEventContext
-): void {
-  acc.assistantMessageCount++;
-  if (iso) {
-    acc.messageTimestamps.push(iso);
-  }
-  pushTurnDuration(acc.turnDurations, acc.pendingTurnStartedAt, iso);
-  acc.pendingTurnStartedAt = null;
-  // CR-1: Assistant message with text content
-  const assistantText = extractText(
-    payload.content ??
-      payload.message ??
-      payload.text ??
-      payload.response ??
-      payload
-  );
-  acc.normalizedMessages.push({
-    role: "assistant",
-    timestamp: iso,
-    text: truncateText(assistantText),
-    model: eventModel,
-    ...(synthetic ? { isSynthetic: true } : {}),
-  });
-}
-
-/** Handle a tool/function/command call event. */
-function handleCliToolCall(
-  acc: CliEventAccumulator,
-  { payload, iso }: CliEventContext
-): void {
-  acc.toolUses.push({
-    name: String(
-      payload.name || payload.tool || payload.command || "copilot_tool"
-    ),
-    timestamp: iso || acc.firstTimestamp,
-    input: safeJson(payload.arguments || payload.input),
-  });
-}
-
-/**
- * CR-3: Back-link a tool result to the most recent matching tool use that is
- * still missing output.
- */
-function handleCliToolResult(
-  acc: CliEventAccumulator,
-  { payload }: CliEventContext
-): void {
-  const resultName = String(payload.name || payload.tool || "copilot_tool");
-  const rawContent =
-    payload.content ?? payload.result ?? payload.output ?? null;
-  const contentText =
-    typeof rawContent === "string" ? truncateText(rawContent) : rawContent;
-  const resultIsError = Boolean(
-    payload.isError || payload.is_error || payload.error
-  );
-  const matchIdx = acc.toolUses.findLastIndex(
-    (tu) => tu.name === resultName && tu.output == null
-  );
-  if (matchIdx >= 0) {
-    if (contentText != null) {
-      acc.toolUses[matchIdx].output = contentText;
-    }
-    if (resultIsError) {
-      acc.toolUses[matchIdx].isError = true;
-    }
-  }
-}
-
-/**
- * Handle a usage/token_count/metrics event: replace the running token totals
- * (last event wins) and append a tokenSeries point.
- */
-function handleCliUsage(
-  acc: CliEventAccumulator,
-  { payload, iso, eventModel }: CliEventContext
-): void {
-  const info = (payload.usage || payload) as Record<string, unknown>;
-  const tokens = readCopilotUsage(info, "copilot.cli_usage");
-  acc.tokenFields.input = tokens.input;
-  acc.tokenFields.output = tokens.output;
-  acc.tokenFields.cacheRead = tokens.cacheRead;
-  acc.tokenFields.cacheWrite = tokens.cacheWrite;
-  if (payload.model) {
-    acc.model = payload.model as string;
-  }
-
-  // CR-2: Push per-event token record for time-series
-  if (iso) {
-    const usageModel = eventModel || acc.model || "copilot-default";
-    if (hasTokenFields(tokens)) {
-      acc.tokenSeries.push({
-        timestamp: iso,
-        model: usageModel,
-        input: tokens.input,
-        output: tokens.output,
-        cacheRead: tokens.cacheRead,
-        cacheWrite: tokens.cacheWrite,
-      });
-    }
-  }
-}
-
-/** Handle an error/api_error event. */
-function handleCliError(
-  acc: CliEventAccumulator,
-  { type, payload, iso }: CliEventContext
-): void {
-  acc.apiErrors.push({
-    type: String(type),
-    message: String(payload.message || payload.error || "Copilot CLI error"),
-    timestamp: iso,
-  });
-}
-
-/**
- * Handle a reasoning/thinking event. Copilot provides a boolean-only thinking
- * flag, so emit a thinking indicator message with null text.
- */
-function handleCliReasoning(
-  acc: CliEventAccumulator,
-  { iso, eventModel, synthetic }: CliEventContext
-): void {
-  acc.thinkingBlockCount++;
-  // CR-1: Thinking indicator as message with null text
-  acc.normalizedMessages.push({
-    role: "assistant",
-    timestamp: iso,
-    text: null,
-    model: eventModel,
-    isThinking: true,
-    ...(synthetic ? { isSynthetic: true } : {}),
-  });
-}
-
-/** Event-type alias → handler for the CLI event loop (aliases share a handler). */
-const CLI_EVENT_HANDLERS = new Map<
-  string,
-  (acc: CliEventAccumulator, ctx: CliEventContext) => void
->([
-  ["session_start", handleCliSessionMeta],
-  ["session_created", handleCliSessionMeta],
-  ["init", handleCliSessionMeta],
-  ["user_message", handleCliUserMessage],
-  ["user_input", handleCliUserMessage],
-  ["prompt", handleCliUserMessage],
-  ["assistant_message", handleCliAssistantMessage],
-  ["response", handleCliAssistantMessage],
-  ["completion", handleCliAssistantMessage],
-  ["tool_call", handleCliToolCall],
-  ["function_call", handleCliToolCall],
-  ["command", handleCliToolCall],
-  ["tool_result", handleCliToolResult],
-  ["function_result", handleCliToolResult],
-  ["command_result", handleCliToolResult],
-  ["usage", handleCliUsage],
-  ["token_count", handleCliUsage],
-  ["metrics", handleCliUsage],
-  ["error", handleCliError],
-  ["api_error", handleCliError],
-  ["reasoning", handleCliReasoning],
-  ["thinking", handleCliReasoning],
-]);
-
-/**
  * Parse a Copilot CLI events.jsonl file. Each line is dispatched through
  * `CLI_EVENT_HANDLERS` (event-type alias → handler over a shared accumulator),
  * replacing the former flat `if (type === a || b || c)` cascade.
@@ -1089,10 +794,15 @@ export async function parseCliEventFile(
   filePath: string,
   sessionId: string
 ): Promise<NormalizedSession | null> {
-  const rl = readline.createInterface({
-    input: fs.createReadStream(filePath, { encoding: "utf8" }),
-    crlfDelay: Number.POSITIVE_INFINITY,
-  });
+  // ISS-6885: stream through the canonical parse-quality scanner (FEA-2905)
+  // rather than a local `JSON.parse`-in-try/catch loop, so a corrupt line is
+  // COUNTED instead of silently dropping its messages, tokens, tools, and
+  // errors under totals that still read as complete.
+  const scan = createParseQualityScan();
+  // The scanner's counters cover only lines that failed `JSON.parse`. A record
+  // that DECODED fine but the parser could not route is the second silent drop
+  // channel, and gets the canonical `unknownRecords` bucket (FEA-3713).
+  let unknownRecords = 0;
 
   const acc: CliEventAccumulator = {
     cwd: null,
@@ -1118,20 +828,16 @@ export async function parseCliEventFile(
 
   const noteTs = (raw: unknown): string | null => noteTimestamp(acc, raw);
 
-  for await (const line of rl) {
-    if (!line.trim()) {
+  for await (const { entry } of readJsonlLinesWithQuality(filePath, scan)) {
+    // A line that parsed cleanly but decoded to a non-object (`null`, a number,
+    // a bare string) is NOT malformed JSON, so it must not inflate that count —
+    // but its content is still dropped, so it belongs in the unknown-record
+    // bucket rather than in no bucket at all.
+    if (!isRecord(entry)) {
+      unknownRecords++;
       continue;
     }
-    let rec: unknown;
-    try {
-      rec = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!rec || typeof rec !== "object") {
-      continue;
-    }
-    const recObj = rec as Record<string, unknown>;
+    const recObj = entry;
 
     const ts = recObj.timestamp || recObj.ts || recObj.created_at || null;
     const iso = noteTs(ts);
@@ -1143,6 +849,12 @@ export async function parseCliEventFile(
 
     const handler = CLI_EVENT_HANDLERS.get(type);
     if (!handler) {
+      // A record the alias table does not know is NOT inert: `noteTs` above has
+      // already let it widen the session window, so the parser treats it as a
+      // real event and then discards its messages, tokens, tools, and errors.
+      // A newer Copilot CLI emitting a type this table predates would otherwise
+      // import as a certified-clean parse with those facts missing.
+      unknownRecords++;
       continue;
     }
 
@@ -1160,7 +872,10 @@ export async function parseCliEventFile(
     return null;
   }
 
-  const tokensByModel: NormalizedSession["tokensByModel"] = {};
+  // ISS-8565: null-prototype container so a key literally named `__proto__`
+  // becomes an own property instead of hitting the inherited `__proto__`
+  // setter, which creates no own key and silently drops the entry.
+  const tokensByModel: NormalizedSession["tokensByModel"] = Object.create(null);
   if (hasTokenFields(acc.tokenFields)) {
     const key = acc.model || "copilot-default";
     tokensByModel[key] = {
@@ -1171,9 +886,9 @@ export async function parseCliEventFile(
     };
   }
 
-  let fileModifiedAt: number | null = null;
+  let fileStats: fs.Stats | undefined;
   try {
-    fileModifiedAt = fs.statSync(filePath).mtimeMs;
+    fileStats = fs.statSync(filePath);
   } catch {
     /* non-fatal */
   }
@@ -1183,7 +898,7 @@ export async function parseCliEventFile(
     : `Copilot CLI ${sessionId.slice(0, 8)}`;
 
   // Unset fields are filled by createNormalizedSession's defaults.
-  return createNormalizedSession({
+  const session = createNormalizedSession({
     sessionId: `copilot-cli-${sessionId}`,
     name: projectName,
     cwd: acc.cwd,
@@ -1193,11 +908,13 @@ export async function parseCliEventFile(
     endedAt: acc.lastTimestamp,
     userMessages: acc.userMessageCount,
     assistantMessages: acc.assistantMessageCount,
-    tokensByModel,
+    // ISS-8565: spread restores a normal prototype (spread defines, so an
+    // own `__proto__` key survives the copy) for downstream consumers.
+    tokensByModel: { ...tokensByModel },
     messageTimestamps: acc.messageTimestamps,
     toolUses: acc.toolUses,
     apiErrors: acc.apiErrors,
-    fileModifiedAt,
+    fileModifiedAt: fileStats?.mtimeMs ?? null,
     turnDurations: acc.turnDurations,
     entrypoint: "copilot",
     thinkingBlockCount: acc.thinkingBlockCount,
@@ -1208,5 +925,21 @@ export async function parseCliEventFile(
     tokenSeries: acc.tokenSeries,
     // CR-13: Artifact references extracted from tool calls
     artifacts: collectArtifacts(acc.toolUses, acc.cwd),
+    // ISS-6885: report what this parse DISCARDED. Every count above is a
+    // survivors-only tally, so without this a corrupt `events.jsonl` renders as
+    // a complete session. `truncatedFinalLine` separates the benign shape — a
+    // final line torn by a live, still-writing session — from mid-file
+    // corruption, which consumers derive as
+    // `malformedLines - (truncatedFinalLine ? 1 : 0)`.
+    parseQuality: {
+      totalLines: scan.totalLines,
+      malformedLines: scan.malformedLines,
+      truncatedFinalLine: scan.lastLineMalformed,
+      // Emitted only when non-zero, matching the Codex parser: a clean session
+      // omits the key so pre-existing metadata blobs round-trip byte-identically.
+      ...(unknownRecords > 0 ? { unknownRecords } : {}),
+    },
   });
+  stampFileCreatedAt(session, fileStats);
+  return session;
 }

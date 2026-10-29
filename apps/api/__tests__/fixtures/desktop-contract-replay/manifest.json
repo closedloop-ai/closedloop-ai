@@ -1,0 +1,156 @@
+{
+  "manifestVersion": 1,
+  "provenance": {
+    "generatedBy": "apps/desktop/test/contract-replay/fixtures-build.ts",
+    "regenCommand": "CONTRACT_REPLAY_WRITE_FIXTURES=1 pnpm --filter desktop exec vitest run --config vitest.node.config.ts test/contract-replay-fixtures.test.ts",
+    "schemaVersion": 2,
+    "maxBytes": 261944,
+    "maxDecompressedBytes": 4194304,
+    "contentPolicy": "retain"
+  },
+  "entries": [
+    {
+      "slug": "iss-8051-token-events-over-historical-cap",
+      "incident": "ISS-8051",
+      "file": "iss-8051-token-events-over-historical-cap.json",
+      "kind": "session",
+      "parts": 1,
+      "sizer": "gzip",
+      "requiresRepositoryAuthority": false,
+      "repositoryFullName": null,
+      "expectedAcceptedSessionIds": [
+        "contract-replay-iss8051-over-cap"
+      ],
+      "expected": {
+        "sessions": 1,
+        "tokenEvents": 10001,
+        "componentUsage": 0,
+        "invocations": 0,
+        "branchActivityAtoms": 0
+      },
+      "sha256": "c37d3fc6384469157b0c772bacb888a812f31255b48f13a93dbcd8ae16a230ba"
+    },
+    {
+      "slug": "iss-8069-oversized-index-key",
+      "incident": "ISS-8069 / ISS-8125",
+      "file": "iss-8069-oversized-index-key.json",
+      "kind": "session",
+      "parts": 1,
+      "sizer": "identity",
+      "requiresRepositoryAuthority": false,
+      "repositoryFullName": null,
+      "expectedAcceptedSessionIds": [
+        "contract-replay-iss8069-index-key"
+      ],
+      "expected": {
+        "sessions": 1,
+        "tokenEvents": 0,
+        "componentUsage": 1,
+        "invocations": 0,
+        "branchActivityAtoms": 0
+      },
+      "sha256": "788c085fbb240ef93a0ea664d76cec4047fa3d99a088504d242bcdcb5acc0735"
+    },
+    {
+      "slug": "iss-8267-partial-unique-arbiter",
+      "incident": "ISS-8267",
+      "file": "iss-8267-partial-unique-arbiter.json",
+      "kind": "invocation-parts",
+      "parts": 1,
+      "sizer": "identity",
+      "requiresRepositoryAuthority": false,
+      "repositoryFullName": null,
+      "expectedAcceptedSessionIds": [],
+      "expected": {
+        "sessions": 0,
+        "tokenEvents": 0,
+        "componentUsage": 0,
+        "invocations": 2,
+        "branchActivityAtoms": 0
+      },
+      "sha256": "37896a3f2ef3724af55ec5197a2e5d2e371de111614d32b4f198208ba718db2e"
+    },
+    {
+      "slug": "iss-8271-sentinel-data-revision",
+      "incident": "ISS-8271",
+      "file": "iss-8271-sentinel-data-revision.json",
+      "kind": "session",
+      "parts": 1,
+      "sizer": "identity",
+      "requiresRepositoryAuthority": false,
+      "repositoryFullName": null,
+      "expectedAcceptedSessionIds": [],
+      "expected": {
+        "sessions": 0,
+        "tokenEvents": 0,
+        "componentUsage": 0,
+        "invocations": 0,
+        "branchActivityAtoms": 0
+      },
+      "sha256": "9830a1b1fcdc1e57e8c5c6e88a6ff2ec4d512f44856cd73e5f83e9ca44e20da6"
+    },
+    {
+      "slug": "iss-8271-sentinel-maintenance-stale",
+      "incident": "ISS-8271",
+      "file": "iss-8271-sentinel-maintenance-stale.json",
+      "kind": "session",
+      "parts": 1,
+      "sizer": "identity",
+      "requiresRepositoryAuthority": false,
+      "repositoryFullName": null,
+      "expectedAcceptedSessionIds": [
+        "contract-replay-iss8271-sentinel-zero"
+      ],
+      "expected": {
+        "sessions": 1,
+        "tokenEvents": 0,
+        "componentUsage": 0,
+        "invocations": 0,
+        "branchActivityAtoms": 0
+      },
+      "sha256": "05928f6bc2a304ec436b511f15c9c10b3529c2dcf5ab2d227a55b53be8342049"
+    },
+    {
+      "slug": "iss-8780-internal-branch-target",
+      "incident": "ISS-8780 / #6576",
+      "file": "iss-8780-internal-branch-target.json",
+      "kind": "session",
+      "parts": 1,
+      "sizer": "identity",
+      "requiresRepositoryAuthority": true,
+      "repositoryFullName": "closedloop-ai/closedloop-ai",
+      "expectedAcceptedSessionIds": [
+        "contract-replay-iss8780-branch-target"
+      ],
+      "expected": {
+        "sessions": 1,
+        "tokenEvents": 0,
+        "componentUsage": 0,
+        "invocations": 0,
+        "branchActivityAtoms": 1
+      },
+      "sha256": "46fa4bff77b91c8797e20fc41d566ddd764b65268f3799f234455b74c290a1a8"
+    },
+    {
+      "slug": "iss-9860-monitored-activity-pages",
+      "incident": "ISS-9860",
+      "file": "iss-9860-monitored-activity-pages.json",
+      "kind": "chunked",
+      "parts": 2,
+      "sizer": "identity",
+      "requiresRepositoryAuthority": true,
+      "repositoryFullName": "closedloop-ai/closedloop-ai",
+      "expectedAcceptedSessionIds": [
+        "contract-replay-iss9860-paged-activity"
+      ],
+      "expected": {
+        "sessions": 1,
+        "tokenEvents": 0,
+        "componentUsage": 0,
+        "invocations": 0,
+        "branchActivityAtoms": 1260
+      },
+      "sha256": "7b127b2d000a017ae0dc4f97d6300eeea694f69347081537b3acc559efed30b0"
+    }
+  ]
+}

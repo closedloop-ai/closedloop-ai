@@ -1,31 +1,21 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { DesktopPopSigner } from "../main/auth/desktop-pop.js";
-import type { DesktopPopUnavailableReporter } from "../main/auth/desktop-pop-sign-utils.js";
-import { verifyChallenge } from "../main/auth/local-auth-verifier.js";
 import type { LocalSessionStore } from "../main/auth/local-session-store.js";
-import type { JobStore } from "../main/jobs/job-store.js";
 import { gatewayLog } from "../main/logging/gateway-logger.js";
-import type { LoopCompletedHook } from "../main/loop/loop-finalizer.js";
-import type { LoopSchedulerContext } from "../main/loop/loop-scheduler-context.js";
-import type { LoopTokenStore } from "../main/loop/loop-token-store.js";
-import type { ApiKeyProvenance } from "../main/settings/api-key-store.js";
-import type { RetrySpawnDeps } from "../main/util/spawn-retry.js";
 import type {
   ComputeTargetCapabilities,
   HealthResponse,
 } from "../shared/contracts.js";
+import { AuthReason } from "./gateway-auth-reasons.js";
 import { isOriginAllowed } from "./gateway-cors-policy.js";
+import { proxyToFallbackGateway } from "./gateway-fallback-proxy.js";
 import { OperationDispatcher } from "./operation-dispatcher.js";
-import type { BinaryPathKey, BinaryPaths } from "./operations/binary-paths.js";
+import { configureBinaryPathsResolver } from "./operations/binary-path-overrides.js";
 import {
-  ClaudeProvider,
-  CodexProvider,
-  ProviderRegistry,
-} from "./operations/chat-providers.js";
-import { registerChatSessionRoutes } from "./operations/chat-session.js";
-import { registerCodexRoutes } from "./operations/codex.js";
-import { registerDeployRoutes } from "./operations/deploy.js";
+  type BinaryPathKey,
+  type BinaryPaths,
+  registerBinaryPathsRoutes,
+} from "./operations/binary-paths.js";
 import { registerFilesystemDirectoriesRoutes } from "./operations/filesystem-directories.js";
 import { registerFilesystemSearchRoutes } from "./operations/filesystem-search.js";
 import { registerGitActionRoutes } from "./operations/git-action.js";
@@ -36,43 +26,25 @@ import { registerGitLocalChangesRoutes } from "./operations/git-local-changes.js
 import { registerGitPrRoutes } from "./operations/git-pr.js";
 import { registerGitRepoPathRoutes } from "./operations/git-repo-path.js";
 import { registerGitWorktreeRoutes } from "./operations/git-worktree.js";
-import { registerLearningsRoutes } from "./operations/learnings.js";
-import { configureMcpDetectionCwdResolver } from "./operations/mcp-detection.js";
 import {
   type MemberPackInstaller,
   registerMemberPackInstallRoutes,
 } from "./operations/member-pack-install.js";
-import { registerMetadataRoutes } from "./operations/metadata-routes.js";
 import { registerReposConfigRoutes } from "./operations/repos-config.js";
-import { registerRunViewerChatRoutes } from "./operations/run-viewer-chat.js";
-import { registerRunViewerExtractRoutes } from "./operations/run-viewer-extract.js";
 import { registerSecurityUpgradeRoutes } from "./operations/security-upgrade.js";
-import { registerSymphonyAttachmentsRoutes } from "./operations/symphony-attachments.js";
-import { registerSymphonyChatHistoryRoutes } from "./operations/symphony-chat-history.js";
-import { registerSymphonyInteractiveRoutes } from "./operations/symphony-interactive.js";
-import { registerSymphonyJudgesRoutes } from "./operations/symphony-judges.js";
-import { registerSymphonyKillRoutes } from "./operations/symphony-kill.js";
-import { registerSymphonyLogsRoutes } from "./operations/symphony-logs.js";
-import {
-  configureBinaryPathsResolver,
-  registerSymphonyLoopRoutes,
-  type WorktreeProvider,
-} from "./operations/symphony-loop.js";
-import { registerSymphonyPlanRoutes } from "./operations/symphony-plan.js";
-import { registerSymphonyPlanLoopRoutes } from "./operations/symphony-plan-loop.js";
-import { registerSymphonySessionRoutes } from "./operations/symphony-sessions.js";
-import { registerSymphonyStatusRoutes } from "./operations/symphony-status.js";
-import { registerSymphonyUploadRoutes } from "./operations/symphony-upload.js";
 import { SymphonyDirNotConfiguredError } from "./operations/symphony-utils.js";
-import { registerSystemCheckRoutes } from "./operations/system-check-routes.js";
-import { registerTerminalChatRoutes } from "./operations/terminal-chat.js";
-import { registerTicketChatRoutes } from "./operations/ticket-chat.js";
-import { registerUpdateAndRestartRoutes } from "./operations/update-and-restart.js";
-import {
-  createClaudeCodeShellEnvProvider,
-  getDefaultClaudeCodeOtelReceiverStatus,
-} from "./otel/claude-code-env.js";
 import { ProcessManager } from "./process-manager.js";
+import { byteLengthOfResponseChunk } from "./response-size.js";
+import {
+  bigintToSafeNumber,
+  GATEWAY_REQUEST_BODY_LIMIT,
+  logOversizedRequest,
+  parseStrictContentLength,
+  REQUEST_BODY_TOO_LARGE_CODE,
+  type RequestBodyLimit,
+  RequestBodyTooLargeError,
+  writeRequestTooLargeResponse,
+} from "./router-body-limits.js";
 
 export type GatewayRouterOptions = {
   webAppOrigin: string;
@@ -91,21 +63,8 @@ export type GatewayRouterOptions = {
     request: GatewayApprovalRequest
   ) => GatewayApprovalResult | Promise<GatewayApprovalResult>;
   sessionStore?: LocalSessionStore;
-  getApiKey?: () => string | null;
-  getApiKeyProvenance?: () => ApiKeyProvenance | null;
-  signDesktopRequest?: DesktopPopSigner;
-  onDesktopPopUnavailable?: DesktopPopUnavailableReporter;
-  getApiOrigin?: () => string;
+  gitPullRequestApiOptions?: Parameters<typeof registerGitPrRoutes>[2];
   prodOriginsOnly?: boolean;
-  jobStore?: JobStore;
-  worktreeProvider?: WorktreeProvider;
-  loopTokenStore?: LoopTokenStore;
-  /** Per-loop heartbeat/refresh/sleep timer container owned by the gateway. */
-  schedulers: LoopSchedulerContext;
-  /** Fired on the live-exit edge when a loop reaches terminal success. */
-  onLoopCompleted?: LoopCompletedHook;
-  retrySpawnDeps?: RetrySpawnDeps;
-  getClaudeCodeOtelReceiverStatus?: () => unknown;
   getGatewayId: () => string;
   getComputeTargetId?: () => string | null;
   handleSecurityUpgrade?: (
@@ -115,14 +74,6 @@ export type GatewayRouterOptions = {
   applyBinaryPathPatch?: (
     patch: Partial<Record<BinaryPathKey, string | null>>
   ) => BinaryPaths;
-  checkForUpdate?: () => Promise<{
-    updateAvailable: boolean;
-    version?: string;
-  }>;
-  applyUpdate?: () => Promise<void>;
-  isUpdateAndRestartEnabled?: () => boolean;
-  /** `app.isPackaged`, forwarded to the Gateway Version check (ISS-5369). */
-  isPackagedBuild?: () => boolean;
   /**
    * Starts a vetted catalog-pack install (FEA-4082). When absent — an older
    * build wired before member self-service installs existed — the pack-install
@@ -173,40 +124,13 @@ export type DesktopSecurityUpgradeResult =
   | { ok: true }
   | { ok: false; code: string; retryable: boolean; statusCode?: number };
 
-const GATEWAY_AUTH_EXCHANGE_LIMIT_BYTES = 4 * 1024;
-const GENERIC_JSON_LIMIT_BYTES = 256 * 1024;
-// Matches the current example-repo /dispatch 1 MiB relay-envelope cap.
-const SYMPHONY_LOOP_LIMIT_BYTES = 1 * 1024 * 1024;
-const SYMPHONY_UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
-const RUN_VIEWER_EXTRACT_LIMIT_BYTES = 210 * 1024 * 1024;
-const REQUEST_BODY_TOO_LARGE_CODE = "request_body_too_large";
-
-type RequestBodyLimit = {
-  limitBytes: number;
-  routeName: string;
-};
-
-class RequestBodyTooLargeError extends Error {
-  readonly code = REQUEST_BODY_TOO_LARGE_CODE;
-  readonly limitBytes: number;
-  readonly routeName: string;
-  readonly declaredSizeBytes?: number;
-  readonly observedSizeBytes?: number;
-
-  constructor(input: {
-    limitBytes: number;
-    routeName: string;
-    declaredSizeBytes?: number;
-    observedSizeBytes?: number;
-  }) {
-    super("request body too large");
-    this.name = "RequestBodyTooLargeError";
-    this.limitBytes = input.limitBytes;
-    this.routeName = input.routeName;
-    this.declaredSizeBytes = input.declaredSizeBytes;
-    this.observedSizeBytes = input.observedSizeBytes;
-  }
-}
+const MALFORMED_REQUEST_TARGET_CODE = "malformed_request_target";
+// Exported so the tests that pin which branch of `writeUnhandledRequestFailure`
+// ran read the same tokens the log sink does, rather than restating them.
+export const UNHANDLED_REQUEST_ERROR_CODE = "unhandled_request_error";
+export const CLIENT_ABORTED_CODE = "client_aborted_request";
+// Attacker-controlled and unbounded; the log sink is a buffer plus a durable file.
+const MAX_LOGGED_REQUEST_TARGET_CHARS = 120;
 
 export class GatewayRouter {
   private readonly options: GatewayRouterOptions;
@@ -222,17 +146,7 @@ export class GatewayRouter {
     this.processManager = new ProcessManager({
       getAllowedDirectories: this.options.getAllowedDirectories,
     });
-    configureMcpDetectionCwdResolver(() => {
-      const [sandboxRoot] = this.options.getAllowedDirectories();
-      return sandboxRoot?.trim() || undefined;
-    });
     configureBinaryPathsResolver(this.options.getBinaryPaths ?? null);
-    const getClaudeCodeShellEnv = createClaudeCodeShellEnvProvider({
-      getReceiverStatus:
-        this.options.getClaudeCodeOtelReceiverStatus ??
-        getDefaultClaudeCodeOtelReceiverStatus,
-      diagnostics: gatewayLog,
-    });
     const getSymphonyDir =
       this.options.getSymphonyDir ??
       (() => {
@@ -241,16 +155,6 @@ export class GatewayRouter {
     registerFilesystemDirectoriesRoutes(
       this.operationDispatcher,
       this.options.getAllowedDirectories
-    );
-    registerCodexRoutes(
-      this.operationDispatcher,
-      this.options.getAllowedDirectories,
-      getClaudeCodeShellEnv
-    );
-    registerDeployRoutes(
-      this.operationDispatcher,
-      this.options.getAllowedDirectories,
-      getSymphonyDir
     );
     registerFilesystemSearchRoutes(
       this.operationDispatcher,
@@ -279,7 +183,8 @@ export class GatewayRouter {
     );
     registerGitPrRoutes(
       this.operationDispatcher,
-      this.options.getAllowedDirectories
+      this.options.getAllowedDirectories,
+      this.options.gitPullRequestApiOptions
     );
     registerGitRepoPathRoutes(this.operationDispatcher, getSymphonyDir);
     registerGitWorktreeRoutes(
@@ -288,158 +193,14 @@ export class GatewayRouter {
       this.options.getAllowedDirectories,
       getSymphonyDir
     );
-    registerSystemCheckRoutes(this.operationDispatcher, {
-      processManager: this.processManager,
-      getSymphonyDir,
-      getBinaryPaths: this.options.getBinaryPaths,
-      applyBinaryPathPatch: this.options.applyBinaryPathPatch,
-      getAppVersion: () => this.options.version,
-      isPackagedBuild: this.options.isPackagedBuild,
-    });
-    registerLearningsRoutes(
-      this.operationDispatcher,
-      this.options.getAllowedDirectories,
-      getSymphonyDir
-    );
-    registerMetadataRoutes(
-      this.operationDispatcher,
-      this.options.getAllowedDirectories,
-      getSymphonyDir
-    );
-    registerReposConfigRoutes(this.operationDispatcher, getSymphonyDir);
-    registerRunViewerChatRoutes(
-      this.operationDispatcher,
-      this.processManager,
-      this.options.getAllowedDirectories,
-      getSymphonyDir,
-      getClaudeCodeShellEnv
-    );
-    registerRunViewerExtractRoutes(this.operationDispatcher);
-    registerSymphonyAttachmentsRoutes(
-      this.operationDispatcher,
-      this.options.getAllowedDirectories
-    );
-    registerSymphonyChatHistoryRoutes(
-      this.operationDispatcher,
-      this.options.getAllowedDirectories
-    );
-    registerSymphonyJudgesRoutes(
-      this.operationDispatcher,
-      this.options.getAllowedDirectories
-    );
-    registerSymphonyKillRoutes(
-      this.operationDispatcher,
-      this.options.getAllowedDirectories,
-      this.options.jobStore
-    );
-    registerSymphonyLoopRoutes(
-      this.operationDispatcher,
-      this.options.getAllowedDirectories,
-      this.options.schedulers,
-      this.options.getApiOrigin,
-      this.options.jobStore,
-      this.options.getWebAppOrigin ?? (() => this.options.webAppOrigin),
-      this.options.worktreeProvider,
-      this.options.loopTokenStore,
-      getSymphonyDir,
-      this.options.getBinaryPaths,
-      // Pass PoP deps unconditionally — buildManagedDesktopPopHeaders degrades
-      // gracefully when provenance is not DESKTOP_MANAGED or signer is absent.
-      {
-        getApiKey: this.options.getApiKey,
-        getApiKeyProvenance: this.options.getApiKeyProvenance,
-        signDesktopRequest: this.options.signDesktopRequest,
-        onDesktopPopUnavailable: this.options.onDesktopPopUnavailable,
-      },
-      getClaudeCodeShellEnv,
-      this.options.onLoopCompleted
-    );
-    registerSymphonyLogsRoutes(
-      this.operationDispatcher,
-      this.options.getAllowedDirectories
-    );
-    registerSymphonyPlanRoutes(
-      this.operationDispatcher,
-      this.options.getAllowedDirectories
-    );
-    registerSymphonySessionRoutes(
-      this.operationDispatcher,
-      this.options.getAllowedDirectories,
-      getSymphonyDir
-    );
-    registerSymphonyStatusRoutes(
-      this.operationDispatcher,
-      this.options.getAllowedDirectories,
-      this.options.jobStore
-    );
-    registerSymphonyInteractiveRoutes(
-      this.operationDispatcher,
-      this.options.getAllowedDirectories,
-      this.options.retrySpawnDeps ?? {
-        log: (_level, msg) =>
-          gatewayLog.warn("spawn-retry", `fallback: ${msg}`),
-        refreshTray: () => {},
-        isShuttingDown: () => false,
-        delay: (ms) => new Promise((r) => setTimeout(r, ms)),
-      },
-      getClaudeCodeShellEnv
-    );
-    if (this.options.getApiKey && this.options.getApiOrigin) {
-      const getApiKey = this.options.getApiKey;
-      const getApiOrigin = this.options.getApiOrigin;
-      registerSymphonyPlanLoopRoutes(
+    if (this.options.getBinaryPaths && this.options.applyBinaryPathPatch) {
+      registerBinaryPathsRoutes(
         this.operationDispatcher,
-        this.options.getAllowedDirectories,
-        getApiKey,
-        getApiOrigin,
-        this.options.jobStore,
-        this.options.getApiKeyProvenance,
-        this.options.signDesktopRequest,
-        this.options.onDesktopPopUnavailable
+        this.options.getBinaryPaths,
+        this.options.applyBinaryPathPatch
       );
     }
-    registerSymphonyUploadRoutes(
-      this.operationDispatcher,
-      this.options.getAllowedDirectories
-    );
-    registerTerminalChatRoutes(
-      this.operationDispatcher,
-      this.processManager,
-      this.options.getAllowedDirectories,
-      getSymphonyDir,
-      getClaudeCodeShellEnv
-    );
-    registerTicketChatRoutes(
-      this.operationDispatcher,
-      this.processManager,
-      this.options.getAllowedDirectories,
-      getSymphonyDir,
-      getClaudeCodeShellEnv
-    );
-    const providerRegistry = new ProviderRegistry();
-    providerRegistry.register(
-      new ClaudeProvider(this.processManager, getClaudeCodeShellEnv)
-    );
-    providerRegistry.register(
-      new CodexProvider(this.options.getAllowedDirectories)
-    );
-    registerChatSessionRoutes(
-      this.operationDispatcher,
-      this.processManager,
-      providerRegistry,
-      this.options.getGatewayId
-    );
-    if (
-      this.options.checkForUpdate &&
-      this.options.applyUpdate &&
-      this.options.isUpdateAndRestartEnabled
-    ) {
-      registerUpdateAndRestartRoutes(this.operationDispatcher, {
-        isUpdateAndRestartEnabled: this.options.isUpdateAndRestartEnabled,
-        checkForUpdate: this.options.checkForUpdate,
-        applyUpdate: this.options.applyUpdate,
-      });
-    }
+    registerReposConfigRoutes(this.operationDispatcher, getSymphonyDir);
     registerSecurityUpgradeRoutes(this.operationDispatcher, {
       getGatewayId: this.options.getGatewayId,
       getComputeTargetId: this.options.getComputeTargetId,
@@ -453,24 +214,66 @@ export class GatewayRouter {
     }
   }
 
+  /**
+   * ISS-8566: the ONE place a gateway request may fail without taking the whole
+   * app down with it.
+   *
+   * `server.ts` dispatches this as a bare `void this.router.handle(...)`, so a
+   * rejection escaping here is an UNHANDLED rejection, and
+   * `handleUnhandledRejection` (`main/lifecycle/error-handlers.ts`) suppresses
+   * only a spawn ENOENT and calls `exit(1)` for every other `Error` — the tray,
+   * every collector and every sync lane die with it. A client that aborts an
+   * upload mid-body raises `ECONNRESET` out of `readBody`, which is exactly such
+   * an `Error`, and it needs no credential to reach: `isAuthorizedGatewayRequest`
+   * authorizes every request when no gateway auth token is configured, which is
+   * the default state. No attacker is required either — a dropped Wi-Fi
+   * handover or a tab closed mid-POST is the same input.
+   *
+   * This is the THIRD door into that crash class on this file (ISS-7585 URIError
+   * in route params, ISS-7958 malformed request target), so it is deliberately a
+   * catch around the whole route body rather than a fourth per-site guard: it
+   * closes the class. It lives here rather than at the `server.ts` dispatch
+   * because the router is what still holds the response and can answer.
+   */
   async handle(
+    request: IncomingMessage,
+    response: ServerResponse
+  ): Promise<void> {
+    try {
+      await this.routeRequest(request, response);
+    } catch (error) {
+      this.writeUnhandledRequestFailure(request, response, error);
+    }
+  }
+
+  private async routeRequest(
     request: IncomingMessage,
     response: ServerResponse
   ): Promise<void> {
     this.applyCorsHeaders(request, response);
 
     const method = request.method?.toUpperCase() ?? "GET";
-    const url = new URL(request.url ?? "/", "http://localhost");
+    let url: URL;
+    try {
+      url = new URL(request.url ?? "/", "http://localhost");
+    } catch {
+      gatewayLog.warn(
+        "gateway-router",
+        `${MALFORMED_REQUEST_TARGET_CODE} method=${method} status=400 target=${(request.url ?? "").slice(0, MAX_LOGGED_REQUEST_TARGET_CHARS)}`
+      );
+      response.statusCode = 400;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ error: "malformed request target" }));
+      return;
+    }
     const isGatewayRoute = url.pathname.startsWith("/api/gateway/");
-    const isExchangeRoute =
-      method === "POST" && url.pathname === "/gateway-auth/exchange";
     const startedAt = Date.now();
     let activityType: GatewayActivityEvent["type"] = "request";
     let activityDetail: string | undefined;
     let requestSizeBytes: number | undefined;
     let responseSizeBytes = 0;
 
-    if ((isGatewayRoute || isExchangeRoute) && method !== "OPTIONS") {
+    if (isGatewayRoute && method !== "OPTIONS") {
       const origWrite = response.write.bind(response) as typeof response.write;
       const origEnd = response.end.bind(response) as typeof response.end;
 
@@ -507,20 +310,10 @@ export class GatewayRouter {
       return;
     }
 
-    if (isExchangeRoute) {
-      const exchangeResult = await this.handleExchange(request, response);
-      if (exchangeResult) {
-        activityType = exchangeResult.activityType;
-        activityDetail = exchangeResult.activityDetail;
-        requestSizeBytes = exchangeResult.requestSizeBytes;
-      }
-      return;
-    }
-
     const authResult = this.isAuthorizedGatewayRequest(request);
     if (isGatewayRoute && !authResult.authorized) {
       activityType = "security";
-      activityDetail = authResult.reason ?? "unauthorized";
+      activityDetail = authResult.reason;
       response.statusCode = 401;
       response.setHeader("content-type", "application/json");
       response.end(
@@ -546,17 +339,16 @@ export class GatewayRouter {
     }
 
     if (isGatewayRoute) {
-      const requestBodyLimit = resolveRequestBodyLimit(method, url.pathname);
       let rawBody: Buffer;
       try {
-        rawBody = await this.readBody(request, requestBodyLimit);
+        rawBody = await this.readBody(request, GATEWAY_REQUEST_BODY_LIMIT);
       } catch (error) {
         if (error instanceof RequestBodyTooLargeError) {
           activityType = "security";
           activityDetail = REQUEST_BODY_TOO_LARGE_CODE;
           requestSizeBytes = error.observedSizeBytes ?? error.declaredSizeBytes;
-          this.logOversizedRequest(method, url.pathname, error);
-          this.writeRequestTooLargeResponse(response, error);
+          logOversizedRequest(method, url.pathname, error);
+          writeRequestTooLargeResponse(response, error);
           return;
         }
         throw error;
@@ -607,12 +399,13 @@ export class GatewayRouter {
       }
 
       if (this.options.fallbackGatewayOrigin) {
-        await this.proxyToFallback(
+        await proxyToFallbackGateway({
+          fallbackGatewayOrigin: this.options.fallbackGatewayOrigin,
+          rawBody,
           request,
+          requestPath: url.pathname + url.search,
           response,
-          url.pathname + url.search,
-          rawBody
-        );
+        });
         return;
       }
 
@@ -679,7 +472,7 @@ export class GatewayRouter {
 
   private isAuthorizedGatewayRequest(
     request: IncomingMessage
-  ): { authorized: true } | { authorized: false; reason: string } {
+  ): { authorized: true } | { authorized: false; reason: AuthReason } {
     const expectedToken = this.options.getGatewayAuthToken?.();
 
     // Path 1: Internal cloud executor token -- checked first so relayed
@@ -704,7 +497,7 @@ export class GatewayRouter {
       if (!this.isOriginAllowed(requestOrigin)) {
         return {
           authorized: false,
-          reason: "origin not allowed in prod-origins-only mode",
+          reason: AuthReason.OriginNotAllowed,
         };
       }
     }
@@ -713,7 +506,6 @@ export class GatewayRouter {
       return { authorized: true };
     }
 
-    // Path 2: Browser session token with origin validation
     const sessionStore = this.options.sessionStore;
     const sessionToken = firstHeaderValue(
       request.headers["x-desktop-session-token"]
@@ -724,230 +516,22 @@ export class GatewayRouter {
       if (!requestOrigin || requestOrigin === "null") {
         return {
           authorized: false,
-          reason: "session token present but Origin header missing",
+          reason: AuthReason.SessionTokenWithoutOrigin,
         };
       }
       if (!sessionStore) {
-        return { authorized: false, reason: "session store not configured" };
+        return { authorized: false, reason: AuthReason.SessionStoreMissing };
       }
       if (sessionStore.validate(sessionToken, requestOrigin)) {
         return { authorized: true };
       }
-      return {
-        authorized: false,
-        reason: "invalid or expired session token, or origin mismatch",
-      };
+      return { authorized: false, reason: AuthReason.SessionTokenInvalid };
     }
-
-    // No valid credential provided
-    if (!requestOrigin || requestOrigin === "null") {
-      return { authorized: false, reason: "no credential provided" };
-    }
-    return {
-      authorized: false,
-      reason: "session token required for browser requests",
-    };
-  }
-
-  private async handleExchange(
-    request: IncomingMessage,
-    response: ServerResponse
-  ): Promise<{
-    activityType: GatewayActivityEvent["type"];
-    activityDetail?: string;
-    requestSizeBytes?: number;
-  } | null> {
-    const requestOrigin = firstHeaderValue(request.headers.origin);
 
     if (!requestOrigin || requestOrigin === "null") {
-      response.statusCode = 400;
-      response.setHeader("content-type", "application/json");
-      response.setHeader("Cache-Control", "no-store");
-      response.end(JSON.stringify({ error: "Origin header required" }));
-      return null;
+      return { authorized: false, reason: AuthReason.NoCredential };
     }
-
-    if (!isLoopbackAddress(request.socket.remoteAddress)) {
-      response.statusCode = 403;
-      response.setHeader("content-type", "application/json");
-      response.setHeader("Cache-Control", "no-store");
-      response.end(JSON.stringify({ error: "loopback only" }));
-      return {
-        activityType: "security",
-        activityDetail: "exchange rejected: non-loopback origin",
-      };
-    }
-
-    if (this.options.prodOriginsOnly && !this.isOriginAllowed(requestOrigin)) {
-      response.statusCode = 403;
-      response.setHeader("content-type", "application/json");
-      response.setHeader("Cache-Control", "no-store");
-      response.end(
-        JSON.stringify({
-          error:
-            "Origin not allowed -- gateway is in production-origins-only mode",
-        })
-      );
-      return {
-        activityType: "security",
-        activityDetail:
-          "exchange rejected: origin blocked by prod-origins-only",
-      };
-    }
-
-    // No-auth mode: skip challenge verification and issue a session immediately
-    const noAuth = !this.options.getGatewayAuthToken?.();
-    if (noAuth) {
-      const sessionStore = this.options.sessionStore;
-      if (!sessionStore) {
-        response.statusCode = 500;
-        response.setHeader("content-type", "application/json");
-        response.setHeader("Cache-Control", "no-store");
-        response.end(JSON.stringify({ error: "session store not available" }));
-        return null;
-      }
-      const session = sessionStore.create(requestOrigin, 86_400); // 24h session
-      response.statusCode = 200;
-      response.setHeader("content-type", "application/json");
-      response.setHeader("Cache-Control", "no-store");
-      response.end(
-        JSON.stringify({
-          sessionToken: session.sessionToken,
-          expiresAt: session.expiresAt,
-        })
-      );
-      return null;
-    }
-
-    const apiKey = this.options.getApiKey?.();
-    if (!apiKey) {
-      response.statusCode = 503;
-      response.setHeader("content-type", "application/json");
-      response.setHeader("Cache-Control", "no-store");
-      response.end(
-        JSON.stringify({
-          error: "Local gateway auth unavailable: API key required",
-        })
-      );
-      return null;
-    }
-
-    const apiOrigin = this.options.getApiOrigin?.();
-    if (!apiOrigin) {
-      response.statusCode = 503;
-      response.setHeader("content-type", "application/json");
-      response.setHeader("Cache-Control", "no-store");
-      response.end(JSON.stringify({ error: "API origin not configured" }));
-      return null;
-    }
-
-    let rawBody: Buffer;
-    try {
-      rawBody = await this.readBody(
-        request,
-        resolveRequestBodyLimit(
-          request.method?.toUpperCase() ?? "POST",
-          "/gateway-auth/exchange"
-        )
-      );
-    } catch (error) {
-      if (error instanceof RequestBodyTooLargeError) {
-        this.logOversizedRequest(
-          request.method?.toUpperCase() ?? "POST",
-          "/gateway-auth/exchange",
-          error
-        );
-        this.writeRequestTooLargeResponse(response, error);
-        return {
-          activityType: "security",
-          activityDetail: REQUEST_BODY_TOO_LARGE_CODE,
-          requestSizeBytes: error.observedSizeBytes ?? error.declaredSizeBytes,
-        };
-      }
-      throw error;
-    }
-    const exchangeRequestSizeBytes = rawBody.byteLength;
-    let challengeToken: string;
-    try {
-      const parsed = JSON.parse(rawBody.toString("utf-8")) as Record<
-        string,
-        unknown
-      >;
-      if (typeof parsed.challengeToken !== "string" || !parsed.challengeToken) {
-        throw new Error("missing challengeToken");
-      }
-      challengeToken = parsed.challengeToken;
-    } catch {
-      response.statusCode = 400;
-      response.setHeader("content-type", "application/json");
-      response.setHeader("Cache-Control", "no-store");
-      response.end(
-        JSON.stringify({
-          error: "invalid request body: challengeToken required",
-        })
-      );
-      return {
-        activityType: "request",
-        requestSizeBytes: exchangeRequestSizeBytes,
-      };
-    }
-
-    const userAgent =
-      firstHeaderValue(request.headers["user-agent"]) ?? undefined;
-    const result = await verifyChallenge({
-      challengeToken,
-      requestOrigin,
-      userAgent,
-      apiOrigin,
-      apiKey,
-      apiKeyProvenance: this.options.getApiKeyProvenance?.() ?? "USER_CREATED",
-      signDesktopRequest: this.options.signDesktopRequest,
-      onDesktopPopUnavailable: this.options.onDesktopPopUnavailable,
-    });
-
-    if (!result.ok) {
-      const statusCode = result.statusCode ?? 401;
-      response.statusCode = statusCode;
-      response.setHeader("content-type", "application/json");
-      response.setHeader("Cache-Control", "no-store");
-      response.end(JSON.stringify({ error: result.error }));
-      return {
-        activityType: "security",
-        activityDetail: `exchange rejected: ${result.error}`,
-        requestSizeBytes: exchangeRequestSizeBytes,
-      };
-    }
-
-    const sessionStore = this.options.sessionStore;
-    if (!sessionStore) {
-      response.statusCode = 500;
-      response.setHeader("content-type", "application/json");
-      response.setHeader("Cache-Control", "no-store");
-      response.end(JSON.stringify({ error: "session store not available" }));
-      return {
-        activityType: "request",
-        requestSizeBytes: exchangeRequestSizeBytes,
-      };
-    }
-
-    const session = sessionStore.create(
-      requestOrigin,
-      result.sessionTtlSeconds
-    );
-
-    response.statusCode = 200;
-    response.setHeader("content-type", "application/json");
-    response.setHeader("Cache-Control", "no-store");
-    response.end(
-      JSON.stringify({
-        sessionToken: session.sessionToken,
-        expiresAt: session.expiresAt,
-      })
-    );
-    return {
-      activityType: "request",
-      requestSizeBytes: exchangeRequestSizeBytes,
-    };
+    return { authorized: false, reason: AuthReason.BrowserSessionRequired };
   }
 
   private async readBody(
@@ -997,96 +581,75 @@ export class GatewayRouter {
     return Buffer.concat(chunks);
   }
 
-  private writeRequestTooLargeResponse(
-    response: ServerResponse,
-    error: RequestBodyTooLargeError
-  ): void {
-    response.statusCode = 413;
-    response.setHeader("content-type", "application/json");
-    response.setHeader("Cache-Control", "no-store");
-    response.end(
-      JSON.stringify({
-        error: "request body too large",
-        code: REQUEST_BODY_TOO_LARGE_CODE,
-        maxBytes: error.limitBytes,
-      })
-    );
-  }
-
-  private logOversizedRequest(
-    method: string,
-    path: string,
-    error: RequestBodyTooLargeError
-  ): void {
-    gatewayLog.warn(
-      "gateway-router",
-      [
-        REQUEST_BODY_TOO_LARGE_CODE,
-        `method=${method}`,
-        `path=${path}`,
-        "status=413",
-        `route=${error.routeName}`,
-        `limitBytes=${error.limitBytes}`,
-        `declaredSizeBytes=${error.declaredSizeBytes ?? "absent"}`,
-        `observedSizeBytes=${error.observedSizeBytes ?? "absent"}`,
-      ].join(" ")
-    );
-  }
-
-  private async proxyToFallback(
+  /**
+   * Answer — or deliberately abandon — a request whose handler threw, never
+   * rejecting. See {@link GatewayRouter.handle} for why rejecting is fatal.
+   *
+   * Four outcomes, because these are not the same failure. A client that
+   * vanished mid-body cannot be told anything, and writing to that socket is
+   * what would throw a second time, so it is logged as an abort and the response
+   * destroyed. A response that already COMPLETED is left alone: the caller has
+   * its whole answer, and tearing the socket down would reset a healthy
+   * keep-alive connection after a good reply. A handler that only BEGAN its
+   * answer cannot have a status put in front of it, so a half-written response
+   * is destroyed rather than corrupted into a body the caller would parse as
+   * complete. Everything else is our own bug and gets a generic 500 that leaks
+   * no internals.
+   *
+   * A valid request never reaches here: every existing branch of
+   * {@link GatewayRouter.routeRequest} still returns its own response, including
+   * the 413 a {@link RequestBodyTooLargeError} already answers with.
+   */
+  private writeUnhandledRequestFailure(
     request: IncomingMessage,
     response: ServerResponse,
-    requestPath: string,
-    rawBody: Buffer
-  ): Promise<void> {
-    const targetUrl = new URL(requestPath, this.options.fallbackGatewayOrigin);
-    const headers = new Headers();
-    for (const [name, value] of Object.entries(request.headers)) {
-      if (!value) {
-        continue;
-      }
-      if (name.toLowerCase() === "host") {
-        continue;
-      }
-      if (Array.isArray(value)) {
-        headers.set(name, value.join(", "));
-      } else {
-        headers.set(name, value);
-      }
-    }
-
+    error: unknown
+  ): void {
     const method = request.method?.toUpperCase() ?? "GET";
-    const upstreamResponse = await fetch(targetUrl, {
-      method,
-      headers,
-      body:
-        method === "GET" || method === "HEAD"
-          ? undefined
-          : new Uint8Array(rawBody),
-    });
-
-    response.statusCode = upstreamResponse.status;
-    for (const [name, value] of upstreamResponse.headers) {
-      if (name.toLowerCase() === "access-control-allow-origin") {
-        continue;
-      }
-      response.setHeader(name, value);
+    const target = (request.url ?? "").slice(
+      0,
+      MAX_LOGGED_REQUEST_TARGET_CHARS
+    );
+    // Bounded for the same reason `target` is: an error message can echo body
+    // or URL content, and the log sink is a buffer plus a durable file.
+    const detail = (
+      error instanceof Error ? error.message : String(error)
+    ).slice(0, MAX_LOGGED_REQUEST_TARGET_CHARS);
+    const aborted = isClientAbort(request, error);
+    // `headersSent` is equally true for a half-written answer and for one that
+    // already completed, so it alone cannot tell them apart (review,
+    // marisolashgrove). A delivered response has no status left to change and
+    // nothing to tear down -- `destroy()` on it resets a keep-alive socket that
+    // carried a good reply, and takes any pipelined request with it.
+    const delivered = response.writableEnded;
+    const summary = `method=${method} target=${target} error=${detail}`;
+    if (aborted) {
+      gatewayLog.warn("gateway-router", `${CLIENT_ABORTED_CODE} ${summary}`);
+    } else {
+      gatewayLog.error(
+        "gateway-router",
+        // The status is what the caller actually got, never a 500 we did not
+        // send: a post-delivery failure is still our bug and still logged, but
+        // the answer on the wire is the one already written.
+        `${UNHANDLED_REQUEST_ERROR_CODE} ${summary} status=${delivered ? response.statusCode : 500}`
+      );
     }
-
-    if (!upstreamResponse.body) {
-      response.end();
+    if (delivered) {
       return;
     }
-
-    const reader = upstreamResponse.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      response.write(Buffer.from(value));
+    if (aborted || response.headersSent) {
+      response.destroy();
+      return;
     }
-    response.end();
+    try {
+      response.statusCode = 500;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ error: "internal error" }));
+    } catch {
+      // The socket died between the checks above and the write. There is
+      // nothing left to answer on, and this handler must not throw.
+      response.destroy();
+    }
   }
 }
 
@@ -1108,85 +671,6 @@ function parseBooleanHeader(value: string | string[] | undefined): boolean {
   return first === "1" || first.toLowerCase() === "true";
 }
 
-/** Selects the in-code request cap for the current gateway route. */
-function resolveRequestBodyLimit(
-  method: string,
-  pathname: string
-): RequestBodyLimit {
-  const normalizedMethod = method.toUpperCase();
-  if (normalizedMethod === "POST" && pathname === "/gateway-auth/exchange") {
-    return {
-      limitBytes: GATEWAY_AUTH_EXCHANGE_LIMIT_BYTES,
-      routeName: "gateway-auth-exchange",
-    };
-  }
-  if (
-    normalizedMethod === "POST" &&
-    pathname === "/api/gateway/symphony/loop"
-  ) {
-    return {
-      limitBytes: SYMPHONY_LOOP_LIMIT_BYTES,
-      routeName: "symphony-loop",
-    };
-  }
-  if (
-    normalizedMethod === "POST" &&
-    /^\/api\/gateway\/symphony\/upload\/[^/]+$/.test(pathname)
-  ) {
-    return {
-      limitBytes: SYMPHONY_UPLOAD_LIMIT_BYTES,
-      routeName: "symphony-upload",
-    };
-  }
-  if (
-    normalizedMethod === "POST" &&
-    pathname === "/api/gateway/run-viewer-extract"
-  ) {
-    return {
-      limitBytes: RUN_VIEWER_EXTRACT_LIMIT_BYTES,
-      routeName: "run-viewer-extract",
-    };
-  }
-  return {
-    limitBytes: GENERIC_JSON_LIMIT_BYTES,
-    routeName: "generic-json",
-  };
-}
-
-function parseStrictContentLength(value: string | null): bigint | null {
-  if (!(value && /^\d+$/.test(value))) {
-    return null;
-  }
-  try {
-    return BigInt(value);
-  } catch {
-    return null;
-  }
-}
-
-function bigintToSafeNumber(value: bigint): number | undefined {
-  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
-    return undefined;
-  }
-  return Number(value);
-}
-
-function byteLengthOfResponseChunk(chunk: unknown, encoding: unknown): number {
-  if (typeof chunk === "string") {
-    return Buffer.byteLength(
-      chunk,
-      typeof encoding === "string" ? (encoding as BufferEncoding) : "utf8"
-    );
-  }
-  if (Buffer.isBuffer(chunk)) {
-    return chunk.byteLength;
-  }
-  if (chunk instanceof Uint8Array) {
-    return chunk.byteLength;
-  }
-  return 0;
-}
-
 function safeEqualToken(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
@@ -1196,14 +680,26 @@ function safeEqualToken(left: string, right: string): boolean {
   return timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-function isLoopbackAddress(address: string | undefined | null): boolean {
-  if (!address) {
-    return false;
+/**
+ * Did the CLIENT go away, rather than the handler failing on its own?
+ *
+ * The SOCKET is the subject, deliberately, and the request stream is not: a
+ * request whose body was read to completion is itself `destroyed` on a perfectly
+ * healthy connection, so reading that flag would classify every later handler
+ * bug as a disconnect and tear the response down instead of answering the 500
+ * the caller is still waiting for.
+ *
+ * The error code is the second signal because the two do not always agree — a
+ * mid-body disconnect surfaces as `ECONNRESET`/`ECONNABORTED` out of the body
+ * read before the socket has finished tearing down.
+ */
+function isClientAbort(request: IncomingMessage, error: unknown): boolean {
+  if (request.socket.destroyed) {
+    return true;
   }
-
   return (
-    address === "127.0.0.1" ||
-    address === "::1" ||
-    address === "::ffff:127.0.0.1"
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "ECONNRESET" || error.code === "ECONNABORTED")
   );
 }

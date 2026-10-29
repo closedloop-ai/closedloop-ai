@@ -7,21 +7,14 @@
  */
 
 import { Priority } from "@repo/api/src/types/common";
+import { render } from "@repo/app/shared/test-fixtures/render-with-nav";
 import { cleanup, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render } from "./render-with-nav";
 
 vi.mock(
   "@repo/app/documents/hooks/use-artifact-favorites",
   async () => await import("./__mocks__/use-artifact-favorites")
 );
-
-vi.mock("@repo/app/judges-analytics/hooks/use-judges", () => ({
-  usePlanJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  usePrdJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  useFeatureJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-  useCodeJudgesFeedback: vi.fn(() => ({ data: null, isLoading: false })),
-}));
 
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
 import { DocumentRow } from "@repo/app/documents/components/table/document-row";
@@ -67,12 +60,12 @@ describe("TypeCell — plain colored label (FEA-3947)", () => {
 });
 
 describe("PriorityCell — compact / omitted-when-default (FEA-3946)", () => {
-  it("omits the 'Medium' text for the default priority on My Issues", () => {
+  it("omits the VISIBLE 'Medium' text for the default priority on My Issues", () => {
     const item: DocumentRowItem = {
       kind: "document",
       data: makeArtifact({ priority: Priority.Medium }),
     };
-    render(
+    const { container } = render(
       <DocumentRow
         editHandlers={MY_TASKS_HANDLERS}
         item={item}
@@ -80,7 +73,18 @@ describe("PriorityCell — compact / omitted-when-default (FEA-3946)", () => {
       />
     );
 
-    expect(screen.queryByText("Medium")).toBeNull();
+    // ISS-9307 narrowed what this case can assert, and the expectation it
+    // encodes is unchanged: a page of default-priority rows still reads as quiet
+    // glyphs, with no repeated word on screen. What changed is that suppressing
+    // the word no longer deletes the value from the accessibility tree — the
+    // champion substitutes an `sr-only` name, so the row is readable by ear
+    // (WCAG 1.4.1). `queryByText` cannot tell those two apart, which is why this
+    // now reads the visible span and the `sr-only` one separately.
+    const mark = container.querySelector('[data-slot="artifact-priority"]');
+    expect(
+      mark?.querySelector("span:not(.sr-only):not([data-priority-glyph])")
+    ).toBeNull();
+    expect(mark?.querySelector(".sr-only")?.textContent).toBe("Medium");
   });
 
   it("keeps the 'Medium' label on the general table (not My Issues)", () => {

@@ -18,6 +18,7 @@ import { registerDownloadAttachment } from "../tools/download-attachment.js";
 import { registerListAttachments } from "../tools/list-attachments.js";
 import { createUrlBuilder } from "../tools/tool-utils.js";
 import { registerUploadAttachment } from "../tools/upload-attachment.js";
+import { expectIssue, ZodIssueCode } from "./fixtures/zod-issues.js";
 
 type ToolHandler = (input: Record<string, unknown>) => Promise<{
   content: Array<{ type: "text"; text: string }>;
@@ -187,7 +188,11 @@ describe("attachment MCP tools", () => {
     const attachmentRefSchema = configs.get("create-inline-image-attachment")
       ?.outputSchema?.attachmentRef;
     expect(attachmentRefSchema?.safeParse(ATTACHMENT_REF).success).toBe(true);
-    expect(attachmentRefSchema?.safeParse("attachment-1").success).toBe(false);
+    expectIssue(attachmentRefSchema?.safeParse("attachment-1"), [], {
+      code: ZodIssueCode.InvalidFormat,
+      format: "starts_with",
+      prefix: INLINE_ATTACHMENT_REF_PREFIX,
+    });
   });
 
   it("create-inline-image-attachment omits base64 bytes and storage keys from output", async () => {
@@ -279,7 +284,7 @@ describe("attachment MCP tools", () => {
       priority: "MEDIUM",
       projectId: "project-1",
       repositorySnapshot: {
-        repositories: [{ fullName: "closedloop-ai/example-repo" }],
+        repositories: [{ fullName: "closedloop-ai/closedloop-ai" }],
         source: "loop_selection",
       },
       sortOrder: 10,
@@ -326,7 +331,7 @@ describe("attachment MCP tools", () => {
       priority: "MEDIUM",
       projectId: "project-1",
       repositorySnapshot: {
-        repositories: [{ fullName: "closedloop-ai/example-repo" }],
+        repositories: [{ fullName: "closedloop-ai/closedloop-ai" }],
         source: "loop_selection",
       },
       slug: "FEA-42",
@@ -468,13 +473,19 @@ describe("attachment MCP tools", () => {
         }))
       ).success
     ).toBe(true);
-    expect(
+    expectIssue(
       inlineImagesSchema?.safeParse(
         Array.from({ length: MAX_DOCUMENT_VERSION_INLINE_IMAGES + 1 }, () => ({
           ...validInlineImage,
         }))
-      ).success
-    ).toBe(false);
+      ),
+      [],
+      {
+        code: ZodIssueCode.TooBig,
+        origin: "array",
+        maximum: MAX_DOCUMENT_VERSION_INLINE_IMAGES,
+      }
+    );
   });
 
   it("create-document-version surfaces API failures through withErrorHandling", async () => {

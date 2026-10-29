@@ -18,7 +18,7 @@
  *    ack path aborts on `false` — but the loud warning contract is unchanged.)
  */
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { clearOutboxOnAck } from "../src/main/agent-sync/agent-session-outbox-writers.js";
 import type { AgentSessionSyncSource } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { gatewayLog } from "../src/main/logging/gateway-logger.js";
@@ -125,14 +125,16 @@ test("an outbox-clear failure still warns, even during a shutdown", async () => 
   } as unknown as AgentSessionSyncSource;
 
   // Goal stage 2: the clear is now AWAITED and success-reporting — a failed
-  // write resolves `false` (the ack path aborts on it) instead of throwing.
+  // write resolves `cleared: false` (the ack path aborts on it) instead of
+  // throwing. ISS-7957 widened the result to carry the row count alongside it;
+  // the failure verdict itself is unchanged.
   const cleared = await clearOutboxOnAck({ sourceKey: "target-1", source }, [
     "a",
     "b",
   ]);
 
   assert.equal(
-    cleared,
+    cleared.cleared,
     false,
     "a failed durable clear must report failure so ack processing aborts"
   );

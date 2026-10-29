@@ -9,10 +9,11 @@
  * carry one. Reading it without checking the subtype would mint turn durations
  * out of whatever else the runtime happens to time, and every downstream
  * average would move. The non-finite arm lives with the other nonsensical
- * numbers in the rewrite-regressions suite.
+ * numbers in the rewrite-regressions suite; the non-negative arm is pinned
+ * here (ISS-8886).
  */
 import { describe, expect, it } from "vitest";
-import { parseClaudeTranscript } from "./parse-claude-core";
+import { parseClaudeTranscript } from "./parse-claude";
 
 const USER_LINE = JSON.stringify({
   type: "user",
@@ -70,5 +71,56 @@ describe("only a turn_duration system record becomes a turn duration", () => {
       { sessionId: "system-record" }
     );
     expect(session?.turnDurations).toEqual([]);
+  });
+});
+
+describe("a turn duration is admitted only when it is non-negative", () => {
+  // Claude states `durationMs` outright rather than deriving it from two
+  // timestamps, so it is the one harness where a negative value arrives as a
+  // number and, before ISS-8886, was persisted as a measurement.
+  it("drops a negative turn duration", async () => {
+    const session = await parseClaudeTranscript(
+      [USER_LINE, systemLine({ subtype: "turn_duration", durationMs: -5000 })],
+      { sessionId: "negative-duration" }
+    );
+    expect(session?.turnDurations).toEqual([]);
+  });
+
+  it("keeps a zero-length turn", async () => {
+    // The over-rejection control: a zero-length turn is legal and must survive
+    // a guard written as `> 0` by mistake.
+    const session = await parseClaudeTranscript(
+      [USER_LINE, systemLine({ subtype: "turn_duration", durationMs: 0 })],
+      { sessionId: "zero-duration" }
+    );
+    expect(session?.turnDurations).toEqual([
+      { durationMs: 0, timestamp: "2026-07-09T12:00:01.000Z" },
+    ]);
+  });
+
+  it("keeps a positive turn unchanged beside a dropped negative one", async () => {
+    const session = await parseClaudeTranscript(
+      [
+        USER_LINE,
+        systemLine({ subtype: "turn_duration", durationMs: -5000 }),
+        systemLine({ subtype: "turn_duration", durationMs: 5000 }),
+      ],
+      { sessionId: "mixed-duration" }
+    );
+    expect(session?.turnDurations).toEqual([
+      { durationMs: 5000, timestamp: "2026-07-09T12:00:01.000Z" },
+    ]);
+  });
+
+  it("keeps a fractional millisecond", async () => {
+    // The predicate is `>= 0`, not `Number.isSafeInteger`: a fractional
+    // millisecond is not impossible the way a negative one is.
+    const session = await parseClaudeTranscript(
+      [USER_LINE, systemLine({ subtype: "turn_duration", durationMs: 1.5 })],
+      { sessionId: "fractional-duration" }
+    );
+    expect(session?.turnDurations).toEqual([
+      { durationMs: 1.5, timestamp: "2026-07-09T12:00:01.000Z" },
+    ]);
   });
 });

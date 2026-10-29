@@ -52,3 +52,34 @@ export function apiKeyScopesAllow(
 
   return apiKeyScopesInclude(resolution.scopes, required);
 }
+
+/**
+ * The API-key scopes a route or resolver requires. Non-empty by type
+ * (ISS-11792): the check requires every listed scope, so an empty list would
+ * admit a key holding any scope at all.
+ */
+export type RequiredApiKeyScopes = [ApiKeyScope, ...ApiKeyScope[]];
+
+/**
+ * Runtime half of `RequiredApiKeyScopes`, for callers the type cannot see (a
+ * cast, parsed JSON). Returns a copy, so a caller that empties its own array
+ * later cannot change what gets checked, or null for an empty list.
+ */
+export function copyRequiredApiKeyScopes(
+  scopes: readonly ApiKeyScope[]
+): RequiredApiKeyScopes | null {
+  const [first, ...rest] = scopes;
+  return first === undefined ? null : [first, ...rest];
+}
+
+/** {@link copyRequiredApiKeyScopes}, throwing on an empty list. */
+export function assertRequiredApiKeyScopes(
+  scopes: readonly ApiKeyScope[],
+  surface: string
+): RequiredApiKeyScopes {
+  const copy = copyRequiredApiKeyScopes(scopes);
+  if (!copy) {
+    throw new Error(`${surface}: requiredScopes must not be empty`);
+  }
+  return copy;
+}

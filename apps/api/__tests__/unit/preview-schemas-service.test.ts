@@ -5,9 +5,10 @@
  * No real database connections are made.
  *
  * withDb is called once per DB operation (listPreviewSchemas, readRegistryRow,
- * readObservation, upsertObservation, cleanupStaleObservations,
- * existence-check in dropSchemaForBranch, executeDrop). Tests chain
+ * readObservation, upsertObservation, cleanupStaleObservations); the DROP runs
+ * on the mocked migrator connection (ISS-5978). Tests chain
  * mockImplementationOnce calls to control each individual call's result.
+ * dropSchemaForBranch lives in preview-schemas-drop-branch.test.ts.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,10 +17,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Mocks — must be declared before imports
 // ---------------------------------------------------------------------------
 
-const { mockWithDb, mockWithDbTx, mockListAllBranchNames } = vi.hoisted(() => ({
+const {
+  mockWithDb,
+  mockWithDbTx,
+  mockWithMigratorClient,
+  mockListAllBranchNames,
+} = vi.hoisted(() => ({
   mockWithDb: vi.fn(),
   mockWithDbTx: vi.fn(),
+  mockWithMigratorClient: vi.fn(),
   mockListAllBranchNames: vi.fn(),
+}));
+
+vi.mock("@/app/preview-schemas/service/migrator-connection", () => ({
+  withMigratorClient: mockWithMigratorClient,
 }));
 
 vi.mock("@repo/database", () => ({
@@ -48,8 +59,6 @@ vi.mock("@repo/github", () => ({
 // Imports — after mocks
 // ---------------------------------------------------------------------------
 
-import { normalizePreviewSchemaName } from "@repo/database/schema-utils";
-import { deriveBranchSchemaName } from "@repo/database/scripts/cleanup-preview-schemas-lib";
 import { log } from "@repo/observability/log";
 import { previewSchemaCleanupService } from "@/app/preview-schemas/service";
 import { createPreviewSchemaMocks, readSqlText } from "./preview-schemas-mocks";
@@ -59,7 +68,6 @@ import { createPreviewSchemaMocks, readSqlText } from "./preview-schemas-mocks";
 // ---------------------------------------------------------------------------
 
 const {
-  mockTransactionalDropOnce,
   mockObservationsBatch,
   mockOrphanDropSuccess,
   mockUpsertObservationsBatch,
@@ -74,17 +82,13 @@ const {
   mockObservationRow,
   mockRegistryRow,
   mockRegistryTableMissing,
-  mockSchemaExists,
-} = createPreviewSchemaMocks(mockWithDb, mockListAllBranchNames, mockWithDbTx);
-
-const TEST_BRANCH = "feat/cleanup-schemas";
-const TEST_SCHEMA = deriveBranchSchemaName(
-  TEST_BRANCH,
-  normalizePreviewSchemaName
+} = createPreviewSchemaMocks(
+  mockWithDb,
+  mockListAllBranchNames,
+  mockWithMigratorClient
 );
 
 // Regex patterns for behavior and SQL-shape validation
-const PREVIEW_SCHEMA_PREFIX = /^preview_/;
 const CLEANUP_REGISTRY_EXISTS_GUARD_SQL =
   /to_regclass\('public\.preview_schemas'\)\s+IS\s+NOT\s+NULL/;
 const CLEANUP_REGISTRY_DELETE_SQL =
@@ -102,7 +106,7 @@ describe("previewSchemaCleanupService.runDailySweep", () => {
     // implementations, so a leftover would be handed to the next test's first
     // query and cascade failures across the file.
     mockWithDb.mockReset();
-    mockWithDbTx.mockReset();
+    mockWithMigratorClient.mockReset();
     mockListAllBranchNames.mockResolvedValue(["main"]);
   });
 
@@ -395,7 +399,7 @@ describe("previewSchemaCleanupService.runDailySweep — orphan error isolation",
     // implementations, so a leftover would be handed to the next test's first
     // query and cascade failures across the file.
     mockWithDb.mockReset();
-    mockWithDbTx.mockReset();
+    mockWithMigratorClient.mockReset();
     mockListAllBranchNames.mockResolvedValue(["main"]);
   });
 
@@ -429,121 +433,8 @@ describe("previewSchemaCleanupService.runDailySweep — orphan error isolation",
     expect(result.counters.orphan.errored).toBe(2);
     expect(result.counters.orphan.dropped).toBe(0);
     expect(result.counters.orphan.kept).toBe(0);
-    expect(mockWithDbTx).not.toHaveBeenCalled();
+    expect(mockWithMigratorClient).not.toHaveBeenCalled();
     expect(result.exitCode).toBe(1); // errored > 0
-  });
-});
-
-describe("previewSchemaCleanupService.dropSchemaForBranch", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    // Drain any `mockImplementationOnce` queue the previous test did not
-    // consume — `clearAllMocks` clears call history but NOT queued
-    // implementations, so a leftover would be handed to the next test's first
-    // query and cascade failures across the file.
-    mockWithDb.mockReset();
-    mockWithDbTx.mockReset();
-    mockListAllBranchNames.mockResolvedValue(["main"]);
-  });
-
-  it("drops schema and returns dropped=true when schema exists", async () => {
-    mockSchemaExists(TEST_SCHEMA, true);
-    // dropSchemaForBranch drops directly; it does not run the sweep's
-    // re-verification read, so only the transactional DROP is queued.
-    mockTransactionalDropOnce();
-
-    const result =
-      await previewSchemaCleanupService.dropSchemaForBranch(TEST_BRANCH);
-
-    expect(result.schemaName).toBe(TEST_SCHEMA);
-    expect(result.dropped).toBe(true);
-    expect(result.alreadyGone).toBe(false);
-    expect(result.error).toBeNull();
-
-    // The DROP moved into a transaction (for its SET LOCAL timeouts), so only
-    // the existence check goes through plain withDb.
-    expect(mockWithDbTx).toHaveBeenCalledTimes(1);
-    // existence check (1) = 1 call
-    expect(mockWithDb).toHaveBeenCalledTimes(1);
-  });
-
-  it("returns alreadyGone=true and does not call DROP when schema does not exist", async () => {
-    mockSchemaExists(TEST_SCHEMA, false);
-
-    const result =
-      await previewSchemaCleanupService.dropSchemaForBranch(TEST_BRANCH);
-
-    expect(result.schemaName).toBe(TEST_SCHEMA);
-    expect(result.dropped).toBe(false);
-    expect(result.alreadyGone).toBe(true);
-    expect(result.error).toBeNull();
-
-    // Only the existence check — no drop call
-    expect(mockWithDb).toHaveBeenCalledTimes(1);
-  });
-
-  it("is idempotent — re-calling after schema is already gone returns alreadyGone=true without error", async () => {
-    // First call: schema gone
-    mockSchemaExists(TEST_SCHEMA, false);
-    const first =
-      await previewSchemaCleanupService.dropSchemaForBranch(TEST_BRANCH);
-
-    // Second call: schema still gone
-    mockSchemaExists(TEST_SCHEMA, false);
-    const second =
-      await previewSchemaCleanupService.dropSchemaForBranch(TEST_BRANCH);
-
-    expect(first.alreadyGone).toBe(true);
-    expect(first.error).toBeNull();
-    expect(second.alreadyGone).toBe(true);
-    expect(second.error).toBeNull();
-  });
-
-  it("derived schema name always starts with preview_ for any branch input", async () => {
-    // The service derives the schema name via normalizePreviewSchemaName which
-    // always produces a preview_-prefixed name. This test verifies the guard
-    // is never triggered for valid branch inputs and confirms the derived name
-    // is always safe for DROP operations.
-    const branches = [
-      "feat/cleanup-schemas",
-      "main",
-      "dependabot/npm_and_yarn/lodash-4.17.21",
-      "release/2.0.0",
-    ];
-
-    for (const branch of branches) {
-      vi.clearAllMocks();
-      // Drain any `mockImplementationOnce` queue the previous test did not
-      // consume — `clearAllMocks` clears call history but NOT queued
-      // implementations, so a leftover would be handed to the next test's first
-      // query and cascade failures across the file.
-      mockWithDb.mockReset();
-      mockWithDbTx.mockReset();
-      const derived = deriveBranchSchemaName(
-        branch,
-        normalizePreviewSchemaName
-      );
-      expect(derived).toMatch(PREVIEW_SCHEMA_PREFIX);
-
-      // Service should proceed to existence check (not return with guard error)
-      mockSchemaExists(derived, false);
-      const result =
-        await previewSchemaCleanupService.dropSchemaForBranch(branch);
-      expect(result.error).toBeNull();
-      expect(result.schemaName).toMatch(PREVIEW_SCHEMA_PREFIX);
-    }
-  });
-
-  it("returns error in result and does not throw when drop fails", async () => {
-    mockSchemaExists(TEST_SCHEMA, true);
-    mockDropFailure("connection lost during DROP");
-
-    const result =
-      await previewSchemaCleanupService.dropSchemaForBranch(TEST_BRANCH);
-
-    expect(result.dropped).toBe(false);
-    expect(result.alreadyGone).toBe(false);
-    expect(result.error).toBe("connection lost during DROP");
   });
 });
 
@@ -555,7 +446,7 @@ describe("previewSchemaCleanupService.runDryRun", () => {
     // implementations, so a leftover would be handed to the next test's first
     // query and cascade failures across the file.
     mockWithDb.mockReset();
-    mockWithDbTx.mockReset();
+    mockWithMigratorClient.mockReset();
     mockListAllBranchNames.mockResolvedValue(["main"]);
   });
 
@@ -871,7 +762,7 @@ describe("previewSchemaCleanupService — branch-aware sweep (partitionDecisions
     // implementations, so a leftover would be handed to the next test's first
     // query and cascade failures across the file.
     mockWithDb.mockReset();
-    mockWithDbTx.mockReset();
+    mockWithMigratorClient.mockReset();
     mockListAllBranchNames.mockResolvedValue(["main"]);
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-15T00:00:00.000Z"));

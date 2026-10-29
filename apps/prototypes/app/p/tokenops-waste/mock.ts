@@ -59,6 +59,11 @@ export type ModelRow = {
   usd: number;
   errorOutcomeUsd: number;
   sessions: number;
+  /**
+   * Median per-session FIRST-PASS tokens — the job-size half of the verdict.
+   * Not the basis the rate beside it is taken over, which is every billed token;
+   * see {@link ModelAccumulator} (ISS-5189).
+   */
   medianTokens: number;
   usdPerSession: number;
   verdict: ModelVerdict;
@@ -166,12 +171,28 @@ function buildWasteEstimate(sessions: readonly MockSession[]): WasteEstimate {
   };
 }
 
+/**
+ * The two halves of the Over-powered verdict are graded on DIFFERENT token
+ * bases, and that split is the point (ISS-5189).
+ *
+ * `billedTokens` — every token the provider charged for — stays the RATE
+ * denominator, so it covers the same population as the `usd` above it. Dividing
+ * a bill that prices cache reads by a count that excludes them is not a
+ * cache-neutral rate, just an incoherent one.
+ *
+ * `workTokens` — first-pass tokens only — is the JOB-SIZE proxy, because
+ * replaying one cached prefix is not a bigger job. Grading both halves over one
+ * all-inclusive total made them move together with a harness's cache reuse
+ * rather than with price and job size, which left a cache-heavy model
+ * structurally unable to earn the verdict at all.
+ */
 type ModelAccumulator = {
   usd: number;
   errorOutcomeUsd: number;
   sessions: number;
   errorSessions: number;
-  tokens: number[];
+  billedTokens: number;
+  workTokens: number[];
 };
 
 function buildModelRows(sessions: readonly MockSession[]): ModelRow[] {
@@ -180,17 +201,19 @@ function buildModelRows(sessions: readonly MockSession[]): ModelRow[] {
     let accumulator = byModel.get(session.model);
     if (!accumulator) {
       accumulator = {
+        billedTokens: 0,
         errorOutcomeUsd: 0,
         errorSessions: 0,
         sessions: 0,
-        tokens: [],
         usd: 0,
+        workTokens: [],
       };
       byModel.set(session.model, accumulator);
     }
     accumulator.sessions += 1;
     accumulator.usd += session.costUsd;
-    accumulator.tokens.push(session.tokens);
+    accumulator.billedTokens += session.tokens;
+    accumulator.workTokens.push(session.firstPassTokens);
     if (outcomeOf(session) === SpendOutcome.Errored) {
       accumulator.errorOutcomeUsd += session.costUsd;
       accumulator.errorSessions += 1;
@@ -208,7 +231,9 @@ function buildModelRows(sessions: readonly MockSession[]): ModelRow[] {
       graded.reduce((sum, [, item]) => sum + item.usd, 0)
     ),
     medianRate: median(graded.map(([, item]) => ratePerMillion(item))),
-    medianSessionTokens: median(graded.map(([, item]) => median(item.tokens))),
+    medianSessionTokens: median(
+      graded.map(([, item]) => median(item.workTokens))
+    ),
   };
   return [...byModel.entries()]
     .map(([model, accumulator]) => toModelRow(model, accumulator, fleet))
@@ -228,7 +253,7 @@ function toModelRow(
 ): ModelRow {
   const errorShare = shareOf(accumulator.errorOutcomeUsd, accumulator.usd);
   const graded = accumulator.sessions >= MIN_GRADED_SESSIONS;
-  const medianTokens = median(accumulator.tokens);
+  const medianTokens = median(accumulator.workTokens);
   const verdict = graded
     ? resolveVerdict(
         { errorShare, medianTokens, rate: ratePerMillion(accumulator) },
@@ -251,10 +276,14 @@ function shareOf(part: number, whole: number): number {
   return whole > 0 ? part / whole : 0;
 }
 
-/** What this model charges per million tokens actually delivered. */
+/**
+ * The blended price this model actually charged: spend over every token that
+ * spend paid for, so numerator and denominator cover the same population.
+ */
 function ratePerMillion(accumulator: ModelAccumulator): number {
-  const tokens = accumulator.tokens.reduce((sum, value) => sum + value, 0);
-  return tokens > 0 ? (accumulator.usd / tokens) * TOKENS_PER_MILLION : 0;
+  return accumulator.billedTokens > 0
+    ? (accumulator.usd / accumulator.billedTokens) * TOKENS_PER_MILLION
+    : 0;
 }
 
 function resolveVerdict(

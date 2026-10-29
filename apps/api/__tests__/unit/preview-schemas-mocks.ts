@@ -48,7 +48,7 @@ function isMockSql(query: unknown): query is MockSql {
 export function createPreviewSchemaMocks(
   mockWithDb: MockFn,
   mockListAllBranchNames: MockFn,
-  mockWithDbTx: MockFn
+  mockWithMigratorClient: MockFn
 ) {
   function mockQueryRawRowsOnce<T>(rows: T[]): void {
     mockWithDb.mockImplementationOnce((fn: (db: unknown) => unknown) =>
@@ -130,16 +130,16 @@ export function createPreviewSchemaMocks(
   }
 
   /**
-   * executeDrop: `withDb.tx(tx => { SET LOCAL …; SET LOCAL …; DROP … })`.
+   * executeDrop: `withMigratorClient(client => { BEGIN; SET LOCAL …; SET LOCAL
+   * …; DROP …; COMMIT })`.
    *
-   * The DROP runs in a transaction so `SET LOCAL lock_timeout` pins to the same
-   * connection, so it consumes a `withDb.tx` call, not a `withDb` one.
+   * The DROP runs on its own MIGRATOR connection (ISS-5978), never the runtime
+   * pool, so it consumes a `withMigratorClient` call, not a `withDb` one.
    */
   function mockTransactionalDropOnce(): void {
-    mockWithDbTx.mockImplementationOnce((fn: (tx: unknown) => unknown) =>
-      fn({
-        $executeRawUnsafe: vi.fn().mockResolvedValue(0),
-      })
+    mockWithMigratorClient.mockImplementationOnce(
+      (fn: (client: unknown) => unknown) =>
+        fn({ query: vi.fn().mockResolvedValue({ rows: [] }) })
     );
   }
 
@@ -185,41 +185,54 @@ export function createPreviewSchemaMocks(
       last_seen_at: new Date(0).toISOString(),
       branch: null,
     });
-    mockWithDbTx.mockImplementationOnce((_fn: (tx: unknown) => unknown) =>
+    mockWithMigratorClient.mockImplementationOnce(() =>
       Promise.reject(new Error(message))
+    );
+  }
+
+  /** Queues `executeDrop` rejecting with a contention error, and nothing else. */
+  function mockContendedDropOnce(
+    sqlState: DropContentionSqlState,
+    shape: DropContentionShape
+  ): void {
+    mockWithMigratorClient.mockImplementationOnce(() =>
+      Promise.reject(contentionError(sqlState, shape))
     );
   }
 
   /**
    * executeDrop rejecting the way Postgres declines a busy schema: SQLSTATE
    * 55P03 (`lock_not_available`) or 57014 (`query_canceled`).
+   *
+   * The re-verification read is answered in the STALE shape (a row whose
+   * `last_seen_at` is older than what classification saw). For the orphan path,
+   * whose re-verification must find NO row at all, use
+   * {@link mockOrphanDropContention}.
    */
   function mockDropContention(
-    sqlState: "55P03" | "57014" = "55P03",
-    shape: "prisma-raw" | "direct" = "prisma-raw"
+    sqlState: DropContentionSqlState = "55P03",
+    shape: DropContentionShape = "direct"
   ): void {
     mockQueryRawOnce({
       last_seen_at: new Date(0).toISOString(),
       branch: null,
     });
-    mockWithDbTx.mockImplementationOnce((_fn: (tx: unknown) => unknown) => {
-      const err = new Error(
-        "canceling statement due to lock timeout"
-      ) as Error & {
-        code?: string;
-        meta?: { code: string };
-      };
-      if (shape === "prisma-raw") {
-        // How Prisma actually reports a failed raw query: its own P2010 on
-        // `code`, with the driver's SQLSTATE nested in `meta.code`.
-        err.code = "P2010";
-        err.meta = { code: sqlState };
-      } else {
-        // Some adapters surface the SQLSTATE directly.
-        err.code = sqlState;
-      }
-      return Promise.reject(err);
-    });
+    mockContendedDropOnce(sqlState, shape);
+  }
+
+  /**
+   * {@link mockDropContention} for the ORPHAN path. `isStillDroppable` is
+   * called with a null observation there, so it clears the drop only when the
+   * re-read still finds no registry row — the stale shape above would instead
+   * read as "registered since classification" and skip the drop before any
+   * contention could occur.
+   */
+  function mockOrphanDropContention(
+    sqlState: DropContentionSqlState = "55P03",
+    shape: DropContentionShape = "direct"
+  ): void {
+    mockQueryRawOnce(null);
+    mockContendedDropOnce(sqlState, shape);
   }
 
   /**
@@ -247,6 +260,7 @@ export function createPreviewSchemaMocks(
 
   return {
     mockDropContention,
+    mockOrphanDropContention,
     mockRevalidateRegistry,
     mockOrphanDropSuccess,
     mockDropBlockedByRevalidation,
@@ -294,4 +308,49 @@ export function createPreviewSchemaMocks(
       mockListAllBranchNames.mockRejectedValueOnce(new Error(message));
     },
   };
+}
+
+/** SQLSTATEs Postgres raises when it declines a DROP rather than failing it. */
+type DropContentionSqlState = "55P03" | "57014";
+
+/**
+ * How the SQLSTATE reaches the caller.
+ *
+ * `direct` — a bare driver SQLSTATE on `code` — is what production raises
+ * since ISS-5978 moved the DROP onto the migrator's own `pg` connection, so it
+ * is the default. `adapter-pg` (Prisma 7.10) and `prisma-raw` (pre-7.10) are
+ * the envelopes the DROP raised while it rode `withDb.tx`; they stay covered
+ * because ISS-8556 shipped a regression precisely when the fixtures built a
+ * shape production no longer sent, and the extractor still accepts all three.
+ */
+type DropContentionShape = "adapter-pg" | "prisma-raw" | "direct";
+
+/** Builds the rejection a contended DROP produces, in any of the three shapes. */
+function contentionError(
+  sqlState: DropContentionSqlState,
+  shape: DropContentionShape
+): Error {
+  const err = new Error("canceling statement due to lock timeout") as Error & {
+    code?: string;
+    meta?: Record<string, unknown>;
+  };
+  if (shape === "adapter-pg") {
+    // Prisma 7.10 + @prisma/adapter-pg: its own P2010 on `code`, the driver
+    // SQLSTATE under the driverAdapterError envelope, and NO `meta.code`.
+    err.code = "P2010";
+    // Only `originalCode` is asserted, because only `originalCode` is what the
+    // realdb pin actually captured. `kind` and `name` were invented in an
+    // earlier draft of this fixture; a fabricated field in a fixture whose
+    // whole purpose is shape fidelity is worse than an absent one.
+    err.meta = {
+      driverAdapterError: { cause: { originalCode: sqlState } },
+    };
+  } else if (shape === "prisma-raw") {
+    // The pre-7.10 envelope: P2010 on `code`, SQLSTATE nested in `meta.code`.
+    err.code = "P2010";
+    err.meta = { code: sqlState };
+  } else {
+    err.code = sqlState;
+  }
+  return err;
 }

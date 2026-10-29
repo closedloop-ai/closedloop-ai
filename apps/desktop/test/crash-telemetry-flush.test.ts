@@ -14,13 +14,18 @@
  */
 
 import assert from "node:assert/strict";
-import { mock, test } from "node:test";
+import { afterEach, test, vi } from "vitest";
 import {
   handleUncaughtException,
   handleUnhandledRejection,
 } from "../src/main/lifecycle/error-handlers.js";
 import { createProcessExceptionTelemetryBridge } from "../src/main/telemetry/process-exception-telemetry-bridge.js";
 import { OBSERVABILITY_SHUTDOWN_DEADLINE_MS } from "../src/main/telemetry/shutdown-deadline.js";
+import { nodeTestTimers } from "./support/node-test-fake-timers.js";
+
+afterEach(() => {
+  nodeTestTimers.reset();
+});
 
 type CrashRun = {
   order: string[];
@@ -107,26 +112,22 @@ test("a non-Error rejection flushes even though it does not exit", async () => {
 test("a never-resolving flush is capped and still exits (ISS-6328)", async () => {
   // The whole reason the cap exists: a wedged relay socket must not convert a
   // crash into a hang. Fake timers so this asserts the cap, not the wall clock.
-  mock.timers.enable({ apis: ["setTimeout"] });
-  try {
-    const run = createCrashRun(() => new Promise<void>(() => undefined));
+  nodeTestTimers.enable(["setTimeout"]);
+  const run = createCrashRun(() => new Promise<void>(() => undefined));
 
-    const handled = handleUncaughtException(new Error("boom"), run.deps);
-    await Promise.resolve();
-    assert.deepEqual(
-      run.exits,
-      [],
-      "exit must not happen while the flush is still pending"
-    );
+  const handled = handleUncaughtException(new Error("boom"), run.deps);
+  await Promise.resolve();
+  assert.deepEqual(
+    run.exits,
+    [],
+    "exit must not happen while the flush is still pending"
+  );
 
-    mock.timers.tick(OBSERVABILITY_SHUTDOWN_DEADLINE_MS);
-    await handled;
+  nodeTestTimers.tick(OBSERVABILITY_SHUTDOWN_DEADLINE_MS);
+  await handled;
 
-    assert.deepEqual(run.order, ["emit", "dialog", "flush", "exit"]);
-    assert.deepEqual(run.exits, [1], "the deadline must release the exit");
-  } finally {
-    mock.timers.reset();
-  }
+  assert.deepEqual(run.order, ["emit", "dialog", "flush", "exit"]);
+  assert.deepEqual(run.exits, [1], "the deadline must release the exit");
 });
 
 test("a rejected flush does not stop the crash path", async () => {
@@ -166,14 +167,21 @@ test("the bridge flushes through the bound runtime, and no-ops without one", asy
   // Unbound (pre-init): resolves without waiting on anything.
   await bridge.flushTelemetry();
 
-  const flush = mock.fn(() => Promise.resolve());
+  const flush = vi.fn(() => Promise.resolve());
   bridge.bindRuntime({
     start: () => Promise.resolve(),
     emitAppLifecycleEvent: () => undefined,
     emitAppExceptionEvent: () => undefined,
+    emitSanitizedAppExceptionEvent: () => undefined,
     emitIpcPerfEvent: () => undefined,
     emitSyncBatchEvent: () => undefined,
     emitImportHealthEvent: () => undefined,
+    emitAuthFailureEvent: () => false,
+    emitDeadEndEvent: () => true,
+    emitGenAiRequestEvent: () => undefined,
+    emitOnboardingEvent: () => undefined,
+    emitOnboardingDiscardEvent: () => undefined,
+    emitUpdateEvent: () => true,
     flush,
     shutdown: () => Promise.resolve(),
     getBufferedRecords: () => [],

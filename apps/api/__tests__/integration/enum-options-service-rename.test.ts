@@ -19,9 +19,19 @@ import { describe, expect, it } from "vitest";
 import { enumOptionsService } from "@/app/custom-fields/enum-options-service";
 import { computeDisplayValue } from "@/app/custom-fields/utils";
 import {
-  autoRollbackTransaction,
+  autoRollbackTransactionJoining,
   createTestOrganization,
 } from "../utils/db-helpers";
+
+/**
+ * ISS-11104 — this suite lets its ambient transaction absorb the nested
+ * `withDb.tx` its production path opens, discarding that call's own budget.
+ * The reason below is the whole statement: it is what a reviewer reads to tell
+ * a suite that does not need the real boundary from one that is blind to it.
+ */
+const joinAmbientTransaction = autoRollbackTransactionJoining(
+  "these cases pin what an enum-option rename rewrites across referencing rows, not the commit boundary the rename's own transaction opens"
+);
 
 // Skip integration tests if no DATABASE_URL is configured
 const env = keys();
@@ -94,7 +104,7 @@ function readDisplayValue(valueId: string): Promise<string | null> {
 
 describe.skipIf(!hasDatabase)("enumOptionsService.updateEnumOption", () => {
   it("re-derives every ENUM row's displayValue and leaves other options alone", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransaction(async () => {
       const orgId = await createTestOrganization();
       const { fieldId, optionIds } = await seedField(
         orgId,
@@ -125,7 +135,7 @@ describe.skipIf(!hasDatabase)("enumOptionsService.updateEnumOption", () => {
   });
 
   it("re-derives MULTI_ENUM displayValues in selection order, dropping ids with no option", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransaction(async () => {
       const orgId = await createTestOrganization();
       const { fieldId, optionIds } = await seedField(
         orgId,
@@ -175,7 +185,7 @@ describe.skipIf(!hasDatabase)("enumOptionsService.updateEnumOption", () => {
   });
 
   it("writes the same MULTI_ENUM string computeDisplayValue would produce", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransaction(async () => {
       const orgId = await createTestOrganization();
       const { fieldId, optionIds } = await seedField(
         orgId,
@@ -209,7 +219,7 @@ describe.skipIf(!hasDatabase)("enumOptionsService.updateEnumOption", () => {
   });
 
   it("advances updatedAt on the MULTI_ENUM rows it rewrites", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransaction(async () => {
       const orgId = await createTestOrganization();
       const { fieldId, optionIds } = await seedField(
         orgId,
@@ -249,7 +259,7 @@ describe.skipIf(!hasDatabase)("enumOptionsService.updateEnumOption", () => {
   });
 
   it("does not rewrite an ENUM row whose organization differs from the field's", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransaction(async () => {
       const orgId = await createTestOrganization();
       const otherOrgId = await createTestOrganization();
       const { fieldId, optionIds } = await seedField(
@@ -283,7 +293,7 @@ describe.skipIf(!hasDatabase)("enumOptionsService.updateEnumOption", () => {
   });
 
   it("does not rewrite a MULTI_ENUM row whose organization differs from the field's", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransaction(async () => {
       const orgId = await createTestOrganization();
       const otherOrgId = await createTestOrganization();
       const { fieldId, optionIds } = await seedField(
@@ -315,7 +325,7 @@ describe.skipIf(!hasDatabase)("enumOptionsService.updateEnumOption", () => {
   });
 
   it("ignores selected ids that belong to another field's options", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransaction(async () => {
       const orgId = await createTestOrganization();
       const renamed = await seedField(orgId, CustomFieldType.MultiEnum, [
         "High",
@@ -344,7 +354,7 @@ describe.skipIf(!hasDatabase)("enumOptionsService.updateEnumOption", () => {
   });
 
   it("does not rewrite value rows belonging to a different custom field", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransaction(async () => {
       const orgId = await createTestOrganization();
       const renamed = await seedField(orgId, CustomFieldType.MultiEnum, [
         "High",
@@ -372,7 +382,7 @@ describe.skipIf(!hasDatabase)("enumOptionsService.updateEnumOption", () => {
   });
 
   it("rejects a rename for a field owned by another organization", async () => {
-    await autoRollbackTransaction(async () => {
+    await joinAmbientTransaction(async () => {
       const orgId = await createTestOrganization();
       const otherOrgId = await createTestOrganization();
       const { fieldId, optionIds } = await seedField(

@@ -2,8 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
-  describeIdOrSlug,
   encodePathSegment,
+  requiredIdOrSlug,
   withErrorHandling,
 } from "./tool-utils.js";
 
@@ -17,11 +17,11 @@ export function registerCreateDocumentThread(
       description:
         "Create a Liveblocks-backed comment thread on a document by UUID or slug (PRD-*, PLN-*, FEA-*). Pass the user's slug verbatim.\n\nWith anchorText, the thread is anchored to that exact text in the document. Without anchorText, an unanchored Liveblocks artifact-level document comment is created for comments that don't reference specific document text.",
       inputSchema: {
-        documentId: z
-          .string()
-          .describe(
-            describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
-          ),
+        documentId: requiredIdOrSlug(
+          "Document",
+          ["PRD-7", "PLN-12", "FEA-42"],
+          "Use list-documents to find one."
+        ),
         body: z.string().min(1).describe("Comment body text"),
         anchorText: z
           .string()

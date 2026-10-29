@@ -4,6 +4,8 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   type DefaultError,
   type DefaultedQueryObserverOptions,
+  hashKey,
+  type NetworkMode,
   QueryCache,
   QueryClient,
   type QueryClientConfig,
@@ -16,10 +18,32 @@ import { publishAuthRejectionForQuery } from "./auth-rejection-store";
 export type ErrorToastAction = { label: string; onClick: () => void };
 
 /**
+ * Opt-in for a caller that renders its own message for a failed mutation.
+ *
+ * A mutation hook shared by several surfaces cannot bake
+ * `suppressDefaultErrorToast` in: the toast is the ONLY message on most of
+ * them, and silencing it there trades a duplicate for a silent failure. So the
+ * hook takes this and the one surface with its own alert asks for it — and owes
+ * a sentence for every outcome it just silenced, not only the interesting ones.
+ */
+export type MutationToastOptions = {
+  suppressDefaultErrorToast?: boolean;
+};
+
+/** The `meta` a mutation carries to opt out of {@link toastMutationError}. */
+export function mutationToastMeta(
+  options?: Readonly<MutationToastOptions>
+): { suppressDefaultErrorToast: true } | undefined {
+  return options?.suppressDefaultErrorToast === true
+    ? { suppressDefaultErrorToast: true }
+    : undefined;
+}
+
+/**
  * Render the standard error toast for a failed mutation. The generic toast
  * primitive shared across surfaces (FEA-1510): the default mutation handler
  * calls it, and domain code calls it from its own mutation `onError` when it
- * needs custom suppression or an action (e.g. loops' "View loop"). Keeps all
+ * needs custom suppression or an action. Keeps all
  * domain-specific error behavior out of this shared file.
  */
 export function toastMutationError(error: unknown, action?: ErrorToastAction) {
@@ -156,6 +180,28 @@ export type MakeQueryClientOptions = {
    * listing timer that the codex P1 review flagged.
    */
   gcTime?: number;
+  /**
+   * Whether a query may fetch while `onlineManager` reports the machine
+   * offline.
+   *
+   * **Left unset by default**, i.e. React Query's stock `"online"`: an offline
+   * fetch is *paused*, and a first fetch on an empty cache then stays
+   * `isPending` with `fetchStatus: "paused"` until connectivity returns. That is
+   * right for every client whose reads are HTTP.
+   *
+   * The desktop *local* client passes `"always"`: its reads are SQLite over IPC,
+   * so offline is precisely the state that sends those surfaces to it, and
+   * pausing there would strand every Local-mode surface on a skeleton that never
+   * resolves. What that costs the few cloud-only queries riding the same client
+   * is recorded at that construction site.
+   *
+   * Applied to MUTATIONS as well as queries, and for the same reason rather
+   * than for symmetry: a paused mutation is not a slow one — React Query holds
+   * it until `onlineManager` reports online again, so a local write over IPC
+   * would render its control, accept the click and do nothing, with no error to
+   * show for it.
+   */
+  networkMode?: NetworkMode;
 };
 
 /**
@@ -263,23 +309,20 @@ export const LIST_QUERY_GC_TIME_MS = 30 * 60 * 1000;
 export const LIST_QUERY_KEY_SEGMENT = "list";
 
 /**
- * True when an error carried a real HTTP response — an `ApiError` from the
- * shared client, or any other error object exposing a numeric `status` in the
- * response range (e.g. `LivePrOverlayError` from the Branches gateway, or a
- * runner-token error that throws a plain `Error` with a `status`). A transport
- * failure with no response (fetch reject, `status === 0`, or a deterministic
- * parse error with no status) is NOT response-backed and stays eligible for a
- * bounded retry.
+ * True when an error carried a real HTTP response: any error object exposing a
+ * numeric `status` in the response range, whether an `ApiError` from the shared
+ * client, a `LivePrOverlayError` from the Branches gateway, or a plain `Error`
+ * carrying a `status`. A transport failure with no
+ * response (fetch reject, `status === 0`, or a deterministic parse error with no
+ * status) is NOT response-backed and stays eligible for a bounded retry. That
+ * includes the shared client's own `ApiError` with status 0, which is how it
+ * wraps every transport failure (ISS-5083).
  *
- * Standardizing on this (instead of an `ApiError`-only check) means every
- * response-backed error fails fast, not just the ones that happen to be
- * `ApiError` — the point of `shouldRetryQuery` is "don't retry something the
- * server already answered," regardless of which error class wraps it.
+ * The check is by status, not by error class: the point of `shouldRetryQuery`
+ * is "don't retry something the server already answered," regardless of which
+ * error class wraps it.
  */
 export function isResponseBackedError(error: unknown): boolean {
-  if (error instanceof ApiError) {
-    return true;
-  }
   if (error !== null && typeof error === "object" && "status" in error) {
     const status = (error as { status: unknown }).status;
     // A real HTTP response status. `0` is the fetch "no response" transport
@@ -302,9 +345,8 @@ export function shouldRetryQuery(failureCount: number, error: unknown) {
   // though it carries no HTTP response. Each retry would be another full-length
   // wait — three in a row is minutes of a surface still claiming to load, which
   // is the very failure the deadline exists to end. Failing fast to the stated
-  // timeout state is the point. Checked explicitly rather than left to fall out
-  // of `isResponseBackedError`'s `ApiError` short-circuit, so the decision is
-  // visible and pinned by a test instead of accidental.
+  // timeout state is the point. A timeout carries status 0, so
+  // `isResponseBackedError` does not stop it; this check is what does.
   if (error instanceof ApiError && error.isTimeout()) {
     return false;
   }
@@ -433,7 +475,81 @@ class ListScopedQueryClient extends QueryClient {
   }
 }
 
+/**
+ * Tenant cache identity, per client (ISS-7442).
+ *
+ * Nearly every key factory in the app is organization-agnostic, so an entry
+ * cached under one organization is a HIT after switching to another and no
+ * request is issued at all — the server's own org scoping is correct,
+ * token-derived, and simply unreachable. Folding the identity into the query
+ * HASH — the cache's map key — makes that read a miss instead.
+ *
+ * Applied through `queryKeyHashFn` rather than by overriding `queryHash` after
+ * the fact, because React Query resolves an `exact: true` filter by RECOMPUTING
+ * the hash from the key (`matchQuery` -> `hashQueryKeyByOptions`) and comparing
+ * it to the stored one. A post-hoc override makes those two disagree forever,
+ * which silently turns every `cancelQueries`/`invalidateQueries`/`find` with
+ * `exact: true` into a no-op. Hashing from the key keeps both sides equal.
+ *
+ * Done here rather than in each key factory because a pure factory cannot reach
+ * React context: folding per-factory means threading an id through every call
+ * site, and the next hook added misses it. Here a new family cannot miss it.
+ *
+ * This is defense in depth UNDER the shell's clear-on-organization-change
+ * effect, not a replacement for it — the clear evicts and notifies
+ * already-mounted observers, which a hash fold cannot do.
+ */
+type QueryCacheScopeHolder = { current: string };
+
+const queryCacheScopes = new WeakMap<QueryClient, QueryCacheScopeHolder>();
+
+const ANONYMOUS_SCOPE_PREFIX = "anonymous:";
+
+let anonymousScopeCount = 0;
+
+/**
+ * A cache identity for "nobody resolved yet".
+ *
+ * Deliberately NOT a constant, and deliberately not "no scope at all". A query
+ * that mounts before the shell's identity hydrates still resolves with REAL
+ * data — `useApiClient` awaits auth INSIDE the request rather than gating the
+ * query — so the pre-hydration slot holds one identity's rows. A shared
+ * anonymous slot would hand those rows to the next identity's own
+ * pre-hydration window, which is the leak this file exists to close
+ * (`use-onboarding.ts` states the same mechanism). A fresh value each time the
+ * cache leaves a resolved identity makes that slot single-use.
+ */
+function nextAnonymousScope(): string {
+  anonymousScopeCount += 1;
+  return `${ANONYMOUS_SCOPE_PREFIX}${anonymousScopeCount}`;
+}
+
+/**
+ * Point `client`'s cache identity at `scope`, or at a fresh anonymous identity
+ * when `scope` is `null` (signed out, or not yet resolved). Idempotent for a
+ * repeated value, so a render-phase caller can call it on every render.
+ */
+export function setQueryCacheScope(
+  client: QueryClient,
+  scope: string | null
+): void {
+  const holder = queryCacheScopes.get(client);
+  if (holder === undefined) {
+    return;
+  }
+  if (scope !== null) {
+    holder.current = scope;
+    return;
+  }
+  // Already anonymous: keep the same slot, or every render would mint a new
+  // one and no pre-hydration read could ever hit its own write.
+  if (!holder.current.startsWith(ANONYMOUS_SCOPE_PREFIX)) {
+    holder.current = nextAnonymousScope();
+  }
+}
+
 export function makeQueryClient(options?: MakeQueryClientOptions) {
+  const scope: QueryCacheScopeHolder = { current: nextAnonymousScope() };
   const config: QueryClientConfig = {
     // Publish a session auth rejection from the shared query boundary (FEA-3940)
     // so the web shell's re-auth surface trips on the first 401 from ANY query,
@@ -467,10 +583,18 @@ export function makeQueryClient(options?: MakeQueryClientOptions) {
         refetchOnWindowFocus:
           options?.refetchOnWindowFocus ?? shouldRefetchOnFocus,
         refetchOnReconnect: options?.refetchOnReconnect ?? true,
+        networkMode: options?.networkMode,
         retry: shouldRetryQuery,
         retryDelay: queryRetryDelay,
+        // ISS-7442. Reads the holder on every hash so a scope change takes
+        // effect for the next read without rebuilding the client.
+        queryKeyHashFn: (queryKey: QueryKey) =>
+          `${scope.current}|${hashKey(queryKey)}`,
       },
       mutations: {
+        // Same value, same reason as the queries above: a client whose writes
+        // are SQLite over IPC must not have them paused by connectivity.
+        networkMode: options?.networkMode,
         retry: false,
         onError: (error, _variables, _onMutateResult, mutation) => {
           if (mutation?.meta?.suppressDefaultErrorToast === true) {
@@ -485,8 +609,40 @@ export function makeQueryClient(options?: MakeQueryClientOptions) {
   // the plain client so the listing scope-up is disabled and no finite listing
   // timer is ever scheduled server-side. The browser/desktop shells (no gcTime
   // override) get the list-scoped client so only listings retain for 30 minutes.
-  if (options?.gcTime !== undefined) {
-    return new QueryClient(config);
-  }
-  return new ListScopedQueryClient(config);
+  const client =
+    options?.gcTime === undefined
+      ? new ListScopedQueryClient(config)
+      : new QueryClient(config);
+  queryCacheScopes.set(client, scope);
+  return client;
+}
+
+/**
+ * The identity a client reports when the shell never wired one — SSR,
+ * Storybook, a test building a bare `QueryClient`. A
+ * single constant, so a scope comparison on such a client always holds and it
+ * keeps exactly the behavior it has today.
+ */
+const UNWIRED_QUERY_CACHE_SCOPE = "unwired";
+
+/**
+ * The cache identity `client` is hashing under RIGHT NOW (ISS-7442).
+ *
+ * For an imperative write made from an async callback — a mutation's
+ * `onSuccess` — "right now" is RESOLVE time, and the hash is what routes that
+ * write to a tenant. So a mutation issued under organization A that resolves
+ * after a switch to B lands A's response in B's slot, under a key that carries
+ * no identity of its own, where B reads it as its own fresh data. That is the
+ * leak the hash fold closes on the read side, arriving through the write side.
+ *
+ * Snapshot this at CALL time (a mutation's `onMutate`) and compare before
+ * writing, so an imperative write can only ever land under the identity that
+ * issued it. Comparing is deliberately all this offers: there is no way to
+ * write INTO another scope, because the shell `clear()`s the whole cache on an
+ * organization change (`use-clear-query-cache-on-org-change.ts`) and a late
+ * write redirected to the departed identity would resurrect the one entry that
+ * clear just removed.
+ */
+export function currentQueryCacheScope(client: QueryClient): string {
+  return queryCacheScopes.get(client)?.current ?? UNWIRED_QUERY_CACHE_SCOPE;
 }

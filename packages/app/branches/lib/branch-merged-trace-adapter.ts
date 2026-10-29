@@ -1,10 +1,10 @@
 import type { TurnActor } from "@repo/api/src/types/agent-session";
 import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
-import type { SessionTraceItem } from "@repo/app/agents/components/detail/session-trace";
+import type { SessionTraceItem } from "@repo/app/agents/components/detail/session-trace-groups";
+import { ActorTurnSide } from "@repo/app/shared/lib/actor-color-domain";
 import { formatTraceCostForDisplay } from "@repo/lib/sessions/trace-cost-format";
 import {
   type BranchActorColorDomain,
-  BranchActorTurnSide,
   buildActorColorDomain,
 } from "./branch-actor-domain";
 
@@ -61,7 +61,7 @@ export function mergedTraceToSessionTraceItems(
       human: isHuman ? resolved : null,
       color: colorDomain.colorForTurn(
         resolved,
-        isHuman ? BranchActorTurnSide.Human : BranchActorTurnSide.Agent
+        isHuman ? ActorTurnSide.Human : ActorTurnSide.Agent
       ),
       harness: harnessBySession.get(sessionId) ?? null,
     };

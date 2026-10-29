@@ -6,10 +6,12 @@ import {
   DOCUMENT_LIST_MAX_RECENCY_DAYS,
   DOCUMENT_LIST_MIN_RECENCY_DAYS,
   DocumentListRecency,
+  DocumentStatus,
   DocumentType,
   DocumentTypeInput,
   type DocumentWithProject,
   type FindDocumentsOptions,
+  IssueStatus,
 } from "@repo/api/src/types/document";
 import { ProjectStatus } from "@repo/api/src/types/project";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,12 +19,53 @@ import {
   attachCustomFieldValues,
   buildArchivedProjectFilter,
   buildDocumentListWhere,
+  buildDocumentStatusFilter,
   buildRecencyFilter,
   resolveDocumentListHasMore,
   resolveDocumentListRecencyDays,
   resolveDocumentListSkip,
   resolveDocumentListTake,
 } from "../document-list-query";
+
+describe("document subtype union", () => {
+  it("scopes the combined PRD, plan, and document population in one predicate", () => {
+    expect(
+      buildDocumentListWhere({
+        organizationId: "org-1",
+        types: [
+          DocumentType.Prd,
+          DocumentType.ImplementationPlan,
+          DocumentType.Doc,
+        ],
+      })
+    ).toMatchObject({
+      organizationId: "org-1",
+      subtype: {
+        in: [
+          DocumentType.Prd,
+          DocumentType.ImplementationPlan,
+          DocumentType.Doc,
+        ],
+      },
+    });
+  });
+
+  it("normalizes aliases and intersects a scalar subtype with the union", () => {
+    expect(
+      buildDocumentListWhere({
+        organizationId: "org-1",
+        type: DocumentType.Doc,
+        types: [DocumentType.Prd, DocumentType.Doc],
+      })
+    ).toMatchObject({ subtype: { in: [DocumentType.Doc] } });
+    expect(
+      buildDocumentListWhere({
+        organizationId: "org-1",
+        types: [DocumentTypeInput.Issue, DocumentType.Feature],
+      })
+    ).toMatchObject({ subtype: { in: [DocumentType.Feature] } });
+  });
+});
 
 // FEA-4373: the document-list bound is opt-in and clamped. These pure helpers
 // own that policy; the service just applies their results as Prisma take/skip.
@@ -58,9 +101,10 @@ describe("resolveDocumentListSkip", () => {
     expect(resolveDocumentListSkip(200, 100)).toBe(100);
   });
 
-  it("clamps an offset above the ceiling to DOCUMENT_LIST_MAX_OFFSET", () => {
-    expect(resolveDocumentListSkip(200, 1_000_000)).toBe(
-      DOCUMENT_LIST_MAX_OFFSET
+  it("passes an offset past DOCUMENT_LIST_MAX_OFFSET through unclamped (ISS-11161)", () => {
+    // A clamp would answer page 10,050 with page 10,000's rows.
+    expect(resolveDocumentListSkip(200, DOCUMENT_LIST_MAX_OFFSET + 50)).toBe(
+      DOCUMENT_LIST_MAX_OFFSET + 50
     );
   });
 
@@ -360,6 +404,93 @@ describe("buildDocumentListWhere (FEA-1626 opt-in narrowing)", () => {
         ),
       },
     });
+  });
+});
+
+// ISS-6778: the status filter is a QUERY predicate, so these assert the shape
+// the database is handed. A `.filter()` over the fetched rows would return the
+// same rows for a one-page fixture and fail every one of these.
+describe("buildDocumentStatusFilter (ISS-6778)", () => {
+  it("narrows nothing when no status is requested", () => {
+    expect(buildDocumentStatusFilter(undefined)).toEqual({});
+  });
+
+  it("emits a single requested status as an IN, not an equality", () => {
+    // One shape for one value and for many, so the two arms cannot drift into
+    // different SQL for the same question.
+    expect(buildDocumentStatusFilter([IssueStatus.Todo])).toEqual({
+      status: { in: [IssueStatus.Todo] },
+    });
+  });
+
+  it("emits a requested set as one IN over every member", () => {
+    expect(
+      buildDocumentStatusFilter([IssueStatus.Todo, IssueStatus.InProgress])
+    ).toEqual({
+      status: { in: [IssueStatus.Todo, IssueStatus.InProgress] },
+    });
+  });
+
+  it("dedupes before the IN list reaches Prisma", () => {
+    // The vocabulary is closed, so deduping is what bounds the bind list no
+    // matter how repetitive the caller's query string was.
+    expect(
+      buildDocumentStatusFilter([
+        IssueStatus.Todo,
+        IssueStatus.Todo,
+        IssueStatus.Done,
+      ])
+    ).toEqual({ status: { in: [IssueStatus.Todo, IssueStatus.Done] } });
+  });
+
+  it("narrows nothing for a member-less filter rather than matching nothing", () => {
+    // Unreachable from the wire — the route rejects an empty set — so this pins
+    // the direct-service-caller reading: no members is indistinguishable here
+    // from no filter.
+    expect(buildDocumentStatusFilter([])).toEqual({});
+  });
+
+  it("accepts a Document status as readily as an Issue status", () => {
+    // `Artifact.status` is one freeform column carrying both vocabularies, and
+    // off-vocabulary rows exist, so the predicate does not police the pairing.
+    expect(buildDocumentStatusFilter([DocumentStatus.Obsolete])).toEqual({
+      status: { in: [DocumentStatus.Obsolete] },
+    });
+  });
+});
+
+describe("buildDocumentListWhere (ISS-6778 status narrowing)", () => {
+  it("carries the status predicate into the shared where", () => {
+    const where = buildDocumentListWhere({
+      organizationId: ORGANIZATION_ID,
+      status: [IssueStatus.Todo],
+    });
+
+    expect(where).toMatchObject({ status: { in: [IssueStatus.Todo] } });
+  });
+
+  it("composes with type rather than replacing it", () => {
+    const where = buildDocumentListWhere({
+      organizationId: ORGANIZATION_ID,
+      type: DocumentTypeInput.Issue,
+      status: [IssueStatus.Todo],
+    });
+
+    expect(where).toMatchObject({
+      subtype: DocumentType.Feature,
+      status: { in: [IssueStatus.Todo] },
+    });
+  });
+
+  it("leaves the predicate of every existing consumer untouched", () => {
+    // The live-endpoint guarantee: nothing shipped sends `status`, so the
+    // predicate they get must be the one they got yesterday.
+    const where = buildDocumentListWhere({
+      organizationId: ORGANIZATION_ID,
+      assigneeId: "user-1",
+    });
+
+    expect(where).not.toHaveProperty("status");
   });
 });
 

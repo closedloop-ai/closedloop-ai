@@ -112,7 +112,7 @@ describe("formatKpiValue", () => {
 describe("formatKpiTileValue (FEA-3431 whole-dollar aggregate spend)", () => {
   it("renders an aggregate spend KPI as whole dollars, not compact $9.1k", () => {
     // The gap #3001 left open: the Insights headline spend read "$9.1k" while
-    // the Branches/Sessions "AI spend" card read "$9,061" for the same amount.
+    // the Sessions summary cost card read "$9,061" for the same amount.
     expect(formatKpiTileValue(9060.84, KpiFormat.Currency)).toBe("$9,061");
     // …and the compact form that formatKpiValue would have produced is gone.
     expect(formatKpiValue(9060.84, KpiFormat.Currency)).toBe("$9.1k");

@@ -1,20 +1,15 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { DocumentColumn, useColumnVisibility } from "../use-column-visibility";
+import {
+  COLUMNS,
+  ORDER_KEY,
+  STORAGE_KEY,
+} from "./use-column-visibility.test-support";
 
 afterEach(() => {
   localStorage.clear();
 });
-
-const STORAGE_KEY = "test:columns";
-const ORDER_KEY = "test:column-order";
-
-// A small canonical column list so the reorder math is easy to assert against.
-const COLUMNS = [
-  DocumentColumn.Type,
-  DocumentColumn.Assignee,
-  DocumentColumn.Priority,
-] as const;
 
 describe("useColumnVisibility column order (FEA-4165)", () => {
   it("reorders the visible columns and persists the new order", () => {
@@ -173,7 +168,7 @@ describe("useColumnVisibility column order (FEA-4165)", () => {
     ]);
   });
 
-  it("drops unknown ids from a restored order so a stale id cannot reorder", () => {
+  it("ignores an unknown id in a restored order when arranging the drawn columns", () => {
     localStorage.setItem(
       ORDER_KEY,
       JSON.stringify(["not-a-column", DocumentColumn.Priority])
@@ -241,30 +236,33 @@ describe("useColumnVisibility column order (FEA-4165)", () => {
     ["a JSON number", JSON.stringify(5)],
     ["a JSON string", JSON.stringify("priority")],
     ["an array with non-string members", JSON.stringify([1, 2, 3])],
-  ])("falls back to the canonical order when the persisted order is %s", (_label, stored) => {
-    localStorage.setItem(ORDER_KEY, stored);
+  ])(
+    "falls back to the canonical order when the persisted order is %s",
+    (_label, stored) => {
+      localStorage.setItem(ORDER_KEY, stored);
 
-    const { result } = renderHook(() =>
-      useColumnVisibility({
-        storageKey: STORAGE_KEY,
-        orderStorageKey: ORDER_KEY,
-        columns: COLUMNS,
-        defaults: {
-          [DocumentColumn.Type]: true,
-          [DocumentColumn.Assignee]: true,
-          [DocumentColumn.Priority]: true,
-        },
-      })
-    );
+      const { result } = renderHook(() =>
+        useColumnVisibility({
+          storageKey: STORAGE_KEY,
+          orderStorageKey: ORDER_KEY,
+          columns: COLUMNS,
+          defaults: {
+            [DocumentColumn.Type]: true,
+            [DocumentColumn.Assignee]: true,
+            [DocumentColumn.Priority]: true,
+          },
+        })
+      );
 
-    // A malformed record must not throw during render; the order degrades to
-    // the table's canonical column order.
-    expect(result.current.visibleColumns).toEqual([
-      DocumentColumn.Type,
-      DocumentColumn.Assignee,
-      DocumentColumn.Priority,
-    ]);
-  });
+      // A malformed record must not throw during render; the order degrades to
+      // the table's canonical column order.
+      expect(result.current.visibleColumns).toEqual([
+        DocumentColumn.Type,
+        DocumentColumn.Assignee,
+        DocumentColumn.Priority,
+      ]);
+    }
+  );
 
   it("backfills a column the stored visibility record predates instead of hiding it", () => {
     // A legacy record written before Priority existed omits that key entirely.
@@ -329,5 +327,69 @@ describe("useColumnVisibility column order (FEA-4165)", () => {
       DocumentColumn.Assignee,
       DocumentColumn.Priority,
     ]);
+  });
+});
+
+/**
+ * ISS-8533. This hook holds TWO adjacent `useLocalStorageState` calls: the visibility
+ * RECORD and the column ORDER. The order read has always coerced downstream; the
+ * record read was the unguarded one, and it is the record that is returned RAW to
+ * callers as well as merged — so a malformed value reaches `!prev[column]` here and
+ * `userVisibility[c] !== false` in the projects tables.
+ */
+describe("useColumnVisibility malformed persisted visibility (ISS-8533)", () => {
+  it("RED: a stored null does not throw, and toggling still works", () => {
+    localStorage.setItem(STORAGE_KEY, "null");
+
+    const { result } = renderHook(() =>
+      useColumnVisibility({ storageKey: STORAGE_KEY, columns: COLUMNS })
+    );
+
+    // Pre-fix `userVisibility` is null and `!prev[column]` throws on toggle.
+    expect(() =>
+      act(() => {
+        result.current.toggleColumn(DocumentColumn.Priority);
+      })
+    ).not.toThrow();
+  });
+
+  it("PIN: a legitimately PARTIAL record survives untouched", () => {
+    // The constraint. A record written before a column existed omits that key, and
+    // the merge backfills it — so a whole-record rejection here would silently reset
+    // preferences the user really set. "Partial" is about KEYS, not corruption.
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ [DocumentColumn.Priority]: false })
+    );
+
+    const { result } = renderHook(() =>
+      useColumnVisibility({ storageKey: STORAGE_KEY, columns: COLUMNS })
+    );
+
+    expect(result.current.userVisibility).toEqual({
+      [DocumentColumn.Priority]: false,
+    });
+    expect(result.current.visibility[DocumentColumn.Priority]).toBe(false);
+    expect(result.current.visibility[DocumentColumn.Assignee]).toBe(true);
+  });
+
+  it("RED: ONE non-boolean member rejects the WHOLE record, not just that key", () => {
+    // Member-wise filtering would leave the key absent from the raw record handed to
+    // the column menu while the backfilled copy still SHOWS the column — an
+    // unchecked switch for a visible column. Wholesale keeps the two agreeing.
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        [DocumentColumn.Priority]: "false",
+        [DocumentColumn.Assignee]: false,
+      })
+    );
+
+    const { result } = renderHook(() =>
+      useColumnVisibility({ storageKey: STORAGE_KEY, columns: COLUMNS })
+    );
+
+    expect(result.current.userVisibility[DocumentColumn.Assignee]).toBe(true);
+    expect(result.current.visibility[DocumentColumn.Priority]).toBe(true);
   });
 });

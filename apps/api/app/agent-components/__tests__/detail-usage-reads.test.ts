@@ -1,8 +1,13 @@
 /**
- * ISS-5441: pin the moved-content usage read and its fail-closed legacy-route
- * guard. The read must recover hash-A usage after the linked inventory row
- * moves to hash B, while a name-level route with no content scope must never
- * query the org-wide linked-usage population.
+ * ISS-5441: pin the moved-inventory usage read and its fail-closed guard. The
+ * read must recover hash-A usage after the linked inventory row moves to hash B,
+ * and must never query a population it has no identity for.
+ *
+ * ISS-10469 re-keyed that read from the content scope onto
+ * `usedOnlyUsageIdentityWhere`, so the guard it fails closed on moved with it:
+ * from "no content scope" to "no identity at all". A name-level route now DOES
+ * grow the second arm — keyed on that route's own names, never org-wide — which
+ * is the family scoping this suite pins below.
  */
 
 import {
@@ -13,7 +18,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   USAGE_WITHOUT_LIVE_INVENTORY_WHERE,
   type WhereClause,
-} from "@/app/agent-components/__tests__/usage-lane-doubles";
+} from "@/__tests__/support/agent-components/usage-lane-doubles";
 
 const mocks = vi.hoisted(() => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
@@ -24,22 +29,25 @@ vi.mock("@repo/database", () => ({
 }));
 
 import {
-  fetchDetailLinkedUsageByContentScope,
+  detailOrphanUsageWhere,
+  fetchDetailLiveInventoryUsage,
   fetchDetailUsageSeenBounds,
+  usageNameIdentityWhere,
+  usedOnlyUsageIdentityWhere,
 } from "../detail-usage-reads";
 
-describe("fetchDetailLinkedUsageByContentScope", () => {
+describe("fetchDetailLiveInventoryUsage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("returns no rows without querying the database when content scope is null", async () => {
+  it("returns no rows without querying the database when there is no identity", async () => {
     const findMany = trackedDelegate([] as DetailUsageRow[]);
     const db = {
       agentComponentSessionUsage: { findMany },
     } as unknown as DetailUsageDb;
 
-    const result = await fetchDetailLinkedUsageByContentScope(
+    const result = await fetchDetailLiveInventoryUsage(
       db,
       ORGANIZATION_ID,
       AgentComponentKind.Skill,
@@ -56,11 +64,11 @@ describe("fetchDetailLinkedUsageByContentScope", () => {
       agentComponentSessionUsage: { findMany },
     } as unknown as DetailUsageDb;
 
-    const result = await fetchDetailLinkedUsageByContentScope(
+    const result = await fetchDetailLiveInventoryUsage(
       db,
       ORGANIZATION_ID,
       AgentComponentKind.Skill,
-      CONTENT_SCOPE_A
+      CONTENT_IDENTITY_A
     );
 
     expect(result).toEqual([MOVED_HASH_USAGE_ROW]);
@@ -71,12 +79,18 @@ describe("fetchDetailLinkedUsageByContentScope", () => {
       // tombstoned-FK rows, and `buildOrphanOnlyDetail` folds both lanes.
       agentComponent: { uninstalledAt: null },
       componentKind: AgentComponentKind.Skill,
-      OR: [
-        { componentVersionHash: { in: [CONTENT_HASH_A] } },
+      // ISS-10469: nested under `AND`, never spread — the content identity IS an
+      // `OR`, and spreading one beside a sibling `OR` replaces it.
+      AND: [
         {
-          definitionVersion: {
-            definitionHash: DEFINITION_HASH_A,
-          },
+          OR: [
+            { componentVersionHash: { in: [CONTENT_HASH_A] } },
+            {
+              definitionVersion: {
+                definitionHash: DEFINITION_HASH_A,
+              },
+            },
+          ],
         },
       ],
       session: {
@@ -90,10 +104,11 @@ describe("fetchDetailLinkedUsageByContentScope", () => {
 
 /**
  * ISS-5577: the seen-window aggregate is the ONLY read whose predicate is built
- * by OR-ing both detail usage lanes, and the moved-inventory lane carries no name
- * constraint — it selects by (kind, content hash) alone. So the thing that must
- * be pinned is that BOTH arms stay org-scoped, and that a name-level route never
- * grows the second arm at all.
+ * by OR-ing both detail usage lanes, so what must be pinned here is that BOTH
+ * arms stay org-scoped and that neither can read a population it has no identity
+ * for. ISS-10469 gave the FK-linked arm the same identity as its sibling, so the
+ * second half of that is now "no identity, no arm" rather than "no fingerprint,
+ * no arm".
  */
 describe("fetchDetailUsageSeenBounds", () => {
   beforeEach(() => {
@@ -134,7 +149,7 @@ describe("fetchDetailUsageSeenBounds", () => {
     expect(lanes[1]?.agentComponent).toEqual({ uninstalledAt: null });
   });
 
-  it("omits the moved-inventory lane entirely on a name-level route", async () => {
+  it("keys BOTH lanes on the family's names on a name-level route", async () => {
     const aggregate = trackedDelegate(EMPTY_BOUNDS);
     const db = {
       agentComponentSessionUsage: { aggregate },
@@ -148,12 +163,36 @@ describe("fetchDetailUsageSeenBounds", () => {
     );
 
     const call = aggregate.mock.calls[0]?.[0] as AggregateArgs | undefined;
-    // Without a fingerprint there is no moved row to recover, so the org-wide
-    // FK-linked population must never widen the window.
-    expect(call?.where.OR).toHaveLength(1);
+    // ISS-10469 (behavior change): this used to assert ONE lane, because the
+    // FK-linked arm keyed on CONTENT alone and a name route has no fingerprint,
+    // so growing it would have meant the org-wide live-FK population. The arm now
+    // carries the route's OWN names, so the window covers the whole family — the
+    // same population every other field on the page states — rather than only the
+    // usage no live inventory row owns.
+    expect(call?.where.OR).toHaveLength(2);
     expect(call?.where.OR[0]?.AND).toContainEqual(
       USAGE_WITHOUT_LIVE_INVENTORY_WHERE
     );
+    expect(call?.where.OR[1]?.agentComponent).toEqual({ uninstalledAt: null });
+  });
+
+  it("omits the FK-linked lane when the route resolved no identity at all", async () => {
+    const aggregate = trackedDelegate(EMPTY_BOUNDS);
+    const db = {
+      agentComponentSessionUsage: { aggregate },
+    } as unknown as DetailUsageDb;
+
+    await fetchDetailUsageSeenBounds(
+      db,
+      ORGANIZATION_ID,
+      AgentComponentKind.Skill,
+      ""
+    );
+
+    const call = aggregate.mock.calls[0]?.[0] as AggregateArgs | undefined;
+    // No name and no fingerprint: an arm with no identity of its own would be
+    // every live-FK usage row of this kind in the org. Fails closed.
+    expect(call?.where.OR).toHaveLength(1);
   });
 });
 
@@ -173,9 +212,9 @@ const EMPTY_BOUNDS = {
   _max: { lastInvokedAt: null },
 };
 
-type DetailUsageDb = Parameters<typeof fetchDetailLinkedUsageByContentScope>[0];
+type DetailUsageDb = Parameters<typeof fetchDetailLiveInventoryUsage>[0];
 type DetailUsageRow = Awaited<
-  ReturnType<typeof fetchDetailLinkedUsageByContentScope>
+  ReturnType<typeof fetchDetailLiveInventoryUsage>
 >[number];
 type FindManyArgs = { where: WhereClause };
 
@@ -186,9 +225,11 @@ const DEFINITION_HASH_A = "definition-hash-a";
 const CONTENT_SCOPE_A = {
   fingerprint: DEFINITION_HASH_A,
   contentHashes: [CONTENT_HASH_A],
-} satisfies NonNullable<
-  Parameters<typeof fetchDetailLinkedUsageByContentScope>[3]
->;
+};
+
+/** The identity a nameless content-hash route resolves to (ISS-10469). */
+const CONTENT_IDENTITY_A = usedOnlyUsageIdentityWhere("", [], CONTENT_SCOPE_A)
+  .where as NonNullable<Parameters<typeof fetchDetailLiveInventoryUsage>[3]>;
 
 // The inventory FK remains non-null but now points at the row's hash-B state;
 // the selected usage shape carries the historical hash-A invocation evidence.
@@ -198,6 +239,7 @@ const MOVED_HASH_USAGE_ROW = {
   harness: Harness.Claude,
   gitBranch: "",
   definitionVersionId: "definition-version-a",
+  componentVersionHash: "hash-a",
   firstInvokedAt: new Date("2026-02-01T00:00:00.000Z"),
   lastInvokedAt: new Date("2026-02-09T00:00:00.000Z"),
 } satisfies DetailUsageRow;
@@ -205,3 +247,89 @@ const MOVED_HASH_USAGE_ROW = {
 function trackedDelegate<T>(value: T) {
   return vi.fn(async (_args: unknown): Promise<T> => value);
 }
+
+/**
+ * ISS-6756 — the identity-scoped usage lanes must ask for the PERSISTED fold,
+ * not for `mode: "insensitive"`.
+ *
+ * Prisma compiles `{ equals: k, mode: "insensitive" }` to `component_key ILIKE
+ * $n`, an operator NO btree can serve — not even a `LOWER(component_key)`
+ * expression index, which is exactly the distinction migration 20260815120000
+ * (ISS-6452) turns on. These lanes bind neither `agentComponentId` nor
+ * `agentSessionId`, and `agent_component_session_usage` carries no
+ * `organization_id` column (org arrives through the `session.artifact` join), so
+ * the ILIKE left them narrowing only to the same-kind partition of every tenant.
+ *
+ * The tests below pin the SPELLING, because both spellings select the same rows:
+ * a `where`-evaluating double cannot tell them apart, so only asserting the
+ * absence of the raw-key predicate distinguishes the indexed read from the
+ * scanning one.
+ */
+describe("usageNameIdentityWhere", () => {
+  it("matches the persisted fold, with no ILIKE anywhere in the predicate", () => {
+    const where = usageNameIdentityWhere(["Reviewer"]);
+
+    expect(where).toEqual({ componentKeyNormalized: { in: ["reviewer"] } });
+    expect(JSON.stringify(where)).not.toContain("insensitive");
+  });
+
+  it("drops a name that folds to nothing instead of emitting `IN ('')`", () => {
+    // `IN ('')` matches every row still carrying the column's
+    // `ADD COLUMN … DEFAULT ''` value — the widest predicate in the shape of
+    // the narrowest. An all-empty set fails CLOSED, selecting nothing.
+    expect(usageNameIdentityWhere(["Reviewer", "  ", ""])).toEqual({
+      componentKeyNormalized: { in: ["reviewer"] },
+    });
+    expect(usageNameIdentityWhere(["", "   "])).toEqual({
+      componentKeyNormalized: { in: [] },
+    });
+  });
+
+  it("folds and de-duplicates alias names that differ only by case or padding", () => {
+    // FEA-4335 hands this lane every name the content is installed under. Two
+    // spellings of one name are ONE index probe, not two.
+    expect(
+      usageNameIdentityWhere(["Reviewer", "  reviewer ", "alias"])
+    ).toEqual({ componentKeyNormalized: { in: ["reviewer", "alias"] } });
+  });
+});
+
+describe("detailOrphanUsageWhere", () => {
+  it("carries the folded identity beside the lane and content predicates, all under AND", () => {
+    const where = detailOrphanUsageWhere(
+      ORGANIZATION_ID,
+      "skill",
+      COMPONENT_KEY,
+      ["My-Skill"],
+      CONTENT_SCOPE_A
+    );
+
+    expect(where.componentKind).toBe("skill");
+    expect(where.AND).toEqual([
+      USAGE_WITHOUT_LIVE_INVENTORY_WHERE,
+      { componentKeyNormalized: { in: ["my-skill"] } },
+      {
+        OR: [
+          { componentVersionHash: { in: [CONTENT_HASH_A] } },
+          { definitionVersion: { definitionHash: DEFINITION_HASH_A } },
+        ],
+      },
+    ]);
+    expect(where).not.toHaveProperty("componentKey");
+  });
+
+  it("drops the identity predicate entirely for the orphan-only content-hash case", () => {
+    // No name at all: `contentScope` alone selects the rows. An empty `in` here
+    // would select NOTHING, silently emptying the lane.
+    const where = detailOrphanUsageWhere(
+      ORGANIZATION_ID,
+      "skill",
+      "",
+      [],
+      CONTENT_SCOPE_A
+    );
+
+    expect(where.AND).toHaveLength(2);
+    expect(JSON.stringify(where)).not.toContain("componentKeyNormalized");
+  });
+});

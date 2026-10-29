@@ -3,7 +3,7 @@ title: Telemetry
 description: Two complementary event streams that make the desktop client observable without leaking user content by default.
 ---
 
-The desktop client emits two telemetry streams with different destinations and different semantics: a PostHog product-analytics stream and a Datadog-bound diagnostics stream sent over the cloud relay.
+The desktop client emits two telemetry streams with different destinations and different semantics: a PostHog product-analytics stream and a Datadog-bound diagnostics stream sent to the API.
 
 ## PostHog (product analytics)
 
@@ -22,7 +22,7 @@ Event taxonomy:
 
 ## Datadog-bound diagnostics
 
-Sent as `desktop.telemetry` events through the cloud relay. Dot-named, past-tense categories:
+Sent to the API's `POST /desktop/telemetry` route. Dot-named, past-tense categories:
 
 ```
 command.initiated, command.started, command.completed,

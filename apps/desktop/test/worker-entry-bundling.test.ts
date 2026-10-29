@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import ts from "typescript6";
+import { describe, test } from "vitest";
 import { collectTsFiles } from "./helpers/collect-ts-files.js";
 import { forEachNode, parseTypeScriptFile } from "./helpers/ts-ast.js";
 
-// PLN-999 guardrail. electron-vite bundles the desktop main process: rollup only
+// PLN-999 guardrail. Vite bundles the desktop main process: rollup only
 // emits the entry points it is told about plus their STATIC import graph.
 // Several Node entry points are spawned as separate processes by runtime PATH —
 // `new URL("./<name>.js", import.meta.url)` handed to utilityProcess.fork /
@@ -15,35 +15,30 @@ import { forEachNode, parseTypeScriptFile } from "./helpers/ts-ast.js";
 // The old per-file `tsc` build emitted every `.ts`, so these "just existed";
 // headless tests fork-mock the workers, so they never caught the gap. This test
 // closes it: every `new URL("./<name>.js", import.meta.url)` worker reference in
-// src/main MUST have a matching `<name>` rollup input key in the electron-vite
+// src/main MUST have a matching `<name>` rollup input key in the main build
 // config (entry key === emitted basename, because entryFileNames is "[name].js").
 //
 // Both halves are read via the TypeScript AST rather than raw source text
 // (AGENTS.md → "Test Practices"): the references are `new URL` expressions with
-// an `import.meta.url` base, and the declared entries are the keys of the MAIN
-// target's `build.rollupOptions.input` plus the keys of every registry const
+// an `import.meta.url` base, and the declared entries are the keys of the main
+// config's `build.rollupOptions.input` plus the keys of every registry const
 // that literal actually SPREADS (`...MAIN_WORKER_ENTRIES`) — reached by walking
 // that exact property path, not by matching any property named `input`, and not
-// by trusting a registry the input never references. The `preload` target has its own
-// `rollupOptions.input`, and its entries emit as `.cjs`, so accepting them here
+// by trusting a registry the input never references. The preload builds from its
+// own config, and its entries emit as `.cjs`, so accepting them here
 // would let a main-process `new URL("./preload-design-system.js", …)` pass
 // against an entry that never emits that file.
 
 const MAIN_DIR = "src/main";
-const CONFIG_PATH = "electron.vite.config.ts";
+const CONFIG_PATH = "vite.main.config.ts";
 const WORKER_ENTRIES_CONST = "MAIN_WORKER_ENTRIES";
-/** `main.build.rollupOptions.input` — the ONLY inline input map in scope. */
-const MAIN_INPUT_PROPERTY_PATH = [
-  "main",
-  "build",
-  "rollupOptions",
-  "input",
-] as const;
+/** `build.rollupOptions.input` — the ONLY inline input map in scope. */
+const MAIN_INPUT_PROPERTY_PATH = ["build", "rollupOptions", "input"] as const;
 const WORKER_SPECIFIER_PREFIX = "./";
 const WORKER_SPECIFIER_SUFFIX = ".js";
 
 describe("desktop forked-worker entry bundling (PLN-999)", () => {
-  test('every new URL("./<name>.js", import.meta.url) worker is a declared electron-vite entry', () => {
+  test('every new URL("./<name>.js", import.meta.url) worker is a declared main-build entry', () => {
     const declared = declaredEntryNames(parseTypeScriptFile(CONFIG_PATH));
 
     const referenced = new Set<string>();
@@ -66,7 +61,7 @@ describe("desktop forked-worker entry bundling (PLN-999)", () => {
     assert.deepEqual(
       missing,
       [],
-      `These forked-worker entry points are referenced via new URL(import.meta.url) but are NOT declared as electron-vite rollup inputs, so they will be dropped from dist/main and crash the fork at runtime. Add each to ${WORKER_ENTRIES_CONST} in ${CONFIG_PATH}:\n${missing.join("\n")}`
+      `These forked-worker entry points are referenced via new URL(import.meta.url) but are NOT declared as main-build rollup inputs, so they will be dropped from dist/main and crash the fork at runtime. Add each to ${WORKER_ENTRIES_CONST} in ${CONFIG_PATH}:\n${missing.join("\n")}`
     );
   });
 
@@ -84,21 +79,21 @@ describe("desktop forked-worker entry bundling (PLN-999)", () => {
   });
 });
 
-/** A minimal electron-vite config whose MAIN input carries `inputSpread`. */
+/** A minimal main-build config whose input carries `inputSpread`. */
 function configFixture(inputSpread: string): ts.SourceFile {
   return ts.createSourceFile(
     CONFIG_PATH,
     `const ${WORKER_ENTRIES_CONST} = { "db-host-worker": "w.ts" };\n` +
-      `export default defineConfig({ main: { build: { rollupOptions: { input: { index: "i.ts", ${inputSpread} } } } } });\n`,
+      `export default defineConfig({ build: { rollupOptions: { input: { index: "i.ts", ${inputSpread} } } } });\n`,
     ts.ScriptTarget.Latest,
     false
   );
 }
 
 /**
- * Rollup input keys declared by the electron-vite config for the MAIN target.
+ * Rollup input keys declared by the main build config.
  *
- * Rooted at `main.build.rollupOptions.input` and NOTHING else: a registry const
+ * Rooted at `build.rollupOptions.input` and NOTHING else: a registry const
  * such as `MAIN_WORKER_ENTRIES` counts only where that input literal actually
  * spreads it. Unioning the registry in unconditionally made the test pass with
  * `...MAIN_WORKER_ENTRIES` deleted from the input — every worker still appeared
@@ -176,12 +171,13 @@ function objectLiteralNamed(
 }
 
 /**
- * Descend `main.build.rollupOptions.input` from the exported config object.
+ * Descend `build.rollupOptions.input` from the exported config object.
  *
  * Anchored to that path on purpose: a bare "any property named `input`" scan
- * also matches `preload.build.rollupOptions.input`, whose entries emit `.cjs`,
- * so a main-process `new URL("./<preload-entry>.js", …)` would pass against a
- * file that is never produced.
+ * would accept an input map nested anywhere, including one this build never
+ * reads. The preload declares its own in `vite.preload.config.ts`, which this
+ * test never parses, and its entries emit `.cjs` — so a main-process
+ * `new URL("./<preload-entry>.js", …)` must find no match here.
  */
 function mainRollupInputLiteral(
   config: ts.SourceFile

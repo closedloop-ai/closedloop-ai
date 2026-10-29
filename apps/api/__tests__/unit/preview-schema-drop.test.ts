@@ -2,7 +2,7 @@
  * Unit tests for maybeDropPreviewSchemaOnClose
  *
  * Verifies:
- * (a) closed + closedloop-ai/example-repo + branch → dropSchemaForBranch called
+ * (a) closed + closedloop-ai/closedloop-ai + branch → dropSchemaForBranch called
  *     with the branch and waitUntil called once
  * (b) closed + different repo → dropSchemaForBranch NOT called
  * (c) non-`closed` action (opened) → dropSchemaForBranch not called
@@ -102,7 +102,7 @@ describe("maybeDropPreviewSchemaOnClose", () => {
     expect(mockDropSchemaForBranch).toHaveBeenCalledWith(BRANCH);
   });
 
-  it("(b) does not call dropSchemaForBranch when repo is not closedloop-ai/example-repo", () => {
+  it("(b) does not call dropSchemaForBranch when repo is not closedloop-ai/closedloop-ai", () => {
     maybeDropPreviewSchemaOnClose({
       action: "closed",
       branch: BRANCH,
@@ -111,6 +111,62 @@ describe("maybeDropPreviewSchemaOnClose", () => {
 
     expect(mockDropSchemaForBranch).not.toHaveBeenCalled();
     expect(mockWaitUntil).not.toHaveBeenCalled();
+  });
+
+  it("retains vibe branches when their PR closes", () => {
+    maybeDropPreviewSchemaOnClose({
+      action: "closed",
+      branch: "vibe/bulk-tags",
+      repoFullName: SOURCE_REPO,
+    });
+
+    expect(mockDropSchemaForBranch).not.toHaveBeenCalled();
+    expect(mockWaitUntil).not.toHaveBeenCalled();
+  });
+
+  it.each(["andy/bulk-tags", "vibe-bulk-tags", "feat/vibe/bulk-tags"])(
+    "still drops %s when its PR closes",
+    (branch) => {
+      maybeDropPreviewSchemaOnClose({
+        action: "closed",
+        branch,
+        repoFullName: SOURCE_REPO,
+      });
+
+      expect(mockDropSchemaForBranch).toHaveBeenCalledExactlyOnceWith(branch);
+      expect(mockWaitUntil).toHaveBeenCalledOnce();
+    }
+  );
+
+  it.each(["functional-prototype/x", "prototype/x"])(
+    "retains %s when its PR closes (ISS-12226, ISS-12214)",
+    (branch) => {
+      maybeDropPreviewSchemaOnClose({
+        action: "closed",
+        branch,
+        repoFullName: SOURCE_REPO,
+      });
+
+      expect(mockDropSchemaForBranch).not.toHaveBeenCalled();
+      expect(mockWaitUntil).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    "feat/x",
+    "prototype-x",
+    "functional-prototype-x",
+    "feat/functional-prototype/x",
+    "feat/prototype/x",
+  ])("still drops %s when its PR closes", (branch) => {
+    maybeDropPreviewSchemaOnClose({
+      action: "closed",
+      branch,
+      repoFullName: SOURCE_REPO,
+    });
+
+    expect(mockDropSchemaForBranch).toHaveBeenCalledExactlyOnceWith(branch);
+    expect(mockWaitUntil).toHaveBeenCalledOnce();
   });
 
   it("(c) does not call dropSchemaForBranch when action is not closed", () => {
@@ -217,6 +273,30 @@ describe("maybeDropPreviewSchemaOnClose — Slack alert integration", () => {
     expect(mockNotifySlack).toHaveBeenCalledWith(
       expect.objectContaining({ route: "cleanup-preview-schemas:pr-close" })
     );
+  });
+
+  it("(j) redacts credential-bearing drop-failure text out of the Slack alert", async () => {
+    mockDropSchemaForBranch.mockResolvedValue({
+      schemaName: "preview_feat_my_branch",
+      dropped: false,
+      alreadyGone: false,
+      error:
+        "DROP SCHEMA failed: postgres://vercel_iam:pw-that-must-not-escape@db.internal.example.com:5432/symphony",
+    });
+
+    maybeDropPreviewSchemaOnClose({
+      action: "closed",
+      branch: BRANCH,
+      repoFullName: SOURCE_REPO,
+    });
+
+    await triggerAndFlush();
+
+    const message = mockNotifySlack.mock.calls[0]?.[0]?.message ?? "";
+    expect(message).toContain("preview_feat_my_branch");
+    expect(message).not.toContain("pw-that-must-not-escape");
+    expect(message).not.toContain("db.internal.example.com");
+    expect(message).toContain("[redacted sensitive value]");
   });
 
   it("(h) does NOT call notifySlack when dropSchemaForBranch returns error === null", async () => {

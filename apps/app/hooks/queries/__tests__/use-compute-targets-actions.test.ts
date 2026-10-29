@@ -4,24 +4,18 @@ import {
   DesktopCommandStatus,
   HarnessType,
 } from "@repo/api/src/types/compute-target";
-import { computePreferenceKeys } from "@repo/app/compute/hooks/use-compute-preference";
+import { computeTargetKeys } from "@repo/app/compute/hooks/compute-target-query-keys";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { computeTargetKeys } from "../compute-target-query-keys";
 import {
   useComputeTargetHealthCheckSnapshot,
   useDeleteComputeTarget,
   useDesktopCommandStatus,
   useDispatchDesktopCommand,
-  useStartDesktopSecurityUpgrade,
-  useToggleComputeTargetSharing,
-  useUpdateComputeTargetHarness,
 } from "../use-compute-targets";
 import { createTestQueryClient, createWrapperWithClient } from "./test-utils";
 
-// Covers the seven action/query hooks in use-compute-targets.ts that the
-// sibling use-compute-targets.test.ts does not exercise (that file is scoped
-// to useComputeTargets' signing-cache refresh behavior only).
+// Covers the action/query hooks in use-compute-targets.ts.
 
 const mockApiClient = {
   get: vi.fn(),
@@ -42,11 +36,16 @@ const mockSignDesktopCommand = vi.hoisted(() => vi.fn());
 // not configurable in ESM").
 const capturedQueryOptions = vi.hoisted(() => [] as Record<string, unknown>[]);
 
-vi.mock("@/hooks/use-api-client", () => ({
+// `useComputeTargetHealthCheckSnapshot` moved to
+// `@repo/app/compute/hooks/use-compute-targets` (PLN-1915 Step 1) and resolves
+// the shared client port directly; the write hooks and the dispatch hooks
+// stayed in this shell. Both groups import that same module, so mocking
+// it here covers both.
+vi.mock("@repo/app/shared/api/use-api-client", () => ({
   useApiClient: () => mockApiClient,
 }));
 
-vi.mock("@/lib/desktop-command-signing/command-signer", () => ({
+vi.mock("@repo/app/compute/lib/command-signing/command-signer", () => ({
   hasEffectiveCommandSigningSupport: mockHasEffectiveCommandSigningSupport,
   signDesktopCommand: mockSignDesktopCommand,
 }));
@@ -162,14 +161,14 @@ describe("useDeleteComputeTarget", () => {
     vi.clearAllMocks();
   });
 
-  it("invalidates the target list, removes the deleted target's health-check cache, and invalidates the user's compute preference", async () => {
+  it("invalidates the target list and removes the deleted target's health-check cache", async () => {
     mockApiClient.delete.mockResolvedValueOnce({ deleted: true });
 
     const queryClient = createTestQueryClient();
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
     const removeSpy = vi.spyOn(queryClient, "removeQueries");
 
-    const { result } = renderHook(() => useDeleteComputeTarget("user-42"), {
+    const { result } = renderHook(() => useDeleteComputeTarget(), {
       wrapper: createWrapperWithClient(queryClient),
     });
 
@@ -187,43 +186,6 @@ describe("useDeleteComputeTarget", () => {
     });
     expect(removeSpy).toHaveBeenCalledWith({
       queryKey: computeTargetKeys.healthCheck("target-9"),
-    });
-    expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: computePreferenceKeys.detail("user-42"),
-    });
-  });
-});
-
-describe("useToggleComputeTargetSharing", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("PATCHes the sharing flag and invalidates the compute-targets list", async () => {
-    mockApiClient.patch.mockResolvedValueOnce({
-      id: "target-3",
-      isSharedWithOrg: true,
-    });
-
-    const queryClient = createTestQueryClient();
-    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
-
-    const { result } = renderHook(() => useToggleComputeTargetSharing(), {
-      wrapper: createWrapperWithClient(queryClient),
-    });
-
-    act(() => {
-      result.current.mutate({ id: "target-3", isSharedWithOrg: true });
-    });
-
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-    expect(mockApiClient.patch).toHaveBeenCalledWith(
-      "/compute-targets/target-3/sharing",
-      { isSharedWithOrg: true }
-    );
-    expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: computeTargetKeys.list(),
     });
   });
 });
@@ -353,75 +315,6 @@ describe("useDispatchDesktopCommand", () => {
       signature: "sig-abc",
       signaturePayload: "payload-abc",
       publicKeyFingerprint: "fp-abc",
-    });
-  });
-});
-
-describe("useUpdateComputeTargetHarness", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("PUTs the selected harness and invalidates the compute-targets list", async () => {
-    const target = makeComputeTarget({ selectedHarness: HarnessType.Codex });
-    mockApiClient.put.mockResolvedValueOnce(target);
-
-    const queryClient = createTestQueryClient();
-    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
-
-    const { result } = renderHook(() => useUpdateComputeTargetHarness(), {
-      wrapper: createWrapperWithClient(queryClient),
-    });
-
-    act(() => {
-      result.current.mutate({ id: "target-4", harness: HarnessType.Codex });
-    });
-
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-    expect(mockApiClient.put).toHaveBeenCalledWith(
-      "/compute-targets/target-4",
-      { selectedHarness: HarnessType.Codex }
-    );
-    expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: computeTargetKeys.list(),
-    });
-  });
-});
-
-describe("useStartDesktopSecurityUpgrade", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("posts the security-upgrade attempt via postRaw and invalidates the compute-targets list on success", async () => {
-    mockApiClient.postRaw.mockResolvedValueOnce({
-      commandId: "cmd-upgrade",
-      expiresAt: "2026-05-10T12:05:00.000Z",
-    });
-
-    const queryClient = createTestQueryClient();
-    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
-
-    const { result } = renderHook(() => useStartDesktopSecurityUpgrade(), {
-      wrapper: createWrapperWithClient(queryClient),
-    });
-
-    act(() => {
-      result.current.mutate({
-        targetId: "target-5",
-        webAppOrigin: "https://app.example.com",
-      });
-    });
-
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-    expect(mockApiClient.postRaw).toHaveBeenCalledWith(
-      "/compute-targets/target-5/security-upgrade-attempt",
-      { webAppOrigin: "https://app.example.com" }
-    );
-    expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: computeTargetKeys.list(),
     });
   });
 });

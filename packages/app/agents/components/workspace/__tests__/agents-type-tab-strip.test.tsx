@@ -4,12 +4,14 @@ import {
   BotIcon,
   HammerIcon,
   LayersIcon,
+  type LucideIcon,
   PlugIcon,
   TerminalIcon,
   WebhookIcon,
   WrenchIcon,
 } from "lucide-react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EXPECTED_TYPE_TAB_SEGMENTS } from "../../../__tests__/type-tab-strip-vocabulary";
 import {
   type AgentsTypeTabOption,
   AgentsTypeTabStrip,
@@ -31,17 +33,33 @@ import {
  * when the production change is reverted.
  */
 
-// The real strip vocabulary, in KIND_ORDER, with the icons `kindMeta` supplies.
-const STRIP_OPTIONS: readonly AgentsTypeTabOption[] = [
-  { value: "all", label: "All", icon: LayersIcon },
-  { value: "agent", label: "Agents", icon: BotIcon },
-  { value: "command", label: "Commands", icon: TerminalIcon },
-  { value: "skill", label: "Skills", icon: HammerIcon },
-  { value: "plugin", label: "Plugins", icon: LayersIcon },
-  { value: "mcp", label: "MCPs", icon: PlugIcon },
-  { value: "tool", label: "Tools", icon: WrenchIcon },
-  { value: "hook", label: "Hooks", icon: WebhookIcon },
-];
+// The icons `kindMeta` supplies. Icon identity does not affect the fit — a
+// segment's estimate is label length plus a fixed 16px icon.
+const STRIP_ICONS = new Map<string, LucideIcon>([
+  ["all", LayersIcon],
+  ["subagent", BotIcon],
+  ["command", TerminalIcon],
+  ["skill", HammerIcon],
+  ["plugin", LayersIcon],
+  ["mcp", PlugIcon],
+  ["tool", WrenchIcon],
+  ["hook", WebhookIcon],
+]);
+
+/**
+ * The real strip vocabulary, from the shared literal the production strip is
+ * guarded against (`agents/__tests__/type-tab-strip-vocabulary.ts`, ISS-6271).
+ * This file used to restate it, so a `SCOPED_OUT_KINDS` change left these
+ * overflow tests proving the disclosure for a strip that no longer ships.
+ */
+const STRIP_OPTIONS: readonly AgentsTypeTabOption[] =
+  EXPECTED_TYPE_TAB_SEGMENTS.map((segment) => {
+    const icon = STRIP_ICONS.get(segment.value);
+    if (!icon) {
+      throw new Error(`No icon fixture for strip segment "${segment.value}"`);
+    }
+    return { ...segment, icon };
+  });
 
 // The reported viewport (ISS-4803 evidence, `a-web-list-mobile.png`) minus the
 // row's `px-4` gutters — the CONTENT width `useContainerWidth` reports.

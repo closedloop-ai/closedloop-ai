@@ -1,7 +1,10 @@
 "use client";
 
 import type { InsightsSection } from "@repo/api/src/types/insights";
+import { INSIGHTS_LOC_TERMINOLOGY_FLAG_KEY } from "@repo/api/src/types/insights-loc-terminology-flag";
+import { useMetricCardHideUnavailable } from "@repo/app/shared/feature-flags/use-metric-card-hide-unavailable";
 import { INSIGHTS_SPEND_OUTCOME_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import { hiddenMetricCardIds } from "@repo/app/shared/lib/metric-card-hide-policy";
 import { Button } from "@repo/design-system/components/ui/button";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { LayoutDashboardIcon } from "lucide-react";
@@ -14,17 +17,20 @@ import {
   useContainerWidth,
   verticalCompactor,
 } from "react-grid-layout";
+import type { GitHubConnectTarget } from "../../github/lib/github-connect-target";
 import { useFeatureFlagEnabledOptional } from "../../shared/feature-flags/use-feature-flag-enabled";
 import type { DashboardPins, GridPosition } from "../hooks/use-dashboard-pins";
 import type { InsightsTileAvailability } from "../lib/tile-availability";
 import {
   getTile,
   isTileEnabled,
+  resolveTileVocabulary,
   type TileDescriptor,
   TileKind,
 } from "../lib/tile-catalog";
-import { InsightsTile } from "./insights-tile";
-import type { InsightsSectionData } from "./tile-content";
+import { InsightsTile, renderTileAvailabilityDetail } from "./insights-tile";
+import { isKpiValueAbsent } from "./kpi-stat-tile";
+import { type InsightsSectionData, selectKpi } from "./tile-content";
 
 const GRID_COLS = 12;
 const MEDIUM_GRID_COLS = 6;
@@ -40,8 +46,7 @@ export function DashboardGrid({
   onEditTile,
   availableSections,
   getTileAvailability,
-  githubConnectHref,
-  onConnectGitHub,
+  githubConnect,
 }: {
   pins: DashboardPins;
   sections: InsightsSectionData;
@@ -51,8 +56,7 @@ export function DashboardGrid({
   onEditTile: (tileId: string) => void;
   availableSections: readonly InsightsSection[];
   getTileAvailability?: (tile: TileDescriptor) => InsightsTileAvailability;
-  githubConnectHref?: string;
-  onConnectGitHub?: () => void | Promise<void>;
+  githubConnect?: GitHubConnectTarget;
 }) {
   // ISS-4463: a flag-gated tile stops rendering when its flag is off, even if it
   // is still pinned on the saved dashboard from when the flag was on. Reading the
@@ -61,17 +65,21 @@ export function DashboardGrid({
   const spendOutcomeEnabled = useFeatureFlagEnabledOptional(
     INSIGHTS_SPEND_OUTCOME_FEATURE_FLAG_KEY
   );
+  const hideUnavailable = useMetricCardHideUnavailable();
+  const locTerminologyEnabled = useFeatureFlagEnabledOptional(
+    INSIGHTS_LOC_TERMINOLOGY_FLAG_KEY
+  );
   const isFlagEnabled = useCallback(
     (key: string) =>
-      key === INSIGHTS_SPEND_OUTCOME_FEATURE_FLAG_KEY
-        ? spendOutcomeEnabled
-        : false,
-    [spendOutcomeEnabled]
+      (key === INSIGHTS_SPEND_OUTCOME_FEATURE_FLAG_KEY &&
+        spendOutcomeEnabled) ||
+      (key === INSIGHTS_LOC_TERMINOLOGY_FLAG_KEY && locTerminologyEnabled),
+    [spendOutcomeEnabled, locTerminologyEnabled]
   );
 
   // Only render pinned tiles whose section this shell can populate — a tile
   // pinned on a surface that supports more sections is silently skipped here.
-  const tiles = useMemo(
+  const pinnedTiles = useMemo(
     () =>
       pins.tiles
         .map((id) => getTile(id))
@@ -80,8 +88,37 @@ export function DashboardGrid({
             tile !== undefined &&
             availableSections.includes(tile.section) &&
             isTileEnabled(tile, isFlagEnabled)
-        ),
+        )
+        .map((tile) => resolveTileVocabulary(tile, isFlagEnabled)),
     [pins.tiles, availableSections, isFlagEnabled]
+  );
+  // ISS-9749: the gate is spent BEFORE the layout is built, not inside the tile.
+  // A `KpiMetricTile` that returns null still leaves this grid a keyed, sized,
+  // draggable cell — a resizable hole where a card used to be (whitlockk review on
+  // #6914) — and `buildLayout` would keep reserving its track. Same all-or-
+  // nothing policy every metric row spends, so a dashboard whose every tile is
+  // absent keeps its tiles rather than collapsing to a bare canvas.
+  const hiddenTileIds = useMemo(
+    () =>
+      hiddenMetricCardIds({
+        cards: pinnedTiles.map((tile) => ({
+          id: tile.id,
+          notComputable:
+            tile.kind === TileKind.Kpi &&
+            sections[tile.section] !== undefined &&
+            !renderTileAvailabilityDetail({
+              availability: getTileAvailability?.(tile),
+              githubConnect,
+            }) &&
+            isKpiValueAbsent(selectKpi(tile, sections)?.value),
+        })),
+        enabled: hideUnavailable,
+      }),
+    [pinnedTiles, getTileAvailability, githubConnect, sections, hideUnavailable]
+  );
+  const tiles = useMemo(
+    () => pinnedTiles.filter((tile) => !hiddenTileIds.has(tile.id)),
+    [pinnedTiles, hiddenTileIds]
   );
 
   const layouts = useMemo(
@@ -168,8 +205,17 @@ export function DashboardGrid({
           rowHeight={ROW_HEIGHT}
           width={containerWidth}
         >
+          {/* ISS-6849: the grid CELL, not the tile's `[data-slot="card"]`, is
+              what holds a KPI tile's control cluster — `KpiMetricTile` renders
+              the info/pin/edit overlay as a SIBLING of its `MetricCard`, so a
+              locator scoped to the card can never reach the info button. Name
+              the cell so a test can address one tile whole. */}
           {tiles.map((tile) => (
-            <div className="group relative h-full" key={tile.id}>
+            <div
+              className="group relative h-full"
+              data-tile-id={tile.id}
+              key={tile.id}
+            >
               <InsightsTile
                 availability={getTileAvailability?.(tile)}
                 comparisonLabel={comparisonLabel}
@@ -178,8 +224,7 @@ export function DashboardGrid({
                     ? comparisonSections
                     : undefined
                 }
-                githubConnectHref={githubConnectHref}
-                onConnectGitHub={onConnectGitHub}
+                githubConnect={githubConnect}
                 onEditTile={onEditTile}
                 onResizeWidth={(tileId, width) =>
                   pins.setLayout(

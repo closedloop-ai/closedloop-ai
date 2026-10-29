@@ -26,6 +26,10 @@ import {
   parseJsonFromCommandOutput,
   resolveStageDependencySpec,
 } from "./stage-packaging-deps-lib.mjs";
+import {
+  prepareStagedRuntimePatches,
+  verifyStagedRuntimePatches,
+} from "./stage-packaging-patches.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appDir = path.resolve(scriptDir, "..");
@@ -124,7 +128,7 @@ function runTar(args) {
 // `pnpm pack` rewrites a package's `workspace:`/`link:` deps into concrete
 // registry specs inside its tarball (e.g. @repo/api's deps become
 // `@closedloop-ai/loops-api: 0.5.2` and
-// `@closedloop-ai/shared-platform: npm:@closedloop-ai/shared-platform@0.1.0`). pnpm will
+// `@repo/shared-platform: npm:@repo/shared-platform@0.1.0`). pnpm will
 // not satisfy those specs from a sibling top-level `file:` dependency, and its
 // `overrides` are unreliable for multiple `file:` targets — so left alone they
 // escape to npm and 404 (the packages are unpublished). Repoint each such nested
@@ -302,10 +306,9 @@ for (const [
 // Workspace dependencies fall into two buckets. The ones in
 // `workspaceDependencyPackages` are packed as tarballs and installed into the
 // closure because the main process imports them at runtime as externals. The
-// remaining workspace links — @repo/api, @closedloop-ai/shared-platform, @closedloop-ai/loops-api,
-// @repo/crewd, and @repo/cost (inlined into the main/preload bundle by
-// electron-vite), plus @repo/app and design-system (bundled into the renderer by
-// Vite) — are not
+// remaining workspace links — @repo/api, @repo/shared-platform, @closedloop-ai/loops-api,
+// and @repo/cost (inlined into the main/preload bundle by Vite),
+// plus @repo/app and design-system (bundled into the renderer by Vite) — are not
 // imported from node_modules by
 // the packaged app, so they are excluded from the closure. Leaving them in would
 // surface their unresolved `workspace:*`/`link:` spec to `pnpm install` and
@@ -386,6 +389,31 @@ await writeFile(
 // directory).
 await writeFile(stageWorkspaceYamlFile, STAGE_WORKSPACE_YAML);
 
+// Resolve this isolated production closure before selecting source patches;
+// transitive versions may differ from those installed in the source workspace.
+const resolveResult = spawnSync(
+  "pnpm",
+  [
+    "install",
+    "--prod",
+    "--lockfile-only",
+    "--ignore-scripts",
+    "--prefer-offline",
+    "--no-frozen-lockfile",
+  ],
+  { cwd: stageAppDir, stdio: "inherit" }
+);
+if (resolveResult.error) {
+  throw resolveResult.error;
+}
+if (resolveResult.status !== 0) {
+  process.exit(resolveResult.status ?? 1);
+}
+const preparedRuntimePatches = await prepareStagedRuntimePatches(
+  repoRoot,
+  stageAppDir
+);
+
 const installResult = spawnSync(
   "pnpm",
   ["install", "--prod", "--prefer-offline", "--no-frozen-lockfile"],
@@ -402,6 +430,7 @@ if (installResult.error) {
 if (installResult.status !== 0) {
   process.exit(installResult.status ?? 1);
 }
+await verifyStagedRuntimePatches(stageAppDir, preparedRuntimePatches);
 
 await stat(buildOutputDir).catch(() => {
   throw new Error(

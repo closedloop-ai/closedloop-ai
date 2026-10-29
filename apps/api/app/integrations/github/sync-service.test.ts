@@ -28,16 +28,34 @@ vi.mock("@repo/github/user-token-auth", () => ({
   getUserTokenOctokit: vi.fn(),
 }));
 
+vi.mock("@repo/auth/server", () => ({
+  clerkClient: vi.fn(),
+}));
+
 vi.mock("@repo/observability/log", () => ({
   log: {
     warn: vi.fn(),
   },
 }));
 
-vi.mock("@/lib/integration-encryption", () => ({
-  decryptIntegrationToken: vi.fn(),
+const persistPullRequestLifecycleActivityMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/app/branches/pull-request-lifecycle-activity", async () => {
+  const actual = await vi.importActual<
+    typeof import("@/app/branches/pull-request-lifecycle-activity")
+  >("@/app/branches/pull-request-lifecycle-activity");
+  return {
+    ...actual,
+    persistPullRequestLifecycleActivityInTransaction:
+      persistPullRequestLifecycleActivityMock,
+  };
+});
+
+vi.mock("@/app/branches/pull-request-author-identity", () => ({
+  ensurePullRequestAuthorIdentity: vi.fn(),
 }));
 
+import { GitHubActorType } from "@repo/api/src/types/github-actor";
 import {
   GitHubFetchCredentialType,
   GitHubFetchMechanism,
@@ -50,39 +68,62 @@ import {
   RepositoryDefaultReason,
   RepositoryDefaultSource,
 } from "@repo/api/src/types/repository-default-identity";
-import { SessionArtifactLinkKind } from "@repo/api/src/types/session-artifact-link";
+import {
+  SessionArtifactLinkKind,
+  SessionPrRelationType,
+} from "@repo/api/src/types/session-artifact-link";
+import { clerkClient } from "@repo/auth/server";
 import {
   GitHubProviderResultStatus,
-  type GitHubSinglePullRequestResult,
   GitHubUserTokenProviderResultStatus,
   getSinglePullRequestWithProviderResult,
 } from "@repo/github";
 import { getUserTokenOctokit } from "@repo/github/user-token-auth";
 import { log } from "@repo/observability/log";
-import { decryptIntegrationToken } from "@/lib/integration-encryption";
-import { mockWithDbCall } from "../../../__tests__/utils/db-helpers";
+import {
+  actorUserId,
+  branchArtifactId,
+  createMockDb,
+  makeBranchTarget,
+  makeProviderPullRequest,
+  makePullRequestDetailRow,
+  makeSessionPrLink,
+  makeUserConnection,
+  now,
+  organizationId,
+} from "@/__tests__/support/integrations/github/sync-service.test-fixtures";
+import { mockWithDbAll } from "@/__tests__/utils/db-helpers";
+import { ensurePullRequestAuthorIdentity } from "@/app/branches/pull-request-author-identity";
 import {
   GitHubServerSyncReason,
   GitHubServerSyncStatus,
   githubServerSyncService,
 } from "./sync-service";
 
-const organizationId = "org-1";
-const branchArtifactId = "branch-1";
-const actorUserId = "019fed13-b752-77c3-bf22-0a6c655d4a38";
-const now = new Date("2026-07-06T09:00:00.000Z");
+/**
+ * The provider repository identity every guarded write on this lane keys on.
+ * Written out here rather than imported from the production helper, because an
+ * assertion that imports the value under test compares it against itself.
+ */
+const TOMBSTONED_REPOSITORY_WHERE = {
+  removedAt: { not: null },
+  githubRepoId: "gh-repo-1",
+} as const;
+
 // Marker object the mocked user-token factory returns; the unified single-PR
 // read must receive it as its first argument (PLN-1525 step 4).
 const userTokenOctokit = { kind: "user-token-octokit" };
 const mockGetUserTokenOctokit = getUserTokenOctokit as ReturnType<typeof vi.fn>;
+const mockClerkClient = clerkClient as unknown as ReturnType<typeof vi.fn>;
 
 describe("githubServerSyncService", () => {
   let mockDb: ReturnType<typeof createMockDb>;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    wireClerkToken(["repo"]);
     mockDb = createMockDb();
-    mockWithDbCall(mockDb);
+    mockWithDbAll(mockDb);
     mockDb.artifact.findFirst.mockResolvedValue(makeBranchTarget());
     mockDb.artifactLink.findFirst.mockResolvedValue(makeSessionPrLink());
     mockDb.gitHubUserConnection.findUnique.mockResolvedValue(
@@ -93,7 +134,7 @@ describe("githubServerSyncService", () => {
       .mockResolvedValueOnce({ count: 1 })
       .mockResolvedValueOnce({ count: 1 });
     mockDb.branchDetail.updateMany.mockResolvedValue({ count: 1 });
-    vi.mocked(decryptIntegrationToken).mockResolvedValue("decrypted-token");
+    persistPullRequestLifecycleActivityMock.mockResolvedValue(undefined);
     mockGetUserTokenOctokit.mockReturnValue(userTokenOctokit);
     vi.mocked(getSinglePullRequestWithProviderResult).mockResolvedValue({
       status: GitHubProviderResultStatus.Success,
@@ -119,7 +160,6 @@ describe("githubServerSyncService", () => {
       reason: GitHubServerSyncReason.NoTombstonedRepository,
     });
     expect(mockDb.gitHubUserConnection.findUnique).not.toHaveBeenCalled();
-    expect(decryptIntegrationToken).not.toHaveBeenCalled();
     expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
   });
 
@@ -144,7 +184,6 @@ describe("githubServerSyncService", () => {
       reason: GitHubSyncResultReason.NoActiveRepository,
     });
     expect(mockDb.gitHubUserConnection.findUnique).not.toHaveBeenCalled();
-    expect(decryptIntegrationToken).not.toHaveBeenCalled();
     expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
   });
 
@@ -168,32 +207,44 @@ describe("githubServerSyncService", () => {
         where: expect.objectContaining({
           AND: [
             {
-              metadata: {
-                path: ["linkKind"],
-                equals: SessionArtifactLinkKind.SessionPr,
-              },
+              OR: expect.arrayContaining([
+                {
+                  metadata: {
+                    path: ["linkKind"],
+                    equals: SessionArtifactLinkKind.SessionPr,
+                  },
+                },
+                {
+                  metadata: {
+                    path: ["linkKinds"],
+                    array_contains: [SessionArtifactLinkKind.SessionPrSet],
+                  },
+                },
+              ]),
             },
             {
-              metadata: {
-                path: ["repositoryFullName"],
-                equals: "closedloop-ai/example-repo",
-              },
-            },
-            {
-              metadata: {
-                path: ["prNumber"],
-                equals: 2294,
-              },
+              OR: expect.arrayContaining([
+                {
+                  metadata: {
+                    path: ["prRefs"],
+                    array_contains: [
+                      {
+                        repositoryFullName: "closedloop-ai/closedloop-ai",
+                        prNumber: 2294,
+                      },
+                    ],
+                  },
+                },
+              ]),
             },
           ],
           source: expect.objectContaining({
-            session: { is: { userId: actorUserId } },
+            createdById: actorUserId,
           }),
         }),
       })
     );
     expect(mockDb.gitHubUserConnection.findUnique).not.toHaveBeenCalled();
-    expect(decryptIntegrationToken).not.toHaveBeenCalled();
     expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
     expect(mockDb.branchDetail.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -208,34 +259,59 @@ describe("githubServerSyncService", () => {
     );
   });
 
+  it("accepts the requested identity from canonical multi-PR metadata", async () => {
+    mockDb.artifactLink.findFirst.mockResolvedValue({
+      metadata: {
+        linkKind: SessionArtifactLinkKind.SessionBranch,
+        linkKinds: [SessionArtifactLinkKind.SessionPrSet],
+        prRefs: [2294, 2295].map((prNumber) => ({
+          repositoryFullName: "closedloop-ai/closedloop-ai",
+          prNumber,
+          relationTypes: [SessionPrRelationType.Created],
+        })),
+      },
+    });
+    mockDb.gitHubUserConnection.findUnique.mockResolvedValue(null);
+
+    const result =
+      await githubServerSyncService.refreshTombstonedBranchPullRequest({
+        actorUserId,
+        branchArtifactId,
+        organizationId,
+        now,
+      });
+
+    expect(result).toEqual({
+      status: GitHubServerSyncStatus.Failed,
+      reason: GitHubSyncResultReason.NoCredential,
+    });
+  });
+
+  // PLN-1742 M5 tail: the credential comes from Clerk alone, so the denials
+  // this lane can stop on are Clerk's. The row-shaped cases that used to live
+  // here — `revokedAt` set, `tokenExpiresAt` past — described a stored token
+  // that no longer exists; a token GitHub rejects at call time is covered by
+  // the provider-status cases below.
   it.each([
     {
-      name: "missing",
-      connection: null,
+      name: "no linked account",
+      wireClerk: () => wireClerkNoAccount(),
       reason: GitHubSyncResultReason.NoCredential,
     },
     {
-      name: "revoked",
-      connection: makeUserConnection({ revokedAt: now }),
-      reason: GitHubSyncResultReason.CredentialRevoked,
+      name: "an unreachable credential service",
+      wireClerk: () => wireClerkFailure(503),
+      reason: GitHubSyncResultReason.NoCredential,
     },
     {
-      name: "expired",
-      connection: makeUserConnection({
-        tokenExpiresAt: new Date("2026-07-06T08:59:59.000Z"),
-      }),
-      reason: GitHubSyncResultReason.CredentialExpired,
-    },
-    {
-      name: "insufficient scope",
-      connection: makeUserConnection({ scopes: [] }),
+      // Only an OAuth-family token can fail the floor: App-family reach is
+      // governed by the installation, not by scopes.
+      name: "a grant without repo",
+      wireClerk: () => wireClerkToken(["read:user"]),
       reason: GitHubSyncResultReason.CredentialInsufficientScope,
     },
-  ])("stops cleanly for $name OAuth credentials", async ({
-    connection,
-    reason,
-  }) => {
-    mockDb.gitHubUserConnection.findUnique.mockResolvedValue(connection);
+  ])("stops cleanly for $name", async ({ wireClerk, reason }) => {
+    wireClerk();
 
     const result =
       await githubServerSyncService.refreshTombstonedBranchPullRequest({
@@ -249,7 +325,6 @@ describe("githubServerSyncService", () => {
       status: GitHubServerSyncStatus.Failed,
       reason,
     });
-    expect(decryptIntegrationToken).not.toHaveBeenCalled();
     expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
     expect(mockDb.pullRequestDetail.updateMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -265,53 +340,14 @@ describe("githubServerSyncService", () => {
     );
   });
 
-  it.each([
-    {
-      providerStatus:
-        GitHubUserTokenProviderResultStatus.CredentialUnauthorized,
-      reason: GitHubSyncResultReason.CredentialRevoked,
-    },
-    {
-      providerStatus:
-        GitHubUserTokenProviderResultStatus.CredentialInsufficientScope,
-      reason: GitHubSyncResultReason.CredentialInsufficientScope,
-    },
-  ])("stamps $reason when GitHub rejects the live user token", async ({
-    providerStatus,
-    reason,
-  }) => {
-    vi.mocked(getSinglePullRequestWithProviderResult).mockResolvedValueOnce({
-      status: providerStatus,
-    });
-
-    const result =
-      await githubServerSyncService.refreshTombstonedBranchPullRequest({
-        actorUserId,
-        branchArtifactId,
-        organizationId,
-        now,
-      });
-
-    expect(result).toEqual({
-      status: GitHubServerSyncStatus.Failed,
-      reason,
-    });
-    expect(mockDb.pullRequestDetail.updateMany).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        where: expect.objectContaining({
-          repository: { removedAt: { not: null } },
-        }),
-      })
+  it("accepts an App-family token, which reports no scopes at all", async () => {
+    // The widening PLN-1742 M2 buys: this lane's own scope check rejected
+    // every GitHub App user-to-server token, while the sync pool drew the
+    // same credential happily. One predicate now answers both.
+    mockDb.gitHubUserConnection.findUnique.mockResolvedValue(
+      makeUserConnection({ scopes: [] })
     );
-    expect(mockDb.pullRequestDetail.updateMany).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ fetchResultReason: reason }),
-      })
-    );
-  });
 
-  it("refreshes a tombstoned linked PR with user OAuth provenance", async () => {
     const result =
       await githubServerSyncService.refreshTombstonedBranchPullRequest({
         actorUserId,
@@ -324,11 +360,257 @@ describe("githubServerSyncService", () => {
       status: GitHubServerSyncStatus.Refreshed,
       reason: GitHubSyncResultReason.Success,
     });
-    expect(mockGetUserTokenOctokit).toHaveBeenCalledWith("decrypted-token");
+    expect(getSinglePullRequestWithProviderResult).toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      providerStatus:
+        GitHubUserTokenProviderResultStatus.CredentialUnauthorized,
+      reason: GitHubSyncResultReason.CredentialRevoked,
+    },
+    {
+      providerStatus:
+        GitHubUserTokenProviderResultStatus.CredentialInsufficientScope,
+      reason: GitHubSyncResultReason.CredentialInsufficientScope,
+    },
+  ])(
+    "stamps $reason when GitHub rejects the live user token",
+    async ({ providerStatus, reason }) => {
+      vi.mocked(getSinglePullRequestWithProviderResult).mockResolvedValueOnce({
+        status: providerStatus,
+      });
+
+      const result =
+        await githubServerSyncService.refreshTombstonedBranchPullRequest({
+          actorUserId,
+          branchArtifactId,
+          organizationId,
+          now,
+        });
+
+      expect(result).toEqual({
+        status: GitHubServerSyncStatus.Failed,
+        reason,
+      });
+      expect(mockDb.pullRequestDetail.updateMany).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          where: expect.objectContaining({
+            repository: TOMBSTONED_REPOSITORY_WHERE,
+          }),
+        })
+      );
+      expect(mockDb.pullRequestDetail.updateMany).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ fetchResultReason: reason }),
+        })
+      );
+    }
+  );
+
+  // ISS-8522: the lane's target is the branch-canonical PR, not the promotion
+  // pointer. Expected PR numbers are literal, never read back off the fixture.
+  it("refuses a same-named canonical row with a conflicting provider id", async () => {
+    mockDb.artifact.findFirst.mockResolvedValue(
+      makeBranchTarget({
+        currentPullRequestDetailId: "pr-foreign",
+        pullRequestDetails: [
+          makePullRequestDetailRow({
+            id: "pr-foreign",
+            repositoryId: "repo-other",
+            repository: {
+              fullName: "closedloop-ai/closedloop-ai",
+              githubRepoId: "gh-repo-other",
+            },
+          }),
+        ],
+      })
+    );
+
+    const result =
+      await githubServerSyncService.refreshTombstonedBranchPullRequest({
+        actorUserId,
+        branchArtifactId,
+        organizationId,
+        now,
+      });
+
+    expect(result).toEqual({
+      status: GitHubServerSyncStatus.NotApplicable,
+      reason: GitHubServerSyncReason.NoCurrentPullRequest,
+    });
+    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
+  });
+
+  // A canonical reinstall can leave the new installation row LIVE. Provider-id
+  // ownership accepts that PR across the split, but every guarded write still
+  // requires the PR's
+  // own repository to be tombstoned — correctly, since this lane spends a USER's
+  // OAuth token — so without a gate the claim matches nothing and the lane
+  // answers `already_refreshing`: a TRANSIENT reason, retried forever, for a
+  // condition that can never clear. The assertion that matters is the REASON,
+  // not merely that it failed.
+  it("answers not_applicable, never already_refreshing, for a PR on a live sibling repository", async () => {
+    mockDb.artifact.findFirst.mockResolvedValue(
+      makeBranchTarget({
+        currentPullRequestDetailId: "pr-detail-live-sibling",
+        pullRequestDetails: [
+          makePullRequestDetailRow({
+            id: "pr-detail-live-sibling",
+            // A NEW installation row for the SAME repository, still installed.
+            repositoryId: "repo-reinstalled",
+            repository: {
+              fullName: "closedloop-ai/closedloop-ai",
+              githubRepoId: "gh-repo-1",
+              removedAt: null,
+            },
+          }),
+        ],
+      })
+    );
+
+    const result =
+      await githubServerSyncService.refreshTombstonedBranchPullRequest({
+        actorUserId,
+        branchArtifactId,
+        organizationId,
+        now,
+      });
+
+    expect(result).toEqual({
+      status: GitHubServerSyncStatus.NotApplicable,
+      reason: GitHubServerSyncReason.NoCurrentPullRequest,
+    });
+    // And it stops at the gate rather than burning the credential or a write.
+    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
+    expect(mockDb.pullRequestDetail.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the live canonical PR when the pointer names an older merged row", async () => {
+    mockDb.artifact.findFirst.mockResolvedValue(
+      makeBranchTarget({
+        currentPullRequestDetailId: "pr-detail-merged",
+        pullRequestDetails: [
+          makePullRequestDetailRow({
+            id: "pr-detail-merged",
+            number: 1000,
+            prState: "MERGED",
+            mergedAt: new Date("2026-07-01T00:00:00.000Z"),
+          }),
+          makePullRequestDetailRow({ id: "pr-detail-live", number: 2294 }),
+        ],
+      })
+    );
+
+    const result =
+      await githubServerSyncService.refreshTombstonedBranchPullRequest({
+        actorUserId,
+        branchArtifactId,
+        organizationId,
+        now,
+      });
+
+    expect(result).toEqual({
+      status: GitHubServerSyncStatus.Refreshed,
+      reason: GitHubSyncResultReason.Success,
+    });
+    expect(getSinglePullRequestWithProviderResult).toHaveBeenCalledWith(
+      expect.anything(),
+      "closedloop-ai",
+      "closedloop-ai",
+      2294,
+      expect.anything()
+    );
+    expect(mockDb.pullRequestDetail.updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({ id: "pr-detail-live" }),
+      })
+    );
+  });
+
+  it("refreshes the owned PR of a branch whose pointer was never promoted", async () => {
+    mockDb.artifact.findFirst.mockResolvedValue(
+      makeBranchTarget({
+        currentPullRequestDetailId: null,
+        pullRequestDetails: [
+          makePullRequestDetailRow({ id: "pr-detail-unpromoted" }),
+        ],
+      })
+    );
+
+    const result =
+      await githubServerSyncService.refreshTombstonedBranchPullRequest({
+        actorUserId,
+        branchArtifactId,
+        organizationId,
+        now,
+      });
+
+    expect(result).toEqual({
+      status: GitHubServerSyncStatus.Refreshed,
+      reason: GitHubSyncResultReason.Success,
+    });
+    expect(mockDb.pullRequestDetail.updateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({ id: "pr-detail-unpromoted" }),
+      })
+    );
+    // The discriminating assertion for the settle guard (PR #6453 review). The
+    // branch write carries the pointer as SNAPSHOTTED — here `null` — while the
+    // row being refreshed is `pr-detail-unpromoted`. A guard that instead
+    // required `pointer === the refreshed row` would name the row here and
+    // match nothing, which is the regression this lane exists to avoid; a guard
+    // with no pointer term at all would omit the key entirely, which is the
+    // concurrent-promotion window two reviewers flagged.
+    const branchUpdate = mockDb.branchDetail.updateMany.mock.calls.at(-1)?.[0];
+    expect(branchUpdate?.where).toMatchObject({
+      artifactId: branchArtifactId,
+      currentPullRequestDetailId: null,
+    });
+    const settleDetailWrite =
+      mockDb.pullRequestDetail.updateMany.mock.calls.at(-1)?.[0];
+    expect(settleDetailWrite?.where).toMatchObject({
+      id: "pr-detail-unpromoted",
+      branchArtifact: {
+        organizationId,
+        branch: {
+          is: {
+            repository: TOMBSTONED_REPOSITORY_WHERE,
+            currentPullRequestDetailId: null,
+          },
+        },
+      },
+    });
+  });
+
+  it("refreshes a tombstoned linked PR with user OAuth provenance", async () => {
+    vi.mocked(getSinglePullRequestWithProviderResult).mockResolvedValueOnce({
+      status: GitHubProviderResultStatus.Success,
+      value: makeProviderPullRequest({
+        authorProviderUserId: "123",
+        authorActorType: GitHubActorType.User,
+      }),
+    });
+    const result =
+      await githubServerSyncService.refreshTombstonedBranchPullRequest({
+        actorUserId,
+        branchArtifactId,
+        organizationId,
+        now,
+      });
+
+    expect(result).toEqual({
+      status: GitHubServerSyncStatus.Refreshed,
+      reason: GitHubSyncResultReason.Success,
+    });
+    expect(mockGetUserTokenOctokit).toHaveBeenCalledWith("clerk-token");
     expect(getSinglePullRequestWithProviderResult).toHaveBeenCalledWith(
       userTokenOctokit,
       "closedloop-ai",
-      "example-repo",
+      "closedloop-ai",
       2294,
       {
         credentialType: GitHubFetchCredentialType.UserOAuth,
@@ -340,30 +622,37 @@ describe("githubServerSyncService", () => {
     );
     expect(mockDb.gitHubUserConnection.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { lastUsedAt: now },
+        data: { lastUsedAt: now, scopes: ["repo"] },
         where: expect.objectContaining({
           id: "connection-1",
           organizationId,
           userId: actorUserId,
-          revokedAt: null,
         }),
       })
     );
     expect(mockDb.pullRequestDetail.updateMany).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
+        // ISS-8522: the claim keys on the DERIVED canonical row id plus the
+        // branch's own tombstoned repository. The promotion-pointer sub-filter
+        // it replaced rejected every branch whose pointer was stale or never
+        // promoted — the exact branches this lane exists to refresh.
+        // Provider identity replaces the per-installation surrogate, so a
+        // reinstall or rename split still claims the same GitHub repository.
         where: expect.objectContaining({
-          repository: { removedAt: { not: null } },
-          currentForBranches: {
-            some: expect.objectContaining({
-              repository: { removedAt: { not: null } },
-            }),
-          },
+          id: "pr-detail-1",
+          branchArtifactId,
+          repository: TOMBSTONED_REPOSITORY_WHERE,
+          branchArtifact: expect.objectContaining({
+            organizationId,
+            branch: { is: { repository: TOMBSTONED_REPOSITORY_WHERE } },
+          }),
         }),
       })
     );
     expect(mockDb.pullRequestDetail.updateMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
+        where: expect.objectContaining({ lastRefreshAttemptAt: now }),
         data: expect.objectContaining({
           fetchCredentialOwnerId: actorUserId,
           fetchCredentialType: GitHubFetchCredentialType.UserOAuth,
@@ -376,10 +665,65 @@ describe("githubServerSyncService", () => {
           changedFiles: 4,
           lastVerifiedAt: now,
           prState: "MERGED",
+          // ISS-8176: the PR columns this lane measured but used to drop. The
+          // same transaction stamps the BRANCH's base below, so leaving these
+          // off made the read serve "not measured" for a base and an author
+          // this call had in hand.
+          baseRefName: "main",
+          authorLogin: "davetho",
+          authorProviderUserId: "123",
+          authorActorType: GitHubActorType.User,
+          // ISS-8243: `number: 2294` was asserted here and is deliberately gone.
+          // The shared builder no longer writes it on the update path; keeping it
+          // there held the ISS-6421 atom-barrier cases blocked until their
+          // concurrent FK writers timed out. Asserted below, because
+          // `objectContaining` cannot see an absent key.
         }),
       })
     );
+    expect(ensurePullRequestAuthorIdentity).toHaveBeenCalledWith(
+      mockDb,
+      expect.objectContaining({
+        authorProviderUserId: "123",
+        authorActorType: GitHubActorType.User,
+      })
+    );
+    // `{ setCurrent: false }` is load-bearing: the old literal never touched
+    // isCurrent, and this lane's guard already requires the row BE the branch's
+    // current PR. A builder change that started writing `isCurrent: false` here
+    // would silently demote a still-current row, and objectContaining above
+    // cannot see an absent key.
+    const currentDetailWrite =
+      mockDb.pullRequestDetail.updateMany.mock.calls.at(-1)?.[0];
+    expect(currentDetailWrite?.data).not.toHaveProperty("isCurrent");
+    // ISS-8243: this expectation CHANGED, and the BEHAVIOR changed with it.
+    // #6064 landed this test asserting the opposite — `number: 2294` present in
+    // the update payload — and its PR body carried the counterfactual "drop
+    // `number` from the builder input → this test goes red". That is now the
+    // intended outcome, not a regression: with the column present the ISS-6421
+    // atom-barrier cases blocked until their concurrent FK writers timed out,
+    // and they pass without it. Why the lock behaves that way is still
+    // contested — see ISS-8243. Pinned HERE as well as in the builder's own
+    // suite because this lane spreads the builder into a wider literal, so that
+    // suite cannot see a `number` re-added at this site. The lane no longer
+    // self-heals a wrong stored number; accepted, since GitHub PR numbers are
+    // immutable per repo.
+    expect(currentDetailWrite?.data).not.toHaveProperty("number");
     const branchUpdate = mockDb.branchDetail.updateMany.mock.calls.at(-1)?.[0];
+    // ISS-8522: the settle guard keys on the branch and its repository. It does
+    // NOT key on `pointer === the refreshed row` — that term rejected exactly
+    // the stale and never-promoted pointers this lane heals. What it does carry
+    // (PR #6453 review) is a pointer-MOVEMENT CAS: the column compared against
+    // the value snapshotted with the target, so a webhook promoting a sibling
+    // during the provider fetch matches zero rows instead of letting this row's
+    // base branch and head SHA land on a branch it no longer represents.
+    // Here the fixture's pointer and the refreshed row coincide; the
+    // never-promoted case below is what distinguishes the two readings.
+    expect(branchUpdate?.where).toMatchObject({
+      artifactId: branchArtifactId,
+      repository: TOMBSTONED_REPOSITORY_WHERE,
+      currentPullRequestDetailId: "pr-detail-1",
+    });
     expect(branchUpdate?.data).toMatchObject({
       fetchCredentialOwnerId: actorUserId,
       fetchResultReason: GitHubSyncResultReason.Success,
@@ -387,6 +731,55 @@ describe("githubServerSyncService", () => {
       headShaObservedAt: now,
     });
     expect(branchUpdate?.data).not.toHaveProperty("lastActivityAt");
+    expect(persistPullRequestLifecycleActivityMock).toHaveBeenCalledWith(
+      mockDb,
+      {
+        organizationId,
+        branchArtifactId,
+        pullRequestDetailId: "pr-detail-1",
+        openedAt: new Date("2026-07-06T09:00:00.000Z"),
+        mergedAt: new Date("2026-07-06T10:00:00.000Z"),
+        closedAt: new Date("2026-07-06T10:00:00.000Z"),
+      }
+    );
+  });
+
+  // ISS-8176 AC-4. GitHub reports no `user` for a deleted account, and this
+  // lane's payload type always carries the key, so passing it straight through
+  // would write NULL and clear a login another producer had measured — the read
+  // renders a cleared login as "not measured". Omission is the column's only
+  // spelling of "nothing to say".
+  //
+  // The base ref rides on the same write to prove it is read off the PROVIDER
+  // payload rather than agreeing with the fixture's default by luck.
+  it("omits an absent author and takes the base from the provider payload", async () => {
+    vi.mocked(getSinglePullRequestWithProviderResult).mockResolvedValueOnce({
+      status: GitHubProviderResultStatus.Success,
+      value: makeProviderPullRequest({
+        authorLogin: null,
+        baseBranch: "release/24",
+      }),
+    });
+
+    const result =
+      await githubServerSyncService.refreshTombstonedBranchPullRequest({
+        actorUserId,
+        branchArtifactId,
+        organizationId,
+        now,
+      });
+
+    expect(result).toEqual({
+      status: GitHubServerSyncStatus.Refreshed,
+      reason: GitHubSyncResultReason.Success,
+    });
+    const detailWrite =
+      mockDb.pullRequestDetail.updateMany.mock.calls.at(-1)?.[0];
+    expect(detailWrite?.data).toMatchObject({ baseRefName: "release/24" });
+    // Presence, not `expect.anything()`: that matcher does not match null, so
+    // an absence written with it stays green on the very payload this case
+    // exists to reject.
+    expect(detailWrite?.data).not.toHaveProperty("authorLogin");
   });
 
   it("rejects a refreshed PR when the stable GitHub id changed", async () => {
@@ -517,7 +910,7 @@ describe("githubServerSyncService", () => {
     expect(mockDb.branchDetail.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          repository: { removedAt: { not: null } },
+          repository: TOMBSTONED_REPOSITORY_WHERE,
         }),
       })
     );
@@ -531,128 +924,6 @@ describe("githubServerSyncService", () => {
     );
   });
 });
-
-function createMockDb() {
-  return {
-    artifact: {
-      findFirst: vi.fn(),
-    },
-    artifactLink: {
-      findFirst: vi.fn(),
-    },
-    branchDetail: {
-      updateMany: vi.fn(),
-    },
-    gitHubUserConnection: {
-      findUnique: vi.fn(),
-      updateMany: vi.fn(),
-    },
-    pullRequestDetail: {
-      findFirst: vi.fn().mockResolvedValue(null),
-      updateMany: vi.fn(),
-    },
-    repositoryDefaultObservationReceipt: {
-      createMany: vi.fn(),
-    },
-  };
-}
-
-function makeBranchTarget(
-  overrides: {
-    currentPullRequestDetail?: {
-      githubId: string;
-      id: string;
-      number: number;
-    } | null;
-    installationStatus?: string;
-    private?: boolean;
-    removedAt?: Date | null;
-  } = {}
-) {
-  return {
-    id: branchArtifactId,
-    organizationId,
-    branch: {
-      repositoryId: "repo-1",
-      currentPullRequestDetail: overrides.currentPullRequestDetail ?? {
-        githubId: "github-pr-1",
-        id: "pr-detail-1",
-        number: 2294,
-      },
-      repository: {
-        id: "repo-1",
-        fullName: "closedloop-ai/example-repo",
-        owner: "closedloop-ai",
-        name: "example-repo",
-        private: overrides.private ?? true,
-        removedAt: resolveRemovedAt(overrides.removedAt),
-        installation: {
-          organizationId,
-          status: overrides.installationStatus ?? "ACTIVE",
-        },
-      },
-    },
-  };
-}
-
-function makeSessionPrLink() {
-  return {
-    metadata: {
-      linkKind: SessionArtifactLinkKind.SessionPr,
-      repositoryFullName: "closedloop-ai/example-repo",
-      prNumber: 2294,
-    },
-  };
-}
-
-function makeUserConnection(
-  overrides: {
-    revokedAt?: Date | null;
-    scopes?: string[];
-    tokenExpiresAt?: Date | null;
-  } = {}
-) {
-  return {
-    id: "connection-1",
-    accessTokenEncrypted: "encrypted-token",
-    revokedAt: overrides.revokedAt ?? null,
-    tokenExpiresAt: overrides.tokenExpiresAt ?? null,
-    scopes: overrides.scopes ?? ["repo"],
-  };
-}
-
-function makeProviderPullRequest(
-  overrides: Partial<GitHubSinglePullRequestResult> = {}
-): GitHubSinglePullRequestResult {
-  return {
-    githubId: "github-pr-1",
-    number: 2294,
-    title: "FEA-2605",
-    htmlUrl: "https://github.com/closedloop-ai/example-repo/pull/2294",
-    headBranch: "feat/fea-2605-github-provenance",
-    baseBranch: "main",
-    state: "MERGED",
-    createdAt: "2026-07-06T09:00:00.000Z",
-    mergedAt: "2026-07-06T10:00:00.000Z",
-    closedAt: "2026-07-06T10:00:00.000Z",
-    authorLogin: "davetho",
-    isDraft: false,
-    headSha: "head-sha",
-    baseSha: "base-sha",
-    mergeCommitSha: "merge-sha",
-    additions: 33,
-    deletions: 7,
-    changedFiles: 4,
-    ...overrides,
-  };
-}
-
-function resolveRemovedAt(value: Date | null | undefined): Date | null {
-  if (value === undefined) {
-    return new Date("2026-07-06T08:30:00.000Z");
-  }
-  return value;
-}
 
 function storedPullRequestAuthority() {
   return {
@@ -674,4 +945,30 @@ function storedPullRequestAuthority() {
     headRepositoryDefaultBranchObservedAt: new Date("2026-07-06T08:00:00.000Z"),
     headRepositoryDefaultBranchEventAt: null,
   };
+}
+
+function wireClerkToken(scopes: string[]) {
+  mockClerkClient.mockResolvedValue({
+    users: {
+      getUserOauthAccessToken: vi.fn().mockResolvedValue({
+        data: [{ token: "clerk-token", scopes, externalAccountId: "ea-1" }],
+      }),
+    },
+  });
+}
+
+function wireClerkNoAccount() {
+  mockClerkClient.mockResolvedValue({
+    users: { getUserOauthAccessToken: vi.fn().mockResolvedValue({ data: [] }) },
+  });
+}
+
+function wireClerkFailure(status: number) {
+  mockClerkClient.mockResolvedValue({
+    users: {
+      getUserOauthAccessToken: vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error("clerk"), { status })),
+    },
+  });
 }

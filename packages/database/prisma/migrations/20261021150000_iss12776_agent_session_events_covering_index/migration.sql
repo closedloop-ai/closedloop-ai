@@ -1,0 +1,24 @@
+-- ISS-12776: let the insights event-bucket reads run index-only.
+--
+-- fetchEventTypeBuckets (/insights/utilization) and fetchToolUsageBuckets
+-- (/insights/agents) probe agent_session_events once per in-scope session on
+-- (agent_session_id, event_created_at), then visit the heap for event_type or
+-- tool_name on every matched row. Production, 2026-10-20, largest org, 90-day
+-- window: 20,141 probes over 3.6M rows touched 724k buffers, 197k of them read
+-- from disk (36.4 s of read wait), and the statement ran 38.7 s. countEvents
+-- over the same window needs no heap column and ran index-only in 2.1 s.
+-- Carrying event_type and tool_name in the index gives both bucket reads the
+-- same index-only path. The (agent_session_id, event_created_at) index stays:
+-- countEvents and fetchEventVolume still plan on it. ISS-12825 tracks dropping
+-- it and the ISS-7513 (event_created_at, agent_session_id) index.
+--
+-- Key columns rather than INCLUDE, so schema.prisma declares the index as-is
+-- (same shape as 20261008172000_route_analytics_covering_indexes).
+-- CONCURRENTLY, one bare statement and no IF NOT EXISTS, for the reasons in
+-- 20260823140000_iss7513_insights_event_window_index. A cancelled build leaves
+-- an INVALID index; drop it before retrying:
+--   DROP INDEX IF EXISTS "agent_session_events_session_time_cover_idx";
+-- Index only: no data change, no result change.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "agent_session_events_session_time_cover_idx" ON "agent_session_events"("agent_session_id", "event_created_at", "event_type", "tool_name");

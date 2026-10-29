@@ -1,13 +1,14 @@
-import { AllowedLinkScheme } from "./link-uri-policy";
+import { AllowedLinkScheme } from "@repo/document-schema/link-uri-policy";
 
 /**
  * Protocols that are safe to store on a link mark and render as an active
  * `<a href>`. Everything else — most importantly `javascript:`, `data:` and
  * `vbscript:` — is rejected so user-typed URLs cannot become an XSS vector.
  *
- * Derived from the single source of truth in `link-uri-policy.ts` (which the
- * Tiptap `isAllowedUri` hook also enforces) so the toolbar and the editor hook
- * can never silently disagree about what's allowed. `URL.protocol` yields the
+ * Derived from the single source of truth in
+ * `@repo/document-schema/link-uri-policy` (which the Tiptap `isAllowedUri` hook
+ * also enforces) so the toolbar and the editor hook can never silently disagree
+ * about what's allowed. `URL.protocol` yields the
  * scheme with a trailing colon (e.g. `"https:"`), hence the `+ ":"`.
  */
 const SAFE_PROTOCOLS = new Set(

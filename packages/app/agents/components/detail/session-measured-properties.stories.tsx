@@ -1,4 +1,7 @@
-import type { Meta, StoryObj } from "@storybook/react";
+import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
+import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
+import { SESSION_TOKENS_RECORDED_HONESTY_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import type { Decorator, Meta, StoryObj } from "@storybook/react";
 import { createAgentSessionDetailFixture } from "./agent-session-detail-fixtures";
 import {
   SessionAutonomyProperty,
@@ -19,9 +22,9 @@ import { SessionPropertiesFrame } from "./session-properties-story-frame";
  * is deliberately adjacent so the difference is visible rather than inferred.
  */
 const meta = {
-  title: "App Core/Agents/Session Measured Properties",
+  title: "Composites v1.0/Agents/Detail/Session Measured Properties",
   component: SessionAutonomyProperty,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (
@@ -34,6 +37,22 @@ const meta = {
 
 export default meta;
 type Story = StoryObj<typeof meta>;
+
+/**
+ * ISS-5637's gate, ON. Mounted through the real `FeatureFlagAdapterProvider`
+ * seam (the `sessions-summary-cards.stories.tsx` pattern) rather than a stubbed
+ * boolean, so these stories resolve the flag exactly as the web session detail
+ * and the desktop renderer do.
+ */
+const withTokensHonestyFlag: Decorator = (Story) => (
+  <FeatureFlagAdapterProvider
+    adapter={createStaticFeatureFlagAdapter({
+      enabledFlags: [SESSION_TOKENS_RECORDED_HONESTY_FEATURE_FLAG_KEY],
+    })}
+  >
+    <Story />
+  </FeatureFlagAdapterProvider>
+);
 
 /**
  * The ordinary measured case: a high autonomy score renders its tier word and
@@ -119,15 +138,18 @@ export const TokensPartiallyRecorded: Story = {
 };
 
 /**
- * The third state the pair above does not cover, and the one this fix most has
- * to get right: a session that genuinely consumed nothing. Every counter was
- * RECORDED and every one of them is zero, so the row reads "0 in | 0 out | …"
- * — a measurement, not a shrug. Sits next to `TokensUnrecorded` on purpose:
- * empty, unavailable, and real-zero are three different claims
- * (`packages/app/AGENTS.md`), and the only way to confirm the reader can tell
- * the last two apart is to look at them side by side.
+ * ISS-5637 REVERSED THE CLAIM THIS STORY WAS WRITTEN TO MAKE. It was authored
+ * reading an all-zero quadruple as "every counter was RECORDED and every one is
+ * zero" — but neither producer can emit the `null` that would have meant
+ * unrecorded, so these four zeros are precisely what a session with NO
+ * token-usage rows renders, and calling them a measurement was the defect.
+ *
+ * It survives as the record of the FLAG-OFF default, which is still what ships
+ * by default. {@link TokensNoRecordedUsage} is the same fixture with the gate
+ * open; the two are adjacent so the change the flag makes is visible rather
+ * than inferred.
  */
-export const TokensMeasuredZero: Story = {
+export const TokensMeasuredZeroGateClosed: Story = {
   args: {
     session: createAgentSessionDetailFixture({
       tokensIn: 0,
@@ -136,6 +158,46 @@ export const TokensMeasuredZero: Story = {
       cacheWrite: 0,
     }),
   },
+  render: (args) => <SessionTokensProperty {...args} />,
+};
+
+/**
+ * ISS-5637, gate OPEN: the same all-zero record now reads as one dash, because
+ * a summed-zero quadruple is the absence of token-usage evidence rather than a
+ * measurement of it. This is the row that used to contradict the Cost dash two
+ * rows below it on the same panel.
+ */
+export const TokensNoRecordedUsage: Story = {
+  args: {
+    session: createAgentSessionDetailFixture({
+      tokensIn: 0,
+      tokensOut: 0,
+      cache: 0,
+      cacheWrite: 0,
+    }),
+  },
+  decorators: [withTokensHonestyFlag],
+  render: (args) => <SessionTokensProperty {...args} />,
+};
+
+/**
+ * The state ISS-5637 had to PRESERVE, and the reason its predicate sums the
+ * quadruple rather than testing each counter: this session really did consume
+ * tokens, and its two cache halves really were zero. Those zeros stay zeros.
+ * Sitting beside {@link TokensNoRecordedUsage} is the only way to confirm a
+ * reader can tell a measured `0 cache read` from a row that knows nothing —
+ * collapsing both to a dash would swap one lie for the opposite one.
+ */
+export const TokensMeasuredZeroCacheWithUsage: Story = {
+  args: {
+    session: createAgentSessionDetailFixture({
+      tokensIn: 128_400,
+      tokensOut: 24_800,
+      cache: 0,
+      cacheWrite: 0,
+    }),
+  },
+  decorators: [withTokensHonestyFlag],
   render: (args) => <SessionTokensProperty {...args} />,
 };
 
@@ -179,6 +241,42 @@ export const WorkMeasuredZeroSteering: Story = {
       turns: 42,
       toolCallsTotal: 310,
       steeringEpisodes: 0,
+    }),
+  },
+  render: (args) => <SessionWorkProperty {...args} />,
+};
+
+/**
+ * ISS-5636, the THIRD state ISS-5565's absent/zero pair does not cover: counted,
+ * but only over the events the producer could read. Worth looking at rather than
+ * asserting, because the qualifier changes the row's TREATMENT — an explained
+ * value is a focusable button, not the plain truncating span above — so the
+ * question a story answers is whether a hedged row still sits in the same value
+ * track as `AutonomyMeasured` beside it, or reads as a different kind of row.
+ */
+export const AutonomyPrefixCounted: Story = {
+  args: {
+    session: createAgentSessionDetailFixture({
+      autonomy: 41,
+      autonomyTruncated: true,
+    }),
+  },
+};
+
+/**
+ * The same state on the Work row, where only SOME of the counters are prefix
+ * counts: the steer count is folded from the bounded event rows, the tool-call
+ * count was re-read whole-run by ISS-5407, and a metadata `turns` was never
+ * event-derived. Placed next to `WorkMeasured` because the numbers are
+ * deliberately identical — the row's disclosure is the only difference.
+ */
+export const WorkPrefixCountedSteering: Story = {
+  args: {
+    session: createAgentSessionDetailFixture({
+      turns: 42,
+      toolCallsTotal: 310,
+      steeringEpisodes: 6,
+      steeringEpisodesTruncated: true,
     }),
   },
   render: (args) => <SessionWorkProperty {...args} />,

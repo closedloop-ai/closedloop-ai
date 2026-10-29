@@ -11,18 +11,10 @@
  */
 import { SESSION_COST_BUCKETS } from "@repo/api/src/agent-session-filters";
 import type { Prisma } from "@repo/database";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
 import { buildSessionFacetCountWheres } from "./facet-count-where";
-import { resolveCostBucketMatchedSessionIds } from "./list-page-fetch";
 import type { SessionUsageInput } from "./records";
 import { buildUsageSummaryWhere } from "./usage-summary-where";
-
-// The cost-sensitive branch resolves a reconciled id set from the DB. Stub that
-// one reader so the cap-truncation cases below are expressible without a
-// database; every other path in this file is pure predicate composition.
-vi.mock("./list-page-fetch", () => ({
-  resolveCostBucketMatchedSessionIds: vi.fn(),
-}));
 
 /**
  * The FULLY filtered predicate `getUsageSummary` computes and hands to
@@ -60,8 +52,18 @@ function harnessPredicate(where: Record<string, unknown>) {
 function modelPredicate(where: Record<string, unknown>) {
   return where.model;
 }
+/** ISS-12251: the Owner facet (assignee) and the scoped `userId` (Created by). */
+function artifactPredicates(where: Record<string, unknown>) {
+  const artifact = where.artifact as
+    | { is?: { assigneeId?: unknown; createdById?: unknown } }
+    | undefined;
+  return artifact?.is ?? {};
+}
 function ownerPredicate(where: Record<string, unknown>) {
-  return where.userId;
+  return artifactPredicates(where).assigneeId;
+}
+function creatorPredicate(where: Record<string, unknown>) {
+  return artifactPredicates(where).createdById;
 }
 function repositoryPredicate(where: Record<string, unknown>) {
   return where.repositoryFullName;
@@ -177,21 +179,24 @@ describe("ISS-5283 — the security scope is NOT relaxed", () => {
     // `userIds` is the facet the user operates; `userId` is the pinned scope.
     // Dropping the latter here would reintroduce the cross-user leak FEA-4304
     // closed — the Owner facet must never be able to widen out of its scope.
-    // The pinned scope lives on `filters.userId` (what `applyUserScope` reads),
+    // The pinned scope lives on `filters.userId` (what `applyArtifactPersonFilters` reads),
     // NOT on the scope object — that distinction is the whole point of the
     // guard, so the fixture has to reproduce it exactly.
     const input = usageInput({
       userId: OTHER_USER_ID,
       userIds: [OWNER_ID],
     });
+    // ISS-12251 (operator ruling 2026-10-13): both match the assignee, so the
+    // Owner facet's relaxed where drops `in` and keeps the pinned `equals`.
     const base = await fullWhere(input);
     const wheres = await buildSessionFacetCountWheres(input, base);
-    expect(
-      ownerPredicate(wheres.harness as Record<string, unknown>)
-    ).toBeDefined();
-    expect(ownerPredicate(wheres.owner as Record<string, unknown>)).toBe(
-      OTHER_USER_ID
-    );
+    expect(ownerPredicate(wheres.harness as Record<string, unknown>)).toEqual({
+      in: [OWNER_ID],
+      equals: OTHER_USER_ID,
+    });
+    const ownerWhere = wheres.owner as Record<string, unknown>;
+    expect(ownerPredicate(ownerWhere)).toEqual({ equals: OTHER_USER_ID });
+    expect(creatorPredicate(ownerWhere)).toBeUndefined();
   });
 });
 
@@ -210,69 +215,34 @@ describe("ISS-5283 — an unfiltered read is unchanged and costs nothing extra",
   });
 });
 
-describe("ISS-5283 — the cost path's candidate cap cannot desync a facet from its parent", () => {
-  beforeEach(() => {
-    vi.mocked(resolveCostBucketMatchedSessionIds).mockReset();
-  });
-
-  test("a filtered facet's relaxed id set is unioned with the totals' set", async () => {
-    // stage review: the relaxed scan runs over a strictly WIDER population, and
-    // both scans stop at `SESSION_COST_RECONCILE_CANDIDATE_CAP` ordered by
-    // recency — so they truncate different tails. Here the relaxed (all-harness)
-    // scan's cap drops `s_deep`, a codex row the fully-filtered (codex-only) scan
-    // kept far deeper into history. Without the union the Harness facet would
-    // advertise ONE codex session while the cards and the table show two.
-    const totalsIds = ["s_recent", "s_deep"];
-    vi.mocked(resolveCostBucketMatchedSessionIds).mockResolvedValue([
-      "s_recent",
-      "s_other_harness",
-    ]);
+describe("ISS-5283 / ISS-7176 — a cost filter cannot desync a facet from its parent", () => {
+  test("every facet carries the SAME estimated_cost predicate, and no id set", async () => {
+    // WHAT THIS REPLACED. Three cases used to live here proving the relaxed
+    // facet scan's id set was UNIONED with the totals' set, because both scans
+    // stopped at a 10,000-candidate cap ordered by recency and truncated
+    // DIFFERENT tails — so a facet could advertise fewer sessions for the current
+    // selection than the cards already showed for it.
+    //
+    // There is no scan and no id set now: a cost bucket is a predicate on
+    // `estimated_cost`, so the relaxed `where` and the totals' `where` narrow
+    // cost identically by construction and there is no tail to truncate. The
+    // absence is what this asserts — an `artifactId IN (…)` reappearing here
+    // means a bounded candidate scan came back.
     const input = usageInput({
       harnesses: [HARNESS],
       costBuckets: [COST_BUCKET],
     });
+
     const wheres = await buildSessionFacetCountWheres(
       input,
-      { AND: [{}, { artifactId: { in: totalsIds } }] },
-      undefined,
-      totalsIds
+      await buildUsageSummaryWhere(input)
     );
 
-    const ids = costIdPredicate(wheres.harness);
-    expect(ids).toEqual(
-      expect.arrayContaining(["s_recent", "s_deep", "s_other_harness"])
-    );
-    // …and no duplicates, so the `IN` list stays bounded.
-    expect(ids).toHaveLength(3);
-  });
-
-  test("an unfiltered dimension still issues no second candidate scan", async () => {
-    vi.mocked(resolveCostBucketMatchedSessionIds).mockResolvedValue([
-      "s_recent",
-    ]);
-    const input = usageInput({ costBuckets: [COST_BUCKET] });
-    const base: Prisma.SessionDetailWhereInput = {
-      AND: [{}, { artifactId: { in: ["s_recent"] } }],
-    };
-    const wheres = await buildSessionFacetCountWheres(input, base, undefined, [
-      "s_recent",
-    ]);
-    expect(wheres.harness).toBe(base);
-    expect(resolveCostBucketMatchedSessionIds).not.toHaveBeenCalled();
+    const serialized = JSON.stringify(wheres.harness);
+    expect(serialized).toContain("estimatedCost");
+    expect(serialized).not.toContain('"artifactId"');
   });
 });
-
-/** The `artifactId IN (…)` list a cost-sensitive facet `where` carries. */
-function costIdPredicate(where: Prisma.SessionDetailWhereInput): string[] {
-  const clauses = Array.isArray(where.AND) ? where.AND : [];
-  for (const clause of clauses) {
-    const { artifactId } = clause as { artifactId?: { in?: string[] } };
-    if (artifactId?.in) {
-      return artifactId.in;
-    }
-  }
-  return [];
-}
 
 /**
  * ISS-5355 — the Project facet joins the ISS-5283 contract. Its predicate is the

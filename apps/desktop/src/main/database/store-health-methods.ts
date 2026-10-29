@@ -1,8 +1,7 @@
 /**
  * @file store-health-methods.ts
  * @description ISS-4824 / ISS-4976 — the STORE-HEALTH slice of the desktop
- * agent-database surface, lifted out of the `sqlite.ts` monolith (a file on the
- * shrink-only `noExcessiveLinesPerFile` grandfather list).
+ * agent-database surface, lifted out of the `sqlite.ts` monolith.
  *
  * Every method here exists solely to feed the FEA-1999 store-integrity probe,
  * which runs in the MAIN process and therefore cannot pass a `prisma.read`
@@ -17,6 +16,7 @@
  * instead of larger each time one is added.
  */
 
+import type { StorageExhaustionHealth } from "../../shared/storage-exhaustion.js";
 import { DATA_REVISION_IMPORT_PENDING } from "../collectors/engine/data-revision.js";
 import {
   readWalProbeHealth as readWalProbeHealthRead,
@@ -27,14 +27,19 @@ import {
   runForeignKeyIntegrityCheck as runForeignKeyIntegrityCheckRead,
 } from "./foreign-key-integrity.js";
 import {
+  type InvocationSyncOutboxIntegrityResult,
+  runInvocationSyncOutboxIntegrityCheck as runInvocationSyncOutboxIntegrityCheckRead,
+} from "./invocation-sync-outbox-integrity.js";
+import {
   type InvocationTelemetryIntegrityCounts,
   runInvocationTelemetryIntegrityCheck as runInvocationTelemetryIntegrityCheckRead,
 } from "./invocation-telemetry-integrity.js";
 import type { DesktopPrisma, WalProbeHealth } from "./prisma-client.js";
 import {
-  type RepositoryDefaultAuthorityIntegrityResult,
-  runRepositoryDefaultAuthorityIntegrityCheck as runRepositoryDefaultAuthorityIntegrityCheckRead,
-} from "./repository-default-authority-integrity.js";
+  runSessionMetadataIntegrityCheck as runSessionMetadataIntegrityCheckRead,
+  type SessionMetadataIntegrityResult,
+} from "./session-metadata-integrity.js";
+import { readStorageExhaustionHealth as readStorageExhaustionHealthRead } from "./storage-exhaustion-integrity.js";
 import {
   runTokenParityCheck as runTokenParityCheckRead,
   type TokenParityResult,
@@ -64,14 +69,34 @@ export type StoreHealthMethods = {
    * never a violating row). See foreign-key-integrity.ts.
    */
   runForeignKeyIntegrityCheck(): Promise<ForeignKeyIntegrityResult>;
-  /** ISS-5838: count malformed persisted authority rows in bounded pages. */
-  runRepositoryDefaultAuthorityIntegrityCheck(): Promise<RepositoryDefaultAuthorityIntegrityResult>;
+  /** ISS-8259: count `sessions` rows whose `metadata` is not valid JSON. */
+  runSessionMetadataIntegrityCheck(): Promise<SessionMetadataIntegrityResult>;
+  /**
+   * Count the invocation-delivery outbox rows this lane cannot deliver, by finding
+   * — counts only, never a row or an offending value.
+   *
+   * ISS-6209: rows whose `created_at` the lane cannot parse. Such a row can never
+   * have its retry horizon evaluated, so before it is quarantined it blocks every
+   * later generation of its session from promotion.
+   *
+   * ISS-5855: rows the lane permanently ABANDONED because their parent session
+   * never reached the cloud inside that horizon. Nothing in this lane re-drives
+   * them, so the data is gone upstream.
+   */
+  runInvocationSyncOutboxIntegrityCheck(): Promise<InvocationSyncOutboxIntegrityResult>;
   /**
    * ISS-4818 store-health read: the WAL-depth probe's anomaly tally for this
    * client lifetime. The counters themselves live in the child, next to the
    * boundary that produced them. See prisma-client.ts `walSizeVerdict`.
    */
   readWalProbeHealth(): Promise<WalProbeHealth>;
+  /**
+   * ISS-6337 store-health read: write failures the store refused for lack of
+   * space, for the window since the previous read. The tally itself lives in the
+   * child, next to the write boundary that produced it — see prisma-client.ts
+   * `write` and storage-exhaustion.ts.
+   */
+  readStorageExhaustionHealth(): Promise<StorageExhaustionHealth>;
   /**
    * ISS-5103 store-health read: ids of sessions currently at the
    * `DATA_REVISION_IMPORT_PENDING` sentinel, capped at `limit`.
@@ -105,11 +130,17 @@ export function createStoreHealthMethods(
     runForeignKeyIntegrityCheck(): Promise<ForeignKeyIntegrityResult> {
       return runForeignKeyIntegrityCheckRead(prisma);
     },
-    runRepositoryDefaultAuthorityIntegrityCheck(): Promise<RepositoryDefaultAuthorityIntegrityResult> {
-      return runRepositoryDefaultAuthorityIntegrityCheckRead(prisma);
+    runSessionMetadataIntegrityCheck(): Promise<SessionMetadataIntegrityResult> {
+      return runSessionMetadataIntegrityCheckRead(prisma);
+    },
+    runInvocationSyncOutboxIntegrityCheck(): Promise<InvocationSyncOutboxIntegrityResult> {
+      return runInvocationSyncOutboxIntegrityCheckRead(prisma);
     },
     readWalProbeHealth(): Promise<WalProbeHealth> {
       return readWalProbeHealthRead(prisma);
+    },
+    readStorageExhaustionHealth(): Promise<StorageExhaustionHealth> {
+      return readStorageExhaustionHealthRead(prisma);
     },
     async listImportPendingSessionIds(limit: number): Promise<string[]> {
       // Ordered by id so a capped snapshot is stable between ticks: an unordered

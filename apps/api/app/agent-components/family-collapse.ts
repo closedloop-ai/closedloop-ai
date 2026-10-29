@@ -14,8 +14,8 @@ import type { MergedComponent } from "./identity";
 // version buckets into ONE canonical row per component FAMILY (the org-level
 // `slug` = `${kind}::${normalizedKey}`, the exact key the detail page and the
 // list row's href already resolve by) for the catalog list, without undoing the
-// underlying version keying. It lives in its own module so the grandfathered
-// `service.ts` and `identity.ts` do not grow, and so the grouping contract has
+// underlying version keying. It lives in its own module so `service.ts` and
+// `identity.ts` do not grow, and so the grouping contract has
 // its own focused test target.
 // ---------------------------------------------------------------------------
 

@@ -1,26 +1,31 @@
 import type { AddTeamMemberInput, TeamMember } from "@repo/api/src/types/teams";
+import { TeamRole } from "@repo/api/src/types/teams";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   errorResponse,
-  forbiddenResponse,
   notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
 import { usersService } from "../../../users/service";
+import { requireTeamRole } from "../../require-team-role";
 import { teamsService } from "../../service";
 import { addMemberValidator } from "../../validators";
 
 /**
  * GET /teams/:teamId/members - List all members of a team
  */
-export const GET = withAuth<TeamMember[], "/teams/[teamId]/members">(
+export const GET = withAnyAuth<TeamMember[], "/teams/[teamId]/members">(
   async ({ user }, _, params) => {
     try {
       const { teamId } = await params;
-      const team = await teamsService.findById(teamId, user.organizationId);
+      const exists = await teamsService.existsInOrganization(
+        teamId,
+        user.organizationId
+      );
 
-      if (!team) {
+      if (!exists) {
         return notFoundResponse("Team");
       }
 
@@ -41,14 +46,9 @@ export const POST = withAuth<TeamMember, "/teams/[teamId]/members">(
     try {
       const { teamId } = await params;
 
-      // Check user has permission (must be team owner or admin)
-      const hasPermission = await teamsService.hasRole(
-        teamId,
-        user.id,
-        "ADMIN"
-      );
-      if (!hasPermission) {
-        return forbiddenResponse();
+      const authError = await requireTeamRole(teamId, user, TeamRole.Admin);
+      if (authError) {
+        return authError;
       }
 
       const { body, errorResponse: parseError } = await parseBody(

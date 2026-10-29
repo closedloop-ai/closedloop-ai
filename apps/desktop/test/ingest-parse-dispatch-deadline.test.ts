@@ -35,14 +35,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { CollectorManager } from "../src/main/collectors/engine/collector-manager.js";
 import type { HistoricalParseRunner } from "../src/main/collectors/engine/historical-parse-runner.js";
 import type { HistoricalParseResult } from "../src/main/collectors/engine/historical-parse-source.js";
-import {
-  createParseQuarantine,
-  parseQuarantinePath,
-} from "../src/main/collectors/engine/parse-quarantine.js";
+import { createParseQuarantine } from "../src/main/collectors/engine/parse-quarantine.js";
 import type {
   Harness,
   NormalizedSession,
@@ -53,6 +50,7 @@ import type {
 } from "../src/main/dashboard/agent-dashboard-db-types.js";
 import { createWriteQueue } from "../src/main/database/write-queue.js";
 import { deferred } from "./deferred.js";
+import { createMemoryIngestStoreProvider } from "./ingest-store-test-utils.js";
 import { fakeCollector, makeSession } from "./normalized-session-test-utils.js";
 
 // A tiny parse bound keeps the test fast: the poison parse never settles, so the
@@ -187,6 +185,7 @@ test("ISS-4572 (R1): a source that waited behind a poison parse does not charge 
   timeout: TEST_CASE_TIMEOUT_MS,
 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "iss-4572-r1-"));
+  const ingestStores = createMemoryIngestStoreProvider();
   // TWO poison sources on the poison harness: the healthy source waits behind BOTH
   // of them on the shared serialized runner, so its queue wait spans ~2 parse-bound
   // windows. That makes the mutation deterministic: with an enqueue-scoped deadline
@@ -251,11 +250,10 @@ test("ISS-4572 (R1): a source that waited behind a poison parse does not charge 
           return { skipped: false, reactivated: false };
         },
       },
-      detectBillingMode: () => "metered_api",
-      // One state dir; each harness's quarantine file is keyed by collector name
-      // (`parseQuarantinePath(stateDir, name)`), so the two are independently
-      // assertable from the same directory.
+      // One provider; each harness's quarantine is keyed by collector name, so
+      // the two are independently assertable from the same provider.
       stateDir: dir,
+      ingestStores: ingestStores.provider,
       emit: () => {},
       getCollectionMode: () => "watcher",
       cooperativeDelay: noopCooperativeDelay,
@@ -286,7 +284,7 @@ test("ISS-4572 (R1): a source that waited behind a poison parse does not charge 
     manager.start();
     // The healthy source must import despite waiting behind the poison parse.
     await healthyImported.promise;
-    manager.stop();
+    await manager.stop();
     poisonWedged.resolve([]); // let the abandoned poison parse settle harmlessly
 
     assert.ok(
@@ -298,7 +296,7 @@ test("ISS-4572 (R1): a source that waited behind a poison parse does not charge 
     // enqueue-scoped deadline the healthy source would have timed out during the
     // queue wait and recorded a spurious attempt here (maxAttempts=1 ⇒ quarantined).
     const healthyQuarantine = createParseQuarantine({
-      persistPath: parseQuarantinePath(dir, "codex"),
+      store: ingestStores.parseQuarantine("codex"),
       maxAttempts: 1,
     });
     assert.equal(
@@ -402,7 +400,6 @@ test("ISS-4572 (R2): a wedged db-host write is evicted so a later source's write
   try {
     const manager = new CollectorManager({
       importer,
-      detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
       getCollectionMode: () => "watcher",
@@ -431,7 +428,7 @@ test("ISS-4572 (R2): a wedged db-host write is evicted so a later source's write
     // (removing the eviction, which parks the later write forever) fails this test
     // fast instead of hanging.
     await laterWriteRan.promise;
-    manager.stop();
+    await manager.stop();
     wedgedWrite.resolve(); // idempotent: already resolved by the eviction
   } finally {
     rmSync(dir, { recursive: true, force: true });

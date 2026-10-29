@@ -1,3 +1,5 @@
+import { AGENT_TURN_TIMESTAMPS_METADATA_KEY } from "@repo/lib/agent-sessions/agent-turn-timestamps";
+import { HUMAN_TURN_TIMESTAMPS_METADATA_KEY } from "@repo/lib/agent-sessions/human-turn-timestamps";
 import { compactMetadataForPreview } from "@repo/lib/agent-sessions/metadata-preview";
 import { describe, expect, it } from "vitest";
 import { sanitizeMetadataForPersist } from "./metadata-sanitizer";
@@ -286,5 +288,139 @@ describe("sanitizeMetadataForPersist (FEA-3033)", () => {
         },
       ],
     });
+  });
+});
+
+// ISS-7775 + ISS-8014 — WHAT THE CLOUD SIDE DOES WITH THE NARROWED CONTRACT.
+//
+// `compactMetadataForPreview` gained a content policy so the DESKTOP can stop
+// shipping prompt-class text below the `full` data-sync level. That module is
+// shared with this persist boundary by construction (FEA-3693), so the change
+// reaches here whether or not anyone intended it to — which is exactly why the
+// decision is written down as a test rather than left to the default.
+//
+// THIS BOUNDARY DELIBERATELY KEEPS THE PERMISSIVE POLICY. Two reasons, and both
+// are about what this function actually is:
+//
+//  · It has no user tier to read. It runs on a payload that has ALREADY left
+//    some machine. The batch envelope's `dataSyncLevel` (ISS-7516) is
+//    SELF-REPORTED by the client, so it cannot decide egress at a trust
+//    boundary; treating it as authority would let a caller pick its own policy.
+//  · Narrowing unconditionally would delete the turn previews of `full`-tier
+//    users, whose consent card says that text syncs, and whose branch merged
+//    trace and `SessionDetail.turnItems[].text` render from it. That is a
+//    capability this ticket has no mandate to take.
+//
+// So the cloud strip's SCOPE is unchanged. What it does gain is ISS-8014: every
+// string it retains is now secret-redacted, not just `messages[].text`.
+describe("the cloud persist boundary's own policy (ISS-7775 / ISS-8014)", () => {
+  // Secret-SHAPED, never real. Booleans are compared rather than substrings so a
+  // failure prints the policy question instead of the token.
+  const SECRET_SHAPED = "sk-ant-api03-cloudunitAAAABBBBCCCCDDDDEEEEFFFFGGGG";
+
+  it("still persists turn text, so a full-tier reader keeps their previews", () => {
+    const result = sanitizeMetadataForPersist({
+      messages: [
+        { role: "user", timestamp: "2026-07-16T00:00:00.000Z", text: "hello" },
+      ],
+    }) as { messages: { text?: string }[] };
+    expect(result.messages[0].text).toBe("hello");
+  });
+
+  it("redacts a secret under a key nothing in this repo names", () => {
+    // The retained key set here is OPEN by design (deny-list plus bounds), so
+    // redaction had to reach every string rather than a listed subset. Planted
+    // under a key nobody enumerated, because an enumerated channel cannot
+    // distinguish "extended to the channels someone listed" from "reaches
+    // everything".
+    const wire = JSON.stringify(
+      sanitizeMetadataForPersist({ aKeyNoPolicyMentions: SECRET_SHAPED })
+    );
+    expect(
+      wire.includes(SECRET_SHAPED),
+      "a secret-shaped token under an unenumerated metadata key was persisted verbatim"
+    ).toBe(false);
+    expect(
+      wire.includes("[REDACTED:sk-ant]"),
+      "no marker either, so the token may be absent because the key was dropped rather than because it was redacted"
+    ).toBe(true);
+  });
+});
+
+describe("humanTurnTimestamps at the persist boundary (ISS-7896)", () => {
+  const stamps = (count: number) =>
+    Array.from(
+      { length: count },
+      (_, i) => `2026-06-15T${String(i % 24).padStart(2, "0")}:00:00.000Z`
+    );
+
+  it("passes a large derived array through intact", () => {
+    // The whole fix dies here if this boundary re-caps the key: it runs the SAME
+    // compactor the desktop producer ran, and `messages` beside it IS capped at
+    // 100. 500 > MAX_METADATA_MESSAGES and > MAX_METADATA_ARRAY_ITEMS, so a
+    // regression to either generic bound fails this.
+    const result = sanitizeMetadataForPersist({
+      [HUMAN_TURN_TIMESTAMPS_METADATA_KEY]: stamps(500),
+      messages: Array.from({ length: 500 }, () => ({
+        role: "human",
+        timestamp: "2026-06-15T10:00:00.000Z",
+      })),
+    });
+
+    expect(
+      (result as Record<string, unknown>)[HUMAN_TURN_TIMESTAMPS_METADATA_KEY]
+    ).toHaveLength(500);
+    expect((result as { messages: unknown[] }).messages).toHaveLength(100);
+  });
+
+  it("never DERIVES the key from the already-capped messages it receives", () => {
+    // By the time a payload reaches this boundary `messages` is a 100-row
+    // preview. Deriving here would rebuild the key from that truncated array and
+    // reinstate the undercount ISS-7896 removes, so the boundary must stay a
+    // pass-through: no key in, no key out.
+    const result = sanitizeMetadataForPersist({
+      messages: Array.from({ length: 100 }, () => ({
+        role: "human",
+        timestamp: "2026-06-15T10:00:00.000Z",
+      })),
+    });
+
+    expect(result).not.toHaveProperty(HUMAN_TURN_TIMESTAMPS_METADATA_KEY);
+  });
+});
+
+describe("agentTurnTimestamps at the persist boundary (ISS-9864)", () => {
+  const stamps = (count: number) =>
+    Array.from(
+      { length: count },
+      (_, i) => `2026-06-15T${String(i % 24).padStart(2, "0")}:00:00.000Z`
+    );
+
+  it("passes a large derived array through intact", () => {
+    // Same boundary, same trap as the human key: the shared compactor caps
+    // `messages` at 100 beside it, and 500 > both generic bounds.
+    const result = sanitizeMetadataForPersist({
+      [AGENT_TURN_TIMESTAMPS_METADATA_KEY]: stamps(500),
+      messages: Array.from({ length: 500 }, () => ({
+        role: "assistant",
+        timestamp: "2026-06-15T10:00:00.000Z",
+      })),
+    });
+
+    expect(
+      (result as Record<string, unknown>)[AGENT_TURN_TIMESTAMPS_METADATA_KEY]
+    ).toHaveLength(500);
+    expect((result as { messages: unknown[] }).messages).toHaveLength(100);
+  });
+
+  it("never DERIVES the key from the already-capped messages it receives", () => {
+    const result = sanitizeMetadataForPersist({
+      messages: Array.from({ length: 100 }, () => ({
+        role: "assistant",
+        timestamp: "2026-06-15T10:00:00.000Z",
+      })),
+    });
+
+    expect(result).not.toHaveProperty(AGENT_TURN_TIMESTAMPS_METADATA_KEY);
   });
 });

@@ -30,9 +30,12 @@ import { TranscriptDisposition } from "./transcript-disposition-constants.ts";
  * while its transcript sat in limbo. This gate makes the aggregate truthful:
  *
  * - `syncing` (the blob is `missing`/`uploadPending` — expected but NOT yet in
- *   the cloud) OR `failedTransient` (a retryable upload FAILURE the desktop
- *   re-queues with backoff — the blob is still absent and still coming) ⇒ the
- *   cloud copy IS behind, so the row is NOT `synced`. Both map to `pending`,
+ *   the cloud) OR `failedTransient` (the blob is still absent and still coming:
+ *   either a retryable upload FAILURE the desktop re-queues with backoff, or —
+ *   ISS-9884 — an `environment_unavailable` give-up, where the lane STOPPED
+ *   attempting but the file is presumed present and resumes when the transport
+ *   returns) ⇒ the cloud copy IS behind, so the row is NOT `synced`. Both
+ *   dispositions map to `pending`,
  *   exactly the "still uploading to the cloud, cloud copy may be behind"
  *   disclosure the existing `CloudSyncStateBadge` renders — honest, and no new UI
  *   vocabulary needed. Treating an in-flight retry as settled would reintroduce
@@ -64,9 +67,16 @@ export function reconcileCloudSyncState(
 
 /**
  * ISS-4647: whether a transcript verdict means the blob is STILL COMING — the
- * blob is missing/in-flight (`syncing`), or a retryable attempt failed and the
- * desktop will re-queue it with backoff (`failedTransient`). Either way the blob
- * is absent from the cloud and the cloud copy is genuinely behind.
+ * blob is missing/in-flight (`syncing`), or it is absent and unsettled
+ * (`failedTransient`: a retryable attempt failed and the desktop will re-queue
+ * it with backoff, or — ISS-9884 — the lane gave up on an unavailable
+ * environment and resumes when the transport returns). Either way the blob is
+ * absent from the cloud and the cloud copy is genuinely behind.
+ *
+ * This predicate deliberately does NOT take the skip reason: both
+ * `failedTransient` producers mean "absent and unsettled", which is the only
+ * question it answers. Telling them apart is a RENDER concern
+ * (`isTranscriptUploadPaused`), not a reconciliation one.
  *
  * Every other verdict is settled: the blob is caught up (`synced`), readable but
  * possibly behind (`stale` — archived bytes exist), terminally never coming

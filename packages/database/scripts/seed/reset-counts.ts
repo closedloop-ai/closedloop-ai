@@ -80,10 +80,6 @@ export async function getResetModelCounts(
       }),
     },
     {
-      name: "ChatSession",
-      query: prisma.chatSession.count({ where: { organizationId } }),
-    },
-    {
       name: "DesktopOnboardingAttempt",
       query: prisma.desktopOnboardingAttempt.count({
         where: { organizationId },

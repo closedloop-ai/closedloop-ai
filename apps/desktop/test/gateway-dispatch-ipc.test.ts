@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
-import { vi } from "vitest";
+import { describe, test, vi } from "vitest";
 import {
   createGatewayDispatchHandler,
   GATEWAY_DISPATCH_ALLOWED_PATHS,

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { CollectorManager } from "../src/main/collectors/engine/collector-manager.js";
 import { makeSession } from "./normalized-session-test-utils.js";
 
@@ -30,7 +30,6 @@ test("CollectorManager stop() clears stranded ingestProgress but preserves the f
       importer: {
         importSession: async () => ({ skipped: false, reactivated: false }),
       },
-      detectBillingMode: () => "metered_api",
       stateDir: join(dir, "state"),
       emit: () => {},
       getCollectionMode: () => "disabled",
@@ -66,6 +65,9 @@ test("CollectorManager stop() clears stranded ingestProgress but preserves the f
       importParked: false,
       complete: true,
       timedOut: false,
+      // ISS-6207: `complete` excludes both degraded terminals — this pass
+      // finished every source, so no re-drive budget was spent.
+      retriesExhausted: false,
       quarantinedByStage: { import: 0, parse: 0 },
       quarantinedCount: 0,
     });
@@ -77,7 +79,7 @@ test("CollectorManager stop() clears stranded ingestProgress but preserves the f
     // per-manager-lifecycle and the renderer treats the signal as first-launch,
     // so re-arming the gate on an in-process restart of an already-imported
     // machine would surface routine catch-ups as a false "importing" state.
-    manager.stop();
+    await manager.stop();
     assert.deepEqual(
       manager.getIngestProgress().byHarness,
       [],
@@ -105,7 +107,7 @@ test("CollectorManager stop() clears stranded ingestProgress but preserves the f
       "zero-pending restart does not flash preparing"
     );
 
-    manager.stop();
+    await manager.stop();
 
     // Phase 3 — a routine catch-up: one brand-new source appears and the manager
     // restarts in the same process. Because codex genuinely finished its first
@@ -136,7 +138,7 @@ test("CollectorManager stop() clears stranded ingestProgress but preserves the f
       "catch-up on an already-imported harness does not flash preparing"
     );
 
-    manager.stop();
+    await manager.stop();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

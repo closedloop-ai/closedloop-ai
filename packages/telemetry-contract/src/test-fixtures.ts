@@ -72,11 +72,36 @@ export function permissionPayload(overrides: Record<string, unknown> = {}) {
 /** Shared valid IPC perf fixture used by tests and package smoke scripts. */
 export function ipcPayload(overrides: Record<string, unknown> = {}) {
   return {
+    ...ipcHandlerMeasuredDimensions(),
+    [TelemetryAttribute.IpcSessionCount]: 1280,
+    ...overrides,
+  };
+}
+
+/** The IPC perf dimensions the handler itself measures; the COUNT is separate. */
+function ipcHandlerMeasuredDimensions() {
+  return {
     [TelemetryAttribute.IpcOperation]: "list",
     [TelemetryAttribute.DurationMs]: 42,
+    [TelemetryAttribute.IpcMatchedCount]: 250,
     [TelemetryAttribute.IpcPayloadBytes]: 2048,
+    [TelemetryAttribute.IpcQueryExecution]: "hydrated_fallback",
+    [TelemetryAttribute.IpcQuerySource]: "canonical",
     [TelemetryAttribute.IpcResultCount]: 25,
-    [TelemetryAttribute.IpcSessionCount]: 1280,
+    [TelemetryAttribute.IpcScannedCount]: 500,
+  };
+}
+
+/**
+ * ISS-8773: the event a distressed db-host produces — the follow-up
+ * `session_count` COUNT failed alongside the handler, so the dimension is
+ * omitted rather than fabricated, and `error.type` is what the event carries.
+ */
+export function ipcPayloadWithoutSessionCount(
+  overrides: Record<string, unknown> = {}
+) {
+  return {
+    ...ipcHandlerMeasuredDimensions(),
     ...overrides,
   };
 }

@@ -562,4 +562,18 @@ describe("InvocationEvidenceList truncation caption (ISS-5520)", () => {
     expect(claims.strip).toBe("10+");
     expect(claims.caption).toBe(claims.strip);
   });
+  it("labels an OTel-attributed row with the wording the sandbox trace inspector already ships", () => {
+    // ISS-10720 (codex on #7731): this string is REUSED, not written here —
+    // `PREVIEW_EVIDENCE_LABEL` renders the same evidence class as "OTel counter"
+    // in this package. Pinned because nothing else in the repo did: reverting
+    // the label to an unsourced invention left all 15,539 `@repo/app` tests
+    // green, which is how an unapproved user-visible word ships unnoticed.
+    const page = invocationPage();
+    page.items[0].evidenceClass =
+      AgentComponentInvocationEvidenceClass.OtelCounter;
+
+    renderWithNavigation(<InvocationEvidenceList page={page} />);
+
+    expect(screen.getByText("OTel counter")).toBeInTheDocument();
+  });
 });

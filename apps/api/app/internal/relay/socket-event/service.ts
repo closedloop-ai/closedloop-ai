@@ -1,62 +1,46 @@
 import { randomUUID } from "node:crypto";
-import { DESKTOP_AGENT_SESSIONS_SOCKET_EVENT } from "@repo/api/src/types/agent-session";
-import type { JsonObject, JsonValue } from "@repo/api/src/types/common";
 import type { ComputeTargetServerCapabilities } from "@repo/api/src/types/compute-target";
 import {
-  DesktopCommandStatus,
+  DESKTOP_HELLO_ACK_SOCKET_EVENT,
   DesktopHelloNackReason,
 } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
 import { redactGatewaySessionId } from "@repo/observability/redact-correlation";
 import { buildTelemetryTraceContext } from "@repo/observability/telemetry/context";
 import { emitConnectionStateEvent } from "@repo/observability/telemetry/emitter";
-import { FilterToken } from "@repo/observability/telemetry/filter-tokens";
-import {
-  emitProtocolMetric,
-  emitQueueMetric,
-} from "@repo/observability/telemetry/metrics";
+import { emitProtocolMetric } from "@repo/observability/telemetry/metrics";
 import { ORIGIN } from "@repo/observability/telemetry/origin";
 import type { TelemetryTraceContext } from "@repo/observability/telemetry/schema";
-import {
-  ErrorClass,
-  TelemetryCategory,
-} from "@repo/observability/telemetry/schema";
+import { ErrorClass } from "@repo/observability/telemetry/schema";
+import { TelemetryCategory } from "@repo/observability/telemetry/telemetry-category";
 import { waitUntil } from "@vercel/functions";
-import {
-  computeTargetsService,
-  isComputeTargetGatewayConflictResult,
-} from "@/app/compute-targets/service";
-import { githubDirtyScopeService } from "@/app/integrations/github/dirty-scope-service";
-import { isAgentSessionSyncSupportedForUser } from "@/lib/agent-session-sync-feature";
+import { computeTargetsService } from "@/app/compute-targets/service";
 import {
   CommandSigningEligibilityStatus,
   isComputeTargetSigningEligible,
 } from "@/lib/compute-target-signing-eligibility";
-import { handleDesktopAgentSessionsEvent } from "@/lib/desktop-agent-sessions-handler";
-import { captureDesktopAnalytics } from "@/lib/desktop-analytics-capture";
-import { handleDesktopAnalyticsEvent } from "@/lib/desktop-analytics-handler";
-import { DESKTOP_ANALYTICS_SOCKET_EVENT } from "@/lib/desktop-analytics-schema";
-import { acknowledgeDesktopCommand } from "@/lib/desktop-command-ack-handler";
+import { isTerminalDesktopCommandStatus } from "@/lib/desktop-command-mappers";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import { getRealDesktopCommandTelemetryContext } from "@/lib/desktop-command-telemetry-context";
-import {
-  type DesktopHelloNackPayload,
-  HELLO_OPERATION_TIMEOUT_MS,
-  PROTOCOL_VERSION,
-  type WireCommandPayload,
-} from "@/lib/desktop-gateway-types";
+import { HELLO_OPERATION_TIMEOUT_MS } from "@/lib/desktop-gateway-types";
 import {
   isTerminalEventData,
   parseCommandEventPayload,
   toEnvelope,
-  toWireCommandFromStore,
 } from "@/lib/desktop-gateway-wire";
-import { publishLegacyRelayEvent } from "@/lib/desktop-relay-event-bridge";
 import { buildDesktopServerCapabilities } from "@/lib/desktop-server-capabilities";
-import { handleTelemetryEvent } from "@/lib/desktop-telemetry-handler";
-import { relayEventBus } from "@/lib/relay-event-bus";
 import { isRecord } from "@/lib/type-guards";
-import { runStage, timeStage } from "@/lib/with-timeout";
+import { runStage } from "@/lib/with-timeout";
+import { handleCommandAck } from "./service/command-ack";
+import { scheduleQueuedCommandRelease } from "./service/command-drain";
+import { emitPresenceFleetCapacityMetrics } from "./service/fleet-capacity-sampler";
+import { scheduleGitHubDirtyScopeRecoveryDrain } from "./service/github-dirty-scope-drain";
+import { handleHello } from "./service/hello-handler";
+import type {
+  CorrelationContext,
+  RelayAuthContext,
+  SocketEventResponse,
+} from "./service/types";
 
 // ---------------------------------------------------------------------------
 // Dispatch — routes an incoming socket event to the appropriate handler
@@ -68,31 +52,18 @@ export type SocketEventInput = {
   auth: RelayAuthContext | null;
   targetId: string | undefined;
   correlation: Partial<CorrelationContext>;
-  pluginVersion: string | undefined;
-  relaySocketId: string | undefined;
   requestArrivedAt: number;
 };
 
-type RelayAuthContext = {
-  organizationId: string;
-  userId: string;
-  clerkUserId?: string | null;
-};
+type DispatchResult =
+  | { ok: true; response: SocketEventResponse }
+  | { ok: false; error: string; status: number };
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the relay keeps a single centralized socket-event dispatcher by design
 export async function dispatchSocketEvent(
   input: SocketEventInput
 ): Promise<DispatchResult> {
-  const {
-    event,
-    payload,
-    auth,
-    targetId,
-    correlation,
-    pluginVersion,
-    relaySocketId,
-    requestArrivedAt,
-  } = input;
+  const { event, payload, auth, targetId, correlation, requestArrivedAt } =
+    input;
 
   switch (event) {
     case "desktop.hello":
@@ -133,68 +104,9 @@ export async function dispatchSocketEvent(
         response: await handlePresence(
           { ...auth, targetId },
           correlation,
-          requestArrivedAt
+          requestArrivedAt,
+          payload
         ),
-      };
-
-    case "desktop.telemetry":
-      if (!targetId) {
-        return { ok: false, error: "Missing targetId", status: 400 };
-      }
-      return {
-        ok: true,
-        response: handleRelayTelemetry(
-          payload,
-          targetId,
-          correlation,
-          pluginVersion,
-          auth
-        ),
-      };
-
-    case DESKTOP_ANALYTICS_SOCKET_EVENT:
-      if (!(auth && targetId)) {
-        return { ok: false, error: "Missing auth/targetId", status: 400 };
-      }
-      return {
-        ok: true,
-        response: {
-          emit: [],
-          ack: await handleDesktopAnalyticsEvent(
-            payload,
-            {
-              organizationId: auth.organizationId,
-              userId: auth.userId,
-              clerkUserId: auth.clerkUserId,
-              targetId,
-              gatewaySessionId: correlation.gatewaySessionId,
-              pluginVersion,
-              relaySocketId,
-            },
-            {
-              capture: captureDesktopAnalytics,
-            }
-          ),
-        },
-      };
-
-    case DESKTOP_AGENT_SESSIONS_SOCKET_EVENT:
-      if (!(auth && targetId)) {
-        return { ok: false, error: "Missing auth/targetId", status: 400 };
-      }
-      return {
-        ok: true,
-        response: {
-          emit: [],
-          ack: await handleDesktopAgentSessionsEvent(payload, {
-            organizationId: auth.organizationId,
-            userId: auth.userId,
-            clerkUserId: auth.clerkUserId,
-            targetId,
-            gatewaySessionId: correlation.gatewaySessionId,
-            relaySocketId,
-          }),
-        },
       };
 
     case "disconnect":
@@ -220,392 +132,9 @@ export async function dispatchSocketEvent(
   }
 }
 
-type CorrelationContext = Pick<
-  TelemetryTraceContext,
-  "commandId" | "computeTargetId" | "gatewaySessionId" | "requestId"
->;
-
-type EmitInstruction = { event: string; payload: unknown };
-
-type SocketEventResponse = {
-  targetId?: string;
-  gatewaySessionId?: string;
-  emit: EmitInstruction[];
-  ack?: unknown;
-  disconnect?: boolean;
-};
-
-type DispatchResult =
-  | { ok: true; response: SocketEventResponse }
-  | { ok: false; error: string; status: number };
-
-function wireCommand(command: WireCommandPayload): EmitInstruction {
-  return { event: "desktop.command", payload: toEnvelope(command) };
-}
-
-type RelayHelloInput = {
-  machineName: string;
-  platform: string;
-  capabilities: JsonObject;
-  supportedOperations: string[];
-  computeTargetId?: string;
-  pluginVersion?: string;
-  gatewayId?: string;
-  desktopSecurityUpgradeProtocolVersion?: 1;
-  maxInFlightCommands?: number;
-};
-
-function parseRelayHelloInput(payload: unknown): RelayHelloInput | null {
-  if (!isRecord(payload)) {
-    return null;
-  }
-  if (
-    typeof payload.machineName !== "string" ||
-    typeof payload.platform !== "string"
-  ) {
-    return null;
-  }
-
-  const desktopSecurityUpgradeProtocolVersion =
-    payload.desktopSecurityUpgradeProtocolVersion === 1 ? 1 : undefined;
-  return {
-    machineName: payload.machineName,
-    platform: payload.platform,
-    capabilities: {
-      ...(isRecord(payload.capabilities)
-        ? (payload.capabilities as JsonObject)
-        : {}),
-      maxInFlightCommands: (payload.maxInFlightCommands as JsonValue) ?? null,
-      allowedDirectoriesHash:
-        (payload.allowedDirectoriesHash as JsonValue) ?? null,
-      socketProtocolVersion: PROTOCOL_VERSION,
-      pluginVersion: (payload.pluginVersion as JsonValue) ?? null,
-      desktopClientVersion: (payload.desktopClientVersion as JsonValue) ?? null,
-      gatewayProtocolVersion:
-        (payload.gatewayProtocolVersion as JsonValue) ?? null,
-      desktopSecurityUpgradeProtocolVersion:
-        desktopSecurityUpgradeProtocolVersion ?? null,
-    },
-    supportedOperations: Array.isArray(payload.supportedOperations)
-      ? payload.supportedOperations.filter(
-          (operation): operation is string => typeof operation === "string"
-        )
-      : [],
-    computeTargetId:
-      typeof payload.computeTargetId === "string"
-        ? payload.computeTargetId
-        : undefined,
-    pluginVersion:
-      typeof payload.pluginVersion === "string"
-        ? payload.pluginVersion
-        : undefined,
-    gatewayId:
-      typeof payload.gatewayId === "string" ? payload.gatewayId : undefined,
-    desktopSecurityUpgradeProtocolVersion,
-    maxInFlightCommands:
-      typeof payload.maxInFlightCommands === "number"
-        ? payload.maxInFlightCommands
-        : undefined,
-  };
-}
-
-type ResolveRelayHelloTargetResult =
-  | {
-      ok: true;
-      targetId: string;
-      targetCreated: boolean;
-      targetGatewayId: string | null;
-    }
-  | { ok: false; reason: DesktopHelloNackReason; cause: unknown }
-  | { ok: "conflict" };
-
-async function resolveRelayHelloTarget(
-  input: RelayHelloInput,
-  auth: RelayAuthContext
-): Promise<ResolveRelayHelloTargetResult> {
-  if (input.computeTargetId) {
-    const updateResult = await runStage(
-      computeTargetsService.updateOwned(
-        input.computeTargetId,
-        auth.organizationId,
-        auth.userId,
-        {
-          machineName: input.machineName,
-          platform: input.platform,
-          capabilities: input.capabilities,
-          supportedOperations: input.supportedOperations,
-          gatewayId: input.gatewayId,
-          desktopSecurityUpgradeProtocolVersion:
-            input.desktopSecurityUpgradeProtocolVersion,
-        }
-      ),
-      HELLO_OPERATION_TIMEOUT_MS,
-      "computeTargetsService.updateOwned",
-      DesktopHelloNackReason.ComputeTargetUpdateFailed
-    );
-    if (!updateResult.ok) {
-      return updateResult;
-    }
-    const updated = updateResult.value;
-    if (isComputeTargetGatewayConflictResult(updated)) {
-      return { ok: "conflict" };
-    }
-    if (updated.value) {
-      return {
-        ok: true,
-        targetId: input.computeTargetId,
-        targetCreated: false,
-        targetGatewayId: updated.value.gatewayId ?? input.gatewayId ?? null,
-      };
-    }
-  }
-
-  const registerResult = await runStage(
-    computeTargetsService.register(auth.organizationId, auth.userId, {
-      machineName: input.machineName,
-      platform: input.platform,
-      capabilities: input.capabilities,
-      supportedOperations: input.supportedOperations,
-      pluginVersion: input.pluginVersion,
-      gatewayId: input.gatewayId,
-      desktopSecurityUpgradeProtocolVersion:
-        input.desktopSecurityUpgradeProtocolVersion,
-    }),
-    HELLO_OPERATION_TIMEOUT_MS,
-    "computeTargetsService.register",
-    DesktopHelloNackReason.ComputeTargetRegisterFailed
-  );
-  if (!registerResult.ok) {
-    return registerResult;
-  }
-  const target = registerResult.value;
-  if (isComputeTargetGatewayConflictResult(target)) {
-    return { ok: "conflict" };
-  }
-  return {
-    ok: true,
-    targetId: target.value.id,
-    targetCreated: true,
-    targetGatewayId: target.value.gatewayId ?? input.gatewayId ?? null,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Event handlers — each returns what the relay should emit back to the worker
 // ---------------------------------------------------------------------------
-
-type HelloStageTimings = {
-  resolveTargetMs?: number;
-  pendingCommandsMs?: number;
-  onlineStateMs?: number;
-  featureFlagSigningMs?: number;
-  featureFlagSyncMs?: number;
-};
-
-function logRelayHello(
-  auth: RelayAuthContext,
-  helloStart: number,
-  stageTimings: HelloStageTimings,
-  extra: Record<string, unknown>
-): void {
-  log.info("Relay hello processed", {
-    organizationId: auth.organizationId,
-    userId: auth.userId,
-    timings: stageTimings,
-    totalMs: Math.round(performance.now() - helloStart),
-    ...extra,
-  });
-}
-
-function helloNackResponse(
-  reason: DesktopHelloNackReason
-): SocketEventResponse {
-  return {
-    emit: [
-      {
-        event: "desktop.hello.nack",
-        payload: toEnvelope<DesktopHelloNackPayload>({ reason }),
-      },
-    ],
-    disconnect: true,
-  };
-}
-
-async function handleHello(
-  payload: unknown,
-  auth: RelayAuthContext
-): Promise<SocketEventResponse> {
-  const helloStart = performance.now();
-  const stageTimings: HelloStageTimings = {};
-
-  const input = parseRelayHelloInput(payload);
-  if (!input) {
-    return { emit: [], disconnect: true };
-  }
-
-  const resolvedTarget = await timeStage(stageTimings, "resolveTargetMs", () =>
-    resolveRelayHelloTarget(input, auth)
-  );
-  if (resolvedTarget.ok === false) {
-    logRelayHello(auth, helloStart, stageTimings, { outcome: "nack" });
-    return helloNackResponse(resolvedTarget.reason);
-  }
-  if (resolvedTarget.ok === "conflict") {
-    log.warn("relay.hello.gateway_conflict", {
-      organizationId: auth.organizationId,
-      userId: auth.userId,
-      computeTargetId: input.computeTargetId,
-      gatewayId: input.gatewayId,
-      errorClass: ErrorClass.Protocol,
-    });
-    logRelayHello(auth, helloStart, stageTimings, {
-      outcome: "gateway_conflict",
-    });
-    return { emit: [], disconnect: true };
-  }
-  const { targetId, targetCreated, targetGatewayId } = resolvedTarget;
-
-  const [pendingCommandsResult, onlineStateResult, signingResult, syncResult] =
-    await Promise.all([
-      timeStage(stageTimings, "pendingCommandsMs", () =>
-        runStage(
-          desktopCommandStore.listNonTerminalDispatchCommands(targetId),
-          HELLO_OPERATION_TIMEOUT_MS,
-          "listNonTerminalDispatchCommands",
-          DesktopHelloNackReason.PendingCommandsLookupFailed
-        )
-      ),
-      timeStage(stageTimings, "onlineStateMs", () =>
-        targetCreated
-          ? Promise.resolve({ ok: true as const, value: true })
-          : runStage(
-              computeTargetsService.setOnlineState(
-                targetId,
-                auth.organizationId,
-                auth.userId,
-                true
-              ),
-              HELLO_OPERATION_TIMEOUT_MS,
-              "setOnlineState",
-              DesktopHelloNackReason.OnlineStateUpdateFailed
-            )
-      ),
-      timeStage(stageTimings, "featureFlagSigningMs", () =>
-        runStage(
-          isComputeTargetSigningEligible({
-            organizationId: auth.organizationId,
-            userId: auth.userId,
-            clerkUserId: auth.clerkUserId,
-            gatewayId: targetGatewayId,
-          }),
-          HELLO_OPERATION_TIMEOUT_MS,
-          "isComputeTargetSigningEligible",
-          DesktopHelloNackReason.InternalError
-        )
-      ),
-      timeStage(stageTimings, "featureFlagSyncMs", () =>
-        runStage(
-          isAgentSessionSyncSupportedForUser({
-            userId: auth.userId,
-            clerkUserId: auth.clerkUserId,
-          }),
-          HELLO_OPERATION_TIMEOUT_MS,
-          "isAgentSessionSyncSupportedForUser",
-          DesktopHelloNackReason.InternalError
-        )
-      ),
-    ]);
-
-  if (!pendingCommandsResult.ok) {
-    logRelayHello(auth, helloStart, stageTimings, {
-      computeTargetId: targetId,
-      outcome: "nack",
-    });
-    return helloNackResponse(pendingCommandsResult.reason);
-  }
-
-  if (!onlineStateResult.ok) {
-    logRelayHello(auth, helloStart, stageTimings, {
-      computeTargetId: targetId,
-      outcome: "nack",
-    });
-    return helloNackResponse(onlineStateResult.reason);
-  }
-
-  // Feature flags soft-fail to `false` — a slow or broken feature-flag SDK
-  // must not prevent the hello handshake from completing.
-  const commandSigningSupported =
-    signingResult.ok &&
-    signingResult.value.status === CommandSigningEligibilityStatus.Eligible;
-  const agentSessionSyncSupported = syncResult.ok ? syncResult.value : false;
-  const serverCapabilities = buildDesktopServerCapabilities({
-    agentSessionSyncSupported,
-    commandSigningSupported,
-  });
-
-  const pendingCommands = pendingCommandsResult.value;
-
-  // Clear stale in-process backlog so new dispatches go through clean
-  relayEventBus.clearOperationBacklog(targetId);
-
-  const sessionId = randomUUID();
-  const resumeFromSequence = Object.fromEntries(
-    pendingCommands.map((c) => [c.commandId, c.lastSequenceAcked])
-  );
-
-  const connectionCategory = targetCreated
-    ? TelemetryCategory.ConnectionRegistered
-    : TelemetryCategory.ConnectionResumed;
-
-  emitConnectionStateEvent(
-    connectionCategory,
-    buildTelemetryTraceContext({
-      computeTargetId: targetId,
-      gatewaySessionId: sessionId,
-    })
-  );
-
-  const emit: EmitInstruction[] = [
-    {
-      event: "desktop.hello.ack",
-      payload: toEnvelope({
-        computeTargetId: targetId,
-        sessionId,
-        serverTime: new Date().toISOString(),
-        ...(serverCapabilities ? { serverCapabilities } : {}),
-        ...(Object.keys(resumeFromSequence).length > 0
-          ? { resumeFromSequence }
-          : {}),
-      }),
-    },
-  ];
-
-  for (const command of pendingCommands) {
-    emit.push(wireCommand(toWireCommandFromStore(command)));
-  }
-
-  waitUntil(
-    emitFleetCapacityMetrics({
-      targetId,
-      maxInFlightCommands: input.maxInFlightCommands,
-    })
-  );
-  scheduleGitHubDirtyScopeRecoveryDrain({
-    organizationId: auth.organizationId,
-    targetId,
-  });
-
-  logRelayHello(auth, helloStart, stageTimings, {
-    computeTargetId: targetId,
-    gatewaySessionIdHash: redactGatewaySessionId(sessionId),
-    outcome: "ack",
-    targetCreated,
-    pendingCommandCount: pendingCommands.length,
-    serverCapabilities,
-  });
-
-  return { targetId, gatewaySessionId: sessionId, emit };
-}
 
 async function handleCommandEvent(
   payload: unknown,
@@ -652,13 +181,16 @@ async function handleCommandEvent(
 
   if (result.accepted) {
     if (!result.duplicate) {
-      // Publish to in-process event bus for live SSE subscribers on this Vercel instance
-      await publishLegacyRelayEvent(commandId, {
-        commandId,
-        eventType: rawEventType,
-        data,
-        sequence,
-      });
+      // The store's own verdict, not a second opinion: `resolveCommandUpdate`
+      // also retires a `result` event carrying `terminal: true`, which the
+      // event-type check below does not name. A slot freed by one of those is
+      // still a slot.
+      if (
+        result.nextStatus &&
+        isTerminalDesktopCommandStatus(result.nextStatus)
+      ) {
+        scheduleQueuedCommandRelease(targetId);
+      }
 
       const isTerminal =
         rawEventType === "done" ||
@@ -726,7 +258,7 @@ async function handleCommandSequenceGap(input: {
   return {
     emit: [
       {
-        event: "desktop.hello.ack",
+        event: DESKTOP_HELLO_ACK_SOCKET_EVENT,
         payload: toEnvelope({
           computeTargetId: command.computeTargetId,
           sessionId: randomUUID(),
@@ -748,23 +280,12 @@ async function loadSequenceGapServerCapabilities(
   if (!auth) {
     return undefined;
   }
-  const [targetResult, syncResult] = await Promise.all([
-    runStage(
-      computeTargetsService.findById(computeTargetId),
-      HELLO_OPERATION_TIMEOUT_MS,
-      "computeTargetsService.findById",
-      DesktopHelloNackReason.InternalError
-    ),
-    runStage(
-      isAgentSessionSyncSupportedForUser({
-        userId: auth.userId,
-        clerkUserId: auth.clerkUserId,
-      }),
-      HELLO_OPERATION_TIMEOUT_MS,
-      "isAgentSessionSyncSupportedForUser",
-      DesktopHelloNackReason.InternalError
-    ),
-  ]);
+  const targetResult = await runStage(
+    computeTargetsService.findById(computeTargetId),
+    HELLO_OPERATION_TIMEOUT_MS,
+    "computeTargetsService.findById",
+    DesktopHelloNackReason.InternalError
+  );
   const targetGatewayId = targetResult.ok
     ? targetResult.value?.gatewayId
     : null;
@@ -782,86 +303,24 @@ async function loadSequenceGapServerCapabilities(
       )
     : null;
   return buildDesktopServerCapabilities({
-    agentSessionSyncSupported: syncResult.ok ? syncResult.value : false,
     commandSigningSupported:
       signingResult?.ok === true &&
       signingResult.value.status === CommandSigningEligibilityStatus.Eligible,
   });
 }
 
-async function handleCommandAck(
-  payload: unknown,
-  targetId: string,
-  correlation: Partial<CorrelationContext>
-): Promise<SocketEventResponse> {
-  if (!isRecord(payload)) {
-    return { emit: [] };
-  }
-
-  if (
-    typeof payload.commandId !== "string" ||
-    typeof payload.accepted !== "boolean"
-  ) {
-    return { emit: [] };
-  }
-
-  const commandId = payload.commandId;
-  const accepted = payload.accepted;
-  const reason =
-    typeof payload.reason === "string" ? payload.reason : undefined;
-
-  const ctx = buildTelemetryTraceContext({
-    ...correlation,
-    commandId,
-    computeTargetId: targetId,
-  });
-
-  log.info("Relay command ack received", {
-    commandId,
-    accepted,
-    computeTargetId: ctx.computeTargetId,
-    gatewaySessionIdHash: redactGatewaySessionId(ctx.gatewaySessionId),
-    requestId: ctx.requestId,
-  });
-
-  const commandContext = getRealDesktopCommandTelemetryContext(ctx);
-  if (!commandContext) {
-    log.info("command.ack.lifecycle_context_omitted", {
-      commandId,
-      computeTargetId: ctx.computeTargetId,
-      gatewaySessionIdHash: redactGatewaySessionId(ctx.gatewaySessionId),
-      requestId: ctx.requestId,
-      reason: "missing_gateway_session",
-    });
-    emitProtocolMetric({
-      metric: "command_ack_lifecycle_context_omitted",
-      origin: ORIGIN,
-      count: 1,
-      computeTargetId: targetId,
-      gatewaySessionId: ctx.gatewaySessionId,
-    });
-  }
-
-  const acknowledged = await acknowledgeDesktopCommand({
-    commandId,
-    accepted,
-    reason,
-    targetId,
-    ...(commandContext ? { context: commandContext } : {}),
-  });
-
-  if (acknowledged) {
-    const latencyMs = Date.now() - new Date(acknowledged.createdAt).getTime();
-    emitProtocolMetric({
-      metric: "ack_latency",
-      origin: ORIGIN,
-      value: latencyMs,
-      computeTargetId: targetId,
-      gatewaySessionId: ctx.gatewaySessionId,
-    });
-  }
-
-  return { emit: [] };
+/**
+ * The desktop's own executor occupancy, off the presence payload, returned RAW.
+ *
+ * JSON carries no `undefined`, so `undefined` here means the field was absent —
+ * the older-client omission, which degrades to no saturation sample. Every other
+ * value is handed on unvalidated so `emitFleetCapacityMetrics` can tell a
+ * malformed one apart from that omission and warn on it. Narrowing to `number`
+ * here folded the two together: `activeCommands: "2"` reported itself as an
+ * absent field at debug level and the invalid-payload signal never fired.
+ */
+function readActiveCommands(payload: unknown): unknown {
+  return isRecord(payload) ? payload.activeCommands : undefined;
 }
 
 async function handlePresence(
@@ -871,7 +330,8 @@ async function handlePresence(
     targetId: string;
   },
   correlation: Partial<CorrelationContext>,
-  requestArrivedAt: number
+  requestArrivedAt: number,
+  payload: unknown
 ): Promise<SocketEventResponse> {
   const ctx = buildTelemetryTraceContext({
     ...correlation,
@@ -884,7 +344,11 @@ async function handlePresence(
     requestId: ctx.requestId,
   });
 
-  await computeTargetsService.heartbeat(
+  // ISS-8897: `recordRelayPresence`, not `heartbeat`. This is the one path that
+  // drives `emitPresenceFleetCapacityMetrics` below, and therefore the one path
+  // whose timestamp the idle drain may read as "the presence trigger owns this
+  // target's backlog". Every other check-in stamps `lastSeenAt` alone.
+  await computeTargetsService.recordRelayPresence(
     auth.targetId,
     auth.organizationId,
     auth.userId
@@ -893,6 +357,9 @@ async function handlePresence(
     organizationId: auth.organizationId,
     targetId: auth.targetId,
   });
+  waitUntil(
+    emitPresenceFleetCapacityMetrics(auth.targetId, readActiveCommands(payload))
+  );
 
   emitProtocolMetric({
     metric: "presence_received_latency",
@@ -903,34 +370,6 @@ async function handlePresence(
   });
 
   return { emit: [] };
-}
-
-function scheduleGitHubDirtyScopeRecoveryDrain({
-  organizationId,
-  targetId,
-}: {
-  organizationId: string;
-  targetId: string;
-}): void {
-  waitUntil(
-    Promise.resolve()
-      .then(() =>
-        githubDirtyScopeService.dispatchDue({
-          computeTargetId: targetId,
-          organizationId,
-        })
-      )
-      .catch((error) => {
-        log.warn(
-          "[relaySocketEvent] GitHub dirty-scope recovery drain failed",
-          {
-            computeTargetId: targetId,
-            error,
-            organizationId,
-          }
-        );
-      })
-  );
 }
 
 async function handleDisconnect(
@@ -969,96 +408,6 @@ async function handleDisconnect(
   );
 
   return { emit: [] };
-}
-
-function handleRelayTelemetry(
-  payload: unknown,
-  targetId: string,
-  correlation: Partial<CorrelationContext>,
-  pluginVersion: string | undefined,
-  auth: RelayAuthContext | null
-): SocketEventResponse {
-  const result = handleTelemetryEvent(payload, {
-    authenticatedTargetId: targetId,
-    pluginVersion,
-    gatewaySessionId: correlation.gatewaySessionId,
-    organizationId: auth?.organizationId,
-    userId: auth?.userId,
-  });
-
-  if (!result.ok) {
-    return { emit: result.emits };
-  }
-
-  return { emit: [] };
-}
-
-export async function emitFleetCapacityMetrics({
-  targetId,
-  maxInFlightCommands,
-}: {
-  targetId: string;
-  maxInFlightCommands: number | undefined;
-}): Promise<void> {
-  let queuedCount: number;
-  let inFlightCount: number;
-
-  try {
-    [queuedCount, inFlightCount] = await Promise.all([
-      desktopCommandStore.countCommandsForTarget(
-        targetId,
-        DesktopCommandStatus.Queued
-      ),
-      desktopCommandStore.countCommandsForTarget(targetId, [
-        DesktopCommandStatus.Accepted,
-        DesktopCommandStatus.Running,
-      ]),
-    ]);
-  } catch (error) {
-    log.warn("fleet.capacity_metrics.query_failed", {
-      computeTargetId: targetId,
-      error,
-    });
-    return;
-  }
-
-  emitQueueMetric({
-    metric: "queued_command_count",
-    value: queuedCount,
-    computeTargetId: targetId,
-    origin: ORIGIN,
-    filterToken: FilterToken.CommandQueued,
-  });
-  emitQueueMetric({
-    metric: "in_flight_command_count",
-    value: inFlightCount,
-    computeTargetId: targetId,
-    origin: ORIGIN,
-    filterToken: FilterToken.CommandDispatched,
-  });
-
-  if (
-    typeof maxInFlightCommands !== "number" ||
-    maxInFlightCommands <= 0 ||
-    !Number.isFinite(maxInFlightCommands)
-  ) {
-    log.warn("executor_saturation_skipped", {
-      event: "executor_saturation_skipped",
-      reason: "maxInFlightCommands_invalid",
-      computeTargetId: targetId,
-      maxInFlightCommands,
-    });
-    return;
-  }
-
-  // Intentionally unclamped: >1.0 signals overload (e.g. maxInFlightCommands lowered mid-flight).
-  const value = inFlightCount / maxInFlightCommands;
-  emitQueueMetric({
-    metric: "executor_saturation",
-    value,
-    computeTargetId: targetId,
-    origin: ORIGIN,
-  });
 }
 
 export function extractCorrelationContext(

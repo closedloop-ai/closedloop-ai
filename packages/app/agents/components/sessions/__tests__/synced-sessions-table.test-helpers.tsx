@@ -3,7 +3,7 @@ import { A11yTheme } from "@repo/app/test/a11y/contrast";
 import { type RenderResult, render, screen } from "@testing-library/react";
 import { AppCoreStoryProviders } from "../../../../shared/storybook/decorators";
 import { useAgentSessions } from "../../../hooks/use-agent-sessions";
-import { AgentSessionsListContent } from "../agent-sessions-list";
+import { SyncedSessionsTable } from "../synced-sessions-table";
 
 // Shared fixtures and DOM-navigation helpers for the `SyncedSessionsTable` test
 // suite, which is split by concern across sibling `*.test.tsx` files (rendering,
@@ -66,9 +66,16 @@ export function renderWithNav(node: React.ReactNode): RenderResult {
 // behavior) and flag-on (folded Status pill) branches of the shared table.
 export function renderWithFlags(
   node: React.ReactNode,
-  enabledFlags: readonly string[] = []
+  enabledFlags: readonly string[] = [],
+  /**
+   * Mount into a caller-owned element instead of a fresh one. Only a suite
+   * whose subject reads the SCROLLER around the grid needs it — jsdom lays
+   * nothing out, so that element's geometry has to be the test's to stub.
+   */
+  container?: HTMLElement
 ): RenderResult {
   return render(node, {
+    container,
     wrapper: ({ children }) => (
       <AppCoreStoryProviders enabledFlags={enabledFlags}>
         {children}
@@ -81,9 +88,8 @@ export function HookBackedListProbe() {
   const query = useAgentSessions({ limit: 25, offset: 0 });
 
   return (
-    <AgentSessionsListContent
+    <SyncedSessionsTable
       getSessionHref={(item) => `/sessions/${item.id}`}
-      isLoading={query.isLoading}
       items={query.data?.items ?? []}
     />
   );

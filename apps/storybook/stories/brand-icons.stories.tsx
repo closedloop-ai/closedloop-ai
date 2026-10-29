@@ -11,9 +11,9 @@ import type { Meta, StoryObj } from "@storybook/react";
  * className to resize.
  */
 const meta = {
-  title: "Design System/Primitives/Brand Icons",
+  title: "Primitives v1.0/Content/Brand Icons",
   component: GoogleGlyph,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   argTypes: {},
 } satisfies Meta<typeof GoogleGlyph>;
 

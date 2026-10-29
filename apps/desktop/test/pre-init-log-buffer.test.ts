@@ -1,8 +1,8 @@
 /**
  * ISS-4916 (codex review): electron-log's file transport resolves the PRODUCTION
  * log path until `initializePersistentLogging` configures the redirect, so every
- * durable write before that point — the macOS GPU-workaround line, the
- * single-instance-lock line, the userData-migration lines — landed in the
+ * durable write before that point (the launch line, the single-instance-lock
+ * line, the userData-migration lines) landed in the
  * operator's real `main.log` even on a redirected (e2e / golden / --user-data-dir)
  * launch. That is the exact interleaving the ticket exists to stop.
  *
@@ -10,7 +10,7 @@
  */
 
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { PreInitLogBuffer } from "../src/main/logging/pre-init-log-buffer.js";
 
 const LEVEL_INFO = "info";
@@ -20,14 +20,14 @@ test("lines written before initialization are held, not written", () => {
   const buffer = new PreInitLogBuffer<string>(10);
 
   assert.equal(
-    buffer.capture(LEVEL_INFO, "gpu workaround applied"),
+    buffer.capture(LEVEL_INFO, "Desktop launch: pid=1 platform=darwin"),
     true,
     "the buffer takes responsibility for the line, so the caller must not write it"
   );
   assert.equal(buffer.capture(LEVEL_WARN, "userData migration failed"), true);
 
   assert.deepEqual(buffer.drain(), [
-    { level: LEVEL_INFO, line: "gpu workaround applied" },
+    { level: LEVEL_INFO, line: "Desktop launch: pid=1 platform=darwin" },
     { level: LEVEL_WARN, line: "userData migration failed" },
   ]);
 });

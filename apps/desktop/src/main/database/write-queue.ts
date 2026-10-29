@@ -72,6 +72,10 @@
  * never an unrelated one.)
  */
 
+import { runOutsideStoreReadCancellation } from "./db-host/store-read-cancellation.js";
+
+import type { WriteSerializer } from "./prisma-client.js";
+
 /**
  * ISS-6115: what {@link WriteQueue.cancel} actually did. The boolean it used to
  * return could not tell the two eviction cases apart, and they mean opposite
@@ -112,6 +116,82 @@ export class WriteQueueCancelledError extends Error {
  * so `cancel(token)` can target exactly that session's queued/in-flight write.
  */
 export type WriteQueueTaskToken = string;
+
+/**
+ * ISS-7256: where an owner's earliest live write stands relative to the writer.
+ *
+ * Three states rather than a boolean because a caller charging a retry budget
+ * has to tell "waiting behind someone else" from "not at the writer at all", and
+ * a boolean collapses the second into the first. {@link Absent} is the state the
+ * ISS-6115 eviction already reported as {@link WriteQueueCancelOutcome.None},
+ * and it keeps that meaning here: an owner doing its own pre-queue work (parse,
+ * attribution) or already past its write is NOT a waiter.
+ */
+export const WriteDispatchState = {
+  /** The owner's earliest live task is queued and has never dispatched. */
+  Queued: "queued",
+  /** That task has dispatched — this owner's own write holds (or held) the writer. */
+  Dispatched: "dispatched",
+  /** The owner owns no live task here, so it is not waiting on the writer. */
+  Absent: "absent",
+} as const;
+export type WriteDispatchState =
+  (typeof WriteDispatchState)[keyof typeof WriteDispatchState];
+
+/**
+ * ISS-7256: the read-only answer to "has this owner's write dispatched?", plus
+ * the identity of the task the answer is ABOUT.
+ *
+ * `taskSeq` is that task's global enqueue order ({@link QueuedTask.seq}), or
+ * `null` when the owner owns nothing live. It exists because this answer is
+ * consumed asynchronously — in DB-host mode a whole IPC round trip after it was
+ * computed — and a bare `queued` cannot be told apart across two probes: an
+ * owner whose task dispatched, settled, and was followed by the NEXT record
+ * group's task reads `queued` both times while having made a full write's worth
+ * of progress in between. A changed `taskSeq` is that progress, so a caller can
+ * refuse to treat the second answer as "still waiting on the same thing".
+ */
+export type WriteDispatchProbe = {
+  state: WriteDispatchState;
+  taskSeq: number | null;
+};
+
+/**
+ * ISS-7256: a write-queue lifecycle transition for a TOKENED task.
+ *
+ * Untokened tasks (live hooks, maintenance) are deliberately not reported: they
+ * are not addressable by `cancel` either, so nothing can ask about them.
+ */
+export const WriteQueueTaskPhase = {
+  /** Enqueued, not yet selected. */
+  Queued: "queued",
+  /** Selected by `pump`; its `fn` is about to run. */
+  Dispatched: "dispatched",
+  /** Done, errored, or evicted. */
+  Settled: "settled",
+} as const;
+export type WriteQueueTaskPhase =
+  (typeof WriteQueueTaskPhase)[keyof typeof WriteQueueTaskPhase];
+
+/**
+ * ISS-7256: observe tokened-task transitions as they happen.
+ *
+ * The queue lives on the store thread, one hop from the dispatcher that has to
+ * answer for it while that thread is blocked inside a synchronous statement. A
+ * PULL (`probeUndispatchedTask` over IPC) cannot be answered in that window by
+ * construction — the thread that holds the queue is the thread that is blocked —
+ * so the state has to have been PUSHED out before the block began. This is that
+ * push; `write-dispatch-mirror.ts` is the dispatcher-side mirror it feeds.
+ *
+ * Fires SYNCHRONOUSLY at the transition, for the same ordering reason
+ * {@link withCommittedWriteObserver} does: a notice posted after the fact is a
+ * notice the blocked window does not have.
+ */
+export type WriteQueueTaskObserver = (
+  token: WriteQueueTaskToken,
+  phase: WriteQueueTaskPhase,
+  taskSeq: number
+) => void;
 
 /**
  * ISS-4710 fairness class for a queued write. `bulk` is backfill/rebuild volume
@@ -172,6 +252,17 @@ export type WriteQueue = {
    * budget. See {@link WriteQueueCancelOutcome}.
    */
   cancel(token: WriteQueueTaskToken, reason?: Error): WriteQueueCancelOutcome;
+  /**
+   * ISS-7256: is `token`'s earliest live task only WAITING behind another owner's
+   * write, or has it dispatched? The read-only counterpart to {@link cancel}'s
+   * {@link WriteQueueCancelOutcome.Queued}, which answers the same question but
+   * only by evicting the task it asks about.
+   *
+   * Reports the probed task's {@link WriteDispatchProbe.taskSeq} alongside the
+   * state so a caller that acts on the answer LATER can tell a still-waiting task
+   * from a different task of the same owner — see that field.
+   */
+  probeUndispatchedTask(token: WriteQueueTaskToken): WriteDispatchProbe;
   /** Resolve once the queue has fully drained (no queued or running task). */
   drain(): Promise<void>;
 };
@@ -211,11 +302,35 @@ type QueuedTask = {
   dispatched: boolean;
 };
 
-export function createWriteQueue(): WriteQueue {
+export function createWriteQueue(
+  /**
+   * ISS-7256: optional transition observer. Absent in the in-process topology and
+   * in tests, where `probeUndispatchedTask` answers directly off this closure;
+   * the store thread supplies one so the dispatcher can answer for the queue
+   * while this thread is blocked. See {@link WriteQueueTaskObserver}.
+   */
+  observe?: WriteQueueTaskObserver
+): WriteQueue {
   // Two class-scoped FIFO sub-queues. A ready task is served from these by the
   // bounded weighted round-robin in `pump`; tasks still run ONE-AT-A-TIME.
   const interactiveQueue: QueuedTask[] = [];
   const bulkQueue: QueuedTask[] = [];
+
+  /**
+   * Report a transition, never letting an observer's failure reach the writer.
+   * A mirror is a diagnostic the sweep consults; a throw here would abort a real
+   * write, which is strictly worse than a stale mirror entry.
+   */
+  const report = (record: QueuedTask, phase: WriteQueueTaskPhase): void => {
+    if (!(observe && record.token !== undefined)) {
+      return;
+    }
+    try {
+      observe(record.token, phase, record.seq);
+    } catch {
+      // A broken observer must never cost a write.
+    }
+  };
   // The task currently running (its `fn` in flight), or null when the writer is
   // idle. Guarantees the single-writer / split-write invariant: the next task is
   // dispatched only after the running one's REAL settle. Tracked (not just a
@@ -250,6 +365,40 @@ export function createWriteQueue(): WriteQueue {
 
   const queueFor = (record: QueuedTask): QueuedTask[] =>
     record.writeClass === WriteQueueClass.Bulk ? bulkQueue : interactiveQueue;
+
+  /**
+   * The globally-earliest (by enqueue `seq`) live task owned by `token`, across
+   * BOTH class sub-queues AND the running head. Class order is NOT global order —
+   * an interactive task can enqueue after an older bulk task, and the running head
+   * may predate every queued task — so selecting by `seq` (not interactive-first,
+   * not queued-before-running) is what makes a per-session timeout address the
+   * actual wedged write. The running head is spliced out of its sub-queue by
+   * `pump`, so it is tracked in `runningTask` and folded into the candidate set.
+   *
+   * Shared by `cancel` and `hasUndispatchedTask` (ISS-7256) so the destructive and
+   * read-only answers can never be about different tasks.
+   */
+  const earliestLiveTaskFor = (
+    token: WriteQueueTaskToken
+  ): QueuedTask | undefined => {
+    let target: QueuedTask | undefined;
+    const consider = (t: QueuedTask | null): void => {
+      if (!t || t.token !== token || t.settled) {
+        return;
+      }
+      if (!target || t.seq < target.seq) {
+        target = t;
+      }
+    };
+    for (const t of interactiveQueue) {
+      consider(t);
+    }
+    for (const t of bulkQueue) {
+      consider(t);
+    }
+    consider(runningTask);
+    return target;
+  };
 
   const removeTask = (record: QueuedTask): void => {
     const queue = queueFor(record);
@@ -307,6 +456,11 @@ export function createWriteQueue(): WriteQueue {
     }
     runningTask = next;
     next.dispatched = true;
+    // Reported BEFORE `start`, which is what makes the notice usable: `fn`'s
+    // first statement is where a synchronous libSQL call blocks this thread, and
+    // a notice posted after that would not reach the dispatcher until the block
+    // ended — exactly the window the mirror exists to answer in.
+    report(next, WriteQueueTaskPhase.Dispatched);
     next.start();
   };
 
@@ -322,7 +476,16 @@ export function createWriteQueue(): WriteQueue {
       let sharedRun: Promise<T> | null = null;
       const startFn = (): Promise<T> => {
         if (!sharedRun) {
-          sharedRun = Promise.resolve().then(fn);
+          // ISS-9802: started OUTSIDE any read-cancellation scope. `pump` selects
+          // the next task from inside the previous task's settle continuation,
+          // and `AsyncLocalStorage` follows that chain — so without this exit a
+          // cancellable read that enqueued a write would seed its own scope into
+          // whatever the queue dispatches next, and cancelling that read would
+          // throw out of an UNRELATED caller's write at its next checkpoint and
+          // lose it. Cancellation may abandon a read; never a write.
+          sharedRun = runOutsideStoreReadCancellation(() =>
+            Promise.resolve().then(fn)
+          );
         }
         return sharedRun;
       };
@@ -357,6 +520,7 @@ export function createWriteQueue(): WriteQueue {
             (value) => {
               if (!record.settled) {
                 record.settled = true;
+                report(record, WriteQueueTaskPhase.Settled);
                 resolve(value);
               }
               advance();
@@ -364,6 +528,7 @@ export function createWriteQueue(): WriteQueue {
             (error) => {
               if (!record.settled) {
                 record.settled = true;
+                report(record, WriteQueueTaskPhase.Settled);
                 reject(
                   error instanceof Error ? error : new Error(String(error))
                 );
@@ -383,6 +548,7 @@ export function createWriteQueue(): WriteQueue {
             return;
           }
           record.settled = true;
+          report(record, WriteQueueTaskPhase.Settled);
           reject(reason);
           if (!record.dispatched) {
             removeTask(record);
@@ -393,6 +559,9 @@ export function createWriteQueue(): WriteQueue {
       });
 
       queueFor(record).push(record);
+      // Reported before `pump`, so a task selected immediately still produces
+      // `queued` then `dispatched` in that order rather than only the latter.
+      report(record, WriteQueueTaskPhase.Queued);
       caller.catch(() => undefined);
       pump();
       return caller;
@@ -402,32 +571,7 @@ export function createWriteQueue(): WriteQueue {
       token: WriteQueueTaskToken,
       reason: Error = new WriteQueueCancelledError()
     ): WriteQueueCancelOutcome {
-      // Target the globally-earliest (by enqueue `seq`) live task owned by
-      // `token`, across BOTH class sub-queues AND the running head. Class order
-      // is NOT global order — an interactive task can enqueue after an older bulk
-      // task, and the running head may predate every queued task — so selecting
-      // by `seq` (not interactive-first, not queued-before-running) ensures a
-      // per-session timeout evicts the actual wedged write. If the running head
-      // is that earliest task (the classic wedge: the timed-out write is the one
-      // holding the writer), it is the one cancelled, not a newer same-token
-      // queued task. The running head is spliced out of its sub-queue by `pump`,
-      // so it is tracked in `runningTask` and folded into the candidate set here.
-      let target: QueuedTask | undefined;
-      const consider = (t: QueuedTask | null): void => {
-        if (!t || t.token !== token || t.settled) {
-          return;
-        }
-        if (!target || t.seq < target.seq) {
-          target = t;
-        }
-      };
-      for (const t of interactiveQueue) {
-        consider(t);
-      }
-      for (const t of bulkQueue) {
-        consider(t);
-      }
-      consider(runningTask);
+      const target = earliestLiveTaskFor(token);
       if (!target) {
         return WriteQueueCancelOutcome.None;
       }
@@ -440,6 +584,19 @@ export function createWriteQueue(): WriteQueue {
         : WriteQueueCancelOutcome.Queued;
     },
 
+    probeUndispatchedTask(token: WriteQueueTaskToken): WriteDispatchProbe {
+      const target = earliestLiveTaskFor(token);
+      if (!target) {
+        return { state: WriteDispatchState.Absent, taskSeq: null };
+      }
+      return {
+        state: target.dispatched
+          ? WriteDispatchState.Dispatched
+          : WriteDispatchState.Queued,
+        taskSeq: target.seq,
+      };
+    },
+
     drain(): Promise<void> {
       if (isIdle()) {
         return Promise.resolve();
@@ -449,4 +606,49 @@ export function createWriteQueue(): WriteQueue {
       });
     },
   };
+}
+
+/**
+ * ISS-7110: a `WriteSerializer` view of `queue` whose tasks call `notify` after
+ * their underlying work resolves. Wrapping the TASK (not the caller promise)
+ * means the observer fires on the write's real successful settle — including an
+ * ISS-4572-evicted task whose transaction still committed — and never for a
+ * write that rejected.
+ *
+ * `notify` must never fail a committed write, in either direction the type
+ * cannot rule out: a synchronous throw is swallowed, and — because structural
+ * typing lets an async function satisfy `() => void` — a returned promise gets
+ * a no-op `catch` so its rejection can never float into this process's
+ * exit-on-unhandledRejection crash path (db-host-memory-watchdog.ts).
+ */
+export function withCommittedWriteObserver(
+  queue: WriteQueue,
+  notify: () => void
+): WriteSerializer {
+  const notifySafely = (): void => {
+    try {
+      swallowRejection(notify());
+    } catch {
+      // Synchronous observer throw — the write already committed.
+    }
+  };
+  return {
+    run: (fn, token, opts) =>
+      queue.run(
+        async () => {
+          const value = await fn();
+          notifySafely();
+          return value;
+        },
+        token,
+        opts
+      ),
+  };
+}
+
+/** Absorb the rejection of a promise an `() => void` callback smuggled back. */
+function swallowRejection(value: unknown): void {
+  if (value instanceof Promise) {
+    value.catch(() => undefined);
+  }
 }

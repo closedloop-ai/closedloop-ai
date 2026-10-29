@@ -15,7 +15,6 @@
  *   - sessions are counted DISTINCT, unioned across rows folding to one identity
  */
 
-import { AGENT_COMPONENT_INVENTORY_CAP } from "@repo/api/src/types/agent-component";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -42,7 +41,10 @@ vi.mock("../../agent-sessions/service", () => ({
   agentSessionsService: { listByArtifactIds: vi.fn().mockResolvedValue([]) },
 }));
 
-import { MAX_ORG_POPULATION_ROWS } from "../org-population-reads";
+import {
+  orphanGroupByCalls,
+  USAGE_WITHOUT_LIVE_INVENTORY_WHERE,
+} from "@/__tests__/support/agent-components/usage-lane-doubles";
 import { rankingService } from "../ranking/service";
 import {
   buildPopulationDb,
@@ -57,10 +59,6 @@ import {
   TARGET_2,
   TARGET_3,
 } from "./org-population-fixtures";
-import {
-  orphanGroupByCalls,
-  USAGE_WITHOUT_LIVE_INVENTORY_WHERE,
-} from "./usage-lane-doubles";
 
 /** Wire the shared fake Prisma client into this suite's hoisted `withDb` mock. */
 function installDb(fixtures: PopulationFixtures): PopulationDb {
@@ -256,9 +254,8 @@ describe("rankingService.getRanking", () => {
           computeTargetId: TARGET_1,
         }),
       ],
-      // One orphan row so the lane's SECOND read (the aggregate, which the
-      // empty-spine short-circuit would otherwise skip) actually fires and its
-      // org scope can be asserted too.
+      // One orphan row so the lane's aggregate read returns something, rather
+      // than asserting the org scope of a query over an empty fixture.
       orphanUsage: [
         makeOrphanUsage({
           agentSessionId: "s-orphan-scope",
@@ -271,12 +268,13 @@ describe("rankingService.getRanking", () => {
 
     await rankingService.getRanking({ organizationId: ORG_A, limit: 50 });
 
-    // ISS-4799: the orphan lane reads through `groupBy` (spine + aggregate).
-    // BOTH reads must carry the org scope — usage has no organizationId column
-    // of its own, so the session→artifact relation is the only thing keeping a
-    // foreign org's rows out.
+    // ISS-4799: the orphan lane reads through `groupBy`. Every one of its reads
+    // must carry the org scope — usage has no organizationId column of its own,
+    // so the session→artifact relation is the only thing keeping a foreign org's
+    // rows out. ISS-6891 removed the identity spine, leaving the aggregate as the
+    // lane's single read.
     const orphanReads = orphanGroupByCalls({ groupBy });
-    expect(orphanReads).toHaveLength(2);
+    expect(orphanReads).toHaveLength(1);
     for (const read of orphanReads) {
       expect(read.where).toEqual(
         expect.objectContaining({
@@ -653,34 +651,20 @@ describe("rankingService.getRanking", () => {
       limit: 50,
     });
 
-    // FEA-3166: the in-memory dedupe/sort/paginate must never materialize an
-    // unbounded org inventory. ISS-4797 moved that bound from a raw-row `take`
-    // — which made a stricter facet return MORE data — onto the DISTINCT
-    // identity spine, still recency-ordered so the dropped tail is stable.
-    expect(inventoryGroupBy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        by: ["componentKind", "componentKey"],
-        orderBy: [
-          { _max: { lastSeenAt: "desc" } },
-          { componentKind: "asc" },
-          { componentKey: "asc" },
-        ],
-        take: AGENT_COMPONENT_INVENTORY_CAP,
-      })
-    );
-    // The row read that follows is bounded by the spine in the correctness
-    // dimension, and carries `MAX_ORG_POPULATION_ROWS` only as a MEMORY ceiling —
-    // set far above what the identity cap can legitimately expand to, so it
-    // cannot reintroduce facet-dependent truncation. `nulls: "last"` is expressed
-    // here (a plain scalar column accepts the order object that a `_max`
-    // aggregate key does not) so a never-stamped row cannot displace a recent one
-    // if the ceiling ever binds.
+    // ISS-6891: the leaderboard reads the SAME population the catalog list does,
+    // and that population is complete — no identity spine, no `take`. The bound
+    // ISS-4797 introduced here truncated after the facet predicate, so the
+    // leaderboard for `?kind=subagent` ranked over a different org than the
+    // unfiltered one. `nulls: "last"` is expressed on the row read — a plain
+    // scalar column accepts the order object that a `_max` aggregate key does not
+    // — so the row sequence stays deterministic.
+    expect(inventoryGroupBy).not.toHaveBeenCalled();
     const rowArgs = findMany.mock.calls[0]?.[0];
     expect(rowArgs?.orderBy).toEqual([
       { lastSeenAt: { sort: "desc", nulls: "last" } },
       { id: "asc" },
     ]);
-    expect(rowArgs?.take).toBe(MAX_ORG_POPULATION_ROWS);
+    expect(rowArgs?.take).toBeUndefined();
   });
 
   it("multiple components of the same kind are ranked in descending invocation order", async () => {

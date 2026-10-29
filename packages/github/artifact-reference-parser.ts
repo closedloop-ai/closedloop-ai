@@ -49,9 +49,9 @@ type PrefixConfig = {
   prefix: SlugPrefix;
   docType: DocumentType;
   routePath: string;
-  // FEA-4137: every route path this doc type can appear under in a URL — the
-  // canonical `routePath` plus retired paths (e.g. `features` for Issues). The
-  // URL pattern accepts any of these.
+  // Every route path this doc type can appear under in a URL — the canonical
+  // `documents` plus the retired per-type paths (`prds`, `implementation-plans`,
+  // `issues`, `features`; ISS-12855). The URL pattern accepts any of these.
   routePaths: readonly string[];
   // FEA-4137: every slug prefix that addresses this doc type — the canonical
   // prefix plus its compat aliases (FEA ↔ ISS). Both the bare-slug and URL
@@ -99,8 +99,8 @@ function buildPrefixConfigs(): PrefixConfig[] {
       continue;
     }
     // FEA-4137: accept the canonical prefix plus its compat aliases (FEA ↔ ISS),
-    // and the canonical route path plus retired ones (/features/ for Issues), so
-    // both new and legacy slugs/links still parse.
+    // and the canonical route path plus the retired ones (ISS-12855), so both
+    // new and legacy slugs/links still parse.
     const matchPrefixes: SlugPrefix[] = [
       prefix,
       ...(SLUG_PREFIX_ALIASES[prefix] ?? []),

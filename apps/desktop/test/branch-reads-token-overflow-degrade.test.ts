@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import test from "node:test";
 import {
   BranchCostCompleteness,
   BranchCostCompletenessReason,
@@ -10,6 +9,7 @@ import {
   TokenCostCompleteness,
   TokenSourceIdentityAvailability,
 } from "@repo/api/src/types/token-cost-provenance";
+import { test, vi } from "vitest";
 import { getSharedBranchUsage } from "../src/main/branch/shared-branches-api.js";
 import {
   readBranchSessionTokenRowsForBranch,
@@ -17,6 +17,14 @@ import {
   readBranchUsageTokenRows,
 } from "../src/main/database/branch-reads.js";
 import { seeder, withAcDb } from "./branch-reads-ac-test-helpers.js";
+
+vi.mock(
+  "../src/main/branch/shared-branches-default-eligibility.js",
+  async (importOriginal) =>
+    (
+      await import("./helpers/complete-eligibility-snapshot.js")
+    ).withCompleteEligibility(await importOriginal())
+);
 
 // A stored INTEGER token counter above Number.MAX_SAFE_INTEGER
 // (9007199254740991). Written as a raw SQL literal (never a bound JS number,

@@ -57,19 +57,25 @@ export const ToolCategory = {
   GitLifecycle: "git_lifecycle",
   /** A human-authored turn (steering density); generalizes the legacy is_human rule. */
   HumanTurn: "human_turn",
-  /** An explicit, declared signal of intent that is NOT plan-specific — e.g. a
-   * trace phase labelled `implement`. The generic declared layer: it boosts
-   * confidence but does NOT gate `plan` (FEA-4184). Since AA-03 this is reachable
-   * ONLY from a trace phase ({@link declaredCategoryForTracePhase}), which declares
-   * the work PHASE itself; a name-derived skill / MCP / slash-command signal the
-   * core cannot positively recognize as work intent falls to the inert
-   * `DeclaredUtility` instead. */
+  /** An explicit, declared signal of intent that is NOT plan-specific. The
+   * generic declared layer: it boosts confidence but does NOT gate `plan`
+   * (FEA-4184). Since AA-03 a name-derived skill / MCP / slash-command signal
+   * the core cannot positively recognize as work intent falls to the inert
+   * `DeclaredUtility` instead, so only a first-class phase declaration (never
+   * a name) could produce this category. No caller supplies one today — the
+   * trace-phase declared-signal path was removed as dead code — so this
+   * category currently has no producer. Kept rather than deleted because
+   * ISS-4394 brings one back: `Session.tracePhaseSources` is already persisted
+   * (`extractTracePhaseSources`), only the classifier wiring is missing. Its
+   * removal is a vocabulary change — `TOOL_CATEGORY_VALUES` and the
+   * `emptyCategoryMix` key set both shrink — so it moves golden oracle values
+   * and needs its own ticket either way. */
   DeclaredIntent: "declared_intent",
-  /** A PLAN-SPECIFIC declared signal — a plan slash command/skill (`/create-plan`),
-   * an `ExitPlanMode`-style MCP call, or a trace phase declaring `plan`. This is the
-   * ONLY declared signal that gates the `plan` phase (FEA-4184): a generic
-   * declaration (`DeclaredIntent`) must never fabricate `plan`. A refinement of
-   * `DeclaredIntent` (every plan declaration is also a declaration for the boost). */
+  /** A PLAN-SPECIFIC declared signal — a plan slash command/skill (`/create-plan`)
+   * or an `ExitPlanMode`-style MCP call. This is the ONLY declared signal that
+   * gates the `plan` phase (FEA-4184): a generic declaration (`DeclaredIntent`)
+   * must never fabricate `plan`. A refinement of `DeclaredIntent` (every plan
+   * declaration is also a declaration for the boost). */
   DeclaredPlan: "declared_plan",
   /** An INERT declaration (FEA-4010 / AA-03): an invocation the core could not
    * positively recognize as declaring WORK intent — harness/workflow utilities
@@ -122,18 +128,6 @@ export const TOOL_CATEGORY_VALUES = [
 ] as const satisfies readonly ToolCategory[];
 
 /**
- * Every MUTATION category — the three kinds a mutating tool use resolves to
- * (AA-09 C1). Membership, not the individual members, is what consumers that care
- * about "did this touch a file at all" should test, so a fourth kind cannot be
- * added without them seeing it.
- */
-export const MUTATION_CATEGORIES: ReadonlySet<ToolCategory> = new Set([
-  ToolCategory.MutateCode,
-  ToolCategory.MutateDocument,
-  ToolCategory.MutateScratch,
-]);
-
-/**
  * The mutation categories that touched a WORKSPACE artifact — everything except
  * the harness's own bookkeeping. This is the set that answers "was a real edit
  * made here": it gates rework confirmation (a review→fix span is only rework if
@@ -157,7 +151,6 @@ export const DeclaredKind = {
   SlashCommand: "slash_command",
   Skill: "skill",
   McpCall: "mcp_call",
-  TracePhase: "trace_phase",
 } as const;
 export type DeclaredKind = (typeof DeclaredKind)[keyof typeof DeclaredKind];
 
@@ -173,17 +166,14 @@ export const MCP_TOOL_NAME_PREFIX = "mcp__";
  * A single declared signal. The highest-rank evidence layer. `category` is the
  * abstract category this declaration maps to:
  *   - `DeclaredPlan` for a plan-specific declaration (a `/create-plan`-style
- *     command/skill, an `ExitPlanMode`-style MCP call, or a trace phase declaring
- *     `plan`) — the only one that gates the `plan` phase (FEA-4184);
- *   - `DeclaredIntent` for a trace phase that declares some OTHER work phase —
- *     a first-class declaration, so it keeps genuine declared provenance;
+ *     command/skill or an `ExitPlanMode`-style MCP call) — the only one that
+ *     gates the `plan` phase (FEA-4184);
  *   - `DeclaredUtility` (AA-03) for everything else, including every unrecognized
  *     name-derived signal — inert: no provenance, no boost, no phase, no mass.
  * The core (`collectDeclared`) is the ONE owner of that mapping
- * ({@link declaredCategoryFor} for name-derived signals,
- * {@link declaredCategoryForTracePhase} for trace phases); adapters emit only the
- * raw kind+name with the inert `DeclaredUtility` placeholder, so no adapter can
- * inject a category and the gate cannot drift.
+ * ({@link declaredCategoryFor}); adapters emit only the raw kind+name with the
+ * inert `DeclaredUtility` placeholder, so no adapter can inject a category and
+ * the gate cannot drift.
  */
 export type DeclaredEvidence = {
   kind: DeclaredKind;
@@ -225,7 +215,6 @@ export function mcpDeclaredFromTool(
  *     command / skill names)
  *   - `ExitPlanMode`, `exit_plan_mode`, `update_plan` (Claude's plan-mode exit +
  *     Codex's `update_plan` MCP/tool call)
- *   - a trace phase whose key/label is `plan`/`planning`
  * The leading `\b` keeps `deploy`/`explain`/`replan` from matching `plan` mid-word
  * only when they lack a boundary; `replan`/`re-plan` DO carry a boundary and are
  * intentionally treated as planning. Deliberately narrow (grows with corpus
@@ -255,71 +244,6 @@ export function declaredCategoryFor(name: string): ToolCategory {
     ? ToolCategory.DeclaredPlan
     : ToolCategory.DeclaredUtility;
 }
-
-/**
- * The category a TRACE-PHASE declaration maps to. Unlike a command/skill/MCP name,
- * a trace phase is a first-class declaration of the work phase itself (supplied by
- * the caller from DB-derived `tracePhaseSources`, not guessed from a vendor
- * string), so a non-plan trace phase keeps genuine `DeclaredIntent` provenance
- * rather than falling to the inert default that {@link declaredCategoryFor}
- * applies to name-derived signals. The plan cue is shared, so a trace phase
- * declaring `plan` still gates `plan` exactly as before.
- */
-export function declaredCategoryForTracePhase(
-  phaseKey: string,
-  label: string
-): ToolCategory {
-  return PLAN_DECLARATION_NAME_CUE.test(`${phaseKey} ${label}`)
-    ? ToolCategory.DeclaredPlan
-    : ToolCategory.DeclaredIntent;
-}
-
-/**
- * The harness-blind structural aggregate over abstract categories. `categoryMix`
- * is a complete count keyed by EVERY `ToolCategory` (zero-filled), so the
- * classifier can read any category without a presence check.
- */
-export type StructuralEvidence = {
-  categoryMix: Record<ToolCategory, number>;
-  /** File paths touched by mutating tool uses of EVERY kind — code, documentation
-   * and scratch alike (deduped, capped). Scoped to the code kind this would stop
-   * reporting the paths that motivated the split. */
-  mutationTargets: string[];
-  gitLifecycle: {
-    commits: number;
-    /** Distinct git branches touched (deduped, capped — like `mutationTargets`). */
-    branchesTouched: string[];
-    prsCreated: number;
-  };
-  humanTurnDensity: { humanTurns: number; totalTurns: number };
-};
-
-/**
- * The natural-language evidence layer. Intentionally a typed-but-empty slot in
- * FEA-2268 — FEA-2274 (the opt-in, isolated linguistic layer) populates it. The
- * shape is deliberately minimal/opaque here so FEA-2269's consumer type is
- * stable across the decomposition without pinning FEA-2274's design.
- */
-export type LinguisticEvidence = {
-  kind: string;
-  detail: string;
-};
-
-/**
- * The complete session-level evidence AGGREGATE for one session. NOTE: FEA-2269's
- * classifier consumes the time-ordered `EvidenceUnit` timeline
- * (`buildEvidenceTimeline`), NOT this aggregate; the aggregate is retained for the
- * session-level consumers of later PRD-488 waves. `harnessKnown` is false when no
- * adapter matched the harness (a future/unknown harness fell back to
- * structural-only signal).
- */
-export type SessionEvidence = {
-  harness: string;
-  harnessKnown: boolean;
-  declared: DeclaredEvidence[];
-  structural: StructuralEvidence;
-  linguistic: LinguisticEvidence[];
-};
 
 /**
  * The thin per-harness adapter — the ONLY place concrete tool-name strings live.
@@ -432,12 +356,12 @@ export function emptyCategoryMix(): Record<ToolCategory, number> {
 
 /**
  * A single time-anchored evidence unit — the per-signal element of the ordered
- * evidence TIMELINE that FEA-2269 windows and scores. Unlike the session-level
- * `StructuralEvidence` aggregate (a whole-session `categoryMix`), this preserves
- * WHEN each abstract signal occurred, so the classifier can partition the
- * timeline into contiguous typed windows rather than label the session as a
- * whole. Still harness-blind: `category` is an abstract `ToolCategory`, never a
- * vendor tool name (the adapter boundary maps names → categories upstream).
+ * evidence TIMELINE that FEA-2269 windows and scores. Unlike a whole-session
+ * `categoryMix` count, this preserves WHEN each abstract signal occurred, so the
+ * classifier can partition the timeline into contiguous typed windows rather
+ * than label the session as a whole. Still harness-blind: `category` is an
+ * abstract `ToolCategory`, never a vendor tool name (the adapter boundary maps
+ * names → categories upstream).
  *
  * `linguistic` units are intentionally never emitted here — that layer is
  * FEA-2274's (opt-in, isolated). A unit is either a `structural` tool/human

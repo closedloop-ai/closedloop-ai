@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import {
   InsightsResultCache,
   insightsCacheKey,
@@ -150,7 +150,7 @@ test("bounds concurrency across different keys to one computation at a time", as
   const makeCompute = (value: string) => async () => {
     running++;
     maxRunning = Math.max(maxRunning, running);
-    await new Promise((r) => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 0));
     running--;
     return value;
   };

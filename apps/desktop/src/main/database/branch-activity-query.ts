@@ -1,284 +1,268 @@
+import { BranchActivityEvidenceCompleteness } from "@repo/api/src/types/branch-activity";
+import { compareMonitoredActivityIdentities } from "@repo/api/src/types/session-monitored-activity";
+import { syncTimestampSchema } from "@repo/api/src/types/sync-timestamp";
+import { z } from "zod";
+import { BRANCH_ACTIVITY_FAST_PATH_SQL } from "./branch-activity-fast-path-sql.js";
 import {
-  ArtifactRefTargetKind,
-  MAX_SYNCED_ARTIFACT_REFS_PRODUCER,
-} from "@repo/api/src/types/session-artifact-link";
-import type { NormalizedBranchActivityScope } from "./branch-activity-identity.js";
-import type { DesktopPrisma } from "./prisma-client.js";
+  branchActivityLookupKey,
+  type NormalizedBranchActivityScope,
+  normalizeActivityBranchName,
+  normalizeActivityRepository,
+} from "./branch-activity-identity.js";
+import {
+  BRANCH_ACTIVITY_CARRIER_EXISTS_SQL,
+  BRANCH_ACTIVITY_READ_SQL,
+  BRANCH_ACTIVITY_SCOPE_BATCH_SIZE,
+} from "./branch-activity-sql.js";
+import type { DesktopPrisma, DesktopPrismaReader } from "./prisma-client.js";
 
-/** Compact row kinds projected by the SQLite carrier query. */
-export const BranchActivityReadRowKind = {
-  BranchIdentity: "branch_identity",
-  PullRequestIdentity: "pull_request_identity",
-  RegularCarrier: "regular_carrier",
-  PrivateCarrier: "private_carrier",
-} as const;
-export type BranchActivityReadRowKind =
-  (typeof BranchActivityReadRowKind)[keyof typeof BranchActivityReadRowKind];
+/** Final payload-free row returned by the canonical SQLite activity query. */
+export type BranchActivityQueryRow = {
+  repoFullName: string;
+  branchName: string;
+  sourceEventId: string;
+  occurredAt: string | null;
+  completeness: BranchActivityEvidenceCompleteness;
+};
 
-/** Internal clone-safe result shape returned by the scoped SQLite query. */
-export type BranchActivityReadRawRow = {
-  rowKind: BranchActivityReadRowKind;
-  recordId: string | null;
-  sessionId: string | null;
-  targetKind: string | null;
-  repoFullName: string | null;
-  branchName: string | null;
-  prNumber: number | bigint | null;
-  payloadJson: string | null;
-  privateEnvelopeValid: boolean | number | bigint | null;
-  carrierOverflow: boolean | number | bigint | null;
+type BranchActivityCarrierExistsRow = {
+  hasCarrier: boolean | number | bigint | string | null;
+};
+
+type BranchActivityFastPathRow = {
+  fastPathSupported: boolean | number | bigint | string | null;
+  repoFullName: unknown;
+  branchName: unknown;
+  sourceEventId: unknown;
+  occurredAt: unknown;
+  completeness: unknown;
 };
 
 /**
- * Read only identities and carrier JSON attributable to the eligible Branch
- * scope. SQLite limits each Session to the producer ref cap plus overflow
- * sentinels before any carrier JSON crosses into JavaScript.
+ * Reconcile the eligible activity corpus inside SQLite and retain independently
+ * valid final rows at the database-to-JavaScript trust boundary.
  */
 export function queryBranchActivityRows(
   prisma: DesktopPrisma,
   scopes: readonly NormalizedBranchActivityScope[]
-): Promise<BranchActivityReadRawRow[]> {
+): Promise<BranchActivityQueryRow[]> {
+  const validScopes = normalizeQueryScopes(scopes);
+  if (validScopes.length === 0) {
+    return Promise.resolve([]);
+  }
   return prisma.read((reader) =>
-    reader.$queryRawUnsafe<BranchActivityReadRawRow[]>(
-      ACTIVITY_READ_SQL,
-      JSON.stringify(scopes)
-    )
+    queryBranchActivityRowsWithReader(reader, validScopes)
   );
 }
 
-function normalizedRepositorySql(column: string): string {
-  const withoutOuterSlashes = `trim(trim(${column}), '/')`;
-  const withoutGitSuffix = `CASE
-    WHEN lower(${withoutOuterSlashes}) LIKE '%.git'
-      THEN substr(${withoutOuterSlashes}, 1, length(${withoutOuterSlashes}) - 4)
-    ELSE ${withoutOuterSlashes}
-  END`;
-  return `lower(trim(${withoutGitSuffix}, '/'))`;
+/** Run the canonical activity read on an already pinned read transaction. */
+export async function queryBranchActivityRowsWithReader(
+  reader: DesktopPrismaReader,
+  scopes: readonly NormalizedBranchActivityScope[]
+): Promise<BranchActivityQueryRow[]> {
+  const validScopes = normalizeQueryScopes(scopes);
+  if (validScopes.length === 0) {
+    return [];
+  }
+  if (
+    shouldRunGlobalCarrierPreflight(validScopes) &&
+    !(await hasBranchActivityCarriers(reader))
+  ) {
+    return [];
+  }
+  const fastPathRows = await queryFastPathBranchActivityRows(
+    reader,
+    validScopes
+  );
+  if (fastPathRows) {
+    return fastPathRows;
+  }
+  const rawRows = await reader.$queryRawUnsafe<unknown>(
+    BRANCH_ACTIVITY_READ_SQL,
+    JSON.stringify(batchQueryScopes(validScopes))
+  );
+  return parseBranchActivityRows(rawRows, validScopes).sort(
+    compareBranchActivityQueryRows
+  );
 }
 
-const BRANCH_SCOPE_SQL = `EXISTS (
-  SELECT 1 FROM requested_branches rb
-  WHERE ${normalizedRepositorySql("a.repo_full_name")} = rb.repo_full_name
-    AND trim(a.branch_name) = rb.branch_name
-)`;
+async function queryFastPathBranchActivityRows(
+  reader: DesktopPrismaReader,
+  scopes: readonly NormalizedBranchActivityScope[]
+): Promise<BranchActivityQueryRow[] | null> {
+  const rawRows = await reader.$queryRawUnsafe<unknown>(
+    BRANCH_ACTIVITY_FAST_PATH_SQL,
+    JSON.stringify(batchQueryScopes(scopes))
+  );
+  return parseFastPathBranchActivityRows(rawRows, scopes);
+}
 
-const ARTIFACT_PULL_REQUEST_SCOPE_SQL = `EXISTS (
-  SELECT 1 FROM requested_pull_requests requested_pr
-  WHERE ${normalizedRepositorySql("a.repo_full_name")} = requested_pr.repo_full_name
-    AND a.pr_number = requested_pr.pr_number
-)`;
+function shouldRunGlobalCarrierPreflight(
+  scopes: readonly NormalizedBranchActivityScope[]
+): boolean {
+  return scopes.length > BRANCH_ACTIVITY_SCOPE_BATCH_SIZE;
+}
 
-const PERSISTED_PULL_REQUEST_SCOPE_SQL = `EXISTS (
-  SELECT 1 FROM requested_pull_requests requested_pr
-  WHERE ${normalizedRepositorySql("pr.repo_full_name")} = requested_pr.repo_full_name
-    AND pr.pr_number = requested_pr.pr_number
-)`;
+async function hasBranchActivityCarriers(
+  reader: DesktopPrismaReader
+): Promise<boolean> {
+  const rows = await reader.$queryRawUnsafe<BranchActivityCarrierExistsRow[]>(
+    BRANCH_ACTIVITY_CARRIER_EXISTS_SQL
+  );
+  const hasCarrier = rows[0]?.hasCarrier;
+  return (
+    hasCarrier === true ||
+    hasCarrier === 1 ||
+    hasCarrier === 1n ||
+    hasCarrier === "1"
+  );
+}
 
-const PRIVATE_ACTIVITY_SCOPE_SQL = `(
-  (
-    json_extract(activity.value, '$.kind') = '${ArtifactRefTargetKind.Branch}'
-    AND EXISTS (
-      SELECT 1 FROM requested_branches rb
-      WHERE ${normalizedRepositorySql("json_extract(activity.value, '$.repositoryFullName')")} = rb.repo_full_name
-        AND trim(json_extract(activity.value, '$.branchName')) = rb.branch_name
-    )
-  ) OR (
-    json_extract(activity.value, '$.kind') = '${ArtifactRefTargetKind.PullRequest}'
-    AND EXISTS (
-      SELECT 1 FROM requested_pull_requests requested_pr
-      WHERE ${normalizedRepositorySql("json_extract(activity.value, '$.repositoryFullName')")} = requested_pr.repo_full_name
-        AND json_extract(activity.value, '$.prNumber') = requested_pr.pr_number
-    )
-  )
-)`;
+function parseFastPathBranchActivityRows(
+  rows: unknown,
+  scopes: readonly NormalizedBranchActivityScope[]
+): BranchActivityQueryRow[] | null {
+  const envelope = z.array(branchActivityFastPathRowSchema).safeParse(rows);
+  if (!envelope.success || envelope.data.length === 0) {
+    return null;
+  }
+  if (
+    envelope.data.some((row) => !isFastPathSupported(row.fastPathSupported))
+  ) {
+    return null;
+  }
+  const candidateRows = envelope.data.flatMap((row) => {
+    if (
+      row.repoFullName === null &&
+      row.branchName === null &&
+      row.sourceEventId === null &&
+      row.occurredAt === null
+    ) {
+      return [];
+    }
+    return [
+      {
+        repoFullName: row.repoFullName,
+        branchName: row.branchName,
+        sourceEventId: row.sourceEventId,
+        occurredAt: row.occurredAt,
+        completeness: row.completeness,
+      },
+    ];
+  });
+  const parsedRows = parseBranchActivityRows(candidateRows, scopes);
+  return parsedRows.length === candidateRows.length
+    ? parsedRows.sort(compareBranchActivityQueryRows)
+    : null;
+}
 
-const SAFE_METADATA_SQL =
-  "CASE WHEN json_valid(s.metadata) THEN s.metadata ELSE '{}' END";
+function parseBranchActivityRows(
+  rows: unknown,
+  scopes: readonly NormalizedBranchActivityScope[]
+): BranchActivityQueryRow[] {
+  const envelope = z.array(z.unknown()).safeParse(rows);
+  if (!envelope.success) {
+    return [];
+  }
+  const allowedKeys = new Set(scopes.map(branchActivityLookupKey));
+  const parsedRows = envelope.data.flatMap((row) => {
+    const parsed = branchActivityQueryRowSchema.safeParse(row);
+    if (!parsed.success) {
+      return [];
+    }
+    const repoFullName = normalizeActivityRepository(parsed.data.repoFullName);
+    const branchName = normalizeActivityBranchName(parsed.data.branchName);
+    if (!(repoFullName && branchName)) {
+      return [];
+    }
+    const key = branchActivityLookupKey({ repoFullName, branchName });
+    return allowedKeys.has(key) ? [{ key, row: parsed.data }] : [];
+  });
+  const keyCounts = new Map<string, number>();
+  for (const parsed of parsedRows) {
+    keyCounts.set(parsed.key, (keyCounts.get(parsed.key) ?? 0) + 1);
+  }
+  return parsedRows.flatMap(({ key, row }) =>
+    keyCounts.get(key) === 1 ? [row] : []
+  );
+}
 
-const ACTIVITY_READ_SQL = `WITH requested_branches(repo_full_name, branch_name) AS (
-    SELECT
-      json_extract(requested.value, '$.repoFullName'),
-      json_extract(requested.value, '$.branchName')
-    FROM json_each(?) requested
-  ), requested_pull_requests(repo_full_name, pr_number) AS (
-    SELECT DISTINCT rb.repo_full_name, pr.pr_number
-    FROM requested_branches rb
-    JOIN pull_requests pr
-      ON ${normalizedRepositorySql("pr.repo_full_name")} = rb.repo_full_name
-     AND trim(pr.branch_name) = rb.branch_name
-    WHERE pr.pr_number IS NOT NULL
-    UNION
-    SELECT DISTINCT rb.repo_full_name, artifact.pr_number
-    FROM requested_branches rb
-    JOIN artifacts artifact
-      ON ${normalizedRepositorySql("artifact.repo_full_name")} = rb.repo_full_name
-     AND trim(artifact.branch_name) = rb.branch_name
-    WHERE artifact.kind = '${ArtifactRefTargetKind.PullRequest}'
-      AND artifact.pr_number IS NOT NULL
-  ), regular_carrier_candidates AS (
-    SELECT
-      '${BranchActivityReadRowKind.RegularCarrier}' AS row_kind,
-      sal.id AS record_id,
-      sal.session_id AS session_id,
-      a.kind AS target_kind,
-      a.repo_full_name AS repo_full_name,
-      a.branch_name AS branch_name,
-      a.pr_number AS pr_number,
-      json_extract(
-        CASE WHEN json_valid(sal.evidence) THEN sal.evidence ELSE '{}' END,
-        '$.monitoredSessionActivity'
-      ) AS payload_json,
-      NULL AS private_envelope_valid,
-      0 AS carrier_lane,
-      sal.id AS carrier_order
-    FROM session_artifact_links sal
-    JOIN artifacts a ON a.id = sal.artifact_id
-    WHERE a.kind IN (
-        '${ArtifactRefTargetKind.Branch}',
-        '${ArtifactRefTargetKind.PullRequest}'
-      )
-      AND json_type(
-        CASE WHEN json_valid(sal.evidence) THEN sal.evidence ELSE '{}' END,
-        '$.monitoredSessionActivity'
-      ) IS NOT NULL
-      AND (
-        (a.kind = '${ArtifactRefTargetKind.Branch}' AND ${BRANCH_SCOPE_SQL})
-        OR
-        (a.kind = '${ArtifactRefTargetKind.PullRequest}' AND ${ARTIFACT_PULL_REQUEST_SCOPE_SQL})
-      )
-  ), private_carrier_candidates AS (
-    SELECT
-      '${BranchActivityReadRowKind.PrivateCarrier}' AS row_kind,
-      s.id || ':' || activity.key AS record_id,
-      s.id AS session_id,
-      json_extract(activity.value, '$.kind') AS target_kind,
-      json_extract(activity.value, '$.repositoryFullName') AS repo_full_name,
-      json_extract(activity.value, '$.branchName') AS branch_name,
-      json_extract(activity.value, '$.prNumber') AS pr_number,
-      activity.value AS payload_json,
-      CASE
-        WHEN json_type(${SAFE_METADATA_SQL}, '$.__monitoredSessionActivityRefs') = 'array'
-         AND json_array_length(${SAFE_METADATA_SQL}, '$.__monitoredSessionActivityRefs') <= ${MAX_SYNCED_ARTIFACT_REFS_PRODUCER}
-        THEN 1 ELSE 0
-      END AS private_envelope_valid,
-      1 AS carrier_lane,
-      printf('%012d', CAST(activity.key AS INTEGER)) AS carrier_order
-    FROM sessions s
-    JOIN json_each(
-      ${SAFE_METADATA_SQL},
-      '$.__monitoredSessionActivityRefs'
-    ) activity
-    WHERE activity.type = 'object'
-      AND CAST(activity.key AS INTEGER) <= ${MAX_SYNCED_ARTIFACT_REFS_PRODUCER}
-      AND ${PRIVATE_ACTIVITY_SCOPE_SQL}
-  ), ranked_carriers AS (
-    SELECT
-      candidates.*,
-      ROW_NUMBER() OVER (
-        PARTITION BY candidates.session_id
-        ORDER BY candidates.carrier_lane, candidates.carrier_order, candidates.record_id
-      ) AS carrier_rank
-    FROM (
-      SELECT * FROM regular_carrier_candidates
-      UNION ALL
-      SELECT * FROM private_carrier_candidates
-    ) candidates
-  ), bounded_carriers AS (
-    SELECT
-      row_kind,
-      record_id,
-      session_id,
-      target_kind,
-      repo_full_name,
-      branch_name,
-      pr_number,
-      payload_json,
-      private_envelope_valid,
-      0 AS carrier_overflow
-    FROM ranked_carriers
-    WHERE carrier_rank <= ${MAX_SYNCED_ARTIFACT_REFS_PRODUCER}
-    UNION ALL
-    SELECT
-      row_kind,
-      'carrier-overflow:' || session_id || ':' || MIN(record_id) AS record_id,
-      session_id,
-      target_kind,
-      ${normalizedRepositorySql("repo_full_name")} AS repo_full_name,
-      trim(branch_name) AS branch_name,
-      pr_number,
-      NULL AS payload_json,
-      0 AS private_envelope_valid,
-      1 AS carrier_overflow
-    FROM ranked_carriers
-    WHERE carrier_rank > ${MAX_SYNCED_ARTIFACT_REFS_PRODUCER}
-    GROUP BY
-      row_kind,
-      session_id,
-      target_kind,
-      ${normalizedRepositorySql("repo_full_name")},
-      trim(branch_name),
-      pr_number
-  )
-  SELECT
-    '${BranchActivityReadRowKind.BranchIdentity}' AS "rowKind",
-    a.id AS "recordId",
-    NULL AS "sessionId",
-    a.kind AS "targetKind",
-    a.repo_full_name AS "repoFullName",
-    a.branch_name AS "branchName",
-    a.pr_number AS "prNumber",
-    NULL AS "payloadJson",
-    NULL AS "privateEnvelopeValid",
-    NULL AS "carrierOverflow"
-  FROM artifacts a
-  WHERE a.kind = '${ArtifactRefTargetKind.Branch}'
-    AND a.repo_full_name IS NOT NULL
-    AND a.branch_name IS NOT NULL
-    AND ${BRANCH_SCOPE_SQL}
-  UNION ALL
-  SELECT
-    '${BranchActivityReadRowKind.PullRequestIdentity}' AS "rowKind",
-    'artifact:' || a.id AS "recordId",
-    NULL AS "sessionId",
-    a.kind AS "targetKind",
-    a.repo_full_name AS "repoFullName",
-    a.branch_name AS "branchName",
-    a.pr_number AS "prNumber",
-    NULL AS "payloadJson",
-    NULL AS "privateEnvelopeValid",
-    NULL AS "carrierOverflow"
-  FROM artifacts a
-  WHERE a.kind = '${ArtifactRefTargetKind.PullRequest}'
-    AND a.repo_full_name IS NOT NULL
-    AND a.pr_number IS NOT NULL
-    AND ${ARTIFACT_PULL_REQUEST_SCOPE_SQL}
-  UNION ALL
-  SELECT
-    '${BranchActivityReadRowKind.PullRequestIdentity}' AS "rowKind",
-    'pull_request:' || pr.id AS "recordId",
-    NULL AS "sessionId",
-    '${ArtifactRefTargetKind.PullRequest}' AS "targetKind",
-    pr.repo_full_name AS "repoFullName",
-    pr.branch_name AS "branchName",
-    pr.pr_number AS "prNumber",
-    NULL AS "payloadJson",
-    NULL AS "privateEnvelopeValid",
-    NULL AS "carrierOverflow"
-  FROM pull_requests pr
-  WHERE pr.repo_full_name IS NOT NULL
-    AND pr.pr_number IS NOT NULL
-    AND ${PERSISTED_PULL_REQUEST_SCOPE_SQL}
-  UNION ALL
-  SELECT
-    row_kind AS "rowKind",
-    record_id AS "recordId",
-    session_id AS "sessionId",
-    target_kind AS "targetKind",
-    repo_full_name AS "repoFullName",
-    branch_name AS "branchName",
-    pr_number AS "prNumber",
-    payload_json AS "payloadJson",
-    private_envelope_valid AS "privateEnvelopeValid",
-    carrier_overflow AS "carrierOverflow"
-  FROM bounded_carriers
-  ORDER BY "rowKind" ASC, "sessionId" ASC, "recordId" ASC`;
+const branchActivityFastPathRowSchema = z
+  .object({
+    fastPathSupported: z.union([
+      z.boolean(),
+      z.number(),
+      z.bigint(),
+      z.string(),
+    ]),
+    repoFullName: z.unknown().nullable(),
+    branchName: z.unknown().nullable(),
+    sourceEventId: z.unknown().nullable(),
+    occurredAt: z.unknown().nullable(),
+    completeness: z.unknown().nullable(),
+  })
+  .strict();
+
+const branchActivityQueryRowSchema = z
+  .object({
+    repoFullName: z.string().refine((value) => value.trim().length > 0),
+    branchName: z.string().refine((value) => value.trim().length > 0),
+    sourceEventId: z.string().refine((value) => value.trim().length > 0),
+    occurredAt: syncTimestampSchema.nullable(),
+    completeness: z.enum(BranchActivityEvidenceCompleteness),
+  })
+  .strict()
+  .refine(
+    (row) =>
+      row.occurredAt !== null ||
+      row.completeness === BranchActivityEvidenceCompleteness.Partial
+  );
+
+function normalizeQueryScopes(
+  scopes: readonly NormalizedBranchActivityScope[]
+): NormalizedBranchActivityScope[] {
+  const normalized = new Map<string, NormalizedBranchActivityScope>();
+  for (const scope of scopes) {
+    const repoFullName = normalizeActivityRepository(scope.repoFullName);
+    const branchName = normalizeActivityBranchName(scope.branchName);
+    if (!(repoFullName && branchName)) {
+      continue;
+    }
+    const candidate = { repoFullName, branchName };
+    normalized.set(branchActivityLookupKey(candidate), candidate);
+  }
+  return [...normalized.values()];
+}
+
+function isFastPathSupported(
+  value: BranchActivityFastPathRow["fastPathSupported"]
+): boolean {
+  return value === true || value === 1 || value === 1n || value === "1";
+}
+
+function batchQueryScopes(
+  scopes: readonly NormalizedBranchActivityScope[]
+): NormalizedBranchActivityScope[][] {
+  const batches: NormalizedBranchActivityScope[][] = [];
+  for (
+    let offset = 0;
+    offset < scopes.length;
+    offset += BRANCH_ACTIVITY_SCOPE_BATCH_SIZE
+  ) {
+    batches.push(
+      scopes.slice(offset, offset + BRANCH_ACTIVITY_SCOPE_BATCH_SIZE)
+    );
+  }
+  return batches;
+}
+
+function compareBranchActivityQueryRows(
+  left: BranchActivityQueryRow,
+  right: BranchActivityQueryRow
+): number {
+  return (
+    compareMonitoredActivityIdentities(left.repoFullName, right.repoFullName) ||
+    compareMonitoredActivityIdentities(left.branchName, right.branchName) ||
+    compareMonitoredActivityIdentities(left.sourceEventId, right.sourceEventId)
+  );
+}

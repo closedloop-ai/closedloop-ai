@@ -11,9 +11,6 @@
 
 import type { InventoryRow, OrphanUsageRow } from "../identity";
 
-/** The identity fold's row cap, as the production readers pass it. */
-export const MAX_ROWS = 5000;
-
 /**
  * One inventory row with provenance-free defaults.
  *

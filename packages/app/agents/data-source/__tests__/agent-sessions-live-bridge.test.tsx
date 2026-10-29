@@ -2,10 +2,10 @@ import { QueryClient } from "@tanstack/react-query";
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppCoreStoryProviders } from "../../../shared/storybook/decorators";
-import {
-  agentSessionKeys,
-  useAgentSessions,
-} from "../../hooks/use-agent-sessions";
+import { agentSessionKeys } from "../../hooks/agent-session-keys";
+import { useAgentSessionEventsPages } from "../../hooks/use-agent-session-events-pages";
+import { useAgentSessions } from "../../hooks/use-agent-sessions";
+import { firstSessionEventsPageParam } from "../../lib/session-events-pages";
 import type {
   AgentSessionQueryFilters,
   AgentSessionsChange,
@@ -295,7 +295,7 @@ describe("AgentSessionsLiveBridge invalidation scoping", () => {
     return keys;
   }
 
-  it("scopes a sessionId change to list + usage + that one detail, never analytics", async () => {
+  it("scopes a sessionId change to the converging prefixes plus that one detail", async () => {
     const fake = liveFakeSource(true);
     renderBridge(fake.source);
     await advance(INVALIDATION_THROTTLE_MS);
@@ -314,14 +314,18 @@ describe("AgentSessionsLiveBridge invalidation scoping", () => {
     expect(keys).toContain(
       JSON.stringify(agentSessionKeys.detail("local", "s1"))
     );
-    // A scoped event never invalidates analytics or the whole detail namespace.
-    expect(keys).not.toContain(
-      JSON.stringify(agentSessionKeys.analyticsRoot())
-    );
+    // ISS-9553 (davetho review): analytics used to be asserted here as never
+    // invalidated. It IS now — it is the sessions list's Repository-facet
+    // fallback while the usage summary reports no repositories, and excluding it
+    // left that facet on pre-sync options until remount. The read is gated
+    // `enabled` on the fallback actually being needed, and `invalidateQueries`
+    // refetches only ACTIVE queries, so this costs nothing on the other path.
+    expect(keys).toContain(JSON.stringify(agentSessionKeys.analyticsRoot()));
+    // A scoped event still never sweeps the whole detail namespace.
     expect(keys).not.toContain(JSON.stringify(agentSessionKeys.details()));
   });
 
-  it("expands a {} change to list + usage + page-data + all details, never analytics", async () => {
+  it("expands a {} change to every converging prefix plus all details", async () => {
     const fake = liveFakeSource(true);
     renderBridge(fake.source);
     await advance(INVALIDATION_THROTTLE_MS);
@@ -335,8 +339,90 @@ describe("AgentSessionsLiveBridge invalidation scoping", () => {
     expect(keys).toContain(JSON.stringify(agentSessionKeys.usages()));
     expect(keys).toContain(JSON.stringify(agentSessionKeys.pageDataRoot()));
     expect(keys).toContain(JSON.stringify(agentSessionKeys.details()));
-    expect(keys).not.toContain(
-      JSON.stringify(agentSessionKeys.analyticsRoot())
+    // ISS-9553: see the scoped case above — analytics converges now.
+    expect(keys).toContain(JSON.stringify(agentSessionKeys.analyticsRoot()));
+    // Transcripts stay excluded: content-addressed, so a re-upload lands under a
+    // new key rather than needing the old one invalidated.
+    expect(keys).not.toContain(JSON.stringify(agentSessionKeys.transcripts()));
+  });
+});
+
+/**
+ * ISS-9857: the walk past a detail's event prefix is `enabled: false`, so an
+ * invalidation marks it and never refetches it — and a tail append that leaves
+ * the prefix boundary unchanged re-keys nothing. The bridge RESETS the walk
+ * instead, so a session at exhaustion goes back to "nothing loaded yet" and the
+ * transcript panel's control returns.
+ */
+describe("AgentSessionsLiveBridge events-page walk reset", () => {
+  const FIRST_CURSOR = "first-cursor";
+  const exhaustedWalk = {
+    pages: [{ events: [] }],
+    pageParams: [firstSessionEventsPageParam(FIRST_CURSOR)],
+  };
+
+  function WalkProbe({
+    sessionId,
+    onState,
+  }: Readonly<{
+    sessionId: string;
+    onState: (sessionId: string, state: { hasMore: boolean }) => void;
+  }>) {
+    const walk = useAgentSessionEventsPages({
+      sessionId,
+      firstCursor: FIRST_CURSOR,
+    });
+    onState(sessionId, { hasMore: walk.hasMore });
+    return null;
+  }
+
+  function renderWalks(source: AgentSessionsDataSource, sessionIds: string[]) {
+    const latest = new Map<string, { hasMore: boolean }>();
+    render(
+      <AppCoreStoryProviders
+        queryData={sessionIds.map((sessionId) => [
+          agentSessionKeys.eventsPages(source.scope, sessionId, FIRST_CURSOR),
+          exhaustedWalk,
+        ])}
+      >
+        <AgentSessionsDataSourceProvider dataSource={source}>
+          <AgentSessionsLiveBridge />
+          {sessionIds.map((sessionId) => (
+            <WalkProbe
+              key={sessionId}
+              onState={(id, state) => latest.set(id, state)}
+              sessionId={sessionId}
+            />
+          ))}
+        </AgentSessionsDataSourceProvider>
+      </AppCoreStoryProviders>
     );
+    return { hasMore: (sessionId: string) => latest.get(sessionId)?.hasMore };
+  }
+
+  it("resets only the changed session's exhausted walk on a scoped change", async () => {
+    const fake = liveFakeSource(true);
+    const walks = renderWalks(fake.source, ["s1", "s2"]);
+    await advance(INVALIDATION_THROTTLE_MS);
+    expect(walks.hasMore("s1")).toBe(false);
+    expect(walks.hasMore("s2")).toBe(false);
+
+    fake.emit({ sessionId: "s1" });
+    await advance(INVALIDATION_THROTTLE_MS);
+
+    expect(walks.hasMore("s1")).toBe(true);
+    expect(walks.hasMore("s2")).toBe(false);
+  });
+
+  it("resets every exhausted walk on a broad change", async () => {
+    const fake = liveFakeSource(true);
+    const walks = renderWalks(fake.source, ["s1", "s2"]);
+    await advance(INVALIDATION_THROTTLE_MS);
+
+    fake.emit({});
+    await advance(INVALIDATION_THROTTLE_MS);
+
+    expect(walks.hasMore("s1")).toBe(true);
+    expect(walks.hasMore("s2")).toBe(true);
   });
 });

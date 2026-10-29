@@ -1,72 +1,53 @@
-import { DesktopGitHubConnectState } from "../components/branches/use-desktop-github-connect";
+import type { DesktopGitHubConnectState } from "../components/branches/use-desktop-github-connect";
+import {
+  DesktopGitHubConnectSurface,
+  desktopGitHubConnectMessage,
+} from "./desktop-github-connect-copy";
 import {
   DesktopStatusBanner,
-  type DesktopStatusBannerTone,
+  type DesktopStatusBannerVariant,
 } from "./desktop-status-banner";
 
 /**
- * Which branch surface renders the connect-GitHub status so the shared renderer
- * can pick the matching chrome and copy:
- * - `list` — the branches table header, a rounded inline card.
- * - `detail` — the branch detail view, a full-width bottom-border banner.
+ * Which list surface renders the connect-GitHub status, selecting its copy. The
+ * `panel` surface is excluded: ISS-11274 removed the Branches detail banner and
+ * the approved design places no connect status on a detail view, so this
+ * component only ever renders the list-shaped ones.
  *
- * Mirrors {@link DesktopStatusBannerVariant} so the variant passes straight
- * through to the shared banner.
+ * No longer the banner's chrome token too. ISS-11326 split the stalled Branches
+ * slot out so it can say something its empty screen can back, and the two still
+ * share one chrome — {@link LIST_BANNER_VARIANT} is what that costs, in place of
+ * the identity this used to rely on.
  */
-export type DesktopConnectStatusVariant = "list" | "detail";
-
-type ConnectStatusContent = { tone: DesktopStatusBannerTone; message: string };
+export type DesktopConnectStatusVariant = Exclude<
+  DesktopGitHubConnectSurface,
+  "panel"
+>;
 
 /**
- * Per-variant, per-state semantic tone + copy for {@link DesktopConnectStatus}.
- * The chrome and color tokens live in {@link DesktopStatusBanner}; this map only
- * carries the surface's tone and copy. Only the terminal states that surface
- * guidance appear here; `Idle`, `Pending`, and any future state fall through to
- * `null` (nothing rendered).
+ * The chrome both list surfaces wear: a rounded inline card above a list. A
+ * `Record` rather than a fallback so adding a fourth surface fails `tsc` here
+ * instead of silently inheriting one page's chrome.
  */
-const CONNECT_STATUS_CONTENT: Record<
+const LIST_BANNER_VARIANT: Record<
   DesktopConnectStatusVariant,
-  Partial<Record<DesktopGitHubConnectState, ConnectStatusContent>>
+  DesktopStatusBannerVariant
 > = {
-  list: {
-    [DesktopGitHubConnectState.Opened]: {
-      tone: "success",
-      message:
-        "Continue in the browser to connect GitHub. Branches refresh when the connection is available.",
-    },
-    [DesktopGitHubConnectState.SignInRequired]: {
-      tone: "warning",
-      message: "Sign in to ClosedLoop Desktop before connecting GitHub.",
-    },
-    [DesktopGitHubConnectState.Failed]: {
-      tone: "error",
-      message:
-        "GitHub connect could not be opened. Local branch data remains available.",
-    },
-  },
-  detail: {
-    [DesktopGitHubConnectState.Opened]: {
-      tone: "success",
-      message:
-        "Continue in the browser to connect GitHub. Branch details refresh when the connection is available.",
-    },
-    [DesktopGitHubConnectState.SignInRequired]: {
-      tone: "warning",
-      message: "Sign in to ClosedLoop Desktop before connecting GitHub.",
-    },
-    [DesktopGitHubConnectState.Failed]: {
-      tone: "error",
-      message:
-        "GitHub connect could not be opened. Local branch details remain available.",
-    },
-  },
+  [DesktopGitHubConnectSurface.List]: "list",
+  [DesktopGitHubConnectSurface.StalledList]: "list",
 };
 
 /**
- * Shared connect-GitHub status banner for the desktop branch views (list +
- * detail). Extracted so the enum branches and rendered markup live once instead
- * of being copy-pasted per view (FEA-2617); `variant` selects the surface's
- * chrome and copy while the state → guidance mapping stays identical.
+ * Shared connect-GitHub status banner for the desktop list surfaces that offer
+ * the connect ask: Sessions, Insights and the Dashboard (which mounts the same
+ * `DesktopInsightsProvider` banner) on `list`, and the Branches stalled-load
+ * slot on `stalledList`, whose retained ISS-10645 ask reports its outcome here
+ * (ISS-11274). No
+ * variant's copy names a page, because none of them renders on only one
+ * (ISS-11326). Extracted so the enum
+ * branches and rendered markup live once instead of being copy-pasted per view
+ * (FEA-2617); the tone + copy come from the one desktop connect-copy map
+ * (ISS-5958) that the Settings and onboarding surfaces also read.
  */
 export function DesktopConnectStatus({
   state,
@@ -75,12 +56,15 @@ export function DesktopConnectStatus({
   state: DesktopGitHubConnectState;
   variant: DesktopConnectStatusVariant;
 }) {
-  const content = CONNECT_STATUS_CONTENT[variant][state];
+  const content = desktopGitHubConnectMessage(state, variant);
   if (!content) {
     return null;
   }
   return (
-    <DesktopStatusBanner tone={content.tone} variant={variant}>
+    <DesktopStatusBanner
+      tone={content.tone}
+      variant={LIST_BANNER_VARIANT[variant]}
+    >
       {content.message}
     </DesktopStatusBanner>
   );

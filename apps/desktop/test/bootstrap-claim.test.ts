@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import type { GatewaySigningKeyMaterial } from "../src/main/command-signing/gateway-signing-key-store.js";
 import {
   buildBootstrapClaimPayload,

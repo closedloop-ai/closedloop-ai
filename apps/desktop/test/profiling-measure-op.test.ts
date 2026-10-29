@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { measureOp } from "../src/main/database/db-host/db-host-memory-watchdog.js";
 import type { ProfilingDbOpRow } from "../src/shared/profiling.js";
 import { createTestClock } from "./helpers/profiling-test-helpers.js";

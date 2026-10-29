@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { describe, test } from "node:test";
 import { DESKTOP_DEEP_LINK_SCHEME } from "@repo/api/src/types/desktop-deep-link";
+import { describe, test } from "vitest";
 import { parse } from "yaml";
 
 /**
@@ -14,8 +14,8 @@ import { parse } from "yaml";
  * `CFBundleURLTypes` entry (and the Linux `.desktop` MimeType) from this
  * `protocols` block. Windows is the other way round — NSIS/Squirrel ignore
  * `protocols`, so there the runtime call is the whole story. Drop the block and
- * the web app's "Launch Desktop App" control silently returns to being a dead
- * button in every packaged macOS install — a regression no unit test of the
+ * the web app's open-Desktop links (onboarding download step, Desktop handback)
+ * silently go dead in every packaged macOS install — a regression no unit test of the
  * handler can see, because the handler is still perfectly correct and simply
  * never invoked.
  *

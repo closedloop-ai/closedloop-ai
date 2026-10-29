@@ -10,11 +10,11 @@ import {
   formatCost,
   formatCostPrecise,
   formatCurrencyWhole,
-  formatLoc,
   formatLocPerDollar,
   formatLocPerDollarColumn,
   formatNumber,
   formatTokenCount,
+  formatTokensPerLoc,
   getDurationScaleMinutes,
   getStableUtcDateWindowForRange,
   getStartDateForRange,
@@ -567,55 +567,6 @@ describe("formatCompact", () => {
   });
 });
 
-describe("formatLoc", () => {
-  describe("below threshold (< 1000)", () => {
-    it("formats zero", () => {
-      expect(formatLoc(0)).toBe("0");
-    });
-
-    it("formats small values as comma-separated integers", () => {
-      expect(formatLoc(500)).toBe("500");
-      expect(formatLoc(892)).toBe("892");
-      expect(formatLoc(999)).toBe("999");
-    });
-
-    it("rounds fractional values below threshold", () => {
-      expect(formatLoc(42.7)).toBe("43");
-    });
-  });
-
-  describe("at or above threshold (>= 1000)", () => {
-    it("formats exactly 1000 as '1 KLOC' (trailing .0 stripped)", () => {
-      expect(formatLoc(1000)).toBe("1 KLOC");
-    });
-
-    it("formats values with fractional KLOC", () => {
-      expect(formatLoc(1500)).toBe("1.5 KLOC");
-      expect(formatLoc(12_500)).toBe("12.5 KLOC");
-    });
-
-    it("strips trailing .0 for round KLOC values", () => {
-      expect(formatLoc(2000)).toBe("2 KLOC");
-      expect(formatLoc(12_000)).toBe("12 KLOC");
-    });
-
-    it("formats very large values", () => {
-      expect(formatLoc(100_000)).toBe("100 KLOC");
-      expect(formatLoc(1_000_000)).toBe("1000 KLOC");
-    });
-  });
-
-  describe("negative values", () => {
-    it("formats negative values below threshold as integers", () => {
-      expect(formatLoc(-500)).toBe("-500");
-    });
-
-    it("formats negative values at or above threshold as KLOC", () => {
-      expect(formatLoc(-1500)).toBe("-1.5 KLOC");
-    });
-  });
-});
-
 describe("getDurationScaleMinutes", () => {
   describe("rounding up to the nearest minute", () => {
     it("rounds 5m 5s up to 6 (FEA-2029 example)", () => {
@@ -716,20 +667,25 @@ describe("getStableUtcDateWindowForRange", () => {
     ["7d", "2026-08-01T00:00:00.000Z"],
     ["30d", "2026-07-09T00:00:00.000Z"],
     ["90d", "2026-05-10T00:00:00.000Z"],
-  ] as const)("returns the inclusive %s UTC window ending with the current day", (range, startDate) => {
-    const window = getStableUtcDateWindowForRange(
-      range,
-      new Date("2026-08-07T18:43:12.345Z")
-    );
+  ] as const)(
+    "returns the inclusive %s UTC window ending with the current day",
+    (range, startDate) => {
+      const window = getStableUtcDateWindowForRange(
+        range,
+        new Date("2026-08-07T18:43:12.345Z")
+      );
 
-    expect(window).toEqual({
-      startDate,
-      endDate: "2026-08-07T23:59:59.999Z",
-    });
-    expect(
-      Date.parse(window.endDate ?? "") - Date.parse(window.startDate ?? "") + 1
-    ).toBe(dateRangeToLookbackDays(range)! * 24 * 60 * 60 * 1000);
-  });
+      expect(window).toEqual({
+        startDate,
+        endDate: "2026-08-07T23:59:59.999Z",
+      });
+      expect(
+        Date.parse(window.endDate ?? "") -
+          Date.parse(window.startDate ?? "") +
+          1
+      ).toBe(dateRangeToLookbackDays(range)! * 24 * 60 * 60 * 1000);
+    }
+  );
 
   // ISS-5809: the defect this window shipped with. A session active at any point
   // during the in-progress UTC day — including seconds ago — must fall inside the
@@ -828,6 +784,30 @@ describe("formatLocPerDollar (ISS-4667)", () => {
   it("uses whole numbers at or above 10 and 2dp below it", () => {
     expect(formatLocPerDollar(5.5)).toBe("5.50");
     expect(formatLocPerDollar(1234.6)).toBe("1,235");
+  });
+});
+
+describe("formatTokensPerLoc (ISS-8184)", () => {
+  it("keeps two decimals under 10, where the compact format rounded to a whole", () => {
+    expect(formatTokensPerLoc(0.4)).toBe("0.40");
+    expect(formatTokensPerLoc(0.5)).toBe("0.50");
+    expect(formatTokensPerLoc(5.5)).toBe("5.50");
+  });
+
+  it("keeps significant digits below the two-decimal floor", () => {
+    expect(formatTokensPerLoc(0.0088)).toBe("0.0088");
+    expect(formatTokensPerLoc(0.0088)).not.toBe("0.00");
+  });
+
+  it("rounds to whole tokens at or above 10", () => {
+    expect(formatTokensPerLoc(1234.6)).toBe("1,235");
+  });
+
+  it("renders a measured zero as a number and an absent one as the dash", () => {
+    expect(formatTokensPerLoc(0)).toBe("0.00");
+    expect(formatTokensPerLoc(null)).toBe(KPI_NO_VALUE);
+    expect(formatTokensPerLoc(undefined)).toBe(KPI_NO_VALUE);
+    expect(formatTokensPerLoc(Number.NaN)).toBe(KPI_NO_VALUE);
   });
 });
 

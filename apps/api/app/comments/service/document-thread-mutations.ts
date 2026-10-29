@@ -16,7 +16,26 @@ import type {
 import { generateDocumentRoomId } from "@repo/collaboration/shared/room-utils";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import {
+  type RecordWriteInTransaction,
+  writeInShape,
+  writeRecorded,
+} from "@/lib/record-write-in-transaction";
 import { deriveThreadAuthorship } from "../thread-participants";
+import type { RecordThreadResolution } from "./thread-resolution";
+
+/** The thread and comment a document-thread write produced. */
+/**
+ * A thread or reply the service wrote: the Liveblocks thread and comment ids
+ * for the response, and the comment's own row id for a receipt (the
+ * Liveblocks id is not a UUID).
+ */
+export type DocumentThreadWrite = DocumentThreadCreated & {
+  commentRowId: string;
+};
+
+/** The Liveblocks thread and comment ids a create or reply answers with. */
+type DocumentThreadCreated = { threadId: string; commentId: string };
 
 /**
  * Result of a permission-guarded document-thread mutation. Reuses the canonical
@@ -37,6 +56,16 @@ type ResolutionProjection = {
   thread: { status: ThreadStatus };
 } | null;
 
+/** The route's in-transaction record of a resolve or reopen (ISS-12552). */
+type RecordResolution = RecordThreadResolution;
+
+/** Liveblocks' resolve or reopen call, and the one that undoes it. */
+type LiveblocksResolutionMutation = (options: {
+  roomId: string;
+  threadId: string;
+  userId: string;
+}) => Promise<ThreadData>;
+
 /**
  * Projection + lookup dependencies the document-thread mutations need from the
  * `commentsService` composition root. Injected (rather than imported) so this
@@ -48,15 +77,17 @@ export type DocumentThreadMutationDeps = {
     organizationId: string,
     roomId: string
   ) => Promise<{ artifactId: string; latestVersion: number | null } | null>;
+  /** Resolves `null` when nothing was stored (ISS-11212: no artifact). */
   upsertThreadFromLiveblocks: (
     organizationId: string,
     thread: ThreadData
-  ) => Promise<unknown>;
+  ) => Promise<StoredProjectionRow | null>;
+  /** Resolves `null` when nothing was stored (the thread row is missing). */
   upsertCommentFromLiveblocks: (
     organizationId: string,
     threadExternalId: string,
     comment: CommentData
-  ) => Promise<unknown>;
+  ) => Promise<StoredProjectionRow | null>;
   /**
    * Best-effort read-after-write fallback: project a provider thread into the DB
    * when the create webhook has not landed yet. Returns `true` when a thread was
@@ -71,11 +102,13 @@ export type DocumentThreadMutationDeps = {
     organizationId: string,
     threadExternalId: string,
     resolvedAt: Date,
-    options?: { resolvedById?: string | null }
+    options?: { resolvedById?: string | null },
+    recordWrite?: RecordResolution
   ) => Promise<ResolutionProjection>;
   unresolveThread: (
     organizationId: string,
-    threadExternalId: string
+    threadExternalId: string,
+    recordWrite?: RecordResolution
   ) => Promise<ResolutionProjection>;
 };
 
@@ -90,35 +123,38 @@ export type DocumentThreadMutations = {
     documentSlug: string,
     userId: string,
     bodyText: string,
-    anchorText: string
-  ) => Promise<{ threadId: string; commentId: string }>;
+    anchorText: string,
+    recordCreated?: RecordWriteInTransaction<DocumentThreadWrite>
+  ) => Promise<DocumentThreadCreated>;
   createArtifactLevelDocumentThread: (
     organizationId: string,
     documentSlug: string,
     userId: string,
-    bodyText: string
-  ) => Promise<{ threadId: string; commentId: string }>;
+    bodyText: string,
+    recordCreated?: RecordWriteInTransaction<DocumentThreadWrite>
+  ) => Promise<DocumentThreadCreated>;
   replyToDocumentThread: (
     organizationId: string,
     artifactId: string,
     threadExternalId: string,
     userId: string,
-    bodyText: string
-  ) => Promise<
-    DocumentThreadMutationResult<{ threadId: string; commentId: string }>
-  >;
+    bodyText: string,
+    recordCreated?: RecordWriteInTransaction<DocumentThreadWrite>
+  ) => Promise<DocumentThreadMutationResult<DocumentThreadCreated>>;
   resolveDocumentThread: (
     organizationId: string,
     artifactId: string,
     threadExternalId: string,
     userId: string,
-    resolvedAt: Date
+    resolvedAt: Date,
+    recordResolved?: RecordResolution
   ) => Promise<DocumentThreadMutationResult<{ status: ThreadStatus }>>;
   reopenDocumentThreadAsAuthor: (
     organizationId: string,
     artifactId: string,
     threadExternalId: string,
-    userId: string
+    userId: string,
+    recordReopened?: RecordResolution
   ) => Promise<DocumentThreadMutationResult<{ status: ThreadStatus }>>;
 };
 
@@ -132,6 +168,8 @@ export type DocumentThreadMutations = {
 type DocumentThreadRow = {
   roomId: string;
   externalId: string;
+  /** The projected status, read before the provider mutation. */
+  status: ThreadStatus;
   authorId: string | null;
   participantIds: Set<string>;
 };
@@ -183,6 +221,7 @@ export function createDocumentThreadMutations(
           roomId: true,
           artifactId: true,
           source: true,
+          status: true,
           createdById: true,
           comments: {
             orderBy: { createdAt: "asc" },
@@ -207,6 +246,7 @@ export function createDocumentThreadMutations(
     return {
       roomId: thread.roomId,
       externalId: thread.externalId,
+      status: thread.status as ThreadStatus,
       authorId,
       participantIds,
     };
@@ -248,8 +288,9 @@ export function createDocumentThreadMutations(
 
   async function syncCreatedLiveblocksDocumentThread(
     organizationId: string,
-    threadData: ThreadData
-  ): Promise<{ threadId: string; commentId: string }> {
+    threadData: ThreadData,
+    recordCreated?: RecordWriteInTransaction<DocumentThreadWrite>
+  ): Promise<DocumentThreadCreated> {
     let commentId: string;
     try {
       const firstComment = threadData.comments[0];
@@ -258,13 +299,27 @@ export function createDocumentThreadMutations(
       }
       commentId = firstComment.id;
 
-      await withDb.tx(async () => {
-        await deps.upsertThreadFromLiveblocks(organizationId, threadData);
-        await deps.upsertCommentFromLiveblocks(
+      await withDb.tx(async (tx) => {
+        const thread = await deps.upsertThreadFromLiveblocks(
+          organizationId,
+          threadData
+        );
+        if (thread === null) {
+          throw new Error("Thread created but its projection stored nothing");
+        }
+        const comment = await deps.upsertCommentFromLiveblocks(
           organizationId,
           threadData.id,
           firstComment
         );
+        if (comment === null) {
+          throw new Error("Comment created but its projection stored nothing");
+        }
+        await recordCreated?.(tx, {
+          threadId: threadData.id,
+          commentId,
+          commentRowId: comment.id,
+        });
       });
     } catch (projectionError) {
       await deleteLiveblocksArtifactThread({
@@ -294,8 +349,9 @@ export function createDocumentThreadMutations(
     documentSlug: string,
     userId: string,
     bodyText: string,
-    anchorText: string
-  ): Promise<{ threadId: string; commentId: string }> {
+    anchorText: string,
+    recordCreated?: RecordWriteInTransaction<DocumentThreadWrite>
+  ): Promise<DocumentThreadCreated> {
     const roomId = generateDocumentRoomId(organizationId, documentSlug);
     const artifact = await deps.findArtifactForRoom(organizationId, roomId);
 
@@ -307,15 +363,20 @@ export function createDocumentThreadMutations(
       version: artifact?.latestVersion ?? undefined,
     });
 
-    return syncCreatedLiveblocksDocumentThread(organizationId, threadData);
+    return syncCreatedLiveblocksDocumentThread(
+      organizationId,
+      threadData,
+      recordCreated
+    );
   }
 
   async function createArtifactLevelDocumentThread(
     organizationId: string,
     documentSlug: string,
     userId: string,
-    bodyText: string
-  ): Promise<{ threadId: string; commentId: string }> {
+    bodyText: string,
+    recordCreated?: RecordWriteInTransaction<DocumentThreadWrite>
+  ): Promise<DocumentThreadCreated> {
     const roomId = generateDocumentRoomId(organizationId, documentSlug);
     const artifact = await deps.findArtifactForRoom(organizationId, roomId);
 
@@ -326,27 +387,30 @@ export function createDocumentThreadMutations(
       version: artifact?.latestVersion ?? undefined,
     });
 
-    return syncCreatedLiveblocksDocumentThread(organizationId, threadData);
+    return syncCreatedLiveblocksDocumentThread(
+      organizationId,
+      threadData,
+      recordCreated
+    );
   }
 
   /**
    * Reply to a document comment thread (FEA-3950). Anyone with view access may
    * reply (the route enforces org+artifact resolution); no author gate.
    * Liveblocks is the source of truth: the reply is created there, then the DB
-   * projection is applied. If the projection throws after the Liveblocks write
-   * succeeds, the just-created Liveblocks comment is compensated (deleted) so a
-   * client retry cannot leave a duplicate visible reply — the create-thread
-   * path uses the same compensation.
+   * projection is applied. If the projection throws or stores nothing after the
+   * Liveblocks write succeeds, the just-created Liveblocks comment is
+   * compensated (deleted) so a client retry cannot leave a duplicate visible
+   * reply — the create-thread path uses the same compensation.
    */
   async function replyToDocumentThread(
     organizationId: string,
     artifactId: string,
     threadExternalId: string,
     userId: string,
-    bodyText: string
-  ): Promise<
-    DocumentThreadMutationResult<{ threadId: string; commentId: string }>
-  > {
+    bodyText: string,
+    recordCreated?: RecordWriteInTransaction<DocumentThreadWrite>
+  ): Promise<DocumentThreadMutationResult<DocumentThreadCreated>> {
     const { thread } = await findDocumentThreadForMutation(
       organizationId,
       artifactId,
@@ -364,10 +428,25 @@ export function createDocumentThreadMutations(
     });
 
     try {
-      await deps.upsertCommentFromLiveblocks(
-        organizationId,
-        thread.externalId,
-        comment
+      // No outer transaction unless the reply is recorded (ISS-12552 parity).
+      await writeRecorded(
+        recordCreated,
+        async () => {
+          const stored = await deps.upsertCommentFromLiveblocks(
+            organizationId,
+            thread.externalId,
+            comment
+          );
+          if (stored === null) {
+            throw new Error("Reply created but its projection stored nothing");
+          }
+          return stored;
+        },
+        (stored) => ({
+          threadId: thread.externalId,
+          commentId: comment.id,
+          commentRowId: stored.id,
+        })
       );
     } catch (projectionError) {
       await deleteLiveblocksArtifactComment({
@@ -410,7 +489,8 @@ export function createDocumentThreadMutations(
     artifactId: string,
     threadExternalId: string,
     userId: string,
-    resolvedAt: Date
+    resolvedAt: Date,
+    recordResolved?: RecordResolution
   ): Promise<DocumentThreadMutationResult<{ status: ThreadStatus }>> {
     return runGuardedResolution({
       organizationId,
@@ -420,10 +500,16 @@ export function createDocumentThreadMutations(
       isPermitted: (thread) => thread.participantIds.has(userId),
       targetStatus: ThreadStatus.Resolved,
       liveblocksMutation: markLiveblocksThreadResolved,
-      projection: () =>
-        deps.resolveThread(organizationId, threadExternalId, resolvedAt, {
-          resolvedById: userId,
-        }),
+      revertLiveblocksMutation: markLiveblocksThreadUnresolved,
+      record: recordResolved,
+      projection: (record) =>
+        deps.resolveThread(
+          organizationId,
+          threadExternalId,
+          resolvedAt,
+          { resolvedById: userId },
+          record
+        ),
     });
   }
 
@@ -437,7 +523,8 @@ export function createDocumentThreadMutations(
     organizationId: string,
     artifactId: string,
     threadExternalId: string,
-    userId: string
+    userId: string,
+    recordReopened?: RecordResolution
   ): Promise<DocumentThreadMutationResult<{ status: ThreadStatus }>> {
     return runGuardedResolution({
       organizationId,
@@ -448,7 +535,10 @@ export function createDocumentThreadMutations(
         thread.authorId !== null && thread.authorId === userId,
       targetStatus: ThreadStatus.Open,
       liveblocksMutation: markLiveblocksThreadUnresolved,
-      projection: () => deps.unresolveThread(organizationId, threadExternalId),
+      revertLiveblocksMutation: markLiveblocksThreadResolved,
+      record: recordReopened,
+      projection: (record) =>
+        deps.unresolveThread(organizationId, threadExternalId, record),
     });
   }
 
@@ -475,12 +565,12 @@ export function createDocumentThreadMutations(
     userId: string;
     isPermitted: (thread: DocumentThreadRow) => boolean;
     targetStatus: ThreadStatus;
-    liveblocksMutation: (options: {
-      roomId: string;
-      threadId: string;
-      userId: string;
-    }) => Promise<ThreadData>;
-    projection: () => Promise<ResolutionProjection>;
+    liveblocksMutation: LiveblocksResolutionMutation;
+    revertLiveblocksMutation: LiveblocksResolutionMutation;
+    record: RecordResolution | undefined;
+    projection: (
+      record: RecordResolution | undefined
+    ) => Promise<ResolutionProjection>;
   }): Promise<DocumentThreadMutationResult<{ status: ThreadStatus }>> {
     const thread = await resolvePermittedThread(input);
     if (!thread) {
@@ -490,13 +580,35 @@ export function createDocumentThreadMutations(
       return { ok: false, error: Status.Forbidden };
     }
 
-    await input.liveblocksMutation({
+    const target = {
       roomId: thread.roomId,
       threadId: thread.externalId,
       userId: input.userId,
-    });
+    };
+    await input.liveblocksMutation(target);
 
-    const projected = await input.projection();
+    // Unrecorded is main's shape: a failed projection leaves the Liveblocks
+    // change in place (ISS-12552 flag-off parity).
+    const projected = await writeInShape(input.record, {
+      unrecorded: () => input.projection(undefined),
+      recorded: async (record) => {
+        try {
+          return await input.projection(record);
+        } catch (projectionError) {
+          // ISS-12552: the projection carries the write's receipt, so when it
+          // fails the Liveblocks change is undone, as create and reply delete
+          // theirs. A thread already in the target state was not changed
+          // there.
+          if (thread.status !== input.targetStatus) {
+            await revertLiveblocksResolution(
+              input.revertLiveblocksMutation,
+              target
+            );
+          }
+          throw projectionError;
+        }
+      },
+    });
     return {
       ok: true,
       value: { status: projected?.thread.status ?? input.targetStatus },
@@ -559,4 +671,27 @@ export function createDocumentThreadMutations(
     resolveDocumentThread,
     reopenDocumentThreadAsAuthor,
   };
+}
+
+/** The row a projection upsert stored; its absence is `null`, never `undefined`. */
+type StoredProjectionRow = { id: string };
+
+/** Best effort: a failed undo is logged, and the projection's error stands. */
+async function revertLiveblocksResolution(
+  revert: LiveblocksResolutionMutation,
+  target: { roomId: string; threadId: string; userId: string }
+): Promise<void> {
+  await revert(target).catch((cleanupError) => {
+    log.warn(
+      "[commentThreadsService] Failed to revert Liveblocks resolution after projection sync failure",
+      {
+        roomId: target.roomId,
+        threadId: target.threadId,
+        error:
+          cleanupError instanceof Error
+            ? cleanupError.message
+            : String(cleanupError),
+      }
+    );
+  });
 }

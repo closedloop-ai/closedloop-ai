@@ -154,7 +154,7 @@ async function loadVerifiers(): Promise<{
   };
 }
 
-describe.sequential("API key fallback parity", () => {
+describe("API key fallback parity", { concurrent: false }, () => {
   beforeEach(() => {
     resetMockState();
   });

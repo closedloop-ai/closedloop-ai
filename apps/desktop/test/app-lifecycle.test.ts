@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { handleActivateEvent } from "../src/main/lifecycle/app-lifecycle.js";
 
 test("activate handler logs rejected async work without rethrowing", async () => {

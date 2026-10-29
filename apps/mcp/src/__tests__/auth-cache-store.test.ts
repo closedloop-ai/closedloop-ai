@@ -1,6 +1,17 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createRedisClient } from "@repo/redis";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthKeyCipher, SerializedMcpAuth } from "../auth-cache-store.js";
+import {
+  asServerResponse,
+  createMockRequest,
+  createMockResponse,
+} from "./fixtures/mock-http.js";
+
+// `createMcpServer` awaits exactly one `withDb` call, so this counts servers
+// actually built. It is what separates "the rebuild was refused before it
+// allocated" from "the rebuild was built and then something else went wrong".
+const { withDbCalls } = vi.hoisted(() => ({ withDbCalls: { count: 0 } }));
 
 // Real AES-256-GCM cipher mirroring the production OAuth key cipher, so the
 // regression assertions exercise genuine encryption rather than a passthrough.
@@ -80,8 +91,10 @@ vi.mock("../api-client.js", () => ({
 
 vi.mock("@repo/database", () => {
   const withDb = Object.assign(
-    async <T>(fn: (db: Record<string, never>) => Promise<T> | T): Promise<T> =>
-      fn({}),
+    <T>(fn: (db: Record<string, never>) => Promise<T> | T): Promise<T> => {
+      withDbCalls.count += 1;
+      return Promise.resolve(fn({}));
+    },
     {
       tx: async <T>(
         fn: (db: Record<string, never>) => Promise<T>
@@ -96,6 +109,12 @@ const ORIGINAL_ENV = { ...process.env };
 afterEach(() => {
   vi.resetModules();
   process.env = { ...ORIGINAL_ENV };
+});
+
+// Module state on the mock, not on a module the registry resets, so it would
+// otherwise carry a previous case's builds into this one's count.
+beforeEach(() => {
+  withDbCalls.count = 0;
 });
 
 const sampleAuth: SerializedMcpAuth = {
@@ -117,7 +136,9 @@ describe("RedisAuthCacheStore", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     const { RedisAuthCacheStore } = await import("../auth-cache-store.js");
-    store = new RedisAuthCacheStore(mockRedisClient as any, testCipher);
+    // `@repo/redis` is mocked above, so this hands the store `mockRedisClient`.
+    const redis = createRedisClient({ url: "redis://auth-cache-store.test" });
+    store = new RedisAuthCacheStore(redis, testCipher);
   });
 
   describe("set", () => {
@@ -145,15 +166,18 @@ describe("RedisAuthCacheStore", () => {
 
     // Regression for the review finding: the bearer API key must never be
     // persisted to Redis in a form that exposes a reusable credential.
-    it("never writes the plaintext API key or sk_ material to Redis", async () => {
+    it("persists decryptable ciphertext without exposing the plaintext API key", async () => {
       mockRedisClient.set.mockResolvedValueOnce("OK");
 
       await store.set("session-1", sampleAuth, 300_000);
 
       const value = mockRedisClient.set.mock.calls[0][1] as string;
       expect(value).not.toContain(sampleAuth.plaintextKey);
-      expect(value).not.toContain("sk_");
       expect(value).not.toContain("plaintextKey");
+      // Randomized base64url ciphertext may contain short credential prefixes.
+      // The stored envelope must instead authenticate and recover the exact key.
+      mockRedisClient.get.mockResolvedValueOnce(value);
+      expect(await store.get("session-1")).toEqual(sampleAuth);
     });
 
     it("does not throw when Redis SET fails", async () => {
@@ -254,7 +278,7 @@ describe("RedisAuthCacheStore", () => {
   });
 });
 
-describe.sequential("MCP_SESSION_STORE env var", () => {
+describe("MCP_SESSION_STORE env var", { concurrent: false }, () => {
   it("leaves authCacheStore null when MCP_SESSION_STORE is unset (memory mode)", async () => {
     process.env.INTERNAL_API_SECRET = "test-internal-secret";
     delete process.env.MCP_SESSION_STORE;
@@ -307,7 +331,7 @@ describe.sequential("MCP_SESSION_STORE env var", () => {
   });
 });
 
-describe.sequential("handleCachedAuthRequest", () => {
+describe("handleCachedAuthRequest", { concurrent: false }, () => {
   const stubReq = {} as import("node:http").IncomingMessage;
   const stubRes = {} as import("node:http").ServerResponse;
 
@@ -396,5 +420,77 @@ describe.sequential("handleCachedAuthRequest", () => {
       "auth:poisoned-session",
       expect.anything()
     );
+  });
+
+  // ISS-8394. This restore is the HIGHER-volume rebuild route, not the fallback
+  // one: `MCP_SESSION_STORE=redis` shares the auth cache and nothing else, so at
+  // `desired_count > 1` a session-bound POST landing on the wrong task is a
+  // cache hit here, never the unknown-session fallback. Both call sites route
+  // through the bounded helper, and the fallback's own cases cannot see this
+  // one — reverting only this line to the pre-ISS-8394 inline build left the
+  // whole suite green.
+  it("refuses the restored rebuild when session capacity is fully committed", async () => {
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    process.env.MCP_SESSION_STORE = "redis";
+    process.env.REDIS_URL = "redis://localhost:6379";
+    process.env.MCP_MAX_SESSIONS = "1";
+
+    const mod = await import("../index.js");
+    const store = mod.__testables.authCacheStore;
+    expect(store).not.toBeNull();
+
+    // Encoded with the PRODUCTION cipher so the restore actually decrypts and
+    // reaches the rebuild, instead of short-circuiting on a cache miss.
+    await store?.set(
+      "restored-session",
+      {
+        plaintextKey: "sk_live_restored",
+        context: {
+          userId: "user_1",
+          organizationId: "org_1",
+          scopes: ["read", "write"],
+        },
+        grantedScopes: ["read", "write"],
+        createdAt: Date.now(),
+      },
+      60_000
+    );
+    mockRedisClient.get.mockResolvedValue(
+      mockRedisClient.set.mock.calls.at(-1)?.[1] as string
+    );
+
+    // The one slot is held by an initialize still building its server, so the
+    // table is empty and there is nothing to evict — the state in which serving
+    // the rebuild is one more McpServer on the heap in exchange for nothing.
+    expect(mod.__testables.reserveMcpSessionCapacity()).not.toBeUndefined();
+
+    const res = createMockResponse();
+    const handled = await mod.__testables.handleCachedAuthRequest(
+      createMockRequest({
+        method: "POST",
+        url: "/mcp",
+        headers: { "content-type": "application/json" },
+        // What a restored client actually sends: it believes it is mid-session,
+        // so it resumes a call rather than handshaking again.
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/list",
+          params: {},
+        }),
+      }),
+      asServerResponse(res),
+      "restored-session"
+    );
+
+    expect(handled).toBe(true);
+    // The same refusal shape the initialize path ships, retry header included.
+    expect({
+      statusCode: res.statusCode,
+      retryAfter: res.headers["Retry-After"],
+    }).toEqual({ statusCode: 503, retryAfter: "1" });
+    // Nothing was built. An unaccounted restore allocates its server first and
+    // asks the bound never, which is what made this route invisible to the cap.
+    expect(withDbCalls.count).toBe(0);
   });
 });

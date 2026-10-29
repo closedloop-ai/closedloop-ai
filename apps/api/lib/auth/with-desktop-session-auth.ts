@@ -1,9 +1,19 @@
 import "server-only";
 
+import { SpanErrorSource } from "@closedloop-ai/telemetry-contract/span";
 import { failure } from "@repo/api/src/types/common";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { type NextRequest, NextResponse } from "next/server";
+import { runWithFeatureFlagOverrides } from "../feature-flags/feature-flag-request-scope-auth";
+import { readResponseErrorCode } from "../observability/request-error-code";
+import { readRouteParams } from "../observability/request-route-path";
+import {
+  recordRequestAuthenticatedIdentity,
+  recordRequestClientAttribution,
+  recordRequestErrorCause,
+  runWithRequestSpanAttribution,
+} from "../observability/request-span-attribution";
 import {
   getBearerToken,
   logRequestCompleted,
@@ -38,46 +48,76 @@ export function withDesktopSessionAuth<
   request: NextRequest,
   context: RouteContext<TRoute>
 ) => Promise<AuthenticatedJsonResponse<TResponse>> {
-  return async (
+  return (
     request: NextRequest,
     routeContext: RouteContext<TRoute>
-  ): Promise<AuthenticatedJsonResponse<TResponse>> => {
-    const startMs = globalThis.performance.now();
-    let response: AuthenticatedJsonResponse<TResponse> | undefined;
-    try {
-      const token = getBearerToken(request);
-      if (!token) {
-        response = unauthorizedResponse();
+  ): Promise<AuthenticatedJsonResponse<TResponse>> =>
+    // ISS-7217/ISS-7221: scope wraps the whole closure, including the `finally`
+    // that emits the span. See `with-api-key-auth.ts` for the full note. This
+    // is the lane the desktop sync client rides, so it is the one whose spans
+    // the 4,453-500s investigation actually reads.
+    runWithRequestSpanAttribution(async () => {
+      const startMs = globalThis.performance.now();
+      let response: AuthenticatedJsonResponse<TResponse> | undefined;
+      try {
+        // ISS-8749 / ISS-11431: the caller's own account of which Desktop
+        // install and build this is, recorded before any auth decision so a
+        // 401 burst names the installs it rejected. Attested, never trusted: it
+        // reaches the span and nothing else.
+        recordRequestClientAttribution(request.headers);
+        const token = getBearerToken(request);
+        if (!token) {
+          response = unauthorizedResponse();
+          return response;
+        }
+
+        const resolved = await resolveDesktopSessionContext(token);
+        if (!resolved) {
+          response = unauthorizedResponse();
+          return response;
+        }
+
+        // Recorded only after the token verified and the user/org resolved.
+        // Every 401 above leaves the org and user absent.
+        recordRequestAuthenticatedIdentity({
+          organizationId: resolved.organizationId,
+          userId: resolved.user.id,
+        });
+
+        const authContext: AuthContext = {
+          user: resolved.user,
+          clerkUserId: resolved.user.clerkId,
+          clerkOrgId: resolved.clerkOrgId,
+          orgRole: undefined,
+          authMethod: "desktop_session",
+          desktopSessionId: resolved.desktopSessionId,
+          apiKeyScopes: undefined,
+        };
+
+        // ISS-12048: same Dev Mode overrides scope as the browser session.
+        response = await runWithFeatureFlagOverrides(
+          request,
+          { clerkUserId: resolved.user.clerkId, email: resolved.user.email },
+          () => handler(authContext, request, routeContext.params)
+        );
         return response;
-      }
-
-      const resolved = await resolveDesktopSessionContext(token);
-      if (!resolved) {
-        response = unauthorizedResponse();
+      } catch (error) {
+        log.error("Desktop session authentication failed", {
+          error: parseError(error),
+        });
+        recordRequestErrorCause(error, SpanErrorSource.AuthWrapper);
+        response = NextResponse.json(failure("Authentication failed"), {
+          status: 500,
+        });
         return response;
+      } finally {
+        logRequestCompleted(
+          request,
+          startMs,
+          response?.status ?? 500,
+          await readResponseErrorCode(response),
+          await readRouteParams(routeContext)
+        );
       }
-
-      const authContext: AuthContext = {
-        user: resolved.user,
-        clerkUserId: resolved.user.clerkId,
-        clerkOrgId: resolved.clerkOrgId,
-        orgRole: undefined,
-        authMethod: "desktop_session",
-        apiKeyScopes: undefined,
-      };
-
-      response = await handler(authContext, request, routeContext.params);
-      return response;
-    } catch (error) {
-      log.error("Desktop session authentication failed", {
-        error: parseError(error),
-      });
-      response = NextResponse.json(failure("Authentication failed"), {
-        status: 500,
-      });
-      return response;
-    } finally {
-      logRequestCompleted(request, startMs, response?.status ?? 500);
-    }
-  };
+    });
 }

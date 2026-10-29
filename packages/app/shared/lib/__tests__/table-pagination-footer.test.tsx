@@ -1,7 +1,10 @@
 import { buildTableRangeReadout } from "@repo/design-system/components/ui/table-page-size-select";
 import { TablePaginationFooter } from "@repo/design-system/components/ui/table-pagination-footer";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+
+const PREVIOUS_PAGE_LABEL = "Go to previous page";
+const NEXT_PAGE_LABEL = "Go to next page";
 
 /**
  * ISS-4681: the shared paginated-table footer is a design-system component and
@@ -163,6 +166,75 @@ describe("TablePaginationFooter", () => {
       screen.getByRole("combobox", { name: "Rows per page" })
     ).toBeInTheDocument();
   });
+
+  // ISS-11412: the pager inside is now the v2 control, which stays mounted on a
+  // single page by design. The footer keeps the v1 visibility rule itself
+  // (PLN-1936 GV-052 KEEP), so these pin that rule at its edges.
+  it("renders no pager for zero pages, even when asked to keep one", () => {
+    render(
+      <TablePaginationFooter
+        onPageChange={vi.fn()}
+        page={0}
+        readout="No tasks"
+        showPagerOnSinglePage
+        totalPages={0}
+      />
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("No tasks");
+    expect(screen.queryByRole("navigation")).toBeNull();
+  });
+
+  it("keeps a one-page pager, both boundaries locked, when asked to", () => {
+    const onPageChange = vi.fn();
+    render(
+      <TablePaginationFooter
+        onPageChange={onPageChange}
+        page={0}
+        showPagerOnSinglePage
+        totalPages={1}
+      />
+    );
+
+    expect(screen.getByRole("navigation")).toBeInTheDocument();
+    for (const label of [PREVIOUS_PAGE_LABEL, NEXT_PAGE_LABEL]) {
+      const control = screen.getByLabelText(label);
+      expect(control).toHaveAttribute("aria-disabled", "true");
+      fireEvent.click(control);
+    }
+    expect(onPageChange).not.toHaveBeenCalled();
+  });
+
+  it("locks every pager control and the page-size select when disabled", () => {
+    const onPageChange = vi.fn();
+    render(
+      <TablePaginationFooter
+        disabled
+        onPageChange={onPageChange}
+        onPageSizeChange={vi.fn()}
+        page={1}
+        pageSize={25}
+        totalPages={3}
+      />
+    );
+
+    const pageLinks = Array.from(
+      screen
+        .getByRole("navigation")
+        .querySelectorAll<HTMLElement>('[data-slot="pagination-link"]')
+    );
+    // Previous, pages 1-3, Next: every one of them is announced as disabled
+    // and none reports a page.
+    expect(pageLinks).toHaveLength(5);
+    for (const control of pageLinks) {
+      expect(control).toHaveAttribute("aria-disabled", "true");
+      fireEvent.click(control);
+    }
+    expect(onPageChange).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("combobox", { name: "Rows per page" })
+    ).toBeDisabled();
+  });
 });
 
 describe("buildTableRangeReadout", () => {
@@ -198,5 +270,46 @@ describe("buildTableRangeReadout", () => {
         total: 30,
       })
     ).toBe("30–30 of 30 sessions");
+  });
+});
+
+describe("buildTableRangeReadout — variable-height pages (ISS-4704)", () => {
+  it("states the plan's own range instead of the page * pageSize stride", () => {
+    // A grouped board packs whole sections, so page 1 held 38 rows and page 2
+    // holds 23. The stride derivation would say "51–75"; those rows are not on
+    // this page.
+    expect(
+      buildTableRangeReadout({
+        noun: "issues",
+        page: 1,
+        pageSize: 50,
+        range: { from: 39, to: 61 },
+        total: 61,
+      })
+    ).toBe("39–61 of 61 issues");
+  });
+
+  it("still clamps the supplied end to the total", () => {
+    expect(
+      buildTableRangeReadout({
+        noun: "issues",
+        page: 0,
+        pageSize: 50,
+        range: { from: 1, to: 90 },
+        total: 61,
+      })
+    ).toBe("1–61 of 61 issues");
+  });
+
+  it("derives the range from the stride when no plan range is supplied", () => {
+    // The fixed-stride surfaces are unchanged: same call, same string.
+    expect(
+      buildTableRangeReadout({
+        noun: "issues",
+        page: 1,
+        pageSize: 50,
+        total: 61,
+      })
+    ).toBe("51–61 of 61 issues");
   });
 });

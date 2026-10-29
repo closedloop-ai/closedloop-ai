@@ -15,8 +15,6 @@ import {
 import { createMockDocument } from "@repo/app/shared/test-fixtures/documents";
 import { describe, expect, it, vi } from "vitest";
 
-// ---- Fixtures ----
-
 const DOC = createMockDocument({ id: "doc-1", projectId: "proj-1" });
 
 const TREE: ProjectTreeResponse = {
@@ -31,8 +29,6 @@ const TREE: ProjectTreeResponse = {
   ],
   externalParents: [],
 };
-
-// ---- Tests ----
 
 describe("computeMoveEntities", () => {
   it("moves a root with its transitive descendants as one bulk move", () => {

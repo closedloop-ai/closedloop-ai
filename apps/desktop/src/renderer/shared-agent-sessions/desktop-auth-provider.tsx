@@ -1,4 +1,7 @@
-import type { DesktopSignInProvider } from "@repo/api/src/types/desktop-authorize-url";
+import type {
+  DesktopSignInFraming,
+  DesktopSignInMethod,
+} from "@repo/api/src/types/desktop-authorize-url";
 import type {
   AuthAdapter,
   AuthSnapshot,
@@ -13,9 +16,11 @@ import {
   useSyncExternalStore,
 } from "react";
 import { DESKTOP_AUTH_TOKEN_SENTINEL } from "../../shared/cloud-api-fetch-contract";
+import { DesktopSignInAccountConfirmDialog } from "../components/desktop-sign-in-account-confirm-dialog";
 import type {
   DesktopAuthState,
   DesktopBrowserSignInResult,
+  DesktopSignInOptions,
 } from "../types/desktop-api";
 import { type BridgeStore, createBridgeStore } from "./bridge-store";
 
@@ -49,7 +54,7 @@ type DesktopAuthStore = BridgeStore<DesktopAuthState>;
  * Bridge-absent (a partial test stub) settles to a signed-out, loaded snapshot
  * rather than stranding the app-core root in "loading" (`initial`).
  */
-function createDesktopAuthStore(): DesktopAuthStore {
+export function createDesktopAuthStore(): DesktopAuthStore {
   return createBridgeStore<DesktopAuthState>({
     hasBridge: hasDesktopAuthBridge,
     pull: () => window.desktopApi.getDesktopAuthState(),
@@ -67,11 +72,20 @@ export type DesktopAuthContextValue = {
   state: DesktopAuthState;
   /** Begin interactive system-browser sign-in. */
   /**
-   * ISS-5112: `provider` pre-selects the social provider on the web sign-in
-   * detour. Optional — omit it and the web page shows its normal chooser.
+   * ISS-5112 / ISS-5954: `method` pre-selects the sign-in flow on the web
+   * detour — a social provider's consent screen, or the email form. Optional —
+   * omit it and the web page runs its GitHub default. `emailHint` (M5) carries
+   * the typed address so the email form opens prefilled, and `framing` names
+   * the door's sign-up vs sign-in intent so that form is the matching Clerk
+   * embed; both are meaningful only with the email method. `options` carries
+   * ISS-11345's `confirmAccount`, which holds the returned account for the
+   * user to confirm before it is adopted; a Cancel there settles as `declined`.
    */
   beginSignIn: (
-    provider?: DesktopSignInProvider
+    method?: DesktopSignInMethod,
+    emailHint?: string,
+    framing?: DesktopSignInFraming,
+    options?: DesktopSignInOptions
   ) => Promise<DesktopBrowserSignInResult>;
   /** Cancel an in-flight sign-in (no-op when none is running). */
   cancelSignIn: () => Promise<void>;
@@ -110,6 +124,9 @@ export function DesktopAuthProvider({
   }
   const store = storeRef.current;
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  // ISS-11345: the latest sign-in call, so a Cancel in the account confirmation
+  // marks the call it answered. Main settles that run as a plain `cancelled`.
+  const signInCallRef = useRef<{ declined: boolean } | null>(null);
 
   const authAdapter = useMemo<AuthAdapter>(() => {
     // Sentinel, not the credential (PLN-1138 D-G): non-null while a session
@@ -137,13 +154,27 @@ export function DesktopAuthProvider({
   const contextValue = useMemo<DesktopAuthContextValue>(
     () => ({
       state,
-      beginSignIn: (provider?: DesktopSignInProvider) =>
-        hasDesktopAuthBridge()
-          ? window.desktopApi.beginDesktopSignIn(provider)
-          : Promise.resolve<DesktopBrowserSignInResult>({
-              ok: false,
-              reason: "unavailable",
-            }),
+      beginSignIn: async (
+        method?: DesktopSignInMethod,
+        emailHint?: string,
+        framing?: DesktopSignInFraming,
+        options?: DesktopSignInOptions
+      ): Promise<DesktopBrowserSignInResult> => {
+        if (!hasDesktopAuthBridge()) {
+          return { ok: false, reason: "unavailable" };
+        }
+        const call = { declined: false };
+        signInCallRef.current = call;
+        const result = await window.desktopApi.beginDesktopSignIn(
+          method,
+          emailHint,
+          framing,
+          options
+        );
+        return !result.ok && call.declined
+          ? { ok: false, reason: "declined" }
+          : result;
+      },
       cancelSignIn: () =>
         hasDesktopAuthBridge()
           ? window.desktopApi.cancelDesktopSignIn()
@@ -161,6 +192,33 @@ export function DesktopAuthProvider({
       <AuthAdapterProvider adapter={authAdapter}>
         {children}
       </AuthAdapterProvider>
+      {/* ISS-11345: rendered by the provider that owns the auth state, so any
+          surface's confirmation-gated sign-in is answerable wherever the user
+          is, and no host can forget to mount it. */}
+      {state.pendingAccount ? (
+        <DesktopSignInAccountConfirmDialog
+          account={state.pendingAccount}
+          onCancel={() => {
+            if (signInCallRef.current) {
+              signInCallRef.current.declined = true;
+            }
+            contextValue.cancelSignIn().catch(() => undefined);
+          }}
+          onConfirm={() => {
+            // A preload without the method, or a confirm that never reached
+            // main, would leave the dialog waiting forever; end the sign-in so
+            // the user stays a guest.
+            const endSignIn = () => {
+              contextValue.cancelSignIn().catch(() => undefined);
+            };
+            if (window.desktopApi.confirmDesktopSignIn) {
+              window.desktopApi.confirmDesktopSignIn().catch(endSignIn);
+            } else {
+              endSignIn();
+            }
+          }}
+        />
+      ) : null}
     </DesktopAuthContext.Provider>
   );
 }
@@ -177,4 +235,21 @@ export function useDesktopAuth(): DesktopAuthContextValue {
     );
   }
   return value;
+}
+
+/**
+ * ISS-11426: the same state, for a component that must render OUTSIDE a
+ * {@link DesktopAuthProvider} as well as inside one.
+ *
+ * `useDesktopAuth` throws by design — a surface whose whole job is the account
+ * panel has no honest behaviour without the provider. A Settings section that
+ * merely wants to build an org-scoped web link does: every Settings mount site
+ * that does not wrap the provider (several coverage suites, and any future
+ * embed) would otherwise crash on an unrelated block, which is exactly what
+ * happened when the compute-target relink alert reached for the throwing hook.
+ * Null here means "no provider", and a caller reads it the same way it reads a
+ * signed-out state: withhold the account-scoped affordance.
+ */
+export function useDesktopAuthOptional(): DesktopAuthContextValue | null {
+  return useContext(DesktopAuthContext);
 }

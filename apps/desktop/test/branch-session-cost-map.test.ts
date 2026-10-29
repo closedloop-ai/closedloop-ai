@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { sessionCostMapFromUsageRows } from "../src/main/branch/branch-analytics-projection.js";
 
 /**
@@ -119,4 +119,39 @@ test("cross-surface parity: desktop and cloud producers agree on the deduped per
   // Both surfaces produce the identical authoritative map: each session once.
   assert.deepEqual(desktopMap, { s1: 90, s2: 10, s3: 0 });
   assert.deepEqual(cloudMap, desktopMap);
+});
+
+/**
+ * ISS-8565. On a plain `{}`, `costBySession["__proto__"]` reads back
+ * `Object.prototype` — truthy, so the `?? 0` never fires — and
+ * `Object.prototype + number` coerces to the string "[object Object]0.42"
+ * before the setter discards it. The session's cost vanished entirely.
+ *
+ * PRODUCER BOUNDARY ONLY: two later hops still drop the key (a `z.record` in
+ * `branch-server-page-response.ts` and a plain-`{}` accumulator in
+ * `branches-data-source.ts`), so this asserts what this producer emits and
+ * deliberately claims nothing about the rendered branch row.
+ */
+test("ISS-8565: a session id of __proto__ keeps its own cost entry", () => {
+  const map = sessionCostMapFromUsageRows([
+    { sessionId: "__proto__", costUsdEstimated: 0.42 },
+    { sessionId: "__proto__", costUsdEstimated: 0.08 },
+    { sessionId: "sNormal", costUsdEstimated: 1.5 },
+  ]);
+
+  assert.ok(Object.keys(map).includes("__proto__"));
+  // biome-ignore lint/suspicious/noProto: ISS-8565 regression — the hostile key IS the subject under test
+  assert.equal(map.__proto__, 0.5);
+  assert.equal(map.sNormal, 1.5);
+  assert.equal(Object.getPrototypeOf(map), Object.prototype);
+});
+
+/** ISS-8565: the absent-vs-zero contract must survive the container change. */
+test("ISS-8565: an all-unpriced __proto__ session stays ABSENT, not zero", () => {
+  const map = sessionCostMapFromUsageRows([
+    { sessionId: "__proto__", costUsdEstimated: null },
+  ]);
+
+  assert.equal(Object.hasOwn(map, "__proto__"), false);
+  assert.deepEqual(Object.keys(map), []);
 });

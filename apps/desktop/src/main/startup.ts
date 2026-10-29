@@ -1,6 +1,8 @@
-import { app, dialog, nativeTheme, protocol, session } from "electron";
+import { app, nativeTheme, protocol, session } from "electron";
 import { DesktopApplication } from "./app.js";
 import { APP_SCHEME_PRIVILEGES } from "./app-scheme.js";
+import { consumeBrowserBridgeHostToken } from "./browser-bridge-host-token.js";
+import { startHarnessResultRetentionSweep } from "./cost/harness-result-retention-sweep.js";
 import { handleActivateEvent } from "./lifecycle/app-lifecycle.js";
 import {
   createDeepLinkListeners,
@@ -12,7 +14,8 @@ import {
   handleUnhandledRejection,
   showStartupCrashDialog,
 } from "./lifecycle/error-handlers.js";
-import { applyMacOverlayWorkaround } from "./lifecycle/gpu-overlay-workaround.js";
+import { notifyFatalExit } from "./lifecycle/fatal-exit-notice.js";
+import { showNativeErrorBox } from "./lifecycle/native-error-box.js";
 import { createBeforeQuitHandler } from "./lifecycle/shutdown-lifecycle.js";
 import { migrateLegacyUserDataDirectory } from "./lifecycle/userdata-migration.js";
 import {
@@ -37,11 +40,17 @@ import {
 import { processExceptionTelemetryBridge } from "./telemetry/process-exception-telemetry-bridge.js";
 
 const sharedDialogDeps = {
-  showDialog: (title: string, body: string) => dialog.showErrorBox(title, body),
+  showDialog: showNativeErrorBox,
   getLogFilePath: () => getMainLogFilePath(),
 };
 
 export function run(): void {
+  // ISS-8412: before anything this process spawns can inherit it. The dev
+  // launcher hands the browser-bridge host token over the environment rather
+  // than in argv, and the environment is inherited by default — the db-host
+  // utilityProcess, and every CLI the Engineer gateway later runs, would each
+  // carry a copy of a credential that mints an authorized bridge host.
+  consumeBrowserBridgeHostToken();
   app.setName("Closedloop");
   if (process.platform === "linux") {
     app.commandLine.appendSwitch("class", "Closedloop");
@@ -60,19 +69,6 @@ export function run(): void {
     "startup",
     `Desktop launch: pid=${process.pid} platform=${process.platform}`
   );
-
-  // Suppress the macOS GPU overlay-mailbox error spam
-  // ("SharedImageManager::ProduceOverlay ... non-existent mailbox" /
-  // "skia_output_device_buffer_queue ... Invalid mailbox") emitted by recent
-  // Chromium (Electron 43) via `--disable-mac-overlays`. Command-line switches
-  // must be registered before the app `ready` event fires, so this runs at the
-  // very top of `run()`. See gpu-overlay-workaround.ts for the full rationale
-  // and citations (electron/electron#38023). darwin-only; no-ops elsewhere.
-  applyMacOverlayWorkaround({
-    commandLine: app.commandLine,
-    platform: process.platform,
-    log: (message) => gatewayLog.info("startup", message),
-  });
 
   // FEA-3132 (E5): single-instance lock. Multiple app instances sharing one
   // userData each fork their own db-host utilityProcess against the SAME SQLite
@@ -113,7 +109,7 @@ export function run(): void {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "invalid golden mode config";
-    dialog.showErrorBox("Closedloop golden mode configuration error", message);
+    showNativeErrorBox("Closedloop golden mode configuration error", message);
     // Golden mode never resolved, so there is no redirect to wait for: flush the
     // buffered launch lines into the real profile before exiting.
     initializeLoggingForCurrentProfile();
@@ -131,6 +127,14 @@ export function run(): void {
       migrateLegacyUserDataDirectory({
         appDataPath: app.getPath("appData"),
         userDataPath: app.getPath("userData"),
+        // ISS-8955: `appData` above is NOT redirected by `--user-data-dir` while
+        // `userData` is, so the migration needs the default it would otherwise
+        // have resolved in order to notice it is looking at someone else's
+        // profile. `app.getName()` is the same value `app.setName` set at the
+        // top of `run()`, which is what Electron joins onto `appData`. Pinned by
+        // `userdata-migration-wire.test.ts` — a literal here would silently
+        // disable the migration for every legacy install.
+        appName: app.getName(),
         log: (message) => gatewayLog.info("userdata-migration", message),
       });
     } catch (error) {
@@ -176,6 +180,11 @@ export function run(): void {
       flushTelemetry: () => processExceptionTelemetryBridge.flushTelemetry(),
       log: (msg) => gatewayLog.error("uncaught", msg),
       exit: (code) => app.exit(code),
+      // ISS-8776: `app.exit()` below skips `before-quit`, so the graceful
+      // shutdown that opens the db-host intentional-teardown window never runs.
+      // Tell the in-process supervisors directly, or they read this teardown's
+      // own child exits as crashes and re-fork into a dying process.
+      beginShutdown: notifyFatalExit,
       ...sharedDialogDeps,
     });
   });
@@ -187,6 +196,9 @@ export function run(): void {
       flushTelemetry: () => processExceptionTelemetryBridge.flushTelemetry(),
       log: (msg) => gatewayLog.warn("unhandled-rejection", msg),
       exit: (code) => app.exit(code),
+      // ISS-8776 — see the uncaughtException handler above. This is the branch
+      // the observed crash actually took: an unhandled `DbHostExitError`.
+      beginShutdown: notifyFatalExit,
       ...sharedDialogDeps,
     });
   });
@@ -234,10 +246,25 @@ export function run(): void {
       // CLOSEDLOOP_PROFILE_TRACE=1 on top of the profile dir; no-op otherwise.
       startMainContentTracing();
       installAppContentSecurityPolicy(session.defaultSession);
+      // ISS-7332 — expiry for retained raw harness result envelopes is owned by
+      // app lifetime, not by loop traffic. The store prunes on construction and
+      // on each retain, both driven by a loop finishing, so a user who stops
+      // running eligible loops keeps plaintext envelopes on disk past the 90-day
+      // window they were promised. Started after `ready` because the store
+      // resolves its directory through Electron's `app`; stopped on `will-quit`
+      // so the interval never outlives the app.
+      const harnessResultRetentionSweep = startHarnessResultRetentionSweep();
+      app.on("will-quit", () => harnessResultRetentionSweep.stop());
       void desktopApplication.boot().catch((error) => {
         const message =
           error instanceof Error ? error.message : "unknown startup error";
         gatewayLog.error("startup", `desktop boot failed: ${message}`);
+        // ISS-8776: the THIRD `app.exit()` in this file, and it skips
+        // `before-quit` exactly like the two process handlers above. `boot()`
+        // starts the capture stack (and with it the db-host fork) before its
+        // later awaits, so a rejection here can land while the child is live —
+        // reproducing the same "exited unexpectedly (code: 0)" re-fork loop.
+        notifyFatalExit();
         showStartupCrashDialog(
           "Closedloop failed to start",
           message,
@@ -285,15 +312,19 @@ export function run(): void {
       })
     );
 
-    app.on("window-all-closed", () => {
-      if (process.platform !== "darwin") {
-        app.quit();
-      }
-    });
+    // The Desktop app is tray-resident on every platform. Closing its only
+    // BrowserWindow releases the renderer while main-process services continue;
+    // the tray's explicit Quit action still enters the before-quit path above.
+    app.on("window-all-closed", () => undefined);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "unknown initialization error";
     gatewayLog.error("startup", `desktop initialization failed: ${message}`);
+    // ISS-8776: the fourth and last `app.exit()` here. Reached when
+    // construction itself threw, so a db-host is unlikely to be live — the call
+    // is a no-op with no hooks registered, and having every `app.exit()` in this
+    // file honor one contract is what stops the next one from forgetting.
+    notifyFatalExit();
     showStartupCrashDialog(
       "Closedloop failed to initialize",
       message,

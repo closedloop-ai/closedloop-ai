@@ -22,8 +22,8 @@
  */
 
 import assert from "node:assert/strict";
-import test from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { test } from "vitest";
 import { sweepExpiredSessions } from "../src/main/database/session-maintenance.js";
 import { OutboxStatus } from "../src/shared/sync-lane-contract.js";
 import { openTestPrisma } from "./prisma-test-utils.js";

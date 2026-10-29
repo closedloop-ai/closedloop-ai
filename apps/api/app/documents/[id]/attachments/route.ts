@@ -4,6 +4,7 @@ import {
   type CreateAttachmentResponse,
   type FileAttachment,
 } from "@repo/api/src/types/attachment";
+import { OperationKind } from "@repo/api/src/types/attribution-evidence";
 import { log } from "@repo/observability/log";
 import {
   attachmentUploadRateLimitResponse,
@@ -15,8 +16,13 @@ import {
   DOCUMENT_NOT_FOUND_ERROR,
   INVALID_INLINE_ATTACHMENT_UPLOAD_ERROR,
 } from "@/app/documents/attachments-service";
+import { documentAttachReceiptWrite } from "@/app/documents/document-attach-receipt";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
+import {
+  withOperationReceipt,
+  withOperationReceipts,
+} from "@/lib/operation-receipts/operation-receipt-recorder";
 import {
   badRequestResponse,
   errorResponse,
@@ -71,82 +77,93 @@ function isInlineAttachmentAttempt(
 export const POST = withAnyAuth<
   CreateAttachmentResponse,
   "/documents/[id]/attachments"
->(async ({ authMethod, clerkUserId, user }, request, params) => {
-  try {
-    const { id } = await params;
-    const diagnostics = await readCreateAttachmentDiagnostics(request);
-    const resolvedId = await resolveDocumentId(id, user.organizationId);
-    if (!resolvedId) {
-      if (isInlineAttachmentAttempt(diagnostics)) {
-        log.warn(
-          "[documents/attachments] Inline attachment upload document not found",
-          {
-            documentId: id,
-            ...diagnostics,
-            reason: "document_not_found",
+>(
+  withOperationReceipts(
+    OperationKind.Attach,
+    async ({ authMethod, clerkUserId, user }, request, params, receipts) => {
+      try {
+        const { id } = await params;
+        const diagnostics = await readCreateAttachmentDiagnostics(request);
+        const resolvedId = await resolveDocumentId(id, user.organizationId);
+        if (!resolvedId) {
+          if (isInlineAttachmentAttempt(diagnostics)) {
+            log.warn(
+              "[documents/attachments] Inline attachment upload document not found",
+              {
+                documentId: id,
+                ...diagnostics,
+                reason: "document_not_found",
+              }
+            );
           }
-        );
-      }
-      return notFoundResponse("Document");
-    }
+          return notFoundResponse("Document");
+        }
 
-    const { body, errorResponse: parseError } = await parseBody(
-      request,
-      createAttachmentValidator
-    );
-    if (parseError) {
-      if (isInlineAttachmentAttempt(diagnostics)) {
-        log.warn(
-          "[documents/attachments] Inline attachment upload validation rejected",
-          {
-            documentId: resolvedId,
-            ...diagnostics,
-            reason: "validation_rejected",
+        const { body, errorResponse: parseError } = await parseBody(
+          request,
+          createAttachmentValidator
+        );
+        if (parseError) {
+          if (isInlineAttachmentAttempt(diagnostics)) {
+            log.warn(
+              "[documents/attachments] Inline attachment upload validation rejected",
+              {
+                documentId: resolvedId,
+                ...diagnostics,
+                reason: "validation_rejected",
+              }
+            );
           }
+          return parseError;
+        }
+
+        const { filename, mimeType, purpose, sizeBytes } = body;
+
+        if (
+          authMethod === "api_key" &&
+          !(await isMcpAttachmentUploadEnabled({
+            clerkUserId,
+            userId: user.id,
+          }))
+        ) {
+          return forbiddenAttachmentUploadResponse();
+        }
+
+        const result = await attachmentsService.requestDirectUpload(
+          resolvedId,
+          user.organizationId,
+          user.id,
+          filename,
+          mimeType,
+          sizeBytes,
+          purpose,
+          receipts.whenRecording((tx) =>
+            receipts.record(tx, documentAttachReceiptWrite(resolvedId))
+          )
         );
+        if (result.ok === false) {
+          return mapAttachmentUploadFailure(result.error);
+        }
+
+        return successResponse(withOperationReceipt(result.value, receipts));
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === DOCUMENT_NOT_FOUND_ERROR
+        ) {
+          return notFoundResponse("Document");
+        }
+        if (
+          error instanceof Error &&
+          error.message === INVALID_INLINE_ATTACHMENT_UPLOAD_ERROR
+        ) {
+          return badRequestResponse(error.message);
+        }
+        return errorResponse("Failed to create attachment", error);
       }
-      return parseError;
     }
-
-    const { filename, mimeType, purpose, sizeBytes } = body;
-
-    if (
-      authMethod === "api_key" &&
-      !(await isMcpAttachmentUploadEnabled({
-        clerkUserId,
-        userId: user.id,
-      }))
-    ) {
-      return forbiddenAttachmentUploadResponse();
-    }
-
-    const result = await attachmentsService.requestDirectUpload(
-      resolvedId,
-      user.organizationId,
-      user.id,
-      filename,
-      mimeType,
-      sizeBytes,
-      purpose
-    );
-    if (result.ok === false) {
-      return mapAttachmentUploadFailure(result.error);
-    }
-
-    return successResponse(result.value);
-  } catch (error) {
-    if (error instanceof Error && error.message === DOCUMENT_NOT_FOUND_ERROR) {
-      return notFoundResponse("Document");
-    }
-    if (
-      error instanceof Error &&
-      error.message === INVALID_INLINE_ATTACHMENT_UPLOAD_ERROR
-    ) {
-      return badRequestResponse(error.message);
-    }
-    return errorResponse("Failed to create attachment", error);
-  }
-});
+  )
+);
 
 export const GET = withAnyAuth<FileAttachment[], "/documents/[id]/attachments">(
   async ({ user }, request, params) => {

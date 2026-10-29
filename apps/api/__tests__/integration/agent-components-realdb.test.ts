@@ -121,7 +121,6 @@ beforeAll(async () => {
       await db.sessionDetail.create({
         data: {
           artifactId,
-          userId: USER_ID,
           computeTargetId: COMPUTE_TARGET_ID,
           externalSessionId: extSession,
           harness: "claude",

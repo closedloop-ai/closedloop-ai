@@ -23,8 +23,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { after, afterEach, test } from "node:test";
-import { vi } from "vitest";
+import { afterAll, test } from "vitest";
 import { ProcessManager } from "../src/server/process-manager.js";
 
 // A real temp dir so the with-cwd tests pass assertPathAllowed.
@@ -32,12 +31,8 @@ const TEMP_DIR = realpathSync(
   mkdtempSync(path.join(os.tmpdir(), "pm-iss5299-"))
 );
 
-after(() => {
+afterAll(() => {
   rmSync(TEMP_DIR, { recursive: true, force: true });
-});
-
-afterEach(() => {
-  vi.restoreAllMocks();
 });
 
 function makeProcessManager(): ProcessManager {
@@ -110,113 +105,4 @@ test("exec captures numeric exit code from subprocess", async () => {
   const result = await pm.exec("/bin/sh", ["-c", "exit 3"]);
   assert.equal(result.exitCode, 3);
   assert.equal(result.stdout, "");
-});
-
-test("killProcessGroup(0) is a no-op — zero pid rejected before any signal", async () => {
-  const pm = makeProcessManager();
-  // !0 is true → early return, no SIGTERM sent
-  await assert.doesNotReject(() => pm.killProcessGroup(0, 0));
-});
-
-test("killProcessGroup(-1) is a no-op — negative pid rejected before any signal", async () => {
-  const pm = makeProcessManager();
-  // -1 < 1 is true → early return, no SIGTERM sent
-  await assert.doesNotReject(() => pm.killProcessGroup(-1, 0));
-});
-
-test("killProcessGroup stops after SIGTERM when the process group exits", async () => {
-  const signals: [number, string | number | undefined][] = [];
-  vi.spyOn(process, "kill").mockImplementation(
-    (pid: number, signal?: string | number) => {
-      signals.push([pid, signal]);
-      if (signal === 0) {
-        const error = new Error(
-          "process does not exist"
-        ) as NodeJS.ErrnoException;
-        error.code = "ESRCH";
-        throw error;
-      }
-      return true;
-    }
-  );
-
-  await makeProcessManager().killProcessGroup(42, 0);
-
-  assert.deepEqual(signals, [
-    [-42, "SIGTERM"],
-    [42, 0],
-  ]);
-});
-
-test("killProcessGroup escalates to SIGKILL while the process is running", async () => {
-  const signals: [number, string | number | undefined][] = [];
-  vi.spyOn(process, "kill").mockImplementation(
-    (pid: number, signal?: string | number) => {
-      signals.push([pid, signal]);
-      return true;
-    }
-  );
-
-  await makeProcessManager().killProcessGroup(42, 0);
-
-  assert.deepEqual(signals, [
-    [-42, "SIGTERM"],
-    [42, 0],
-    [-42, "SIGKILL"],
-  ]);
-});
-
-test("killProcessGroup propagates non-ESRCH signal failures", async () => {
-  vi.spyOn(process, "kill").mockImplementation(() => {
-    const error = new Error("operation not permitted") as NodeJS.ErrnoException;
-    error.code = "EPERM";
-    throw error;
-  });
-
-  await assert.rejects(
-    () => makeProcessManager().killProcessGroup(42, 0),
-    (error: NodeJS.ErrnoException) => error.code === "EPERM"
-  );
-});
-
-test("killProcessGroup tolerates a process group that already exited", async () => {
-  const signals: [number, string | number | undefined][] = [];
-  vi.spyOn(process, "kill").mockImplementation(
-    (pid: number, signal?: string | number) => {
-      signals.push([pid, signal]);
-      const error = new Error(
-        "process does not exist"
-      ) as NodeJS.ErrnoException;
-      error.code = "ESRCH";
-      throw error;
-    }
-  );
-
-  await assert.doesNotReject(() =>
-    makeProcessManager().killProcessGroup(42, 0)
-  );
-  assert.deepEqual(signals, [
-    [-42, "SIGTERM"],
-    [42, 0],
-  ]);
-});
-
-test("killProcessGroup propagates non-ESRCH process probes", async () => {
-  vi.spyOn(process, "kill").mockImplementation(
-    (_pid: number, signal?: string | number) => {
-      if (signal === 0) {
-        const error = new Error(
-          "operation not permitted"
-        ) as NodeJS.ErrnoException;
-        error.code = "EPERM";
-        throw error;
-      }
-      return true;
-    }
-  );
-
-  await assert.rejects(
-    () => makeProcessManager().killProcessGroup(42, 0),
-    (error: NodeJS.ErrnoException) => error.code === "EPERM"
-  );
 });

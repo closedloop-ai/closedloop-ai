@@ -2,8 +2,7 @@
 // Presentational mirror of packages/app/shared/lib/mentions.ts: the sandbox
 // cannot import that module (it pulls the collaboration matching package), so
 // the same caret/token rules are replicated here on the prototype's mock member
-// shape. Kept framework-free so the prototype's vitest suite can exercise the
-// caret-splice, token-replacement, and mention-resolution rules directly.
+// shape.
 
 import type { CommentAuthor } from "../mock";
 

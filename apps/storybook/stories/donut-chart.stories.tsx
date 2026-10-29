@@ -26,9 +26,9 @@ const partialOutcomeColors: Record<string, string> = Object.fromEntries(
 );
 
 const meta = {
-  title: "Design System/Data Display/Data Visualization/Donut Chart",
+  title: "Composites v1.0/Charts/Donut Chart",
   component: DonutChart,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "centered" },
   args: {
     data: donutData,
@@ -199,4 +199,46 @@ export const RedundantSliceTexturesSmallTile: Story = {
       </div>
     ),
   ],
+};
+
+/**
+ * ISS-9842: a ring whose `data` is a capped PREFIX of a larger population.
+ *
+ * The desktop's Local-mode "Tool usage share" keeps the top 20 tools of however
+ * many exist, so a ring drawn against the sum of those 20 overstates every
+ * slice. With `total` and `omittedCount` the arcs are drawn against the whole
+ * population and the remainder becomes a neutral "Other tools (N)" slice whose
+ * label carries the number of tools it folds. Here four of nine tools are
+ * shown: the four sum to 70 of 100 runs, so the residual is 30 runs across
+ * five tools and the share legend reads 30/20/12/8/30.
+ */
+export const WithPopulationResidual: Story = {
+  args: {
+    data: [
+      { key: "Bash", label: "Bash", value: 30 },
+      { key: "Read", label: "Read", value: 20 },
+      { key: "Edit", label: "Edit", value: 12 },
+      { key: "Grep", label: "Grep", value: 8 },
+    ],
+    omittedCount: 5,
+    otherSeriesLabel: "Other tools",
+    showSharePercent: true,
+    total: 100,
+  },
+};
+
+/**
+ * The same residual as the shipped tiles actually draw it (marisolashgrove
+ * review). `showSharePercent` is set on exactly one catalog tile
+ * (`chart:spendByOutcome`), so neither "Tool usage share" nor "Events by type"
+ * prints a percentage: on them the fix is the arc proportion plus the labelled
+ * "Other tools (5)" slice, with the legend showing counts only. The story above
+ * turns percentages on so the denominator is legible; this one is the shipped
+ * appearance.
+ */
+export const WithPopulationResidualAsShipped: Story = {
+  args: {
+    ...WithPopulationResidual.args,
+    showSharePercent: false,
+  },
 };

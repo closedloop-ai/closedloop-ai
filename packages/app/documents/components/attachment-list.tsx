@@ -1,6 +1,12 @@
 "use client";
 
-import type { FileAttachment } from "@repo/api/src/types/attachment";
+import {
+  AttachmentPurpose,
+  type FileAttachment,
+} from "@repo/api/src/types/attachment";
+import { INLINE_ATTACHMENT_BADGE_LABEL } from "@repo/app/documents/lib/attachment-visibility";
+import { formatAttachmentSize } from "@repo/app/documents/lib/format-attachment-size";
+import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { cn } from "@repo/design-system/lib/utils";
 import { DownloadIcon, FileIcon, Trash2Icon } from "lucide-react";
@@ -17,9 +23,11 @@ export type AttachmentListProps = {
 
 /**
  * Wrap-enabled list of attachment chips for artifact detail surfaces.
- * Image attachments link to their preview URL; every other file type
- * (`.md`, `.txt`, `.pdf`, `.csv`, …) is openable by clicking its filename
- * when an `onDownload` handler is provided, plus a dedicated download button.
+ * Every attachment gets a download button when an `onDownload` handler is
+ * provided — images included (ISS-8036), whose thumbnail links to a preview URL
+ * that only ever opened the image, never saved it. Non-image types
+ * (`.md`, `.txt`, `.pdf`, `.csv`, …) additionally make the filename itself
+ * clickable, since they have no thumbnail to click.
  */
 export function AttachmentList({
   attachments,
@@ -63,15 +71,19 @@ function AttachmentChip({
 }: Readonly<AttachmentChipProps>) {
   // On a touch pointer there is no hover to reveal the download / delete
   // actions, so `touch:opacity-100` keeps them visible; the mouse hover reveal
-  // is unchanged.
+  // is unchanged. `focus-visible:` does the same for the keyboard — these are
+  // focus stops, so without it tabbing lands on a control that renders nothing
+  // (WCAG 2.4.7).
   const actionClassName =
     actionVisibility === "always"
       ? undefined
-      : "opacity-0 touch:opacity-100 group-hover:opacity-100";
+      : "opacity-0 touch:opacity-100 focus-visible:opacity-100 group-hover:opacity-100";
 
-  // Non-image files have no inline preview, so clicking the filename opens
-  // (downloads) the file instead — this is what makes `.md`, `.txt`, `.pdf`,
-  // etc. attachments openable rather than dead text (FEA-1940).
+  // Non-image files have no thumbnail to click, so the filename itself becomes
+  // the affordance — this is what makes `.md`, `.txt`, `.pdf`, etc. attachments
+  // openable rather than dead text (FEA-1940). An image keeps its plain
+  // filename because its thumbnail is already the click target; the download
+  // button below serves both.
   const isFilenameClickable = !attachment.previewUrl && Boolean(onDownload);
 
   return (
@@ -111,7 +123,12 @@ function AttachmentChip({
       <span className="shrink-0 text-muted-foreground text-xs">
         {formatAttachmentSize(attachment.sizeBytes)}
       </span>
-      {!attachment.previewUrl && onDownload ? (
+      {attachment.purpose === AttachmentPurpose.Inline ? (
+        <Badge className="shrink-0" variant="muted">
+          {INLINE_ATTACHMENT_BADGE_LABEL}
+        </Badge>
+      ) : null}
+      {onDownload ? (
         <Button
           aria-label={`Download ${attachment.filename}`}
           className={cn("h-6 w-6", actionClassName)}
@@ -135,11 +152,4 @@ function AttachmentChip({
       ) : null}
     </div>
   );
-}
-
-function formatAttachmentSize(sizeBytes: number): string {
-  if (sizeBytes < 1024 * 1024) {
-    return `${Math.ceil(sizeBytes / 1024)} KB`;
-  }
-  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
 }

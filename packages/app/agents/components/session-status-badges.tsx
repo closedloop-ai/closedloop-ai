@@ -1,22 +1,20 @@
 "use client";
 
 import {
-  DISPLAYED_SESSION_STATUS,
   type DisplayedSessionStatus,
-  isDisplayOnlySessionStatus,
-  normalizeDisplayedSessionStatus,
+  foldToDisplayedSessionStatus,
   SESSION_STATUS,
 } from "@repo/api/src/types/session-status";
-import {
-  SESSION_STALE_TOOLTIP,
-  SESSION_STATUS_LABELS,
-  SESSION_UNKNOWN_TOOLTIP,
-} from "@repo/api/src/types/session-status-display";
+import { SESSION_STATUS_LABELS } from "@repo/api/src/types/session-status-display";
+import { UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY } from "@repo/api/src/types/universal-artifact-status-flag";
 import {
   CloudSyncDisclosure,
   getCloudSyncDisclosureCopy,
 } from "@repo/app/agents/components/sessions/cloud-sync-state-badge";
-import { resolveHarnessDisplayConfig } from "@repo/app/agents/lib/harness-labels";
+import {
+  resolveHarnessDisplayConfig,
+  resolveHonestHarnessDisplayConfig,
+} from "@repo/app/agents/lib/harness-labels";
 import {
   SESSION_STATUS_SYNC_BADGE_TEST_ID,
   SessionSyncPresentation,
@@ -26,22 +24,29 @@ import type {
   Harness,
   SessionStatus,
 } from "@repo/app/agents/lib/session-types";
-import { ToneBadge } from "@repo/design-system/components/ui/primitives/status-badge";
+import { ArtifactStatus as UniversalArtifactStatus } from "@repo/app/shared/components/artifact-status/artifact-status";
+import { artifactStatusLabel } from "@repo/app/shared/components/artifact-status/artifact-status-presentation";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { sessionStatusView } from "@repo/app/shared/lib/artifact-status-adapter";
+import { ArtifactStatusVariant } from "@repo/app/shared/lib/artifact-status-view-contract";
+import { AGENTS_SURFACE_HONESTY_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import {
+  STATUS_PULSE_RING_FOCUS_ORIGIN_HANDLERS,
+  STATUS_PULSE_RING_HOST_CLASS_NAME,
+  ToneBadge,
+} from "@repo/design-system/components/ui/primitives/status-badge";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
 import type { Tone } from "@repo/design-system/components/ui/types";
+import { cn } from "@repo/design-system/lib/utils";
 
 type StatusBadgeConfig = {
   label: string;
   tone: Tone;
   pulse?: boolean;
-  /** Hover copy explaining a pill whose label is a hedge rather than a state. */
-  tooltip?: string;
-  /** Set whenever `tooltip` is, since the tooltip is hover-only. */
-  ariaLabel?: string;
 };
 
 // Labels come from the canonical SESSION_STATUS_LABELS vocabulary (SSOT) so the
@@ -63,41 +68,8 @@ const sessionStatusConfig: Record<DisplayedSessionStatus, StatusBadgeConfig> = {
     label: SESSION_STATUS_LABELS[SESSION_STATUS.ERROR],
     tone: "danger",
   },
-  // ISS-4586: `waiting` is not a stored status — it is the DISPLAY value
-  // `normalizeDisplayedSessionStatus` preserves for a row awaiting input, so it
-  // needs a tone. ISS-4654 removed the `completed`/`abandoned` entries that used
-  // to sit here: both are retired from the vocabulary and their rows were
-  // collapsed to `inactive`, whose tone is already defined above.
-  [DISPLAYED_SESSION_STATUS.WAITING]: {
-    label: SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.WAITING],
-    tone: "accent",
-    pulse: true,
-  },
-  // ISS-4997 / ISS-4998: the two honest non-claims. Deliberately the quietest
-  // treatment in the set — `muted`, no pulse. Neither must read as an outcome
-  // (`danger` would claim a failure that may not have happened) and neither must
-  // read as liveness (the pulse is this file's one signal that a run is alive,
-  // and these are the absence of that claim).
-  //
-  // Both carry a tooltip AND an aria-label (#4324 review). A bare "Unknown" or
-  // "Stale" pill leaves the reader worse off than the wrong "Active" did: the
-  // old badge was at least a claim they could act on, whereas an unexplained
-  // one-word hedge invites the question it refuses to answer. Same shape as the
-  // sync presentation below — the aria-label LEADS with the visible label (WCAG
-  // 2.5.3 Label in Name) because a hover-only tooltip is unreachable for
-  // keyboard and touch users.
-  [DISPLAYED_SESSION_STATUS.UNKNOWN]: {
-    label: SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.UNKNOWN],
-    tone: "muted",
-    tooltip: SESSION_UNKNOWN_TOOLTIP,
-    ariaLabel: `${SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.UNKNOWN]}, ${SESSION_UNKNOWN_TOOLTIP}`,
-  },
-  [DISPLAYED_SESSION_STATUS.STALE]: {
-    label: SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.STALE],
-    tone: "muted",
-    tooltip: SESSION_STALE_TOOLTIP,
-    ariaLabel: `${SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.STALE]}, ${SESSION_STALE_TOOLTIP}`,
-  },
+  // `completed`/`abandoned`/`waiting`/`unknown`/`stale` all fold to one of the
+  // three tones above before this map is ever consulted, so none needs its own.
 };
 
 const agentStatusConfig: Record<AgentStatus, StatusBadgeConfig> = {
@@ -128,9 +100,12 @@ function resolveStatusConfig(
 }
 
 export function SessionStatusBadge({
+  artifactId,
   status,
   syncPresentation,
 }: {
+  /** Real artifact identity required by the universal status view contract. */
+  artifactId?: string;
   status: SessionStatus | string;
   /**
    * ISS-4774 / ISS-5036 / ISS-5279: how this row's transport state modulates the
@@ -147,32 +122,55 @@ export function SessionStatusBadge({
    */
   syncPresentation?: SessionSyncPresentation;
 }) {
+  const champion = useFeatureFlagEnabledOptional(
+    UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY
+  );
   // ISS-4586: fold to the DISPLAY vocabulary before the config lookup, so a
   // recognized alias reuses its canonical tone instead of rendering a red
-  // raw-string badge. `waiting` survives the fold on purpose — it is the
-  // awaiting-input sub-state the list projects and it needs its own tone.
-  // The mapping itself is `normalizeDisplayedSessionStatus`; do not restate it
-  // here (ISS-6581 — the sentence that used to, claiming an `abandoned` row
-  // renders muted "Inactive", outlived the fold that made it true).
-  //
-  // ISS-4997: an UNRECOGNIZED value still degrades to the in-flight "Active"
-  // here — the legacy fail-open default this batch dark-launches a replacement
-  // for.
-  //
-  // The DISPLAY-ONLY members (`unknown`, `stale`) are matched BEFORE that fold,
-  // never through it (#4324): `normalizeSessionStatus` deliberately fail-opens
-  // them to `active` for its other consumers, so routing them through it here
-  // would render the row mapper's honest "Stale" as a pulsing green "Active" —
-  // the exact lie the mapper just removed. Since ISS-5366 retired the
-  // `sessions-honest-unknown-states` gate ON, the mapper writes these values
-  // onto `status` for every user, so this branch is live, not dark.
-  const displayedStatus = isDisplayOnlySessionStatus(status)
-    ? status
-    : normalizeDisplayedSessionStatus(status);
+  // raw-string badge. An unrecognized value degrades to Active, the fail-open
+  // every fold in this vocabulary shares.
+  const displayedStatus = foldToDisplayedSessionStatus(status);
   const config = resolveStatusConfig(displayedStatus, sessionStatusConfig);
   const syncCopy = syncPresentation
     ? SYNC_PRESENTATION_COPY[syncPresentation]
     : null;
+  if (champion && artifactId) {
+    // ISS-10364 (operator ruling): an unparsable session status reads Active
+    // everywhere, so the champion is fed the folded displayed status only and
+    // never sees the raw value that would make it render Unknown.
+    const view = sessionStatusView(artifactId, displayedStatus);
+    const statusBadge = (
+      <UniversalArtifactStatus
+        variant={ArtifactStatusVariant.Badge}
+        view={view}
+      />
+    );
+    if (syncCopy) {
+      return (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              aria-label={`${artifactStatusLabel(view)}, ${syncCopy.ariaSuffix}`}
+              className={cn(
+                "inline-flex rounded-full border-0 bg-transparent p-0",
+                STATUS_PULSE_RING_HOST_CLASS_NAME
+              )}
+              data-session-sync-state={syncPresentation}
+              data-testid={SESSION_STATUS_SYNC_BADGE_TEST_ID}
+              type="button"
+              {...STATUS_PULSE_RING_FOCUS_ORIGIN_HANDLERS}
+            >
+              <span aria-hidden="true" className="flex">
+                {statusBadge}
+              </span>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{syncCopy.tooltip}</TooltipContent>
+        </Tooltip>
+      );
+    }
+    return statusBadge;
+  }
   if (syncCopy) {
     // ISS-5279: ONE pill, and it is the pill that was already there. ISS-4848
     // stacked a "Syncing" pill beside "Active"; ISS-5036 replaced "Active" with
@@ -223,24 +221,7 @@ export function SessionStatusBadge({
       </Tooltip>
     );
   }
-  // #4324: the two honest non-claims carry a tooltip + accessible name; every
-  // other status keeps the bare pill it has always rendered. A display-only
-  // status can never carry a `syncPresentation` — `resolveSessionSyncPresentation`
-  // refuses to derive one for a row displaying Unknown/Stale — so this branch and
-  // the one above cannot both want the tooltip slot.
-  return config.tooltip ? (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <ToneBadge
-          aria-label={config.ariaLabel}
-          label={config.label}
-          pulse={config.pulse}
-          tone={config.tone}
-        />
-      </TooltipTrigger>
-      <TooltipContent>{config.tooltip}</TooltipContent>
-    </Tooltip>
-  ) : (
+  return (
     <ToneBadge label={config.label} pulse={config.pulse} tone={config.tone} />
   );
 }
@@ -253,10 +234,22 @@ export function AgentStatusBadge({ status }: { status: AgentStatus | string }) {
 }
 
 export function HarnessBadge({ harness }: { harness?: Harness | null }) {
+  // ISS-5524 (ISS-4779 closed-by-default): the map behind the resolver below has
+  // no `Harness.Both` row, so a component used across more than one harness fell
+  // to the raw-value fallback and this badge rendered a lowercase `both` — the
+  // one place on the Agents page that did not say "Multiple harnesses". Read
+  // here because this is the component that swaps on it; `…Optional` because the
+  // badge also mounts in Storybook and in table tests with no flag provider,
+  // where the honest default is today's render.
+  const honestMultiHarnessLabel = useFeatureFlagEnabledOptional(
+    AGENTS_SURFACE_HONESTY_FEATURE_FLAG_KEY
+  );
   // #4480: the label + tone come from the hoisted `harness-labels` map, so the
   // Sessions "Group by" band header (which is React-free and cannot import this
   // module) names a harness the same word this badge does.
-  const config = resolveHarnessDisplayConfig(harness);
+  const config = honestMultiHarnessLabel
+    ? resolveHonestHarnessDisplayConfig(harness)
+    : resolveHarnessDisplayConfig(harness);
 
   return <ToneBadge label={config.label} tone={config.tone} />;
 }

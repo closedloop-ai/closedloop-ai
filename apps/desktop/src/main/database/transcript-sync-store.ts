@@ -20,6 +20,10 @@
 // `noBarrelFile` forbids re-exporting the runtime bindings through the types
 // module, which re-exports only the TYPES).
 import {
+  type TranscriptSkipReason,
+  toKnownTranscriptSkipReason,
+} from "@repo/api/src/types/transcript-skip-reason-constants";
+import {
   asTranscriptSyncStatus,
   emptyTranscriptStatusCounts,
   TranscriptSyncClass,
@@ -27,27 +31,49 @@ import {
   type TranscriptSyncStatusCounts,
 } from "../../shared/transcript-sync-status-contract.js";
 import {
+  isoAfter,
+  TRANSCRIPT_LANE_STALL_RETRY_MS,
   TRANSCRIPT_MAIN_FILE_KEY,
   TRANSCRIPT_OVERSIZED_DEAD_LETTER_PREFIX,
   type TranscriptFingerprint,
   type TranscriptMainBlobState,
   transcriptCursorMatchesComputeTarget,
 } from "../transcript-sync/transcript-sync-types.js";
+import type { SignedInUserIdentity } from "../util/user-identity.js";
 import type { Prisma } from "./generated/client.js";
 import type { DesktopPrisma } from "./prisma-client.js";
 import {
+  createTranscriptLaneRecoveryDelegates,
+  isAttributedEnvironmentPause,
+  isOpenToComputeTarget,
+  TERMINAL_SKIP_PAIR_SELECT,
+  type TerminalSkipPair,
+  type TranscriptLaneRecoveryStore,
+  uploadScopeWhere,
+} from "./transcript-lane-recovery-delegates.js";
+import {
+  FOREIGN_IDLE_STATE,
+  observedFileIdentity,
+  sessionIsForeignOwned,
+} from "./transcript-observe-gate.js";
+import {
   interleaveBackfillReady,
+  TRANSCRIPT_FINGERPRINT_SELECT,
   type TranscriptRow,
   toBigInt,
   toFingerprint,
 } from "./transcript-sync-rows.js";
 import {
   CLEARED_CLOUD_ACK,
+  CLEARED_TERMINAL_SKIP_REASON,
+  CLEARED_UPLOAD_LEASE,
   revivedRowData,
+  scopeKeepingRevivedRowData,
   settleUpdateData,
   strandedCloudAckWhere,
   strandedCursorWhere,
   TRANSCRIPT_ROW_SELECT,
+  type TranscriptDeadInput,
   type TranscriptFailureInput,
   type TranscriptSettle,
   type TranscriptUploadedInput,
@@ -79,6 +105,16 @@ export type TranscriptObserveInput = {
    * unredacted archive objects are rewritten through the redaction lane.
    */
   currentComputeTargetId?: string | null;
+  /**
+   * ISS-7096: the signed-in identity pair, or null/absent when unknown. When
+   * present, an observation for a session ANOTHER pair owns never queues an
+   * upload — on a multi-environment device that transcript belongs to the
+   * other environment's cloud. The file is still recorded (idle) so discovery
+   * stays honest, and the sweep re-observes it once its own environment is
+   * active. A NULL-owner or locally-absent session is never treated as
+   * foreign (the ISS-6168 boot claim may still stamp it as ours).
+   */
+  signedInIdentity?: SignedInUserIdentity | null;
   now: string;
 };
 
@@ -92,7 +128,7 @@ export type TranscriptRowIdentity = {
   fileKey: string;
 };
 
-export type TranscriptSyncStore = {
+export type TranscriptSyncStore = TranscriptLaneRecoveryStore & {
   get(
     externalSessionId: string,
     fileKey: string
@@ -117,9 +153,13 @@ export type TranscriptSyncStore = {
    * is served by the leading column of `idx_transcript_sync_state_status_next`
    * and materializes no rows in the heap-capped db-host worker. Correctness: a
    * newest-100 window is a SAMPLE biased toward recently-touched files, so a
-   * device with thousands of older dead-lettered rows reported a clean lane —
-   * the footer missed the failure it exists to report. Counts describe the
-   * whole population.
+   * device whose oldest rows are the ones in a reportable state reported a
+   * clean lane — the footer missed the condition it exists to report. ISS-5348
+   * argued that from `dead` rows; ISS-7094 retired `dead` as a footnote driver,
+   * so read it on the states the footer still reports (a long-backed-off
+   * `failed` row is as old and as invisible to a newest-N window). This census
+   * still counts every status regardless — the footer stopped reading one, the
+   * aggregate did not stop reporting it. Counts describe the whole population.
    *
    * Every {@link TranscriptSyncStatus} key is always present; a status with no
    * rows is `0`. A row carrying an unknown/corrupt `status` string is counted
@@ -137,13 +177,29 @@ export type TranscriptSyncStore = {
   listMainBlobStates(
     externalSessionIds: string[]
   ): Promise<TranscriptMainBlobState[]>;
-  listReady(now: string, limit: number): Promise<TranscriptFingerprint[]>;
+  /**
+   * Due `queued`/`failed` rows, live first. ISS-9884: scoped in the query to
+   * rows open to `computeTargetId` ({@link uploadScopeWhere}), so a revived
+   * pause is listed only to the target that acknowledged it.
+   */
+  listReady(
+    now: string,
+    limit: number,
+    computeTargetId: string | null
+  ): Promise<TranscriptFingerprint[]>;
   observe(input: TranscriptObserveInput): Promise<TranscriptFingerprint>;
+  /**
+   * Claim the row `uploading` for an attempt under `computeTargetId`. ISS-9884:
+   * refused — `false`, nothing written — when the row is a revived pause owed to
+   * another target, decided in the same write turn as the claim. An absent row
+   * still rejects with P2025.
+   */
   markUploading(
     externalSessionId: string,
     fileKey: string,
-    now: string
-  ): Promise<void>;
+    now: string,
+    computeTargetId: string
+  ): Promise<boolean>;
   /** Settle a file with no actionable work (missing / no complete line yet). */
   markIdle(
     externalSessionId: string,
@@ -178,13 +234,17 @@ export type TranscriptSyncStore = {
    * without a retry — used for the oversize cap. Unlike `recordFailure` this is
    * a deliberate, non-retryable skip, not a consecutive-failure dead-letter.
    * `planObservation` re-queues it only if the file later changes.
+   *
+   * ISS-9884: `terminalSkipReason` is the machine-readable half — the
+   * {@link TranscriptSkipReason} the cloud acknowledged — persisted alongside
+   * the free-text `reason` so the desktop-local Sessions verdict can tell an
+   * environmental give-up from a hard terminal instead of calling every `dead`
+   * row permanently failed. `null` when the cloud acknowledged a terminal this
+   * build cannot name; the read path folds that to `failedPermanent`.
+   * `terminalSkipComputeTargetId` is the target whose cloud gave that
+   * acknowledgement, the only one the lane recovery may revive the row under.
    */
-  markDead(
-    externalSessionId: string,
-    fileKey: string,
-    reason: string,
-    now: string
-  ): Promise<void>;
+  markDead(input: TranscriptDeadInput): Promise<void>;
   recordUploaded(input: TranscriptUploadedInput): Promise<void>;
   recordFailure(input: TranscriptFailureInput): Promise<void>;
   /**
@@ -202,8 +262,9 @@ export type TranscriptSyncStore = {
    * each row applies via a zero-row-safe `updateMany`, so a missing row (concurrent
    * prune) is a 0-count no-op — NOT a P2025 throw that would strand every later
    * settle in the batch. A dropped settle is harmless anyway: the row is still
-   * `uploading` (the claim landed per-file) and `requeueStale` revives it on the
-   * next boot, so the server-authoritative cursor re-plans it.
+   * `uploading` (the claim landed per-file) and the sweep's lease reclaim
+   * revives it once the claim expires, so the server-authoritative cursor
+   * re-plans it.
    */
   recordBatchSettled(settles: TranscriptSettle[]): Promise<void>;
   /**
@@ -212,8 +273,9 @@ export type TranscriptSyncStore = {
    * When `recordBatchSettled` fails (a db-host error mid-flush), every file in
    * that batch is left `uploading` — and `uploading` is invisible to
    * `listReady`, so nothing in the running process ever re-arms them. The only
-   * thing that did was `requeueStale`, which is boot-only: a single transient
-   * flush failure stranded a whole batch until the next app restart. That is a
+   * thing that did was the sweeper's reclaim, which was boot-latched at the
+   * time: a single transient flush failure stranded a whole batch until the
+   * next app restart (ISS-7097 has since made that reclaim recurring). That is a
    * silent hole in the eventual-consistency guarantee, so the drain now closes
    * it while it is still running.
    *
@@ -225,7 +287,8 @@ export type TranscriptSyncStore = {
    *
    * Deliberately does NOT touch the retry ladder (`retryCount`,
    * `missingSourceCount`, `nextAttemptAt`, `lastError`) — mirroring
-   * `requeueStale`. The UPLOAD did not fail here; only the settle write did, so
+   * {@link TranscriptSyncStore.requeueExpiredUploadLeases}. The UPLOAD did not
+   * fail here; only the settle write did, so
    * advancing a failure counter would punish the wrong thing.
    *
    * Returns the number of rows revived (0 when every settle actually landed).
@@ -235,12 +298,33 @@ export type TranscriptSyncStore = {
     now: string
   ): Promise<number>;
   /**
-   * Boot recovery: reset rows left in `uploading` by a crash/force-quit back to
-   * `queued`. Safe on start because no upload is in flight in a fresh process,
-   * and `listReady`/`planObservation` would otherwise never re-pick them.
+   * ISS-7097: reclaim rows whose durable `uploading` claim has EXPIRED, i.e.
+   * whose settle was lost (crash, force-quit, a rejected settle write, a flush
+   * that exhausted its in-process recovery). Such a row is invisible to both
+   * `listReady` (which selects `queued`/`failed`) and `planObservation` (which
+   * deliberately leaves an in-flight upload alone), so without this it waits for
+   * the next app start.
+   *
+   * RECURRING, not boot-only — the ISS-4647 lesson applied to `uploading`. A
+   * lost settle is not a boot-only condition, and its predecessor `requeueStale`
+   * could not simply be made recurring: it matched EVERY `uploading` row, so a
+   * live tick would have reset an overlapping in-process upload's own claim
+   * (`db-host-exit-consumer-recovery.test.ts` pins that). The lease is what makes
+   * recurring safe — a fresh claim does not match.
+   *
+   * `claimableFrom` is the instant this lane started holding claims — anything
+   * stamped earlier belongs to a dead process and is reclaimed without waiting
+   * out `leaseMs`, which is what preserves the immediate crash recovery the
+   * boot-only predecessor gave.
+   *
+   * Does not touch the retry ladder: the upload did not fail, its settle did.
    * Returns the number of rows revived.
    */
-  requeueStale(now: string): Promise<number>;
+  requeueExpiredUploadLeases(input: {
+    now: string;
+    leaseMs: number;
+    claimableFrom: string;
+  }): Promise<number>;
   /**
    * ISS-4621: boot recovery for STRANDED transcript blobs — rows that settled to
    * `idle` having never uploaded a single byte (`syncedByteOffset === 0`). Such a
@@ -264,8 +348,8 @@ export type TranscriptSyncStore = {
    * Scoped tightly so it never disturbs a healthy row: `status = idle` AND the
    * row holds no bytes THE CURRENT COMPUTE TARGET's cloud can read. A
    * `queued`/`uploading`/`failed`/`dead` row is already owned by a lane. One
-   * atomic `updateMany` (no read-then-write) resets the backoff/counters exactly
-   * like `requeueStale`. Returns the rows re-armed.
+   * atomic `updateMany` (no read-then-write) resets the backoff/counters the
+   * same way the other re-arms do. Returns the rows re-armed.
    *
    * ISS-4647: "holds no readable bytes" is NOT just `syncedByteOffset = 0`. A
    * positive cursor can belong to a PREVIOUS compute target (or to the
@@ -364,6 +448,17 @@ type PlannedObservation = Pick<
    * re-queue (permanent loss of the appended lines).
    */
   advanceObserved: boolean;
+  /**
+   * ISS-9884: the terminal-skip pair's part of the update. CLEARED only when
+   * this observation re-queues the row and either the file changed or the row
+   * was not already owed an upload (`idle` or `dead`): that re-queue ends the
+   * terminal the pair recorded. KEPT in every other case: a row this observation
+   * does not re-queue, which includes an attributed `environment_unavailable`
+   * pause a cursor rewrite alone leaves dead, and a cursor rewrite of a row
+   * already `queued` or `failed`, where a revived pause's recorded target is the
+   * scope its upload is owed under.
+   */
+  terminalSkipUpdate: typeof CLEARED_TERMINAL_SKIP_REASON | typeof KEPT;
 };
 
 /**
@@ -378,12 +473,22 @@ type PlannedObservation = Pick<
  * partial trailing line is not on a newline boundary) settles to `idle` and
  * never flaps back to `queued`. An in-flight (`uploading`) row is never
  * disturbed; a dead-lettered row re-queues only on a real change (one more
- * chance for a grown file), and a changed/new
- * file resets the backoff.
+ * chance for a grown file), and a changed/new file resets the backoff.
+ *
+ * ISS-8689: that reset is no longer unconditional. New bytes say nothing about
+ * a cloud that is down, so a revive does not pull an open environmental
+ * stand-down forward — see {@link revivedNextAttemptAt}.
+ *
+ * ISS-9884: a cursor rewrite alone does not re-queue a pause the lane give-up
+ * attributed to a compute target ({@link isAttributedEnvironmentPause}). A
+ * target switch is no evidence the environment recovered, and the re-queue would
+ * clear the pair and open the row to whichever target observed it; the pause
+ * stands for its own target's recovery door. A file change still re-queues it.
  */
 function planObservation(
   existing: TranscriptFingerprint | null,
-  input: TranscriptObserveInput
+  input: TranscriptObserveInput,
+  pair: TerminalSkipPair | null
 ): PlannedObservation {
   const cursorNeedsRewrite =
     input.currentComputeTargetId != null &&
@@ -399,12 +504,18 @@ function planObservation(
   // always true and every sweep re-queues every file (FEA-2834).
   const observedMtimeMs =
     input.mtimeMs == null ? null : Math.trunc(input.mtimeMs);
-  const changed =
+  const fileChanged =
     !existing ||
-    cursorNeedsRewrite ||
     existing.lastMtimeMs !== observedMtimeMs ||
     existing.lastSize !== input.size ||
     existing.sourcePath !== input.sourcePath;
+  const changed =
+    fileChanged ||
+    (cursorNeedsRewrite &&
+      !isAttributedEnvironmentPause(existing?.status, pair));
+  const owedUpload =
+    existing?.status === TranscriptSyncStatus.Queued ||
+    existing?.status === TranscriptSyncStatus.Failed;
 
   // `uploading` is left alone (an upload is in flight); every other status
   // re-queues iff the file changed. When `changed` is false the row keeps its
@@ -426,9 +537,17 @@ function planObservation(
     // FEA-3555: a reappeared/changed file (`resetBackoff`) restarts the
     // missing-source run; otherwise carry the isolated counter forward.
     missingSourceCount: resetBackoff ? 0 : (existing?.missingSourceCount ?? 0),
-    nextAttemptAt: resetBackoff ? null : (existing?.nextAttemptAt ?? null),
+    nextAttemptAt: revivedNextAttemptAt(
+      existing,
+      resetBackoff,
+      cursorNeedsRewrite
+    ),
     lastError: resetBackoff ? null : (existing?.lastError ?? null),
     advanceObserved: needsSync,
+    terminalSkipUpdate:
+      needsSync && (fileChanged || !owedUpload)
+        ? CLEARED_TERMINAL_SKIP_REASON
+        : KEPT,
   };
 }
 
@@ -443,11 +562,14 @@ export function createTranscriptSyncStore(
   ): Promise<TranscriptFingerprint | null> {
     const row = await prisma.client.transcriptSyncState.findUnique({
       where: { externalSessionId_fileKey: { externalSessionId, fileKey } },
+      select: TRANSCRIPT_FINGERPRINT_SELECT,
     });
     return row ? toFingerprint(row) : null;
   }
 
   return {
+    // ISS-9884: the lane-recovery slice (give-up stamp + paused-row revival).
+    ...createTranscriptLaneRecoveryDelegates(prisma),
     get,
     listRecent(limit: number): Promise<TranscriptFingerprint[]> {
       // ISS-4710 / ISS-4716: status reads run on the READER pool (`prisma.read`)
@@ -462,6 +584,7 @@ export function createTranscriptSyncStore(
         const rows = await reader.transcriptSyncState.findMany({
           orderBy: NEWEST_FIRST_ORDER_BY,
           take: limit,
+          select: TRANSCRIPT_FINGERPRINT_SELECT,
         });
         return rows.map((row) => toFingerprint(row));
       });
@@ -506,6 +629,7 @@ export function createTranscriptSyncStore(
           syncedComputeTargetId: true,
           cloudUploadedAt: true,
           cloudUploadedComputeTargetId: true,
+          terminalSkipReason: true,
         },
       });
       return rows.map((row) => ({
@@ -517,14 +641,24 @@ export function createTranscriptSyncStore(
         syncedComputeTargetId: row.syncedComputeTargetId,
         cloudUploadedAt: row.cloudUploadedAt,
         cloudUploadedComputeTargetId: row.cloudUploadedComputeTargetId,
+        // ISS-9884: an unconstrained TEXT column holding a grow-only enum, so
+        // narrow it here rather than casting — a label written by a newer
+        // build degrades to `null`, which the verdict reads as the
+        // conservative hard terminal.
+        terminalSkipReason: toKnownTranscriptSkipReason(row.terminalSkipReason),
       }));
     },
-    listReady(now: string, limit: number): Promise<TranscriptFingerprint[]> {
+    listReady(
+      now: string,
+      limit: number,
+      computeTargetId: string | null
+    ): Promise<TranscriptFingerprint[]> {
       const readyWhere = {
         status: {
           in: [TranscriptSyncStatus.Queued, TranscriptSyncStatus.Failed],
         },
         OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
+        AND: [uploadScopeWhere(computeTargetId)],
       };
       // ISS-4710: the drain's claim-discovery read runs on the READER pool
       // (`prisma.read`), NOT the writer connection (`prisma.client`). During a
@@ -545,6 +679,7 @@ export function createTranscriptSyncStore(
           where: { ...readyWhere, syncClass: TranscriptSyncClass.Live },
           orderBy: NEWEST_FIRST_ORDER_BY,
           take: limit,
+          select: TRANSCRIPT_FINGERPRINT_SELECT,
         });
         const remaining = limit - live.length;
         let backfill: TranscriptRow[] = [];
@@ -559,11 +694,13 @@ export function createTranscriptSyncStore(
               where: { ...readyWhere, syncClass: TranscriptSyncClass.Backfill },
               orderBy: NEWEST_FIRST_ORDER_BY,
               take: remaining,
+              select: TRANSCRIPT_FINGERPRINT_SELECT,
             }),
             reader.transcriptSyncState.findMany({
               where: { ...readyWhere, syncClass: TranscriptSyncClass.Backfill },
               orderBy: [{ lastMtimeMs: "asc" }, { updatedAt: "asc" }],
               take: remaining,
+              select: TRANSCRIPT_FINGERPRINT_SELECT,
             }),
           ]);
           backfill = interleaveBackfillReady(newest, oldest, remaining);
@@ -589,19 +726,58 @@ export function createTranscriptSyncStore(
       const row = await prisma.write(async (client) => {
         const existingRow = await client.transcriptSyncState.findUnique({
           where,
+          select: {
+            ...TRANSCRIPT_FINGERPRINT_SELECT,
+            ...TERMINAL_SKIP_PAIR_SELECT,
+          },
         });
         const existing = existingRow ? toFingerprint(existingRow) : null;
-        const next = planObservation(existing, input);
+        // ISS-7096: a foreign-owned session's transcript never queues here —
+        // and an already-`queued`/`failed` row is WITHDRAWN to idle, because a
+        // row enqueued before the identity switch would otherwise still drain
+        // to the wrong environment's cloud (cr-81036; the session lane parks
+        // and the invocation lane releases for the same reason — `listReady`
+        // selects by status alone). An `uploading` row is left for the sweep's
+        // lease reclaim to re-queue and the next observation to withdraw. A
+        // first observation records the file as idle so discovery is honest
+        // without owing an upload to the wrong environment.
+        if (
+          input.signedInIdentity &&
+          (await sessionIsForeignOwned(
+            client,
+            input.externalSessionId,
+            input.signedInIdentity
+          ))
+        ) {
+          if (existingRow) {
+            if (
+              existing?.status === TranscriptSyncStatus.Queued ||
+              existing?.status === TranscriptSyncStatus.Failed
+            ) {
+              return client.transcriptSyncState.update({
+                where,
+                data: { ...FOREIGN_IDLE_STATE, updatedAt: input.now },
+                select: TRANSCRIPT_FINGERPRINT_SELECT,
+              });
+            }
+            return existingRow;
+          }
+          return client.transcriptSyncState.create({
+            data: {
+              ...observedFileIdentity(input, mtime, size),
+              syncClass: input.syncClass,
+              ...FOREIGN_IDLE_STATE,
+              createdAt: input.now,
+              updatedAt: input.now,
+            },
+            select: TRANSCRIPT_FINGERPRINT_SELECT,
+          });
+        }
+        const next = planObservation(existing, input, existingRow);
         return client.transcriptSyncState.upsert({
           where,
           create: {
-            externalSessionId: input.externalSessionId,
-            fileKey: input.fileKey,
-            sourceHarness: input.sourceHarness,
-            sourcePath: input.sourcePath,
-            sourcePathHash: input.sourcePathHash,
-            lastMtimeMs: mtime,
-            lastSize: size,
+            ...observedFileIdentity(input, mtime, size),
             status: next.status,
             syncClass: next.syncClass,
             retryCount: next.retryCount,
@@ -626,6 +802,7 @@ export function createTranscriptSyncStore(
             nextAttemptAt: next.nextAttemptAt,
             lastError: next.lastError,
             updatedAt: input.now,
+            ...next.terminalSkipUpdate,
             ...(next.advanceObserved
               ? {
                   sourcePath: input.sourcePath,
@@ -644,35 +821,52 @@ export function createTranscriptSyncStore(
       });
       return toFingerprint(row);
     },
-    async markUploading(
+    markUploading(
       externalSessionId: string,
       fileKey: string,
-      now: string
-    ): Promise<void> {
-      await prisma.write((client) =>
-        client.transcriptSyncState.update({
-          where: { externalSessionId_fileKey: { externalSessionId, fileKey } },
-          data: { status: TranscriptSyncStatus.Uploading, updatedAt: now },
+      now: string,
+      computeTargetId: string
+    ): Promise<boolean> {
+      const where = transcriptRowWhere(externalSessionId, fileKey);
+      // ISS-9884: read the scope and claim in ONE write turn, so no revival or
+      // settle can re-scope the row between the check and the claim. An absent
+      // row reads null and falls through to the `update`, which rejects P2025.
+      return prisma.write(async (client) => {
+        const scope = await client.transcriptSyncState.findUnique({
+          where,
+          select: { terminalSkipComputeTargetId: true },
+        });
+        if (
+          scope &&
+          !isOpenToComputeTarget(
+            scope.terminalSkipComputeTargetId,
+            computeTargetId
+          )
+        ) {
+          return false;
+        }
+        await client.transcriptSyncState.update({
+          where,
+          // ISS-7097: the claim's durable half. `status` alone said an upload was
+          // in flight but not since WHEN, so a lost settle was indistinguishable
+          // from a live 90 MiB transfer and nothing could safely reclaim it on a
+          // tick. Stamped in the SAME write as the status so the two can never
+          // disagree.
+          data: {
+            status: TranscriptSyncStatus.Uploading,
+            uploadingSince: now,
+            updatedAt: now,
+          },
           select: TRANSCRIPT_ROW_SELECT,
-        })
-      );
+        });
+        return true;
+      });
     },
-    async markDead(
-      externalSessionId: string,
-      fileKey: string,
-      reason: string,
-      now: string
-    ): Promise<void> {
+    async markDead(input: TranscriptDeadInput): Promise<void> {
       await prisma.write((client) =>
         client.transcriptSyncState.update({
-          where: transcriptRowWhere(externalSessionId, fileKey),
-          data: settleUpdateData({
-            kind: "dead",
-            externalSessionId,
-            fileKey,
-            reason,
-            now,
-          }),
+          where: transcriptRowWhere(input.externalSessionId, input.fileKey),
+          data: settleUpdateData({ ...input, kind: "dead" }),
           select: TRANSCRIPT_ROW_SELECT,
         })
       );
@@ -786,16 +980,54 @@ export function createTranscriptSyncStore(
               fileKey: identity.fileKey,
             })),
           },
-          data: { status: TranscriptSyncStatus.Queued, updatedAt: now },
+          data: {
+            status: TranscriptSyncStatus.Queued,
+            updatedAt: now,
+            ...CLEARED_UPLOAD_LEASE,
+          },
         })
       );
       return result.count;
     },
-    async requeueStale(now: string): Promise<number> {
+    async requeueExpiredUploadLeases(input: {
+      now: string;
+      leaseMs: number;
+      claimableFrom: string;
+    }): Promise<number> {
+      const expiredBefore = isoAfter(input.now, -input.leaseMs);
       const result = await prisma.write((client) =>
         client.transcriptSyncState.updateMany({
-          where: { status: TranscriptSyncStatus.Uploading },
-          data: { status: TranscriptSyncStatus.Queued, updatedAt: now },
+          where: {
+            status: TranscriptSyncStatus.Uploading,
+            // A NULL lease is EXPIRED, not exempt. Two row populations reach
+            // here that way: pre-migration rows, whose claim predates the
+            // column entirely (and which are exactly the already-wedged rows
+            // this fix exists to heal), and any row whose lease write was lost.
+            // Neither can be a live upload — `markUploading` stamps the lease in
+            // the same write that takes the claim.
+            OR: [
+              { uploadingSince: null },
+              { uploadingSince: { lte: expiredBefore } },
+              // A claim stamped BEFORE this lane existed belongs to a previous
+              // process, so it is abandoned by definition and need not wait out
+              // the lease. Without this arm a crash-then-relaunch was strictly
+              // WORSE than before the lease: the old boot recovery re-armed
+              // such a row immediately, while a lease-only predicate makes a
+              // crash two minutes into an upload sit unreachable for the rest of
+              // the hour. Expressed as a claimable-from instant rather than a
+              // first-sweep latch, because a latch would race the 5s drain tick
+              // that may already have taken a legitimate claim of its own.
+              { uploadingSince: { lt: input.claimableFrom } },
+            ],
+          },
+          // Deliberately does NOT touch the retry ladder: losing a settle is not
+          // the file failing to upload, so advancing a failure counter would
+          // punish the wrong thing (same stance as `requeueUnsettledBatch`).
+          data: {
+            status: TranscriptSyncStatus.Queued,
+            updatedAt: input.now,
+            ...CLEARED_UPLOAD_LEASE,
+          },
         })
       );
       return result.count;
@@ -853,11 +1085,14 @@ export function createTranscriptSyncStore(
       // permanently-stranded rows. Same "revived" reset the redrives use (a
       // revocation is not a failure, so the ladder restarts clean). `updateMany`
       // on the unique identity: atomic, and a vanished row is a 0-count no-op
-      // rather than a throw.
+      // rather than a throw. ISS-9884: minus the upload-scope clear — the
+      // attempt was in flight, so a target on the row is a revived pause's scope,
+      // and a revocation (a consent change, or the target switching under the
+      // attempt) must not hand that transcript to the next target.
       const result = await prisma.write((client) =>
         client.transcriptSyncState.updateMany({
           where: { externalSessionId, fileKey },
-          data: revivedRowData(now),
+          data: scopeKeepingRevivedRowData(now),
         })
       );
       return result.count;
@@ -914,3 +1149,67 @@ export function createTranscriptSyncStore(
     },
   };
 }
+
+/**
+ * ISS-8689: when a changed file may retry, given the lane's own stand-down.
+ *
+ * A revive normally clears `nextAttemptAt` — new bytes deserve an attempt, and
+ * outside a stall that is the whole story. But an OPEN lane-wide stall means the
+ * cloud is the thing that is broken, and PRD-699 Appendix A is explicit that an
+ * environmental failure "would fail identically" for every item: local bytes
+ * cannot fix it. Clearing the deadline there re-POSTs on the FILE's change
+ * cadence — the ~5 minute live-activity debounce — which is the 835-request
+ * storm ISS-8689 was filed for, and no backoff the lane computes can survive it.
+ *
+ * So the deadline survives a file change while a stall is open, EXCEPT when the
+ * whole wait falls inside the stall's OPENING RUNG. That exception is the point
+ * rather than a rounding: a first-rung wait is a cloud blip that has most likely
+ * already passed, and the cost of trying is one request.
+ *
+ * That test is deliberately anchored to `laneStalledSince`, not to how much of
+ * the wait is LEFT. A remaining-wait test decays into its own exception: an hour
+ * the server asked for is longer than the floor for fifty-five minutes and then
+ * shorter, so an observation in that last window would cut a `Retry-After: 3600`
+ * short by five minutes — honoring a minimum only until it is nearly satisfied.
+ * Anchored to the stall origin the answer is the same at every observation, so a
+ * wait the schedule or the server pushed past the first rung can never decay
+ * into being clearable.
+ *
+ * A CURSOR rewrite is the one revive that is not about the bytes: the row is
+ * re-queued because the compute target changed, so the next request is not the
+ * one that failed. That is not the storm — a target switch is a sign-in, not a
+ * keystroke — and holding the new target behind the old one's stand-down would
+ * make re-pointing the app take up to a full rung to have any effect.
+ *
+ * Deliberately does NOT touch `laneStalledSince`. That column is the origin the
+ * 24h ceiling measures from, and an observation is not an event in the run: a
+ * revive that reset it would let a file the user keeps writing to push its own
+ * terminal instant forward indefinitely, which is the invariant-5 violation in
+ * `sync/AGENTS.md`. Only a settle ends a stall run.
+ */
+function revivedNextAttemptAt(
+  existing: TranscriptFingerprint | null,
+  resetBackoff: boolean,
+  cursorNeedsRewrite: boolean
+): string | null {
+  const pending = existing?.nextAttemptAt ?? null;
+  if (!resetBackoff) {
+    return pending;
+  }
+  if (cursorNeedsRewrite) {
+    return null;
+  }
+  if (!(existing?.laneStalledSince && pending)) {
+    return null;
+  }
+  const openingRungEndsMs =
+    Date.parse(existing.laneStalledSince) + TRANSCRIPT_LANE_STALL_RETRY_MS;
+  const pendingMs = Date.parse(pending);
+  if (!(Number.isFinite(openingRungEndsMs) && Number.isFinite(pendingMs))) {
+    return null;
+  }
+  return pendingMs > openingRungEndsMs ? pending : null;
+}
+
+/** An update fragment that writes nothing: the columns keep their values. */
+const KEPT = {} as const;

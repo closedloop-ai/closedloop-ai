@@ -14,13 +14,14 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
 import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
 import {
   GitGatewayErrorCategory,
   GitHookType,
 } from "@closedloop-ai/loops-api/friendly-error";
+import { afterEach, describe, test } from "vitest";
 import { OperationDispatcher } from "../src/server/operation-dispatcher.js";
+import { getResolvedGitPath } from "../src/server/operations/binary-path-overrides.js";
 import { registerGitActionRoutes } from "../src/server/operations/git-action.js";
 import { registerGitBranchWorktreeRoutes } from "../src/server/operations/git-branch-worktree.js";
 import { registerGitBranchesRoutes } from "../src/server/operations/git-branches.js";
@@ -31,7 +32,6 @@ import {
   resolveRepoFullNameAsync,
 } from "../src/server/operations/git-helpers.js";
 import { registerGitWorktreeRoutes } from "../src/server/operations/git-worktree.js";
-import { getResolvedGitPath } from "../src/server/operations/symphony-loop.js";
 import type { ExecResult } from "../src/server/process-manager.js";
 import {
   createGitOpTempDirs,
@@ -571,7 +571,7 @@ describe("git-helpers.ts — pure function null-return branches", () => {
     // The repo is on "main"; asking for a nonexistent branch exercises the
     // condition `line.endsWith("/nonexistent-feature") === false` at line 87,
     // then returns null after the loop.
-    const result = findWorktreeForBranch(repoPath, "nonexistent-feature");
+    const result = await findWorktreeForBranch(repoPath, "nonexistent-feature");
     assert.equal(result, null);
   });
 });

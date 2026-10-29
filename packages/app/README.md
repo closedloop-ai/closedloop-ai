@@ -22,7 +22,7 @@ Surface-agnostic application code shared between the Next.js web shell
   port), `query` (QueryClient factory), `lib` (pure utilities), `hooks` (generic
   UI-state hooks), `components`, `storybook` (story/test harness),
   `observability`.
-- `<feature>/` — `tags`, `documents`, `loops`, `projects`, `github`, `chat`, …
+- `<feature>/` — `tags`, `documents`, `projects`, `github`, …
 
 ## Migration (PLN-810) — files that stay in `apps/app`
 
@@ -36,13 +36,12 @@ ported to `@repo/app`:
   versa.
 - `lib/navigation/next-adapter.tsx` — the FEA-1509 navigation adapter (stays by
   design; the shell mounts it).
-- `lib/desktop-command-signing/*` — command signing (security-critical,
-  local-only); `hooks/queries/use-public-keys.ts` is part of the same flow.
-- Compute-target code — `hooks/queries/use-compute-targets`,
-  `use-compute-target-status-stream`, `use-agent-onboarding` (consumes targets),
-  and `components/compute-target-popover`. Managing compute targets is a
-  web-app/control-plane concern: the desktop app *is* a compute target, so it
-  never enumerates or selects them. Web-only by nature, not deferred.
+- `hooks/queries/use-public-keys.ts` — command signing (security-critical,
+  local-only).
+- Compute-target code — `hooks/queries/use-compute-targets`. Managing compute
+  targets is a web-app/control-plane concern: the desktop app *is* a compute
+  target, so it never enumerates or selects them. Web-only by nature, not
+  deferred.
 
 ### Excluded — removed with the Engineer/Desktop surface
 
@@ -51,21 +50,10 @@ Per the FEA-1510 directive: do not port anything in (or coupled to) an
 `engineer/` tree.
 
 - `lib/engineer/*` — Engineer feature (security-critical, local FS/process).
-- `lib/git/*`, `lib/system-check/*` — Engineer-feature subtrees.
-- The chat **shell + session machinery** that couples to Engineer: the
-  `components/chat/*` UI (drawer, panel, slash commands), `hooks/chat/*` session
-  hooks (`use-chat-session` etc. reach into `lib/engineer/*`, route-local
-  `comment-context`, and `env`), `lib/chat/{chat-markdown,chat-utils}` (import
-  `lib/engineer/*`, `lib/git/*`), and the server-side `lib/chat/runner-token/*`
-  (Clerk auth, `next/server`). The surface-agnostic chat **core** — stream/state
-  reducers, NDJSON `stream-utils`, context builders, `default-models`,
-  `mcp-instructions`, `build-section`, and the leaf presentational components —
-  ported to `@repo/app/chat/` (shared with the non-Engineer document-chat path).
-- `lib/run-loop-launcher.ts`, `lib/diff-viewer-theme.ts` — Engineer-coupled.
-- `lib/markdown.tsx` — imports the excluded `lib/engineer/*`.
-- `lib/desktop-installer-script.ts`, `lib/desktop-managed-onboarding.ts`,
-  `lib/desktop-provisioning-platform.ts` — surface-agnostic and individually
-  portable (each has colocated tests), **but** consumed only by Desktop
+- `lib/git/*` — Engineer-feature subtree.
+- `lib/diff-viewer-theme.ts` — Engineer-coupled.
+- `lib/desktop-installer-script.ts` and `lib/desktop-provisioning-platform.ts`:
+  surface-agnostic and individually portable (each has colocated tests), **but** consumed only by Desktop
   onboarding/provisioning flows that go away with the Desktop surface. Deferred
   as throwaway risk; revisit only if Desktop onboarding outlives the Engineer
   removal.
@@ -103,10 +91,6 @@ no `NavigationProvider`. So the components migrated here
 shell**; making them function on desktop needs the semantic/named-route
 view-state seam (FEA-1518), where the caller names a destination and each
 surface maps it (web → href, desktop → a `navId`/drill-down).
-
-Note: `use-loops` is **not** an auth-seam item — its blocker is the
-`run-loop-launcher` + `lib/desktop-command-signing` + `lib/engineer` coupling
-(see Excluded), not `useUser`.
 
 ## React Native adapter contract (FEA-3872 / FEA-3811 Phase 6 / PLN-1458)
 

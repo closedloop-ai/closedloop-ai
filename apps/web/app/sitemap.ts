@@ -1,20 +1,16 @@
+import { siteUrl } from "@repo/seo/site-url";
 import type { MetadataRoute } from "next";
 import { blogPosts } from "@/lib/blog";
 import { locales, localize } from "@/lib/site";
 
-function getBaseUrl() {
-  const productionUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+export default function sitemap(): MetadataRoute.Sitemap {
+  const baseUrl = siteUrl(process.env.VERCEL_PROJECT_PRODUCTION_URL);
 
-  if (productionUrl) {
-    const protocol = productionUrl.startsWith("https") ? "https" : "http";
-    return new URL(`${protocol}://${productionUrl}`);
+  // Every entry is an absolute URL, so with no base there is nothing to list.
+  if (!baseUrl) {
+    return [];
   }
 
-  return new URL("http://localhost:3001");
-}
-
-export default function sitemap(): MetadataRoute.Sitemap {
-  const baseUrl = getBaseUrl();
   const now = new Date();
   const entries = new Map<string, MetadataRoute.Sitemap[number]>();
 

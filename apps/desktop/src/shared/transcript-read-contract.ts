@@ -8,7 +8,7 @@
  * transcript file by id; main authorizes and mints the signed S3 URL itself (via
  * the read route, with the first-party session token), streams the bytes into a
  * local cache, and returns an opaque same-origin `app://renderer/transcripts/…`
- * URL the renderer can `fetch()` under the unchanged `connect-src 'self' app:`.
+ * URL the renderer can `fetch()` with no transcript origin in `connect-src`.
  *
  * Per AGENTS.md, values that cross the main/renderer boundary live in a shared
  * module so the two sides can't drift — the main handler

@@ -22,8 +22,8 @@
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { describe, test } from "node:test";
 import ts from "typescript6";
+import { describe, test } from "vitest";
 import { createPostBootMaintenance } from "../src/main/dashboard/post-boot-maintenance.js";
 import { SKILL_SHADOW_INVENTORY_REPAIR_OP } from "../src/main/database/skill-shadow-inventory-repair-boundary.js";
 import { forEachNode, parseTypeScriptFile } from "./helpers/ts-ast.js";
@@ -73,16 +73,16 @@ describe("ISS-5260 post-boot chain runs the inventory repair before the rebuild"
 describe("ISS-5260 the repair store op is registered in the db host", () => {
   // The chain invokes by KEY, and an unregistered key throws
   // `db-host store op not found` only at runtime, on a real boot — the recording
-  // double above would stay green through a rename. `db-host-worker.ts` cannot be
-  // imported here (it wires `process.parentPort` at module scope), so the
-  // registration is pinned structurally against the resolved AST, exactly as
+  // double above would stay green through a rename. The registration is pinned
+  // structurally against the resolved AST, exactly as
   // `post-boot-maintenance-wire.test.ts` pins the runtime wire.
-  test("db-host-worker registers the key the boundary invokes", () => {
+  //
+  // ISS-8246 M1 moved the store-op table out of `db-host-worker.ts` and onto the
+  // store thread. The op did not change and neither did this contract — only its
+  // owning file — so the guard follows the subject rather than being retired.
+  test("the store-op table registers the key the boundary invokes", () => {
     const source = parseTypeScriptFile(
-      join(
-        import.meta.dirname,
-        "../src/main/database/db-host/db-host-worker.ts"
-      )
+      join(import.meta.dirname, "../src/main/database/db-host/db-store-ops.ts")
     );
     let registered = false;
     forEachNode(source, (node) => {
@@ -96,7 +96,7 @@ describe("ISS-5260 the repair store op is registered in the db host", () => {
     });
     assert.ok(
       registered,
-      `db-host-worker.ts must register the "${SKILL_SHADOW_INVENTORY_REPAIR_OP}" store op — the maintenance chain invokes it by key, and an unregistered key throws only on a real boot`
+      `db-store-ops.ts must register the "${SKILL_SHADOW_INVENTORY_REPAIR_OP}" store op — the maintenance chain invokes it by key, and an unregistered key throws only on a real boot`
     );
   });
 });

@@ -74,7 +74,7 @@ import { branchSelectedPullRequestFilesService } from "./branch-selected-pull-re
 const BRANCH_ID = "11111111-1111-4111-8111-111111111111";
 const ORGANIZATION_ID = "22222222-2222-4222-8222-222222222222";
 const USER_ID = "33333333-3333-4333-8333-333333333333";
-const REPOSITORY_FULL_NAME = "closedloop-ai/example-repo";
+const REPOSITORY_FULL_NAME = "closedloop-ai/closedloop-ai";
 const PULL_REQUEST_NUMBER = 4471;
 const BASE_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
@@ -131,7 +131,7 @@ describe("branchSelectedPullRequestFilesService", () => {
           id: BRANCH_ID,
           organizationId: ORGANIZATION_ID,
           type: "BRANCH",
-          branch: { deletedAt: null },
+          branch: { isNot: null },
         }),
       })
     );
@@ -144,14 +144,14 @@ describe("branchSelectedPullRequestFilesService", () => {
       {
         organizationId: ORGANIZATION_ID,
         userId: USER_ID,
-        target: { owner: "closedloop-ai", repo: "example-repo" },
+        target: { owner: "closedloop-ai", repo: "closedloop-ai" },
       },
       expect.any(Function)
     );
     expect(mocks.getEvidence).toHaveBeenCalledWith(
       OCTOKIT,
       "closedloop-ai",
-      "example-repo",
+      "closedloop-ai",
       PULL_REQUEST_NUMBER,
       expect.any(AbortSignal)
     );
@@ -199,6 +199,117 @@ describe("branchSelectedPullRequestFilesService", () => {
       )
     ).resolves.toBeNull();
     expect(mocks.runBranchViewRead).not.toHaveBeenCalled();
+  });
+
+  it.each([`${REPOSITORY_FULL_NAME}/extra`, "closedloop-ai"])(
+    "returns null for the structurally invalid identity %s rather than reading its first two segments (ISS-7548)",
+    async (repositoryFullName) => {
+      // The row and the query agree on the name, so the selection matches and
+      // the parse is what rejects. Truncating `owner/repo/extra` to `owner/repo`
+      // would fetch a DIFFERENT repository's PR files and return them as this
+      // branch's diff.
+      mocks.artifactFindFirst.mockResolvedValueOnce(
+        branchRow({ repositoryFullName })
+      );
+
+      await expect(
+        branchSelectedPullRequestFilesService.getFiles(
+          ORGANIZATION_ID,
+          USER_ID,
+          BRANCH_ID,
+          { repositoryFullName, pullRequestNumber: PULL_REQUEST_NUMBER }
+        )
+      ).resolves.toBeNull();
+      expect(mocks.runBranchViewRead).not.toHaveBeenCalled();
+    }
+  );
+
+  it("fails closed when Product eligibility disappears during context hydration", async () => {
+    mocks.branchHasCloudEligibility
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+
+    await expect(
+      branchSelectedPullRequestFilesService.getFiles(
+        ORGANIZATION_ID,
+        USER_ID,
+        BRANCH_ID,
+        filesQuery()
+      )
+    ).resolves.toBeNull();
+    expect(mocks.runBranchViewRead).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when Product eligibility is revoked after files provider success", async () => {
+    mockFinalEligibilityRevoked();
+
+    await expect(
+      branchSelectedPullRequestFilesService.getFiles(
+        ORGANIZATION_ID,
+        USER_ID,
+        BRANCH_ID,
+        filesQuery()
+      )
+    ).resolves.toBeNull();
+    expect(mocks.getEvidence).toHaveBeenCalledTimes(1);
+    expect(mocks.branchHasCloudEligibility).toHaveBeenCalledTimes(3);
+  });
+
+  it("fails closed when Product eligibility is revoked after diff provider success", async () => {
+    mockFinalEligibilityRevoked();
+
+    await expect(
+      branchSelectedPullRequestFilesService.getDiff(
+        ORGANIZATION_ID,
+        USER_ID,
+        BRANCH_ID,
+        diffQuery()
+      )
+    ).resolves.toBeNull();
+    expect(mocks.getContent).toHaveBeenCalledTimes(1);
+    expect(mocks.releaseContent).toHaveBeenCalledTimes(1);
+    expect(mocks.branchHasCloudEligibility).toHaveBeenCalledTimes(3);
+  });
+
+  it("fails closed when Product eligibility is revoked after a typed access failure", async () => {
+    mocks.runBranchViewRead.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        reason: GitHubAccessDenialReason.RateLimited,
+        retryAfterSeconds: 30,
+      },
+    });
+    mockFinalEligibilityRevoked();
+
+    await expect(
+      branchSelectedPullRequestFilesService.getFiles(
+        ORGANIZATION_ID,
+        USER_ID,
+        BRANCH_ID,
+        filesQuery()
+      )
+    ).resolves.toBeNull();
+    expect(mocks.runBranchViewRead).toHaveBeenCalledTimes(1);
+    expect(mocks.branchHasCloudEligibility).toHaveBeenCalledTimes(3);
+  });
+
+  it("fails closed when Product eligibility is revoked after a typed evidence failure", async () => {
+    mocks.getEvidence.mockResolvedValueOnce({
+      status: SelectedPullRequestEvidenceAvailability.Unavailable,
+      reason: SelectedPullRequestEvidenceUnavailableReason.ProviderTimedOut,
+    });
+    mockFinalEligibilityRevoked();
+
+    await expect(
+      branchSelectedPullRequestFilesService.getFiles(
+        ORGANIZATION_ID,
+        USER_ID,
+        BRANCH_ID,
+        filesQuery()
+      )
+    ).resolves.toBeNull();
+    expect(mocks.getEvidence).toHaveBeenCalledTimes(1);
+    expect(mocks.branchHasCloudEligibility).toHaveBeenCalledTimes(3);
   });
 
   it("authorizes an exact persisted PR even when default selection is ambiguous", async () => {
@@ -320,6 +431,27 @@ describe("branchSelectedPullRequestFilesService", () => {
       reason: SelectedPullRequestEvidenceUnavailableReason.StaleRevision,
     });
     expect(mocks.getContent).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when Product eligibility is revoked after stale-revision projection", async () => {
+    mockFinalEligibilityRevoked();
+
+    await expect(
+      branchSelectedPullRequestFilesService.getDiff(
+        ORGANIZATION_ID,
+        USER_ID,
+        BRANCH_ID,
+        {
+          ...filesQuery(),
+          path: "file.ts",
+          baseSha: "c".repeat(40),
+          headSha: HEAD_SHA,
+        }
+      )
+    ).resolves.toBeNull();
+    expect(mocks.getEvidence).toHaveBeenCalledTimes(1);
+    expect(mocks.getContent).not.toHaveBeenCalled();
+    expect(mocks.branchHasCloudEligibility).toHaveBeenCalledTimes(3);
   });
 
   it("reads matching immutable file content with the bounded application limit", async () => {
@@ -464,6 +596,13 @@ function filesQuery() {
     repositoryFullName: REPOSITORY_FULL_NAME,
     pullRequestNumber: PULL_REQUEST_NUMBER,
   };
+}
+
+function mockFinalEligibilityRevoked(): void {
+  mocks.branchHasCloudEligibility
+    .mockResolvedValueOnce(true)
+    .mockResolvedValueOnce(true)
+    .mockResolvedValueOnce(false);
 }
 
 function acquisitionKey() {

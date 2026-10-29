@@ -50,8 +50,8 @@ describe("synced session attribution — repository identity (ISS-4996)", () => 
   });
 
   it("preserves a well-formed remote verbatim", () => {
-    expect(parseWithRepositoryFullName("closedloop-ai/example-repo")).toBe(
-      "closedloop-ai/example-repo"
+    expect(parseWithRepositoryFullName("closedloop-ai/closedloop-ai")).toBe(
+      "closedloop-ai/closedloop-ai"
     );
   });
 
@@ -63,25 +63,28 @@ describe("synced session attribution — repository identity (ISS-4996)", () => 
     ["a local-path remote", "my projects/repo"],
     ["a gitolite remote", "~user/repo"],
     ["a non-ASCII self-hosted owner", "Grüne/repo"],
-    ["a single-segment name", "example-repo"],
-  ])("keeps %s — the normalizer is permissive by design, not an owner/repo guard", (_label, value) => {
-    // Two different reasons live in this table, so keep them apart.
-    //
-    // The three OWNER/REPO rows are values the producer really can emit:
-    // `resolveRepoFullName` — `git-helpers.ts` in the desktop gateway's
-    // privileged operations tree — captures the one-slash tail of ANY origin
-    // remote, so a local-path, gitolite, or non-ASCII owner resolves for real
-    // users. Nulling them here would erase a repository that genuinely resolved
-    // and desync the stored value from the Repository facet.
-    //
-    // The SINGLE-SEGMENT row is not one of those: that resolver's match
-    // requires an owner/repo slash, so it can never produce a slashless name.
-    // It is here because this schema is a permissive pass-through, not an
-    // owner/repo guard — it must not invent a rejection rule the producer does
-    // not enforce, and must not silently null a value some other or older
-    // writer already stored.
-    expect(parseWithRepositoryFullName(value)).toBe(value);
-  });
+    ["a single-segment name", "closedloop-ai"],
+  ])(
+    "keeps %s — the normalizer is permissive by design, not an owner/repo guard",
+    (_label, value) => {
+      // Two different reasons live in this table, so keep them apart.
+      //
+      // The three OWNER/REPO rows are values the producer really can emit:
+      // `resolveRepoFullName` — `git-helpers.ts` in the desktop gateway's
+      // privileged operations tree — captures the one-slash tail of ANY origin
+      // remote, so a local-path, gitolite, or non-ASCII owner resolves for real
+      // users. Nulling them here would erase a repository that genuinely resolved
+      // and desync the stored value from the Repository facet.
+      //
+      // The SINGLE-SEGMENT row is not one of those: that resolver's match
+      // requires an owner/repo slash, so it can never produce a slashless name.
+      // It is here because this schema is a permissive pass-through, not an
+      // owner/repo guard — it must not invent a rejection rule the producer does
+      // not enforce, and must not silently null a value some other or older
+      // writer already stored.
+      expect(parseWithRepositoryFullName(value)).toBe(value);
+    }
+  );
 
   it("still accepts an absent repositoryFullName", () => {
     expect(parseWithRepositoryFullName(null)).toBeNull();

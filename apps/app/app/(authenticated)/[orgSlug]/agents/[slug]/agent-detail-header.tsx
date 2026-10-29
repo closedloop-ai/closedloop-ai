@@ -50,7 +50,10 @@ export function AgentDetailHeader({
 
   return (
     <Header
-      breadcrumbs={[{ href: `/${orgSlug}/agents`, label: "Agents" }, { label }]}
+      breadcrumbs={[
+        { href: `/${orgSlug}/agents`, label: "Agentic Components" },
+        { label },
+      ]}
       suppressPageHeading
     />
   );

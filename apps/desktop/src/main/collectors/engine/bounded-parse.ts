@@ -1,35 +1,5 @@
+import type { ParsePolicy } from "../../parse-policy/parse-policy.js";
 import type { Harness, NormalizedSession } from "../types.js";
-
-/**
- * ISS-4444: default per-source wall-clock bound for the historical parse await.
- *
- * The boot-import loop `await`s `parseSource(source)` once per transcript. The
- * ISS-4410 fix bounded the *write* (`importSession`); this is the sibling bound
- * for the *parse*. Two real failure modes never THROW, so the loop's existing
- * try/catch dead-letter `continue` never fires and the whole 1545-source import
- * wedges at `1/1545`:
- *
- * 1. A catastrophic-regex-backtrack / CPU-spin inside a parser on a pathological
- *    transcript — the parse promise never settles, and the parser pegs a CPU
- *    core indefinitely.
- * 2. (The import-write hang — bounded separately by ISS-4410.)
- *
- * A `setTimeout` alone cannot preempt a synchronous CPU-spin in the SAME isolate.
- * In production `parseSource` runs in the Electron utility-process worker turn
- * (`historicalParseRunner`), which is separately abandonable and killable — so the
- * manager can move on even while the worker turn is still spinning, and (via the
- * optional `onTimeout` abort hook) signal the worker to kill that turn so the pegged
- * core is reclaimed. When the runner is absent (tests, golden mode) the parse runs
- * in-process and this bound cannot preempt a synchronous spin; it still lets the
- * loop advance once the turn yields (the residual is documented on the manager).
- *
- * Generous enough that a legitimately large single-transcript parse completes well
- * within it. Tests pin it small; `null` disables the bound (restores the prior
- * unbounded await). 90 seconds — comfortably under the 5-minute utility-process
- * worker timeout so the manager gives up (and abandons/aborts the turn) before the
- * worker's own kill fires.
- */
-export const HISTORICAL_PARSE_TIMEOUT_MS = 90_000;
 
 /**
  * ISS-4572 (whitlockk / T9 review): the multiple of the dispatch bound used as the
@@ -70,7 +40,9 @@ export type BoundedParseOutcome =
  */
 export type BoundedParseInvoker = (
   source: string,
-  onDispatch: () => void
+  onDispatch: () => void,
+  /** ISS-12552: the policy captured for this source's parse and import. */
+  parsePolicy?: ParsePolicy
 ) => Promise<NormalizedSession[]>;
 
 /**

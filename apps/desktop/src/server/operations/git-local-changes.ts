@@ -4,9 +4,9 @@ import path from "node:path";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import type { ProcessManager } from "../process-manager.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";
+import { getResolvedGitPathAsync } from "./binary-path-overrides.js";
 import { parseBody } from "./parse-body.js";
 import { json } from "./response-utils.js";
-import { getResolvedGitPath } from "./symphony-loop.js";
 import { expandHome } from "./symphony-utils.js";
 
 export const GitLocalChangesRoute = {
@@ -778,7 +778,7 @@ async function gitRead(
   args: string[]
 ): Promise<GitReadResult> {
   const result = await processManager.exec(
-    getResolvedGitPath(),
+    await getResolvedGitPathAsync(),
     args,
     repoPath,
     {

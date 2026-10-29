@@ -71,15 +71,12 @@ describe("admitComponentKey", () => {
     );
   });
 
-  it.each([
-    ["/..."],
-    ["/…"],
-    ["/"],
-    ["//"],
-    ["   "],
-  ])("rejects the placeholder %j", (key) => {
-    expect(admitComponentKey(AgentComponentKind.Command, key)).toBeNull();
-  });
+  it.each([["/..."], ["/…"], ["/"], ["//"], ["   "]])(
+    "rejects the placeholder %j",
+    (key) => {
+      expect(admitComponentKey(AgentComponentKind.Command, key)).toBeNull();
+    }
+  );
 
   it("does not touch a non-command kind, even a slash-leading key", () => {
     // A skill keyed on `/name` is a legitimate identity and none of this

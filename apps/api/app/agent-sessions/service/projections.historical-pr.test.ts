@@ -36,7 +36,7 @@ vi.mock("@repo/observability/telemetry/metrics", async () => {
   return telemetryModuleMock();
 });
 
-const REPO = "closedloop-ai/example-repo";
+const REPO = "closedloop-ai/closedloop-ai";
 const VERIFIED_AT = new Date("2026-07-26T09:01:00.000Z");
 const MERGED_AT = new Date("2026-07-26T09:00:00.000Z");
 // FEA-4317 (whitlockk review): the PR-opened timestamp. Present only when a producer
@@ -356,46 +356,39 @@ describe("agentSessionsService historical merged-PR projection", () => {
               slug: "SES-TWO",
               project: null,
               sourceLinks: [
-                // ISS-4768: the session AUTHORED both PRs on the reused branch —
-                // one CREATED link each, which is the shape a two-PR session
-                // actually produces. Previously only #2 was linked and #1 rode in
-                // on the branch's historical set alone; that is branch-inherited
-                // attribution, not authorship, and the ISS-4768 gate now drops it
-                // (see "does not surface a blob PR the session only inherited from
-                // its branch"). Linking #1 keeps this test on its real subject:
-                // each authored PR resolving to its OWN verified state.
-                reusedBranchSourceLink({
-                  prNumber: 1,
-                  current: currentPrDetail({
-                    number: 2,
-                    title: "Newer open PR",
-                    prState: PullRequestState.Open,
-                  }),
-                  historical: [
-                    historicalPrDetail({
-                      number: 1,
-                      title: "Historical merged PR",
-                      prState: PullRequestState.Merged,
-                      mergedAt: MERGED_AT,
+                {
+                  ...reusedBranchSourceLink({
+                    prNumber: 1,
+                    current: currentPrDetail({
+                      number: 3,
+                      title: "Incidental current PR",
+                      prState: PullRequestState.Open,
                     }),
-                  ],
-                }),
-                reusedBranchSourceLink({
-                  prNumber: 2,
-                  current: currentPrDetail({
-                    number: 2,
-                    title: "Newer open PR",
-                    prState: PullRequestState.Open,
+                    historical: [
+                      historicalPrDetail({
+                        number: 1,
+                        title: "Historical merged PR",
+                        prState: PullRequestState.Merged,
+                        mergedAt: MERGED_AT,
+                      }),
+                      historicalPrDetail({
+                        number: 2,
+                        title: "Historical open PR",
+                        prState: PullRequestState.Open,
+                      }),
+                    ],
                   }),
-                  historical: [
-                    historicalPrDetail({
-                      number: 1,
-                      title: "Historical merged PR",
-                      prState: PullRequestState.Merged,
-                      mergedAt: MERGED_AT,
-                    }),
-                  ],
-                }),
+                  metadata: {
+                    linkKind: SessionArtifactLinkKind.SessionBranch,
+                    linkKinds: [SessionArtifactLinkKind.SessionPrSet],
+                    confidence: 1,
+                    prRefs: [1, 2].map((prNumber) => ({
+                      repositoryFullName: REPO,
+                      prNumber,
+                      relationTypes: [SessionPrRelationType.Created],
+                    })),
+                  },
+                },
               ],
             },
           }),
@@ -413,6 +406,7 @@ describe("agentSessionsService historical merged-PR projection", () => {
     expect(prs).toHaveLength(2);
     const byNum = new Map(prs.map((pr) => [pr.num, pr]));
     expect(byNum.get(1)?.status).toBe(SessionPrLifecycleStatus.Merged);
+    expect(byNum.has(3)).toBe(false);
     expect(byNum.get(2)?.status).toBe(SessionPrLifecycleStatus.Open);
     expect(result.items[0]?.prsMerged).toBe(1);
   });

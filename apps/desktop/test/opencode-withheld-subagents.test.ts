@@ -20,7 +20,7 @@
  */
 import assert from "node:assert/strict";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, test } from "vitest";
 import { createOpencodeCollector } from "../src/main/collectors/opencode/opencode-collector.js";
 import type { OpencodeWithheldSubagentReport } from "../src/main/collectors/opencode/opencode-withheld-subagents.js";
 import { buildWithheldSubagentRoot } from "../src/main/collectors/opencode/opencode-withheld-subagents.js";

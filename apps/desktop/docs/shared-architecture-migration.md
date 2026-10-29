@@ -2,24 +2,24 @@
 
 **Source:** [FEA-1516](https://app.closedloop.ai/closedloop-ai/features/FEA-1516) · [PLN-848](https://app.closedloop.ai/closedloop-ai/implementation-plans/PLN-848) · [PRD-430 FR6](https://app.closedloop.ai/closedloop-ai/prds/PRD-430) (US-090, AC-090.1)
 **Workspace commit at initial categorization:** `2b16f47a6b5f2c3eb52a15a0db58d3607c92a069`
-**Doc lifecycle:** Living document. Updated by feature PRs whenever a renderer route adopts (or deliberately defers) shared `@closedloop-ai/design-system` components.
+**Doc lifecycle:** Living document. Updated by feature PRs whenever a renderer route adopts (or deliberately defers) shared `@repo/design-system` components.
 
 ---
 
 ## What this is
 
-A per-route inventory of the desktop renderer's adoption of shared components from `@closedloop-ai/design-system` (workspace dep), with a sequencing rationale for which routes adopt first vs. later.
+A per-route inventory of the desktop renderer's adoption of shared components from `@repo/design-system` (workspace dep), with a sequencing rationale for which routes adopt first vs. later.
 
-The desktop renderer (`apps/desktop/src/renderer/`) and the web app (`apps/app/`) share UI primitives through `@closedloop-ai/design-system` as a workspace package. This doc identifies which renderer routes have started adoption, which should follow next, and which are deferred until upstream work lands.
+The desktop renderer (`apps/desktop/src/renderer/`) and the web app (`apps/app/`) share UI primitives through `@repo/design-system` as a workspace package. This doc identifies which renderer routes have started adoption, which should follow next, and which are deferred until upstream work lands.
 
 There is no longer an automated per-export drift report: the static parity-drift detector (`apps/desktop/scripts/check-design-system-drift.mjs`) was retired ahead of the TypeScript 7 migration (it was a TS-compiler-API consumer, and its one hard signal duplicated `tsc`). This doc is now the source of truth for adoption — track the per-route narrative here.
 
 ## Foundations already in place
 
-- `apps/desktop/src/renderer/main.tsx` wraps the app in `DesignSystemProvider` from `@closedloop-ai/design-system`.
-- `apps/desktop/vite.renderer.config.ts` chunks `@closedloop-ai/design-system` as `vendor-ds`.
-- The Turbo task graph (`turbo.json`) declares `desktop#build` / `desktop#test` / `desktop#typecheck` with `dependsOn: ["@closedloop-ai/design-system#build", ...]` — a change in the design-system invalidates desktop tasks via the standard `--filter=...[origin/main]` pattern.
-- Tailwind tokens are wired through the shared package; the renderer's `globals.css` consumes `@closedloop-ai/design-system/styles/globals.css`.
+- `apps/desktop/src/renderer/main.tsx` wraps the app in `DesignSystemProvider` from `@repo/design-system`.
+- `apps/desktop/vite.renderer.config.ts` chunks `@repo/design-system` as `vendor-ds`.
+- The Turbo task graph (`turbo.json`) declares `desktop#build` / `desktop#test` / `desktop#typecheck` with `dependsOn: ["@repo/design-system#build", ...]` — a change in the design-system invalidates desktop tasks via the standard `--filter=...[origin/main]` pattern.
+- Tailwind tokens are wired through the shared package; the renderer's `globals.css` consumes `@repo/design-system/styles/globals.css`.
 
 These foundations mean per-route adoption is a matter of swapping local primitives for shared ones, not standing up new infrastructure.
 
@@ -38,8 +38,8 @@ The route IDs match the `pageId` cases in `apps/desktop/src/renderer/App.tsx`. E
 | `dashboard` | `components/dashboard/DashboardPage.tsx` | early | `components/ui/primitives/metric-card` (MetricCard) | Adopt additional KPI tile primitives as the dashboard fills out. |
 | `kanban` | `components/kanban/KanbanView.tsx` | early | `components/ui/button` (Button), `components/ui/layout/kanban-board` (KanbanBoard*) | Already on the shared layout primitive. Next: card primitives once they stabilize. |
 | `activity` | `components/feed/ActivityFeedView.tsx` | early | `components/ui/badge`, `button`, `empty-state`, `input`, `primitives/metric-card`, `select` | Broad adoption already. Carry into related sub-views. |
-| `analytics` | `components/analytics/AnalyticsView.tsx` (+ `AnalyticsDetails.tsx`) | early | `components/ui/primitives/metric-card` (view); sibling `AnalyticsDetails.tsx` uses more (~5) | Chart primitives (`donut-chart`, `line-chart`, `ranked-bar`, `sankey-graph`, `segmented-bar`) are obvious next adoptions if/when desktop adds richer charts. |
-| `workflows` | `components/workflows/WorkflowsView.tsx` | early | `composites/agent-collaboration-network`, `composites/orchestration-dag`, `primitives/ranked-bar`, `primitives/sankey-graph`, `primitives/metric-card`, `components/ui/badge`, `table` | Heaviest design-system consumer today. Reference implementation for other routes. |
+| `analytics` | `components/analytics/AnalyticsView.tsx` (+ `AnalyticsDetails.tsx`) | early | `components/ui/primitives/metric-card` (view); sibling `AnalyticsDetails.tsx` uses more (~5) | The live `components/ui/donut-chart` and chart primitives (`ranked-bar`, `segmented-bar`) are obvious next adoptions if/when desktop adds richer charts. |
+| `workflows` | `components/workflows/WorkflowsView.tsx` | early | `composites/agent-collaboration-network`, `composites/orchestration-dag`, `primitives/ranked-bar`, `primitives/metric-card`, `components/ui/badge`, `table` | Heaviest design-system consumer today. Reference implementation for other routes. |
 | `packs` | `components/features/CoreFeaturesView.tsx#PacksView` (re-exports `PacksCatalog.tsx`) | early | via `PacksCatalog.tsx`: badge, button, empty-state, input, select, table (6) | Adoption is at the child catalog level. The `PacksView` re-export itself is a thin wrapper. |
 | `skills` | `components/features/CoreFeaturesView.tsx#SkillsView` | early | badge, empty-state, primitives/metric-card, table | Implemented inline in `CoreFeaturesView` (no standalone `SkillsView.tsx` file) — shares the four design-system primitives with the Tools/SubAgents views. |
 | `tools` | `components/features/CoreFeaturesView.tsx#ToolsView` | early | badge, empty-state, primitives/metric-card, table | Same implementation shape as `skills`. |
@@ -49,8 +49,8 @@ The route IDs match the `pageId` cases in `apps/desktop/src/renderer/App.tsx`. E
 | `approvals` | `components/approvals/ApprovalsPanel.tsx` | early | badge, button, card | Continue with table + dialog primitives once approval-detail views land. |
 | `requests` (a.k.a. activity) | `components/activity/ActivityPanel.tsx` | early | badge, button, card, checkbox | Adopt drawer or dialog primitives when request detail UI matures. |
 | `diagnostics` | `components/diagnostics/LogsPanel.tsx` | early | button, card | Logs viewer is intentionally compact; adopt code-block, scroll-area, or empty-state primitives as the surface grows. |
-| `settings` | `components/settings/SettingsPanel.tsx` | early | badge, button, card, input, switch, tabs | Most complete adoption. Reference implementation for form-shaped routes. |
-| `(session-detail)` | `components/sessions/SessionDetailView.tsx` (non-nav route, opened on session click) | early | badge, button, card | Composite `composites/session-table` already used by sibling `SessionsView.tsx`. Evaluate `conversation-message` / `conversation-transcript` primitives for the message view. |
+| `settings` | `settings-v2/desktop-settings-v2-root.tsx` (the modal `DesktopSettingsModalHost` presents) | early | badge, button, card, input, switch | Broad adoption; the machine-local control blocks under Labs → Desktop App are the reference for form-shaped surfaces. ISS-10246 deleted the legacy `SettingsPanel.tsx` this row used to name, and `tabs` went with its chrome. |
+| `(session-detail)` | `components/sessions/SessionDetailView.tsx` (non-nav route, opened on session click) | early | badge, button, card | Composite `composites/session-table` already used by sibling `SessionsView.tsx`. |
 
 ## Sequencing rationale
 
@@ -72,6 +72,6 @@ This is a living document. When a renderer-route PR adopts a new design-system c
 ## What this doc deliberately does not cover
 
 - **Coverage- or Storybook-based usage signal** — tracked in [FEA-1568](https://app.closedloop.ai/closedloop-ai/features/FEA-1568). The minimum-fidelity drift detector only sees static `import` statements; it does not know which components are actually rendered at runtime.
-- **Cross-surface merge-blocking CI gate** for shared-component changes — tracked in [FEA-1567](https://app.closedloop.ai/closedloop-ai/features/FEA-1567). The Turbo task graph already invalidates `desktop#build`/`#test` on `@closedloop-ai/design-system` changes via `--filter=...[origin/main]`; this doc is not the place for that mechanic.
+- **Cross-surface merge-blocking CI gate** for shared-component changes — tracked in [FEA-1567](https://app.closedloop.ai/closedloop-ai/features/FEA-1567). The Turbo task graph already invalidates `desktop#build`/`#test` on `@repo/design-system` changes via `--filter=...[origin/main]`; this doc is not the place for that mechanic.
 - **Operating-mode (local-gateway vs. cloud-relay) abstractions** — out of scope for FEA-1516; no filed FEA owns this today.
 - **A componentization policy for the web app (`apps/app/`)** — symmetric work for the web side is not covered here; this doc is desktop-renderer-only.

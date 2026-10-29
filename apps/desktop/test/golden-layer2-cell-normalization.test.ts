@@ -8,7 +8,7 @@
  * file-size ceiling and shrink-only.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   canonicalizeHostPaths,
   LONG_TEXT_THRESHOLD,

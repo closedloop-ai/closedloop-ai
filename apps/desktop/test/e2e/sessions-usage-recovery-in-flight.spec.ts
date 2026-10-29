@@ -35,7 +35,12 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { gotoNav, launchDesktopApp } from "./helpers/desktop-app";
+import {
+  clickDesktopDateRange,
+  DesktopDateRangeLabel,
+  gotoNav,
+  launchDesktopApp,
+} from "./helpers/desktop-app";
 import {
   seedSessionsList,
   waitForBranchesSchema,
@@ -43,6 +48,7 @@ import {
 import {
   cleanupSeededSessionsDirs,
   makeSeededSessionsDirs,
+  seededSessionsEnv,
 } from "./helpers/seeded-sessions-list";
 import {
   armSessionsUsageFailure,
@@ -81,7 +87,7 @@ test.describe("Sessions usage recovery in flight (ISS-4561)", () => {
     test.setTimeout(300_000);
 
     const dirs = makeSeededSessionsDirs("desktop-usage-recovery");
-    const env = { CLAUDE_HOME: dirs.claudeHome, CODEX_HOME: dirs.codexHome };
+    const env = seededSessionsEnv(dirs);
 
     try {
       // Launch 1 — create + migrate the SQLite schema, confirm it landed, close.
@@ -125,7 +131,7 @@ test.describe("Sessions usage recovery in flight (ISS-4561)", () => {
 
         // The app boots with the gate inert, so the strip settles on REAL totals
         // off the seeded store first — the state the reported bug starts from.
-        await app.page.locator('[aria-label="All time"]:visible').click();
+        await clickDesktopDateRange(app.page, DesktopDateRangeLabel.AllTime);
         await expect(
           app.page.getByRole("link", { name: SEEDED_SESSION_NAME, exact: true })
         ).toBeVisible({ timeout: MOUNT_TIMEOUT_MS });

@@ -1,5 +1,8 @@
 "use client";
 
+import { DataSyncLevelCard } from "@repo/app/shared/components/data-sync-level-card";
+import { DataSyncLevelVisual } from "@repo/app/shared/components/data-sync-level-visual";
+import { DATA_SYNC_LEVEL_COPY } from "@repo/app/shared/lib/data-sync-copy";
 import {
   Alert,
   AlertDescription,
@@ -23,23 +26,13 @@ import {
   TabsList,
   TabsTrigger,
 } from "@repo/design-system/components/ui/tabs";
-import { cn } from "@repo/design-system/lib/utils";
-import {
-  ArrowDownRightIcon,
-  ArrowUpRightIcon,
-  CloudIcon,
-  EyeOffIcon,
-  ShieldAlertIcon,
-} from "lucide-react";
+import { ArrowDownRightIcon, ArrowUpRightIcon, CloudIcon } from "lucide-react";
 import { useId, useState } from "react";
 import {
   DATA_SYNC_LEVEL_RANK,
-  type DataLine as DataLineModel,
+  DATA_SYNC_PICKER_LEVELS,
   type DataSyncLevel,
-  type DataSyncLevelOption,
   DEFAULT_DATA_SYNC_LEVEL,
-  dataSyncLevelOptions,
-  findDataSyncLevelOption,
   DataSyncLevel as Level,
 } from "./mock";
 
@@ -59,72 +52,6 @@ type SaveEffect = {
   icon: "up" | "down" | "cloud";
   message: string;
 };
-
-const DataLine = ({ label, kind }: DataLineModel) => (
-  // A "sync" line means this data LEAVES the device, so it must not read as the
-  // reassuring success-green a check implies. A neutral up-and-out arrow says
-  // "uploaded" without the all-clear tone; green stays reserved for what stays
-  // local. The local line keeps the muted eye-off ("kept private").
-  <div className="flex items-center gap-2 text-xs">
-    {kind === "sync" ? (
-      <ArrowUpRightIcon className="size-3.5 shrink-0 text-foreground" />
-    ) : (
-      <EyeOffIcon className="size-3.5 shrink-0 text-muted-foreground" />
-    )}
-    <span
-      className={kind === "sync" ? "text-foreground" : "text-muted-foreground"}
-    >
-      {label}
-    </span>
-  </div>
-);
-
-const LevelRadioCard = ({
-  option,
-  fieldId,
-  selected,
-  isDefault,
-}: {
-  option: DataSyncLevelOption;
-  fieldId: string;
-  selected: boolean;
-  isDefault: boolean;
-}) => (
-  <label
-    className={cn(
-      "flex w-full cursor-pointer items-start gap-3 rounded-xl border bg-card p-4 text-left transition-colors",
-      selected
-        ? "border-primary/40 bg-primary/5 ring-3 ring-primary/15"
-        : "border-border hover:border-primary/25"
-    )}
-    htmlFor={fieldId}
-  >
-    <RadioGroupItem className="mt-0.5" id={fieldId} value={option.level} />
-    <div className="min-w-0 flex-1">
-      <div className="flex flex-wrap items-center gap-2">
-        <p className="font-medium text-sm">{option.title}</p>
-        {isDefault ? <Badge variant="accent">Default</Badge> : null}
-        {option.elevated ? (
-          <Badge variant="warning">
-            <ShieldAlertIcon className="size-3" />
-            Elevated
-          </Badge>
-        ) : null}
-      </div>
-      <p className="mt-1 text-pretty text-foreground/80 text-sm leading-relaxed">
-        {option.description}
-      </p>
-      <div className="mt-3 flex flex-col gap-1.5">
-        {option.dataLines.map((line) => (
-          <DataLine key={line.label} kind={line.kind} label={line.label} />
-        ))}
-      </div>
-      {option.caveat ? (
-        <p className="mt-2.5 text-muted-foreground text-xs">{option.caveat}</p>
-      ) : null}
-    </div>
-  </label>
-);
 
 const EFFECT_ICON = {
   up: ArrowUpRightIcon,
@@ -146,29 +73,28 @@ function computeEffect(
   previous: DataSyncLevel,
   next: DataSyncLevel
 ): SaveEffect {
-  const nextOption = findDataSyncLevelOption(next);
+  const nextTitle = DATA_SYNC_LEVEL_COPY[next].title;
   const delta = DATA_SYNC_LEVEL_RANK[next] - DATA_SYNC_LEVEL_RANK[previous];
   if (delta > 0) {
     return {
       tone: "success",
       icon: "up",
-      message: `Raised to ${nextOption.title}. Additional sync lanes open on the next sync evaluation.`,
+      message: `Raised to ${nextTitle}. Additional sync lanes open on the next sync evaluation.`,
     };
   }
   return {
     tone: "warning",
     icon: "down",
-    message: `Lowered to ${nextOption.title}. Wider sync lanes close on the next sync evaluation.`,
+    message: `Lowered to ${nextTitle}. Wider sync lanes close on the next sync evaluation.`,
   };
 }
 
 const CurrentLevelSummary = ({ level }: { level: DataSyncLevel }) => {
-  const option = findDataSyncLevelOption(level);
   return (
     <div className="flex items-center gap-2">
       <span className="text-muted-foreground text-xs">Current level</span>
       <Badge variant={level === Level.Off ? "muted" : "accent"}>
-        {option.badgeLabel}
+        {DATA_SYNC_LEVEL_COPY[level].badgeLabel}
       </Badge>
     </div>
   );
@@ -176,8 +102,8 @@ const CurrentLevelSummary = ({ level }: { level: DataSyncLevel }) => {
 
 const DataSyncTab = () => {
   const radioName = useId();
-  // Land on the recommended DEFAULT so the happy path is pre-selected, matching
-  // the graduated-permission-selector reference.
+  // Start on the level the shared card badges Recommended, so the selection and
+  // the chip agree.
   const [currentLevel, setCurrentLevel] = useState<DataSyncLevel>(
     DEFAULT_DATA_SYNC_LEVEL
   );
@@ -207,13 +133,26 @@ const DataSyncTab = () => {
           onValueChange={(value) => setSelected(value as DataSyncLevel)}
           value={selected}
         >
-          {dataSyncLevelOptions.map((option) => (
-            <LevelRadioCard
-              fieldId={`${radioName}-${option.level}`}
-              isDefault={option.level === DEFAULT_DATA_SYNC_LEVEL}
-              key={option.level}
-              option={option}
-              selected={selected === option.level}
+          {/* ISS-12522: the canonical shared card with its opt-in visual of
+              what stays on this device and what is uploaded, rather than a
+              sandbox look-alike of it. */}
+          {DATA_SYNC_PICKER_LEVELS.map((level) => (
+            <DataSyncLevelCard
+              control={
+                <RadioGroupItem
+                  // Named from the copy source the card prints, as the
+                  // production picker does, so the name contains the label.
+                  aria-label={DATA_SYNC_LEVEL_COPY[level].title}
+                  className="mt-0.5"
+                  id={`${radioName}-${level}`}
+                  value={level}
+                />
+              }
+              htmlFor={`${radioName}-${level}`}
+              key={level}
+              level={level}
+              selected={selected === level}
+              visual={<DataSyncLevelVisual level={level} />}
             />
           ))}
         </RadioGroup>

@@ -1,7 +1,7 @@
 /**
  * Unit tests for createSseStream / encodeSseData — the shared SSE primitive
- * behind every streaming API route (compute-target status, loop streams,
- * operation streams, command events).
+ * behind every streaming API route (compute-target status, operation streams,
+ * command events).
  *
  * Drives createSseStream with a real ReadableStream reader plus fake timers to
  * assert: data-frame send, keepalive frames, max-duration close, idempotent

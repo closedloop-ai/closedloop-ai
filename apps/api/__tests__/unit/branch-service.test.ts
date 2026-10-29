@@ -2,75 +2,49 @@ import {
   BranchBaseBranchSource,
   BranchFileCacheStatus,
   BranchHeadShaSource,
-  LinkType,
 } from "@repo/api/src/types/artifact";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { Status } from "@repo/api/src/types/result";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  branchInput,
+  expectedProducesLinkUpsert,
+  ORG_ID,
+  PROJECT_ID,
+  REPO_FULL_NAME,
+  REPO_ID,
+} from "@/__tests__/support/branches/branch-service-upsert.test-fixtures";
+import { branchUpsert } from "@/__tests__/support/branches/branch-upsert-result.test-fixtures";
 import { mockWithDbTx } from "../utils/db-helpers";
 
-vi.mock("@repo/database", () => ({
+// ISS-12552: writing a source link derives implementation evidence, a store
+// this suite does not exercise.
+vi.mock(
+  "@/app/agent-sessions/service/attribution/derive-implementation-evidence",
+  () => ({ deriveImplementationEvidence: vi.fn() })
+);
+// The generated enums are real; only the database access is replaced.
+vi.mock("@repo/database", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  ArtifactType: {
-    DOCUMENT: "DOCUMENT",
-    BRANCH: "BRANCH",
-
-    DEPLOYMENT: "DEPLOYMENT",
-  },
-  ArtifactSubtype: {
-    PRD: "PRD",
-    IMPLEMENTATION_PLAN: "IMPLEMENTATION_PLAN",
-    TEMPLATE: "TEMPLATE",
-    FEATURE: "FEATURE",
-  },
-  ChecksStatus: {
-    UNKNOWN: "UNKNOWN",
-    PENDING: "PENDING",
-    PASSING: "PASSING",
-    FAILING: "FAILING",
-  },
 }));
 
 vi.mock("@/app/branches/branch-write-eligibility", () => ({
-  resolveCloudBranchWriteEligibility: vi
-    .fn()
-    .mockResolvedValue({ kind: "eligible" }),
+  resolveCloudBranchWriteEligibility: vi.fn(async () => ({ kind: "eligible" })),
+}));
+vi.mock("@/app/branches/branch-owner-seed/branch-owner-seed");
+vi.mock("@/app/artifact-links/produces-link-sort-order", () => ({
+  nextProducesLinkSortOrder: async () => 0,
 }));
 
 import { ArtifactSubtype, ArtifactType, ChecksStatus } from "@repo/database";
-import {
-  branchService,
-  type UpsertBranchArtifactInput,
-} from "@/app/branches/branch-service";
+import { branchService } from "@/app/branches/branch-service";
 
-const ORG_ID = "org-1";
-const PROJECT_ID = "project-1";
-const REPO_ID = "repo-1";
-const REPO_FULL_NAME = "closedloop-ai/example-repo";
 const ZERO_GIT_SHA = "0000000000000000000000000000000000000000";
 const expectedBranchInclude = {
   branch: { include: { currentPullRequestDetail: true } },
   pullRequest: true,
 };
-
-function branchInput(
-  overrides: Partial<UpsertBranchArtifactInput> = {}
-): UpsertBranchArtifactInput {
-  return {
-    organizationId: ORG_ID,
-    repositoryId: REPO_ID,
-    repositoryFullName: REPO_FULL_NAME,
-    branchName: "feature/branch-artifact",
-    defaultBranch: "main",
-    projectId: PROJECT_ID,
-    baseBranch: "main",
-    baseBranchSource: BranchBaseBranchSource.RepositoryDefault,
-    headSha: "sha-2",
-    headShaSource: BranchHeadShaSource.PushWebhook,
-    beforeSha: "sha-1",
-    ...overrides,
-  };
-}
 
 describe("branchService.upsertBranchArtifact", () => {
   beforeEach(() => {
@@ -78,11 +52,7 @@ describe("branchService.upsertBranchArtifact", () => {
   });
 
   it("creates an unparented BRANCH artifact when projectId is null (FEA-1749)", async () => {
-    // Was: "rejects a null projectId — only SESSION artifacts may be
-    // projectless". Branch identity is (org, repositoryFullName, branchName)
-    // per PRD-510 D2 — a project has never been part of it. Failing closed here
-    // is what made the desktop lane, whose sessions have no project, unable to
-    // produce a branch at all (FR8/FR12's non-App producer).
+    // PRD-510 D2 identity excludes projectId, allowing projectless Desktop Sessions (FR8/FR12).
     const created = {
       id: "branch-artifact-1",
       branch: { artifactId: "branch-artifact-1" },
@@ -107,7 +77,7 @@ describe("branchService.upsertBranchArtifact", () => {
       branchInput({ projectId: null })
     );
 
-    expect(result).toEqual({ ok: true, value: created });
+    expect(result).toEqual(branchUpsert.created(created));
     expect(mockDb.artifact.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         type: ArtifactType.BRANCH,
@@ -143,7 +113,7 @@ describe("branchService.upsertBranchArtifact", () => {
 
     const result = await branchService.upsertBranchArtifact(branchInput());
 
-    expect(result).toEqual({ ok: true, value: created });
+    expect(result).toEqual(branchUpsert.created(created));
     expect(mockDb.artifact.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         type: ArtifactType.BRANCH,
@@ -152,7 +122,7 @@ describe("branchService.upsertBranchArtifact", () => {
         createdById: null,
         name: "feature/branch-artifact",
         externalUrl:
-          "https://github.com/closedloop-ai/example-repo/tree/feature%2Fbranch-artifact",
+          "https://github.com/closedloop-ai/closedloop-ai/tree/feature%2Fbranch-artifact",
         branch: {
           create: expect.objectContaining({
             repositoryId: REPO_ID,
@@ -203,7 +173,7 @@ describe("branchService.upsertBranchArtifact", () => {
       })
     );
 
-    expect(result).toEqual({ ok: true, value: created });
+    expect(result).toEqual(branchUpsert.created(created));
     expect(mockDb.artifact.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         status: GitHubPRState.Closed,
@@ -278,7 +248,7 @@ describe("branchService.upsertBranchArtifact", () => {
       })
     );
 
-    expect(result).toEqual({ ok: true, value: reread });
+    expect(result).toEqual(branchUpsert.updated(reread));
     expect(mockDb.branchDetail.update).toHaveBeenCalledWith({
       where: { artifactId: "branch-artifact-1" },
       data: expect.objectContaining({
@@ -286,12 +256,12 @@ describe("branchService.upsertBranchArtifact", () => {
         lastPushBeforeSha: ZERO_GIT_SHA,
         deletedAt: null,
       }),
+      select: { artifactId: true },
     });
     expect(mockDb.artifact.update).toHaveBeenCalledWith({
       where: { id: "branch-artifact-1" },
-      data: expect.objectContaining({
-        status: GitHubPRState.Open,
-      }),
+      data: expect.objectContaining({ status: GitHubPRState.Open }),
+      select: { id: true },
     });
   });
 
@@ -357,7 +327,7 @@ describe("branchService.upsertBranchArtifact", () => {
       })
     );
 
-    expect(result).toEqual({ ok: true, value: reread });
+    expect(result).toEqual(branchUpsert.updated(reread));
     expect(mockDb.branchDetail.update).toHaveBeenCalledWith({
       where: { artifactId: "branch-artifact-1" },
       data: expect.objectContaining({
@@ -365,6 +335,7 @@ describe("branchService.upsertBranchArtifact", () => {
         lastPushBeforeSha: ZERO_GIT_SHA,
         deletedAt: null,
       }),
+      select: { artifactId: true },
     });
   });
 
@@ -527,15 +498,14 @@ describe("branchService.upsertBranchArtifact", () => {
       })
     );
 
-    expect(result).toEqual({ ok: true, value: reread });
+    expect(result).toEqual(branchUpsert.updated(reread));
     expect(mockDb.branchDetail.update).toHaveBeenCalled();
     const updateData = mockDb.branchDetail.update.mock.calls[0][0].data;
     expect(updateData.deletedAt).toBeUndefined();
     expect(mockDb.artifact.update).toHaveBeenCalledWith({
       where: { id: "branch-artifact-1" },
-      data: expect.objectContaining({
-        status: GitHubPRState.Closed,
-      }),
+      data: expect.objectContaining({ status: GitHubPRState.Closed }),
+      select: { id: true },
     });
   });
 
@@ -642,6 +612,8 @@ describe("branchService.upsertBranchArtifact", () => {
       pullRequest: { id: "pr-detail-1", githubId: "12345" },
     };
     const mockDb = {
+      $executeRaw: vi.fn().mockResolvedValue(1),
+      $queryRaw: vi.fn().mockResolvedValue([]),
       artifact: {
         findFirst: vi.fn().mockResolvedValue({
           document: {
@@ -658,17 +630,18 @@ describe("branchService.upsertBranchArtifact", () => {
       },
       branchDetail: {
         findUnique: vi.fn().mockResolvedValue(null),
-        update: vi.fn(),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       pullRequestDetail: {
-        findFirst: vi.fn().mockResolvedValue(null),
-        upsert: vi.fn().mockResolvedValue({ id: "pr-detail-1" }),
+        findMany: vi.fn().mockResolvedValue([]),
+        upsert: vi.fn().mockResolvedValue({
+          id: "pr-detail-1",
+          branchArtifactId: "branch-artifact-1",
+        }),
         updateMany: vi.fn(),
       },
       artifactLink: {
-        findFirst: vi.fn(),
-        create: vi.fn(),
-        upsert: vi.fn(),
+        upsert: vi.fn().mockResolvedValue(branchUpsert.linkRow),
       },
     };
     mockWithDbTx(mockDb);
@@ -681,18 +654,16 @@ describe("branchService.upsertBranchArtifact", () => {
           githubId: "12345",
           number: 42,
           title: "Add branch artifacts",
-          htmlUrl: "https://github.com/closedloop-ai/example-repo/pull/42",
+          htmlUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/42",
           state: "OPEN",
           isDraft: false,
         },
       })
     );
 
-    expect(result).toEqual({ ok: true, value: reread });
+    expect(result).toEqual(branchUpsert.createdLinked(reread));
     expect(mockDb.artifact.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        createdById: "user-1",
-      }),
+      data: expect.objectContaining({ createdById: "user-1" }),
       include: expectedBranchInclude,
     });
     expect(mockDb.artifact.findFirst).toHaveBeenCalledWith({
@@ -720,44 +691,31 @@ describe("branchService.upsertBranchArtifact", () => {
         branchArtifactId: "branch-artifact-1",
         githubId: "12345",
         title: "Add branch artifacts",
-        htmlUrl: "https://github.com/closedloop-ai/example-repo/pull/42",
+        htmlUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/42",
         isCurrent: true,
       }),
       update: expect.objectContaining({
-        branchArtifactId: "branch-artifact-1",
         title: "Add branch artifacts",
         isCurrent: true,
       }),
-      select: { id: true },
+      select: { id: true, branchArtifactId: true },
     });
     expect(mockDb.pullRequestDetail.updateMany).toHaveBeenCalledWith({
       where: {
+        organizationId: ORG_ID,
         branchArtifactId: "branch-artifact-1",
         isCurrent: true,
         id: { not: "pr-detail-1" },
       },
       data: { isCurrent: false },
     });
-    expect(mockDb.branchDetail.update).toHaveBeenCalledWith({
-      where: { artifactId: "branch-artifact-1" },
+    expect(mockDb.branchDetail.updateMany).toHaveBeenCalledWith({
+      where: { artifactId: "branch-artifact-1", organizationId: ORG_ID },
       data: { currentPullRequestDetailId: "pr-detail-1" },
     });
-    expect(mockDb.artifactLink.upsert).toHaveBeenCalledWith({
-      where: {
-        sourceId_targetId_linkType: {
-          sourceId: "plan-1",
-          targetId: "branch-artifact-1",
-          linkType: LinkType.Produces,
-        },
-      },
-      create: {
-        organizationId: ORG_ID,
-        sourceId: "plan-1",
-        targetId: "branch-artifact-1",
-        linkType: LinkType.Produces,
-      },
-      update: {},
-    });
+    expect(mockDb.artifactLink.upsert).toHaveBeenCalledWith(
+      expectedProducesLinkUpsert
+    );
   });
 
   it("derives a new branch artifact creator from the validated source artifact", async () => {
@@ -790,7 +748,7 @@ describe("branchService.upsertBranchArtifact", () => {
         findUnique: vi.fn().mockResolvedValue(null),
       },
       artifactLink: {
-        upsert: vi.fn(),
+        upsert: vi.fn().mockResolvedValue(branchUpsert.linkRow),
       },
     };
     mockWithDbTx(mockDb);
@@ -799,29 +757,14 @@ describe("branchService.upsertBranchArtifact", () => {
       branchInput({ sourceArtifactId: "plan-1" })
     );
 
-    expect(result).toEqual({ ok: true, value: reread });
+    expect(result).toEqual(branchUpsert.createdLinked(reread));
     expect(mockDb.artifact.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        createdById: "source-user-1",
-      }),
+      data: expect.objectContaining({ createdById: "source-user-1" }),
       include: expectedBranchInclude,
     });
-    expect(mockDb.artifactLink.upsert).toHaveBeenCalledWith({
-      where: {
-        sourceId_targetId_linkType: {
-          sourceId: "plan-1",
-          targetId: "branch-artifact-1",
-          linkType: LinkType.Produces,
-        },
-      },
-      create: {
-        organizationId: ORG_ID,
-        sourceId: "plan-1",
-        targetId: "branch-artifact-1",
-        linkType: LinkType.Produces,
-      },
-      update: {},
-    });
+    expect(mockDb.artifactLink.upsert).toHaveBeenCalledWith(
+      expectedProducesLinkUpsert
+    );
   });
 
   it("backfills an existing branch artifact creator without replacing an existing creator", async () => {
@@ -874,12 +817,11 @@ describe("branchService.upsertBranchArtifact", () => {
       branchInput({ createdById: "user-1", beforeSha: "sha-1" })
     );
 
-    expect(result).toEqual({ ok: true, value: reread });
+    expect(result).toEqual(branchUpsert.updated(reread));
     expect(mockDb.artifact.update).toHaveBeenCalledWith({
       where: { id: "branch-artifact-1" },
-      data: expect.objectContaining({
-        createdById: "user-1",
-      }),
+      data: expect.objectContaining({ createdById: "user-1" }),
+      select: { id: true },
     });
 
     existingBranch.artifact.createdById = "user-2";
@@ -891,9 +833,8 @@ describe("branchService.upsertBranchArtifact", () => {
 
     expect(mockDb.artifact.update).toHaveBeenCalledWith({
       where: { id: "branch-artifact-1" },
-      data: expect.not.objectContaining({
-        createdById: expect.any(String),
-      }),
+      data: expect.not.objectContaining({ createdById: expect.any(String) }),
+      select: { id: true },
     });
   });
 
@@ -947,7 +888,7 @@ describe("branchService.upsertBranchArtifact", () => {
         deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
       artifactLink: {
-        upsert: vi.fn(),
+        upsert: vi.fn().mockResolvedValue(branchUpsert.linkRow),
       },
     };
     mockWithDbTx(mockDb);
@@ -956,12 +897,11 @@ describe("branchService.upsertBranchArtifact", () => {
       branchInput({ sourceArtifactId: "plan-1", beforeSha: "sha-1" })
     );
 
-    expect(result).toEqual({ ok: true, value: reread });
+    expect(result).toEqual(branchUpsert.updatedLinked(reread));
     expect(mockDb.artifact.update).toHaveBeenCalledWith({
       where: { id: "branch-artifact-1" },
-      data: expect.objectContaining({
-        createdById: "source-user-1",
-      }),
+      data: expect.objectContaining({ createdById: "source-user-1" }),
+      select: { id: true },
     });
 
     existingBranch.artifact.createdById = "user-2";
@@ -973,9 +913,8 @@ describe("branchService.upsertBranchArtifact", () => {
 
     expect(mockDb.artifact.update).toHaveBeenCalledWith({
       where: { id: "branch-artifact-1" },
-      data: expect.not.objectContaining({
-        createdById: expect.any(String),
-      }),
+      data: expect.not.objectContaining({ createdById: expect.any(String) }),
+      select: { id: true },
     });
   });
 
@@ -1036,7 +975,7 @@ describe("branchService.upsertBranchArtifact", () => {
       })
     );
 
-    expect(result).toEqual({ ok: true, value: reread });
+    expect(result).toEqual(branchUpsert.updated(reread));
     expect(mockDb.branchDetail.update).toHaveBeenCalledWith({
       where: { artifactId: "branch-artifact-1" },
       data: expect.objectContaining({
@@ -1044,6 +983,7 @@ describe("branchService.upsertBranchArtifact", () => {
         headShaSource: BranchHeadShaSource.HarnessInput,
         lastPushBeforeSha: null,
       }),
+      select: { artifactId: true },
     });
   });
 
@@ -1102,18 +1042,16 @@ describe("branchService.upsertBranchArtifact", () => {
       })
     );
 
-    expect(result).toEqual({
-      ok: true,
-      value: {
+    expect(result).toEqual(
+      branchUpsert.updated({
         ...reread,
         pullRequest: reread.branch.currentPullRequestDetail,
-      },
-    });
+      })
+    );
     expect(mockDb.artifact.update).toHaveBeenCalledWith({
       where: { id: "branch-artifact-1" },
-      data: expect.objectContaining({
-        status: GitHubPRState.Merged,
-      }),
+      data: expect.objectContaining({ status: GitHubPRState.Merged }),
+      select: { id: true },
     });
   });
 
@@ -1147,6 +1085,8 @@ describe("branchService.upsertBranchArtifact", () => {
       mergeCommitSha: string | null;
     }> = [];
     const mockDb = {
+      $executeRaw: vi.fn().mockResolvedValue(1),
+      $queryRaw: vi.fn().mockResolvedValue([]),
       artifact: {
         findFirst: vi.fn(),
         create: vi.fn().mockResolvedValue({
@@ -1182,30 +1122,28 @@ describe("branchService.upsertBranchArtifact", () => {
           Object.assign(branchDetail, data);
           return branchDetail;
         }),
+        updateMany: vi.fn().mockImplementation(({ data }) => {
+          Object.assign(branchDetail, data);
+          return { count: 1 };
+        }),
       },
       pullRequestDetail: {
-        // FEA-3212: adopt selects the single repo-less (githubId=null) row for
-        // this branch+number, then updates it by id.
-        findFirst: vi.fn().mockImplementation(({ where }) => {
-          const match = pullRequestDetails.find(
-            (detail) =>
-              detail.branchArtifactId === where.branchArtifactId &&
-              detail.number === where.number &&
-              (detail.githubId === null || detail.githubId === undefined)
-          );
-          return match ? { id: match.id } : null;
-        }),
+        findMany: vi.fn().mockResolvedValue([]),
+        findUnique: vi.fn().mockResolvedValue(null),
         upsert: vi.fn().mockImplementation(({ where, create, update }) => {
           const existing = pullRequestDetails.find(
             (detail) => detail.githubId === where.githubId
           );
           if (existing) {
             Object.assign(existing, update);
-            return { id: existing.id };
+            return {
+              id: existing.id,
+              branchArtifactId: existing.branchArtifactId,
+            };
           }
 
           pullRequestDetails.push({ ...create });
-          return { id: create.id };
+          return { id: create.id, branchArtifactId: create.branchArtifactId };
         }),
         updateMany: vi.fn().mockImplementation(({ where, data }) => {
           let count = 0;
@@ -1235,7 +1173,7 @@ describe("branchService.upsertBranchArtifact", () => {
           githubId: "111",
           number: 41,
           title: "First PR",
-          htmlUrl: "https://github.com/closedloop-ai/example-repo/pull/41",
+          htmlUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/41",
           state: "OPEN",
         },
       })
@@ -1246,7 +1184,7 @@ describe("branchService.upsertBranchArtifact", () => {
           githubId: "222",
           number: 42,
           title: "Second PR",
-          htmlUrl: "https://github.com/closedloop-ai/example-repo/pull/42",
+          htmlUrl: "https://github.com/closedloop-ai/closedloop-ai/pull/42",
           state: "OPEN",
         },
       })
@@ -1264,6 +1202,7 @@ describe("branchService.upsertBranchArtifact", () => {
     expect(branchDetail.currentPullRequestDetailId).toBe(secondPr?.id);
     expect(mockDb.pullRequestDetail.updateMany).toHaveBeenLastCalledWith({
       where: {
+        organizationId: ORG_ID,
         branchArtifactId: "branch-artifact-1",
         isCurrent: true,
         id: { not: secondPr?.id },

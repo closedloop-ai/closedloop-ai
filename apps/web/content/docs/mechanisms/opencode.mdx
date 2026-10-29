@@ -79,8 +79,6 @@ That matters concretely. The label and facet maps over the harness value are exh
 
 `both` is the synthetic "used across harnesses" collapse, not one of the **individual-harness** options the Agents UI facet menu offers. It is labeled **Multiple harnesses** rather than "Claude + Codex", precisely because any multi-harness combination collapses into it — including Claude plus OpenCode — and naming two specific harnesses would assert one the component never touched. Programmatic callers *can* target the bucket directly: the `list-agent-components` MCP tool accepts `both` in its `harness` enum, and the components API honors `?harness=both` by exact-matching the displayed synthetic value. The UI simply keeps it out of the individual-harness facet list.
 
-The same three-value vocabulary (`claude`, `codex`, `opencode`) is the canonical harness identity used by the [scheduled-task and routine](./scheduled-tasks) layer, so a harness name means the same thing whether it came from a collected session or from a scheduled run.
-
 Note that the *parser-source* set is wider than the display contract: the collectors also parse Cursor and Copilot sessions. The display contract covers the harnesses the component inventory attributes to, which is a narrower question than which transcripts the collector can read.
 
 ## Related reading

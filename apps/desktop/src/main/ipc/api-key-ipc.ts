@@ -1,20 +1,9 @@
+import { ApiKeyIpcChannel } from "../../shared/api-key-ipc-channel.js";
 import type { AdminKeyVendor } from "../cost/admin-key-store.js";
 import type { CostReconciliationService } from "../cost/cost-reconciliation-service.js";
 import type { ApiKeyStore } from "../settings/api-key-store.js";
 import { assertTrustedIpcSender } from "./ipc-trusted-sender.js";
 import { normalizeClosedloopApiKey } from "./profile-config-ipc.js";
-
-export const ApiKeyIpcChannel = {
-  GetApiKeyStatus: "desktop:get-api-key-status",
-  SetApiKey: "desktop:set-api-key",
-  ClearApiKey: "desktop:clear-api-key",
-  GetAdminKeyStatuses: "desktop:get-admin-key-statuses",
-  SetAdminKey: "desktop:set-admin-key",
-  ClearAdminKey: "desktop:clear-admin-key",
-} as const;
-
-export type ApiKeyIpcChannel =
-  (typeof ApiKeyIpcChannel)[keyof typeof ApiKeyIpcChannel];
 
 type IpcMainLike = {
   handle: (
@@ -46,6 +35,7 @@ type ApiKeyIpcDeps = {
    * not yet provisioned keeps the paste path as a fallback.
    */
   isManualApiKeyEntryDisabled: () => boolean;
+  isCredentialMutationAllowed?: () => boolean;
 };
 
 /** Runtime-validate an IPC vendor argument to a known AdminKeyVendor. */
@@ -82,6 +72,11 @@ export function registerApiKeyIpcHandlers(
 
   ipcMainLike.handle(ApiKeyIpcChannel.SetApiKey, (event, apiKey) => {
     assertTrustedIpcSender(deps.isTrustedSender, event);
+    if (deps.isCredentialMutationAllowed?.() === false) {
+      throw new Error(
+        "API key changes are unavailable during sign-out cleanup"
+      );
+    }
     // PRD-532 §5.5 (PR-K / M8): under the unified-auth flag the relay key is
     // auto-provisioned (DESKTOP_MANAGED, PoP-bound). Reject manual paste so it
     // cannot overwrite the managed key with an unbound USER_CREATED one. Fails

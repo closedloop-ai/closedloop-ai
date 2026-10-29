@@ -23,7 +23,7 @@
  * this test would surface as an assertion failure on the awaited rejection.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { DbHostClient } from "../src/main/database/db-host/db-host-client.js";
 import {
   DB_HOST_DATA_CLONE_ERROR_NAME,
@@ -31,10 +31,6 @@ import {
   DbHostResponseKind,
   isDbHostDataCloneError,
 } from "../src/main/database/db-host/db-host-protocol.js";
-import type {
-  ScheduledReviewRequest,
-  ScheduledReviewResult,
-} from "../src/shared/scheduled-review-contract.js";
 import type {
   DbHostChildListenerArgs,
   DbHostChildMessageListener,
@@ -55,7 +51,7 @@ function makeDataCloneError(): Error {
  * throw a DataCloneError for an Invoke request whose op matches — modelling a
  * non-cloneable payload — while every other request posts normally.
  */
-function makeFakeChild(throwCloneOnOp?: string, throwCloneOnKind?: string) {
+function makeFakeChild(throwCloneOnOp?: string) {
   const posted: { kind: string; id?: number; op?: string }[] = [];
   let messageListener: DbHostChildMessageListener | undefined;
   const child = {
@@ -72,11 +68,6 @@ function makeFakeChild(throwCloneOnOp?: string, throwCloneOnKind?: string) {
         message.kind === DbHostRequestKind.Invoke &&
         message.op === throwCloneOnOp
       ) {
-        throw makeDataCloneError();
-      }
-      // Model a non-cloneable payload on a non-Invoke request kind (e.g. a
-      // ScheduledReviewResult whose value/error cannot be structured-cloned).
-      if (throwCloneOnKind && message.kind === throwCloneOnKind) {
         throw makeDataCloneError();
       }
       posted.push(message);
@@ -102,10 +93,6 @@ function makeFakeChild(throwCloneOnOp?: string, throwCloneOnKind?: string) {
         ok: true,
         value,
       });
-    },
-    /** Deliver an arbitrary child→main message (e.g. a ScheduledReviewRun). */
-    emit(message: unknown) {
-      messageListener?.(message);
     },
   };
 }
@@ -139,12 +126,7 @@ async function waitForInvokeCount(
 }
 
 /** Build a started client over a supplied fake child, resolving its init. */
-async function startClientOver(
-  fake: FakeChild,
-  onRunScheduledReview?: (
-    request: ScheduledReviewRequest
-  ) => Promise<ScheduledReviewResult>
-): Promise<{
+async function startClientOver(fake: FakeChild): Promise<{
   client: DbHostClient;
   logs: string[];
 }> {
@@ -152,7 +134,6 @@ async function startClientOver(
   const client = new DbHostClient({
     onEmit: () => undefined,
     onLog: (message) => logs.push(message),
-    onRunScheduledReview,
     fork: () => fake.child,
   });
   const started = client.start({ dataDir: "/tmp/agent-dashboard" });
@@ -233,84 +214,5 @@ test("pending correlation is cleaned up after a clone failure (no leaked entry)"
     client.pendingRequestCount,
     0,
     "the resolved invoke must also clean up its pending entry"
-  );
-});
-
-test("a ScheduledReviewResult clone failure never deletes/rejects a same-id in-flight invoke (ISS-4620 P2)", async () => {
-  // The worker mints ScheduledReview reverse-RPC ids from its OWN counter, so a
-  // reply id can collide with a live main-side Invoke id. If posting that reply's
-  // ScheduledReviewResult throws a DataCloneError, the failure must NOT reach into
-  // `this.pending` and delete/reject the unrelated Invoke that happens to share
-  // the id. Make the fake throw on the ScheduledReviewResult post to force that
-  // race deterministically.
-  const fake = makeFakeChild(
-    undefined,
-    DbHostRequestKind.ScheduledReviewResult
-  );
-  const reviewResult: ScheduledReviewResult = {
-    ok: true,
-    created: 0,
-    skipped: 0,
-    failed: 0,
-    summary: "noop",
-    error: null,
-  };
-  const { client, logs } = await startClientOver(fake, () =>
-    Promise.resolve(reviewResult)
-  );
-
-  // Start a real Invoke and capture the id it was assigned (Init took id 1, so
-  // this Invoke is id 2). It stays pending awaiting a Result.
-  const invokePromise = client.invoke("sessions.getAll", []);
-  await waitForInvokeCount(fake, 1);
-  const invokeId = fake.posted
-    .filter((m) => m.kind === DbHostRequestKind.Invoke)
-    .at(-1)?.id;
-  assert.ok(
-    invokeId !== undefined,
-    "the invoke must have been posted with an id"
-  );
-  assert.equal(
-    client.pendingRequestCount,
-    1,
-    "exactly the in-flight invoke should be pending"
-  );
-
-  // The child raises a ScheduledReviewRun whose reverse-RPC id COLLIDES with the
-  // live invoke id. Its result-post throws a DataCloneError inside the client.
-  const request: ScheduledReviewRequest = {
-    repoDir: "/tmp/repo",
-    characters: [],
-  };
-  fake.emit({
-    kind: DbHostResponseKind.ScheduledReviewRun,
-    id: invokeId,
-    generation: "gen-1",
-    request,
-  });
-  // Let onRunScheduledReview resolve and its (throwing) result-post run.
-  await Promise.resolve();
-  await Promise.resolve();
-
-  // TEETH: the collided-id invoke must STILL be pending and resolvable — the
-  // clone failure on the review reply must not have deleted/rejected it. With the
-  // pre-fix generic lookup this entry would already be gone (count 0) and the
-  // invoke rejected below.
-  assert.equal(
-    client.pendingRequestCount,
-    1,
-    "the same-id invoke must remain pending after the review-reply clone failure"
-  );
-  fake.resolveLastInvoke(["row"]);
-  assert.deepEqual(
-    await invokePromise,
-    ["row"],
-    "the same-id invoke must resolve normally, unaffected by the review-reply failure"
-  );
-
-  // The dropped review reply degraded to a log line (best-effort), not a crash.
-  assert.ok(
-    logs.some((line) => line.includes(DbHostRequestKind.ScheduledReviewResult)),
-    "the un-cloneable review reply must be logged and degraded"
   );
 });

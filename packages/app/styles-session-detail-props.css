@@ -163,6 +163,116 @@
   flex-shrink: 0;
 }
 
+/* ISS-7229: the Cost row carries TWO figures when Claude reported one — our
+   estimate and Claude's own, each under the word for where it came from.
+
+   They share ONE `.prd-prop` deliberately. `.prd-props` above is a multi-column
+   `auto-fit` grid, so a second ROW is an independent grid item: at two columns
+   the estimate sat in the right column while "Claude reported" landed in the
+   LEFT column one line below, reading as a property of nothing. Nesting the pair
+   inside one value makes that unrepresentable.
+
+   ALWAYS STACKED, never side by side, decided 2026-09-10 (Cosimo) after a design
+   pass measured what side-by-side actually does here. The pair needs 282px; the
+   two-column value track is 238px. So it fits only at ONE column — meaning the
+   row was four lines tall on a wide window and two lines on a narrow one, and
+   flipped between them when a side panel opened, because `.sd3-doc` stops
+   reaching its 1000px cap once the comments rail (`--sd3-cmts-w`) is out. One
+   shape at every width is worth more than matching a mock at one of them. */
+.sd3-props .prd-cost-pair {
+  display: inline-flex;
+  min-width: 0;
+  flex-direction: column;
+  /* BETWEEN the two pairs. Eight against the one-pixel gap inside a pair is the
+     only thing telling a reader which caption belongs to which number, and
+     proximity is the sole grouping cue a stack has. The first cut shipped
+     `2px 20px`, which put 1px inside a pair and 2px between pairs — visually
+     identical, so "ClosedLoop estimate" floated between the two figures
+     labelling neither. 8px is this pane's existing step. */
+  gap: 8px;
+}
+
+.sd3-props .prd-cost-figure {
+  display: inline-flex;
+  min-width: 0;
+  flex-direction: column;
+  /* WITHIN a pair: a figure and its own caption are one unit. */
+  gap: 1px;
+}
+
+/* The source word is prose, not a figure: it sinks to the label colour so the
+   numbers stay what the eye lands on.
+
+   No `font-family` here, deliberately. It carried `var(--font-sans)` until a
+   design pass measured that the token is declared inside design-system's
+   `@theme inline` block, which generates Tailwind utilities rather than a `:root`
+   custom property — so on web it resolved to `""` and the caption silently fell
+   back to the inherited mono, while `apps/desktop/src/renderer/globals.css`
+   declares `--font-sans` literally at `:root` and really did render sans. One
+   component, two faces, and nothing in the code saying so. `.sd3-out-label`, the
+   11px caption already in this pane, sets colour and size and no face; this
+   matches it. */
+.sd3-props .prd-cost-source {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* A stacked value ends this pane's single-line assumptions, and every one of
+   them is wrong for this row.
+
+   Scoped with `:has()` rather than a marker class or a second feature-flag read
+   — same tool and same reason as `.sd3-act-head:has(> h2.sd3-act-title)` in
+   `styles-session-timeline.css`. The pair is the only thing that knows it is
+   tall, and asking the DOM is what keeps every single-line row untouched. */
+
+/* ISS-8427's dead air, reached by a second tall row. That fix rides with the
+   Branches and Other repositories rows alone (`SessionPropertiesExpanded` sets
+   `sd3-props-top-aligned` only when one of them renders), so a session with a
+   Claude-reported cost and no plural branches kept `align-items: center` and the
+   row opposite this one floated in the middle of an 84px stripe. Derived from
+   the rendered pair rather than from the flag, so it cannot drift from what is
+   actually on screen.
+
+   SECOND TRIGGER for the same declaration: `.prd-props.sd3-props-top-aligned`
+   further down does this for the tall Branches and Other repositories rows, set
+   as a class by the panel.
+   Two independent triggers on purpose — neither row implies the other — but a
+   reader who finds one should know the other exists. Fold them together once
+   ISS-8427's gate is open and that modifier is unconditional. */
+.sd3-props .prd-props:has(.prd-cost-pair) {
+  align-items: start;
+}
+
+/* The LABEL, against a value several lines taller than it. */
+.sd3-props .prd-prop:has(.prd-cost-pair) {
+  align-items: start;
+}
+
+/* The leading ICON, which otherwise centres against the whole stack and ends up
+   level with a caption rather than with a number — reading for a moment as if
+   the glyph belonged to the caption. */
+.sd3-props .prd-prop-value:has(.prd-cost-pair) {
+  align-items: flex-start;
+}
+
+/* Optically centres the glyph on the FIRST LINE, not on the top edge of the
+   block: `flex-start` puts the 14px icon box at the top of a taller line box,
+   which reads high against the digits beside it. In `em` so it tracks the row's
+   font-size instead of pinning a pixel a type change would strand. */
+.sd3-props .prd-prop-value:has(.prd-cost-pair) > svg {
+  margin-top: 0.18em;
+}
+
+/* And the stack must not be ellipsised. `.prd-prop-value > span` above is
+   `nowrap` + `overflow: hidden` + `text-overflow: ellipsis`, which is right for
+   the one-line values it was written for and wrong for a column of them. */
+.sd3-props .prd-prop-value > span:has(.prd-cost-pair) {
+  overflow: visible;
+  white-space: normal;
+  text-overflow: clip;
+}
+
 @media (max-width: 420px) {
   .sd3-props .prd-prop {
     grid-template-columns: minmax(0, 1fr);
@@ -193,8 +303,13 @@
    clickable" legible in dark mode too (a bright-white inert label next to a
    colored link reads backwards). `min-height` lifts the chip to the 24px
    minimum pointer-target size (WCAG 2.5.8) now that it is a real click target
-   and these pills sit in a tightly wrapped row. */
-.sd3-props .sd3-result-pr {
+   and these pills sit in a tightly wrapped row.
+
+   `.sd3-details` is the Session Details tab (PLN-2169 M3), which mounts the
+   same Other repositories pills outside the Properties pane (its branches and
+   pull requests draw in the linked-artifacts table, PLN-2175); the chip rules
+   below match either scope. */
+:is(.sd3-props, .sd3-details) .sd3-result-pr {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -224,7 +339,7 @@
    Under `prefers-reduced-motion` the pulse is dropped but the reduced opacity is
    KEPT — the distinction from the settled label is the load-bearing part, and
    the animation is only its emphasis. */
-.sd3-props .sd3-result-pr-pending {
+:is(.sd3-props, .sd3-details) .sd3-result-pr-pending {
   opacity: 0.55;
   animation: sd3-linked-pending-pulse 1.6s ease-in-out infinite;
 }
@@ -240,7 +355,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sd3-props .sd3-result-pr-pending {
+  :is(.sd3-props, .sd3-details) .sd3-result-pr-pending {
     animation: none;
   }
 }
@@ -257,7 +372,7 @@
    measures 1.9:1 as 12px text on this pill in dark mode -- using it here would
    have made the one pill we want people to click the least readable thing in
    the pane. `--link` holds 6.6:1 (light) / 5.6:1 (dark). */
-.sd3-props a.sd3-result-pr {
+:is(.sd3-props, .sd3-details) a.sd3-result-pr {
   color: var(--link);
 }
 
@@ -266,15 +381,14 @@
    dark and darken it in light, in both cases pushing the label back toward the
    contrast floor, so hovering would make the text HARDER to read. `--accent`
    moves away from the label in both themes (6.1:1 light / 7.6:1 dark). */
-.sd3-props a.sd3-result-pr:hover {
+:is(.sd3-props, .sd3-details) a.sd3-result-pr:hover {
   background: var(--accent);
 }
 
 /* WCAG 2.4.7 Focus Visible: the pill is a real link, so keyboard focus has to be
-   visible. The indicator reuses `--link` rather than `--ring`, which is a pale
-   halo here (1.5:1 against the pane, under the 3:1 WCAG 1.4.11 floor for a
-   non-text indicator); `--link` clears it comfortably at 7.1:1 / 9.1:1. */
-.sd3-props a.sd3-result-pr:focus-visible {
+   visible. The indicator uses `--link`, which clears the 3:1 WCAG 1.4.11 floor
+   for a non-text indicator against the pane at 7.1:1 / 9.1:1. */
+:is(.sd3-props, .sd3-details) a.sd3-result-pr:focus-visible {
   outline: 2px solid var(--link);
   outline-offset: 2px;
 }
@@ -283,7 +397,7 @@
    UA button reset the span never did (a button does not inherit the pane's font
    family, and ships a border and a default cursor). Only the delta is declared —
    the base `.sd3-result-pr` rule above still owns the shape, size, and color. */
-.sd3-props button.sd3-result-pr {
+:is(.sd3-props, .sd3-details) button.sd3-result-pr {
   border: 0;
   font-family: inherit;
   cursor: pointer;
@@ -295,15 +409,14 @@
    affordance from hover + focus instead. Same `--accent` hover as the pill
    links, for the same reason (a `--link` tint would push the label toward the
    contrast floor in one theme or the other). */
-.sd3-props button.sd3-result-pr:hover {
+:is(.sd3-props, .sd3-details) button.sd3-result-pr:hover {
   background: var(--accent);
 }
 
 /* WCAG 2.4.7 Focus Visible. Reuses `--link` for the same reason the pill links
-   do: `--ring` is a 1.5:1 halo against this pane, under the 3:1 WCAG 1.4.11
-   floor for a non-text indicator. An outline color is not the "link-colored
-   text" signal, so this does not contradict the rule above. */
-.sd3-props button.sd3-result-pr:focus-visible {
+   do. An outline color is not the "link-colored text" signal, so this does not
+   contradict the rule above. */
+:is(.sd3-props, .sd3-details) button.sd3-result-pr:focus-visible {
   outline: 2px solid var(--link);
   outline-offset: 2px;
 }
@@ -321,31 +434,23 @@
   font-size: 12px;
 }
 
-.sd3-props .sd3-out-diff .add {
-  color: var(--success-foreground);
-  font-weight: 600;
-}
-
-.sd3-props .sd3-out-diff .del {
-  color: var(--destructive);
-  font-weight: 600;
-}
-
-/* FEA-4378: the authored-PR roll-up value is a single combined added+removed
-   total, so it renders at plain foreground weight — NOT the green `.add` color,
-   which means "added" everywhere else in this pane and would mis-teach the
-   combined figure. Same 600 weight as the working-tree add/del values so the
-   numbers read consistently across both "Lines changed" shapes. */
+/* FEA-4378, narrowed by ISS-9964: the merged-PR value is a single combined
+   added+removed total, so it renders at plain foreground weight — NOT a green
+   "added" color, which means "added" everywhere else in this pane and would
+   mis-teach the combined figure. The `.add` / `.del` rules that styled the
+   retired working-tree split were deleted with the split itself; a merged-PR
+   roll-up carries only `additions + deletions` per PR, so there is no honest
+   per-side breakdown left to color. */
 .sd3-props .sd3-out-diff .total {
   font-weight: 600;
 }
 
-/* FEA-4378: the quiet "in PRs" qualifier on the authored-PR roll-up value in the
-   "Lines changed" row — present ONLY on the roll-up shape, to tell the reader the
-   number is the PRs' delivered code and not the session's local working-tree diff.
-   The working-tree shape carries no qualifier (the row label already says "Lines
-   changed"). Matches `.sd3-result-status`'s muted, small treatment so it reads as
-   a caption, not a value. */
+/* FEA-4378: the quiet qualifier beside the value in the "Lines changed" row —
+   "in merged PRs" on a measured count, "not available" when the merged count
+   could not be resolved. It tells the reader which population the number is,
+   and (ISS-9964) both shapes carry one, because "not available" is a different
+   fact from a measured zero. Matches `.sd3-result-status`'s muted, small
+   treatment so it reads as a caption, not a value. */
 .sd3-props .sd3-out-diff .sd3-out-label {
   color: var(--muted-foreground);
   font-size: 11px;
@@ -366,4 +471,99 @@
 .sd3-props .sd3-linked-overflow {
   color: var(--muted-foreground);
   cursor: default;
+}
+
+/* ISS-7737 (visual QA): the ISS-4654 explained value carries `.prd-prop-value`'s
+   whole treatment and one delta — it opens a tooltip on hover and focus and has
+   no `onClick`, so it must not wear the pointer this pane gives its real
+   affordances. It shipped as a Tailwind `cursor-default`, which never applied:
+   the utility is one class against `.sd3-props .prd-prop-value`'s two, so the
+   pointer above always won. Declared here instead, at the specificity that
+   actually reaches it — the same move `.sd3-linked-overflow` already makes. This
+   matters more since ISS-7737 put an explanation on Turns, Tokens, and Cost:
+   with four explained values in the grid, a pointer on all of them erases the
+   one signal telling them from Session ID (copies) and Branch (navigates). */
+.sd3-props .prd-prop-value-explained {
+  cursor: default;
+}
+
+/* ISS-8427: the Branches row renders every branch a session touched, and branch
+   names are long where a PR number is not — `.sd3-result-pr` sets
+   `white-space: nowrap` with no max-width, so one 50-character name would blow
+   out the value track. Clip the NAME inside the pill instead: the flex track
+   supplies the width, the pill's tooltip already carries the full name, and no
+   pixel value is invented. `min-width: 0` is what lets the flex child shrink
+   below its content size at all. */
+:is(.sd3-props, .sd3-details) .sd3-branch-pill {
+  max-width: 100%;
+}
+
+/* ISS-8427 (visual QA): `.prd-props` is a two-column grid whose items STRETCH to
+   their grid row, and `.sd3-props .prd-prop` centres its content — so a tall row
+   leaves the row opposite it floating in the middle of a band of dead air. The
+   Branches row is the first one tall enough to make that visible (six branches
+   is ~192px against a 28px rhythm), which is why the fix lands here. Pins every
+   row to the top of its band, the same move `.sd3-linked-prop` already makes one
+   level down, so the two label columns scan level again.
+
+   SCOPED TO THE MODIFIER, not to `.prd-props` itself, because this rule is part
+   of the ISS-8427 perceivable change and must not outrun its gate (ISS-4779
+   closed-by-default). Unscoped it re-aligned EVERY session's Properties pane
+   with the flag shut: the PR row already wraps today (`.sd3-prs-value` is
+   `flex-wrap: wrap`), and the five-PR session ISS-8427 is written about is
+   exactly a pane with a tall row and no Branches row. `SessionPropertiesExpanded`
+   adds the class only when it renders the plural row or the Other repositories
+   row (PLN-2061 M5), so a closed gate reproduces today's alignment for every pane
+   without the latter. */
+/* ISS-8427's trigger for the same top alignment. Its twin is
+   `.prd-props:has(.prd-cost-pair)` above, which does this for the tall Cost
+   pair; that block records why the two are separate. */
+.sd3-props .prd-props.sd3-props-top-aligned {
+  align-items: start;
+}
+
+:is(.sd3-props, .sd3-details) .sd3-branch-pill > .mono {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The Details tab has no `.prd-prop-value`, so the wrap-not-clip rule below is
+   anchored on its own scope here. */
+.sd3-details .sd3-other-repo-pill {
+  max-width: 100%;
+  white-space: normal;
+}
+
+/* PLN-2061 M5 (visual QA): an "Other repositories" entry is `owner/repo` plus a
+   PR number or branch name, routinely wider than the value column. It WRAPS
+   rather than clipping like `.sd3-branch-pill`: that clip is paired with a
+   tooltip carrying the full name, and this row has none (operator ruling
+   2026-09-22), so an ellipsis would hide the end of the name outright.
+   Anchored on `.prd-prop-value >` so it outranks `.prd-prop-value > span`, which
+   an unlinked entry (a bare span) otherwise inherits the clip from. */
+.sd3-props .prd-prop-value > .sd3-other-repo-pill {
+  max-width: 100%;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+:is(.sd3-props, .sd3-details) .sd3-other-repo-pill > .mono {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ISS-12412 (session-detail layout, kept here so `styles.css` does not grow):
+   on the shell's canvas card the workspace starts at the inset
+   every other tab's body uses (`ArtifactCanvasPanel`: px-5 pt-4), not the
+   standalone page's centred measure. */
+[data-artifact-frame="framed"] .sd3-doc {
+  max-width: none;
+  margin: 0;
+  padding: 16px 20px 96px;
+}
+
+[data-artifact-frame="framed"] .sd3-head {
+  padding-top: 0;
 }

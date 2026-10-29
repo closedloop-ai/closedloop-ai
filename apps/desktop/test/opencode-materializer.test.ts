@@ -7,8 +7,8 @@
  * parser core.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { parseOpenCodeTranscript } from "@repo/lib/harness/opencode/parse-opencode";
+import { test } from "vitest";
 import type {
   OpencodeDroppedSession,
   OpencodeSessionLoad,

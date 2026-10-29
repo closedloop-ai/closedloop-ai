@@ -13,8 +13,10 @@
 
 import {
   DESKTOP_AUTHORIZE_QUERY_PARAMS,
+  DESKTOP_BOOTSTRAP_SUPPORTED_TRUE,
   decodeDesktopGatewayPublicKey,
 } from "@repo/api/src/types/desktop-authorize-url";
+import { isAllowedDesktopLoopbackRedirectUri } from "@repo/api/src/types/desktop-loopback-redirect";
 
 export type DesktopAuthorizeParams = {
   codeChallenge: string;
@@ -25,6 +27,7 @@ export type DesktopAuthorizeParams = {
   gatewayPublicKeyPem: string;
   deviceName: string;
   platform: string;
+  bootstrapSupported: boolean;
 };
 
 /** Why parsing the desktop authorize URL failed (const-object, not a bare union). */
@@ -38,33 +41,6 @@ export type DesktopAuthorizeParamError =
 export type ParseDesktopAuthorizeParamsResult =
   | { ok: true; params: DesktopAuthorizeParams }
   | { ok: false; reason: DesktopAuthorizeParamError };
-
-/**
- * IP-literal loopback only (`127.0.0.1` / `[::1]`), mirroring the API allowlist
- * (`apps/api/lib/auth/desktop-loopback-redirect.ts`). `localhost` is rejected
- * (DNS/hosts-repointable, RFC 8252 §7.3); the API stays authoritative.
- */
-const LOOPBACK_REDIRECT_HOSTNAMES: ReadonlySet<string> = new Set([
-  "127.0.0.1",
-  "[::1]",
-  "::1",
-]);
-
-export function isLoopbackRedirectUri(uri: string): boolean {
-  let parsed: URL;
-  try {
-    parsed = new URL(uri);
-  } catch {
-    return false;
-  }
-  if (parsed.username !== "" || parsed.password !== "") {
-    return false;
-  }
-  if (parsed.protocol !== "http:") {
-    return false;
-  }
-  return LOOPBACK_REDIRECT_HOSTNAMES.has(parsed.hostname);
-}
 
 type SearchParamValue = string | string[] | undefined;
 
@@ -126,7 +102,7 @@ export function parseDesktopAuthorizeParams(
     return { ok: false, reason: DesktopAuthorizeParamError.MissingParams };
   }
 
-  if (!isLoopbackRedirectUri(redirectUri)) {
+  if (!isAllowedDesktopLoopbackRedirectUri(redirectUri)) {
     return { ok: false, reason: DesktopAuthorizeParamError.InvalidRedirectUri };
   }
 
@@ -145,6 +121,10 @@ export function parseDesktopAuthorizeParams(
       platform:
         firstValue(searchParams[DESKTOP_AUTHORIZE_QUERY_PARAMS.platform]) ??
         "Unknown platform",
+      bootstrapSupported:
+        firstValue(
+          searchParams[DESKTOP_AUTHORIZE_QUERY_PARAMS.bootstrapSupported]
+        ) === DESKTOP_BOOTSTRAP_SUPPORTED_TRUE,
     },
   };
 }

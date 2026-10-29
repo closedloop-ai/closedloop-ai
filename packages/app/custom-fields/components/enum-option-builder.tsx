@@ -18,7 +18,13 @@ import {
   useReorderEnumOptions,
   useUpdateEnumOption,
 } from "@repo/app/custom-fields/hooks/use-custom-fields";
+import {
+  CustomFieldOptionColor,
+  resolveCustomFieldOptionColor,
+} from "@repo/app/custom-fields/lib/option-colors";
 import { DndProvider } from "@repo/app/shared/components/dnd-provider";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { CUSTOM_FIELD_EDITOR_CONTRACTS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -33,9 +39,7 @@ import { useId, useMemo, useRef, useState } from "react";
 import type { ColorName } from "./color-picker";
 import { ColorPicker } from "./color-picker";
 
-// ---------------------------------------------------------------------------
 // Local option type used in create mode
-// ---------------------------------------------------------------------------
 
 type LocalEnumOption = {
   /** Stable key for React and DnD. */
@@ -45,9 +49,7 @@ type LocalEnumOption = {
   enabled: boolean;
 };
 
-// ---------------------------------------------------------------------------
 // Row component (used in both modes)
-// ---------------------------------------------------------------------------
 
 type EnumOptionRowProps = {
   id: string;
@@ -194,9 +196,7 @@ function EnumOptionRow({
   );
 }
 
-// ---------------------------------------------------------------------------
 // Create mode (local state, no API calls)
-// ---------------------------------------------------------------------------
 
 type CreateModeProps = {
   value: CreateEnumOptionInput[];
@@ -310,15 +310,16 @@ function CreateModeBuilder({ value, onChange }: Readonly<CreateModeProps>) {
   );
 }
 
-// ---------------------------------------------------------------------------
 // Edit mode (API-backed, fieldId required)
-// ---------------------------------------------------------------------------
 
 type EditModeProps = {
   fieldId: string;
 };
 
 function EditModeBuilder({ fieldId }: Readonly<EditModeProps>) {
+  const canonicalColors = useFeatureFlagEnabledOptional(
+    CUSTOM_FIELD_EDITOR_CONTRACTS_FEATURE_FLAG_KEY
+  );
   const { data: options = [] } = useCustomFieldEnumOptions(fieldId);
   const updateOption = useUpdateEnumOption(fieldId);
   const createOption = useCreateEnumOption(fieldId);
@@ -328,13 +329,19 @@ function EditModeBuilder({ fieldId }: Readonly<EditModeProps>) {
   const [orderedIds, setOrderedIds] = useState<string[] | null>(null);
 
   const displayOptions = useMemo(() => {
+    const serverOrder = [...options].sort((a, b) => a.sortOrder - b.sortOrder);
     if (orderedIds === null) {
-      return [...options].sort((a, b) => a.sortOrder - b.sortOrder);
+      return serverOrder;
     }
     const map = new Map(options.map((o) => [o.id, o]));
-    return orderedIds
+    const reordered = orderedIds
       .map((id) => map.get(id))
       .filter((o): o is CustomFieldEnumOption => Boolean(o));
+    // An option created after the last local reorder is absent from orderedIds.
+    // Appending it keeps the new row visible without discarding the reorder,
+    // which resetting orderedIds to null would.
+    const placed = new Set(reordered.map((o) => o.id));
+    return [...reordered, ...serverOrder.filter((o) => !placed.has(o.id))];
   }, [options, orderedIds]);
 
   const sortedIds = useMemo(
@@ -375,7 +382,7 @@ function EditModeBuilder({ fieldId }: Readonly<EditModeProps>) {
         >
           {displayOptions.map((opt) => (
             <EnumOptionRow
-              color={(opt.color as ColorName | null) ?? null}
+              color={storedOptionColor(opt.color, canonicalColors)}
               enabled={opt.enabled}
               id={opt.id}
               key={opt.id}
@@ -415,9 +422,7 @@ function EditModeBuilder({ fieldId }: Readonly<EditModeProps>) {
   );
 }
 
-// ---------------------------------------------------------------------------
 // Public component — switches between create/edit mode
-// ---------------------------------------------------------------------------
 
 type EnumOptionBuilderCreateProps = {
   fieldId?: undefined;
@@ -446,4 +451,27 @@ export function EnumOptionBuilder(props: EnumOptionBuilderProps) {
       value={createProps.value}
     />
   );
+}
+
+/**
+ * A persisted option colour as the picker should show it (ISS-8215).
+ *
+ * `null` is "no colour", which the picker renders grey and `syncToParent` omits
+ * from the wire — so an unknown value must resolve to `null`, never to the
+ * `None` id, or an absent optional would start being serialized. With the gate
+ * ON a row still carrying the add-field dialog's Tailwind class resolves to the
+ * colour its author picked instead of reading as unknown.
+ *
+ * Create mode does not go through here: its values come straight from
+ * `ColorPicker`, so they are canonical by construction.
+ */
+function storedOptionColor(
+  stored: string | null | undefined,
+  canonicalColors: boolean
+): ColorName | null {
+  if (!canonicalColors) {
+    return (stored as ColorName | null) ?? null;
+  }
+  const resolved = resolveCustomFieldOptionColor(stored);
+  return resolved === CustomFieldOptionColor.None ? null : resolved;
 }

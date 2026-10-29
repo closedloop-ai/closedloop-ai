@@ -1,20 +1,17 @@
 import { resolveBinaryFromLoginShell } from "../../server/shell-path.js";
-import { CLI_BINARY_TOOLS } from "../../shared/cli-binary-tools.js";
+import { BinaryPathsIpcChannel } from "../../shared/binary-paths-ipc-channel.js";
+import {
+  type BinaryPaths,
+  CLI_BINARY_TOOLS,
+  type CliBinaryTool,
+  stripLegacyCliBinaryPaths,
+} from "../../shared/cli-binary-tools.js";
 import { assertTrustedIpcSender } from "./ipc-trusted-sender.js";
 
-export const BinaryPathsIpcChannel = {
-  GetBinaryPaths: "desktop:get-binary-paths",
-  PatchBinaryPaths: "desktop:patch-binary-paths",
-  DetectCliTools: "desktop:detect-cli-tools",
-} as const;
+export type { CliBinaryTool } from "../../shared/cli-binary-tools.js";
 
-export type BinaryPathsIpcChannel =
-  (typeof BinaryPathsIpcChannel)[keyof typeof BinaryPathsIpcChannel];
-
-/** Persistable CLI binary-override keys (single source of truth in the shared list). */
-export type CliBinaryTool = (typeof CLI_BINARY_TOOLS)[number];
 /** The stored binary-path override map — mirrors settings-store's `BinaryPaths`. */
-type BinaryPathMap = Partial<Record<CliBinaryTool, string>>;
+type BinaryPathMap = BinaryPaths;
 /** A binary-path override patch (null clears an override). */
 export type BinaryPathPatch = Partial<Record<CliBinaryTool, string | null>>;
 
@@ -37,16 +34,18 @@ export function registerBinaryPathsIpcHandlers(
   deps: BinaryPathsIpcDeps
 ): void {
   ipcMainLike.handle(BinaryPathsIpcChannel.GetBinaryPaths, () =>
-    deps.getBinaryPaths()
+    stripLegacyCliBinaryPaths(deps.getBinaryPaths())
   );
   ipcMainLike.handle(BinaryPathsIpcChannel.PatchBinaryPaths, (event, patch) => {
     assertTrustedIpcSender(deps.isTrustedSender, event);
     // `patch` is renderer-supplied; applyBinaryPathPatch canonicalizes and
     // validates each path (realpath + executable check) before persisting.
-    return deps.applyBinaryPathPatch(patch as BinaryPathPatch);
+    return stripLegacyCliBinaryPaths(
+      deps.applyBinaryPathPatch(patch as BinaryPathPatch)
+    );
   });
   ipcMainLike.handle(BinaryPathsIpcChannel.DetectCliTools, async () => {
-    const overrides = deps.getBinaryPaths();
+    const overrides = stripLegacyCliBinaryPaths(deps.getBinaryPaths());
     const names = CLI_BINARY_TOOLS;
     const results = await Promise.all(
       names.map(async (name) => {

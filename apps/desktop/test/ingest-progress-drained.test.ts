@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { createTracker } from "./helpers/ingest-progress-fixture.js";
 
 // ISS-5281 (whitlockk review). The import splash used to infer "the queue is empty"

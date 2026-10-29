@@ -17,8 +17,7 @@ export const DOCUMENT_TITLE_SUFFIX = "Closedloop.ai";
  * `metadata` pattern is not reachable from these pages without adding a server
  * layout per route. This hook is the one seam both surfaces use instead, which
  * also means the desktop renderer (no Next at all) titles its tabs by the exact
- * same rule rather than a parallel implementation. It follows the precedent the
- * loop detail container already set (`loop-detail-container.tsx`).
+ * same rule rather than a parallel implementation.
  *
  * Pass `null` to leave the title alone — that is how a caller keeps the page on
  * the root layout's default while the feature is flagged off. It is NOT how a

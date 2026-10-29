@@ -24,8 +24,9 @@
  * emitted refs — the only observable the concatenation ever produced.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { ArtifactRefTargetKind } from "@repo/api/src/types/session-artifact-link";
+import { collectSessionToolUses } from "@repo/lib/harness/session-tool-uses";
+import { describe, test } from "vitest";
 import { extractArtifactRefs } from "../src/main/collectors/parsing/artifact-ref-extractor.js";
 import {
   findProseBranchNames,
@@ -33,12 +34,11 @@ import {
   proseBlocks,
 } from "../src/main/collectors/parsing/artifact-ref-prose-refs.js";
 import type { ArtifactRefRecord } from "../src/main/collectors/parsing/artifact-ref-record.js";
-import { collectSessionToolUses } from "../src/main/collectors/parsing/session-tool-uses.js";
 import type { NormalizedSession } from "../src/main/collectors/types.js";
 import { makeSession as baseSession } from "./normalized-session-test-utils.js";
 
 const NOW = "2026-01-01T12:00:00.000Z";
-const REPO = "closedloop-ai/example-repo";
+const REPO = "closedloop-ai/closedloop-ai";
 
 function makeSession(
   overrides: Partial<NormalizedSession> = {}

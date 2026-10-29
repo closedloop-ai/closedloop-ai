@@ -73,7 +73,7 @@ describe("useDesktopLinkedEntityColumns", () => {
     );
 
     expect(result.current.getIssueHref(ISSUE)).toBe(
-      "https://app.closedloop.ai/acme/issues/FEA-4210"
+      "https://app.closedloop.ai/acme/documents/FEA-4210"
     );
   });
 

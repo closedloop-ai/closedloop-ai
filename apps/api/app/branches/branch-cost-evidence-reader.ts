@@ -104,26 +104,6 @@ export async function readBoundedCloudCostEvidence(
   };
 }
 
-/** Build the organization/session/date predicate used by the numeric aggregate. */
-export function cloudSessionEventWhere(
-  organizationId: string,
-  sessionIds: string[],
-  dateWindow: SessionUsageDateWindow | undefined
-): Prisma.AgentSessionTokenEventWhereInput {
-  return {
-    agentSessionId: { in: sessionIds },
-    session: { artifact: { organizationId } },
-    ...(dateWindow?.startDate || dateWindow?.endDate
-      ? {
-          eventCreatedAt: {
-            ...(dateWindow.startDate ? { gte: dateWindow.startDate } : {}),
-            ...(dateWindow.endDate ? { lte: dateWindow.endDate } : {}),
-          },
-        }
-      : {}),
-  };
-}
-
 function isPopulatedEvidenceRow(
   row: CloudEvidenceRawRow
 ): row is PopulatedCloudEvidenceRawRow {

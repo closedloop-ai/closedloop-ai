@@ -1,6 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import {
+  MAX_ATTACHMENT_FILE_SIZE_BYTES,
+  MAX_MEDIA_FILE_SIZE_BYTES,
+  MEDIA_MIME_TYPES,
+} from "@repo/api/src/types/attachment.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { registerUploadAttachment } from "../tools/upload-attachment.js";
+import { expectIssue, ZodIssueCode } from "./fixtures/zod-issues.js";
 
 vi.mock("../api-client.js", () => ({
   verifyApiKey: vi.fn(),
@@ -67,6 +74,67 @@ describe("upload-attachment tool registration gating", () => {
     const readOnly = await registeredToolNames(["read"]);
     expect(readOnly).not.toContain(TOOL_NAME);
     expect(readOnly).toContain("list-attachments");
+  });
+});
+
+describe("upload-attachment input schema", () => {
+  it("admits a media-sized upload and rejects anything above the media ceiling", () => {
+    // ISS-10415 / operator ruling 2026-09-17: the schema used to cap at
+    // MAX_ATTACHMENT_FILE_SIZE_BYTES, which made the media path unreachable
+    // through MCP — a `.mov` the API accepts could not even be declared. The
+    // per-type narrowing (a non-media file is still limited to the document
+    // ceiling) belongs to the API validator, which can see `mimeType`; a Zod
+    // raw shape cannot. The document ceiling is asserted here only as the floor
+    // this bound must clear.
+    const localRegisterTool = vi.fn();
+    const localApiClient = { post: vi.fn() };
+
+    registerUploadAttachment(
+      { registerTool: localRegisterTool } as never,
+      localApiClient as never
+    );
+
+    const config = localRegisterTool.mock.calls[0]?.[1] as {
+      inputSchema: z.ZodRawShape;
+    };
+    const inputSchema = z.object(config.inputSchema);
+    const validInput = {
+      entityId: "FEA-42",
+      filename: "large.bin",
+      mimeType: "application/octet-stream",
+    };
+
+    expect(MAX_MEDIA_FILE_SIZE_BYTES).toBeGreaterThan(
+      MAX_ATTACHMENT_FILE_SIZE_BYTES
+    );
+    for (const mimeType of MEDIA_MIME_TYPES) {
+      expect(
+        inputSchema.safeParse({
+          ...validInput,
+          mimeType,
+          sizeBytes: MAX_MEDIA_FILE_SIZE_BYTES,
+        }).success
+      ).toBe(true);
+    }
+    expect(
+      inputSchema.safeParse({
+        ...validInput,
+        sizeBytes: MAX_ATTACHMENT_FILE_SIZE_BYTES + 1,
+      }).success
+    ).toBe(true);
+    expectIssue(
+      inputSchema.safeParse({
+        ...validInput,
+        sizeBytes: MAX_MEDIA_FILE_SIZE_BYTES + 1,
+      }),
+      ["sizeBytes"],
+      {
+        code: ZodIssueCode.TooBig,
+        origin: "number",
+        maximum: MAX_MEDIA_FILE_SIZE_BYTES,
+      }
+    );
+    expect(localApiClient.post).not.toHaveBeenCalled();
   });
 });
 

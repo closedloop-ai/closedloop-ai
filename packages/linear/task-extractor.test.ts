@@ -8,7 +8,11 @@ vi.mock("@repo/ai/server", () => ({
 }));
 
 import { generateObject } from "@repo/ai/server";
-import { extractTasksWithLLM, formatTaskForLinear } from "./task-extractor";
+import {
+  extractTasksWithLLM,
+  formatTaskForLinear,
+  TASK_EXTRACTION_TIMEOUT_MS,
+} from "./task-extractor";
 
 const mockGenerateObject = generateObject as Mock;
 
@@ -95,6 +99,32 @@ describe("extractTasksWithLLM", () => {
         maxOutputTokens: 128_000,
       })
     );
+  });
+
+  /**
+   * ISS-6774: without an `abortSignal` a hung generation is unbounded (the AI
+   * SDK retries serially), so the export route outlives its platform
+   * `maxDuration` — and the time is taken from the non-idempotent Linear issue
+   * fan-out this call runs ahead of.
+   */
+  it("bounds the generation with the extraction deadline", async () => {
+    // Spy on the factory rather than only the signal's type: a signal that can
+    // never fire (`new AbortController().signal`) is also an AbortSignal, so
+    // asserting the shape alone would stay green under exactly the regression
+    // this pins. This asserts the deadline the signal was armed with AND that
+    // the armed signal is the one handed to the model.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+
+    await extractTasksWithLLM("- [ ] Setup database");
+
+    expect(timeoutSpy).toHaveBeenCalledWith(TASK_EXTRACTION_TIMEOUT_MS);
+    const call = mockGenerateObject.mock.calls[0]?.[0] as {
+      abortSignal?: AbortSignal;
+    };
+    expect(call.abortSignal).toBe(timeoutSpy.mock.results[0]?.value);
+    expect(call.abortSignal?.aborted).toBe(false);
+
+    timeoutSpy.mockRestore();
   });
 
   it("passes the security-hardened system prompt", async () => {

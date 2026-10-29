@@ -27,12 +27,10 @@
  * production probe drifted back onto a table scan.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { DATA_REVISION_IMPORT_PENDING } from "../src/main/collectors/engine/data-revision.js";
-import type {
-  CapturedStatement,
-  DesktopPrisma,
-} from "../src/main/database/prisma-client.js";
+import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
+import type { CapturedStatement } from "../src/main/database/prisma-statement-observers.js";
 import { createStoreHealthMethods } from "../src/main/database/store-health-methods.js";
 import { createWriteQueue } from "../src/main/database/write-queue.js";
 import { openTestPrisma } from "./prisma-test-utils.js";

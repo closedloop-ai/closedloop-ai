@@ -1,3 +1,4 @@
+// gardener-support: test and story data, not shipped
 /**
  * Shared Insights `InsightsSectionData` fixtures for the slice's stories.
  *

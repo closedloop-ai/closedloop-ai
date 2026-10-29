@@ -1,22 +1,36 @@
 import {
-  DESKTOP_SERVER_ANALYTICS_RELAY_FLAG,
   DesktopAnalyticsAckReason,
+  DesktopAnalyticsAttributionModel,
   DesktopAnalyticsEventName,
 } from "@repo/api/src/types/desktop-analytics";
-import { describe, expect, it, vi } from "vitest";
+import { log } from "@repo/observability/log";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type DesktopAnalyticsCaptureInput,
   type DesktopAnalyticsHandlerContext,
   DesktopAnalyticsRateLimiter,
   handleDesktopAnalyticsEvent,
+  handleDesktopAnalyticsPreAuthEvent,
 } from "../desktop-analytics-handler";
+
+vi.mock("@repo/observability/log", async () => {
+  const { createLogMockModule } = await import(
+    "@/__tests__/fixtures/mock-modules"
+  );
+  return createLogMockModule();
+});
+
+// apps/api sets no global mock reset, so the module-scoped log spy accumulates
+// across every case in this file.
+beforeEach(() => {
+  vi.mocked(log.warn).mockReset();
+});
 
 const baseContext: DesktopAnalyticsHandlerContext = {
   organizationId: "org-1",
   userId: "user_db_1",
   clerkUserId: "clerk_user_1",
   targetId: "target-1",
-  gatewaySessionId: "session-1",
   pluginVersion: "1.0.0",
 };
 
@@ -31,27 +45,21 @@ const validPayload = {
 };
 
 describe("handleDesktopAnalyticsEvent", () => {
-  it("returns feature_disabled unless the exact server relay flag is enabled", async () => {
+  // PRD-736 P1: the `desktop-server-analytics-relay` flag is retired, so the
+  // lane is always on. A valid event with only a capture sink is accepted with
+  // NO feature-flag arrangement — in the pre-P1 handler this exact call went
+  // through the default PostHog evaluator, which resolves `null` in this
+  // unconfigured test environment and rejected the event with
+  // `analytics_unavailable`, so this case fails if the flag read comes back.
+  it("captures a valid event with no feature-flag dependency (always on)", async () => {
     const capture = vi.fn();
-    const isFeatureEnabled = vi.fn(
-      (flag: string) => flag !== DESKTOP_SERVER_ANALYTICS_RELAY_FLAG
-    );
 
     await expect(
-      handleDesktopAnalyticsEvent(validPayload, baseContext, {
-        capture,
-        isFeatureEnabled,
-      })
-    ).resolves.toEqual({
-      accepted: false,
-      reason: DesktopAnalyticsAckReason.FeatureDisabled,
-    });
+      handleDesktopAnalyticsEvent(validPayload, baseContext, { capture })
+    ).resolves.toEqual({ accepted: true });
 
-    expect(isFeatureEnabled).toHaveBeenCalledWith(
-      DESKTOP_SERVER_ANALYTICS_RELAY_FLAG,
-      "clerk_user_1"
-    );
-    expect(capture).not.toHaveBeenCalled();
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(log.warn).not.toHaveBeenCalled();
   });
 
   it("forwards accepted events with server-owned identity and enrichment", async () => {
@@ -72,7 +80,6 @@ describe("handleDesktopAnalyticsEvent", () => {
           capture: (input) => {
             captures.push(input);
           },
-          isFeatureEnabled: async () => true,
         }
       )
     ).resolves.toEqual({ accepted: true });
@@ -90,7 +97,6 @@ describe("handleDesktopAnalyticsEvent", () => {
           desktop_attribution_model: "gateway_owner",
           organization_id: "org-1",
           compute_target_id: "target-1",
-          gateway_session_id: "session-1",
           code_plugin_version: "1.0.0",
         },
       },
@@ -116,7 +122,6 @@ describe("handleDesktopAnalyticsEvent", () => {
           capture: (input) => {
             captures.push(input);
           },
-          isFeatureEnabled: async () => true,
         }
       )
     ).resolves.toEqual({ accepted: true });
@@ -134,7 +139,6 @@ describe("handleDesktopAnalyticsEvent", () => {
           desktop_attribution_model: "gateway_owner",
           organization_id: "org-1",
           compute_target_id: "target-1",
-          gateway_session_id: "session-1",
           code_plugin_version: "1.0.0",
         },
       },
@@ -162,7 +166,6 @@ describe("handleDesktopAnalyticsEvent", () => {
           capture: (input) => {
             captures.push(input);
           },
-          isFeatureEnabled: async () => true,
         }
       )
     ).resolves.toEqual({ accepted: true });
@@ -181,7 +184,6 @@ describe("handleDesktopAnalyticsEvent", () => {
           desktop_attribution_model: "gateway_owner",
           organization_id: "org-1",
           compute_target_id: "target-1",
-          gateway_session_id: "session-1",
           code_plugin_version: "1.0.0",
         },
       },
@@ -204,7 +206,6 @@ describe("handleDesktopAnalyticsEvent", () => {
         baseContext,
         {
           capture,
-          isFeatureEnabled: async () => true,
         }
       )
     ).resolves.toEqual({
@@ -224,7 +225,6 @@ describe("handleDesktopAnalyticsEvent", () => {
         { ...baseContext, clerkUserId: null },
         {
           capture,
-          isFeatureEnabled: async () => true,
         }
       )
     ).resolves.toEqual({
@@ -239,7 +239,6 @@ describe("handleDesktopAnalyticsEvent", () => {
     const rateLimiter = new DesktopAnalyticsRateLimiter();
     const acceptedDeps = {
       capture: vi.fn(),
-      isFeatureEnabled: async () => true,
       rateLimiter,
       now: () => 1000,
     };
@@ -262,7 +261,6 @@ describe("handleDesktopAnalyticsEvent", () => {
         capture: () => {
           throw new Error("posthog unavailable");
         },
-        isFeatureEnabled: async () => true,
         rateLimiter: new DesktopAnalyticsRateLimiter(),
       })
     ).resolves.toEqual({
@@ -271,35 +269,47 @@ describe("handleDesktopAnalyticsEvent", () => {
     });
   });
 
-  it("rate limits relay reconnects with a stable gateway-owner target key", async () => {
+  it("rate limits per org, gateway-owner Clerk user, and target key", async () => {
     const rateLimiter = new DesktopAnalyticsRateLimiter();
     const acceptedDeps = {
       capture: vi.fn(),
-      isFeatureEnabled: async () => true,
       rateLimiter,
       now: () => 1000,
+    };
+    const rateLimited = {
+      accepted: false,
+      reason: DesktopAnalyticsAckReason.RateLimited,
     };
 
     for (let index = 0; index < 120; index += 1) {
       await expect(
-        handleDesktopAnalyticsEvent(
-          validPayload,
-          { ...baseContext, relaySocketId: "socket-a" },
-          acceptedDeps
-        )
+        handleDesktopAnalyticsEvent(validPayload, baseContext, acceptedDeps)
       ).resolves.toEqual({ accepted: true });
     }
 
     await expect(
+      handleDesktopAnalyticsEvent(validPayload, baseContext, acceptedDeps)
+    ).resolves.toEqual(rateLimited);
+
+    // The database userId is not part of the key: the same gateway owner
+    // shares the exhausted bucket.
+    await expect(
       handleDesktopAnalyticsEvent(
         validPayload,
-        { ...baseContext, relaySocketId: "socket-b" },
+        { ...baseContext, userId: "user_db_2" },
         acceptedDeps
       )
-    ).resolves.toEqual({
-      accepted: false,
-      reason: DesktopAnalyticsAckReason.RateLimited,
-    });
+    ).resolves.toEqual(rateLimited);
+
+    for (const otherKeyContext of [
+      { ...baseContext, organizationId: "org-2" },
+      { ...baseContext, clerkUserId: "clerk_user_2" },
+      { ...baseContext, targetId: "target-2" },
+    ]) {
+      await expect(
+        handleDesktopAnalyticsEvent(validPayload, otherKeyContext, acceptedDeps)
+      ).resolves.toEqual({ accepted: true });
+    }
   });
 
   it("evicts expired and oldest rate-limit entries", () => {
@@ -322,5 +332,207 @@ describe("handleDesktopAnalyticsEvent", () => {
     expect(entries.has("active")).toBe(false);
     expect(entries.has("next-a")).toBe(true);
     expect(entries.has("next-b")).toBe(true);
+  });
+});
+
+// ISS-10503 (PRD-736 D5, invariant 5): the alias handshake on the
+// authenticated lane.
+describe("handleDesktopAnalyticsEvent alias handshake (ISS-10503)", () => {
+  const ONBOARDING_ID = "22222222-2222-4222-8222-222222222222";
+
+  it("emits one alias and still captures under the server-resolved clerk identity", async () => {
+    const capture = vi.fn();
+    const alias = vi.fn();
+
+    await expect(
+      handleDesktopAnalyticsEvent(
+        { ...validPayload, distinctId: ONBOARDING_ID },
+        baseContext,
+        { alias, capture }
+      )
+    ).resolves.toEqual({ accepted: true, aliased: true });
+
+    expect(alias).toHaveBeenCalledExactlyOnceWith({
+      distinctId: "clerk_user_1",
+      alias: ONBOARDING_ID,
+    });
+    // The envelope id is the alias trigger, never the capture identity.
+    expect(capture).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ distinctId: "clerk_user_1" })
+    );
+  });
+
+  it("emits no alias when the payload carries no distinct id", async () => {
+    const alias = vi.fn();
+
+    await handleDesktopAnalyticsEvent(validPayload, baseContext, {
+      alias,
+      capture: vi.fn(),
+    });
+
+    expect(alias).not.toHaveBeenCalled();
+  });
+
+  it("captures the event even when the alias emission throws, and logs without the id", async () => {
+    const capture = vi.fn();
+
+    await expect(
+      handleDesktopAnalyticsEvent(
+        { ...validPayload, distinctId: ONBOARDING_ID },
+        baseContext,
+        {
+          alias: () => {
+            throw new Error("posthog down");
+          },
+          capture,
+        }
+      )
+      // PR #7768 review: the ack must SAY the alias failed, or the client
+      // clears its pending-alias latch on a capture that never merged.
+    ).resolves.toEqual({ accepted: true, aliased: false });
+
+    expect(capture).toHaveBeenCalledTimes(1);
+    // No-logging rule (PRD-736 decision #13): the warn names the event, never
+    // the onboarding id.
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(vi.mocked(log.warn).mock.calls[0])).not.toContain(
+      ONBOARDING_ID
+    );
+  });
+
+  it("accepts a distinct-id-bearing payload when no alias sink is supplied (socket transports)", async () => {
+    const capture = vi.fn();
+
+    await expect(
+      handleDesktopAnalyticsEvent(
+        { ...validPayload, distinctId: ONBOARDING_ID },
+        baseContext,
+        { capture }
+      )
+    ).resolves.toEqual({ accepted: true });
+
+    expect(capture).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ISS-10503 (PRD-736 D5): the pre-auth mode.
+describe("handleDesktopAnalyticsPreAuthEvent (ISS-10503)", () => {
+  const PRE_AUTH_ID = "33333333-3333-4333-9333-333333333333";
+  const preAuthPayload = {
+    event: DesktopAnalyticsEventName.FlowStarted,
+    occurredAt: "2026-09-22T00:00:00.000Z",
+    properties: { flow_id: PRE_AUTH_ID, surface: "desktop" },
+    distinctId: PRE_AUTH_ID,
+  };
+
+  it("captures under the client-supplied distinct id with pre-auth attribution and no authenticated enrichment", async () => {
+    const captures: DesktopAnalyticsCaptureInput[] = [];
+
+    await expect(
+      handleDesktopAnalyticsPreAuthEvent(preAuthPayload, {
+        capture: (input) => {
+          captures.push(input);
+        },
+      })
+    ).resolves.toEqual({ accepted: true });
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0]?.distinctId).toBe(PRE_AUTH_ID);
+    expect(captures[0]?.properties).toMatchObject({
+      desktop_attribution_model:
+        DesktopAnalyticsAttributionModel.PreAuthDistinctId,
+      origin: "desktop",
+      occurred_at: preAuthPayload.occurredAt,
+    });
+    expect(captures[0]?.properties).not.toHaveProperty("organization_id");
+    expect(captures[0]?.properties).not.toHaveProperty("compute_target_id");
+    expect(captures[0]?.properties).not.toHaveProperty("gateway_session_id");
+  });
+
+  it("rejects a payload without a distinct id, logging without one", async () => {
+    const capture = vi.fn();
+    const { distinctId: _omitted, ...withoutDistinctId } = preAuthPayload;
+
+    await expect(
+      handleDesktopAnalyticsPreAuthEvent(withoutDistinctId, { capture })
+    ).resolves.toEqual({
+      accepted: false,
+      reason: DesktopAnalyticsAckReason.ValidationFailed,
+    });
+
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it("rejects a distinct id that is a UUID but not v4", async () => {
+    const capture = vi.fn();
+
+    await expect(
+      handleDesktopAnalyticsPreAuthEvent(
+        {
+          ...preAuthPayload,
+          distinctId: "11111111-1111-1111-8111-111111111111",
+        },
+        { capture }
+      )
+    ).resolves.toEqual({
+      accepted: false,
+      reason: DesktopAnalyticsAckReason.ValidationFailed,
+    });
+
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  // PR #7768 review: a per-id window alone is no flood bound — minted ids each
+  // open a new window — so a per-instance GLOBAL window backstops it (the edge
+  // rate limit is per IP; deny rule off). Two DIFFERENT ids share this budget.
+  it("bounds pre-auth spend across all distinct ids with the global window", async () => {
+    const globalRateLimiter = new DesktopAnalyticsRateLimiter({
+      maxRequests: 1,
+      windowMs: 60_000,
+    });
+    const deps = { capture: vi.fn(), globalRateLimiter, now: () => 1000 };
+    const otherId = "44444444-4444-4444-a444-444444444444";
+
+    await expect(
+      handleDesktopAnalyticsPreAuthEvent(preAuthPayload, deps)
+    ).resolves.toEqual({ accepted: true });
+    await expect(
+      handleDesktopAnalyticsPreAuthEvent(
+        { ...preAuthPayload, distinctId: otherId },
+        deps
+      )
+    ).resolves.toEqual({
+      accepted: false,
+      reason: DesktopAnalyticsAckReason.RateLimited,
+    });
+    expect(deps.capture).toHaveBeenCalledTimes(1);
+  });
+
+  // If the budget were global (or keyed on anything but the distinct id), the
+  // second id's first event would be refused here — the two-key fixture is
+  // what tells a per-id window from a shared one.
+  it("rate-limits per distinct id, not globally", async () => {
+    const rateLimiter = new DesktopAnalyticsRateLimiter({
+      maxRequests: 1,
+      windowMs: 60_000,
+    });
+    const deps = { capture: vi.fn(), now: () => 1000, rateLimiter };
+    const otherId = "44444444-4444-4444-a444-444444444444";
+
+    await expect(
+      handleDesktopAnalyticsPreAuthEvent(preAuthPayload, deps)
+    ).resolves.toEqual({ accepted: true });
+    await expect(
+      handleDesktopAnalyticsPreAuthEvent(preAuthPayload, deps)
+    ).resolves.toEqual({
+      accepted: false,
+      reason: DesktopAnalyticsAckReason.RateLimited,
+    });
+    await expect(
+      handleDesktopAnalyticsPreAuthEvent(
+        { ...preAuthPayload, distinctId: otherId },
+        deps
+      )
+    ).resolves.toEqual({ accepted: true });
   });
 });

@@ -1,5 +1,4 @@
 /**
- * @file convert-install-state-parity.test.ts
  * @description Renderer-side parity guard (FEA-4079) pinning the convert
  * engine's execution-boundary state vocabulary against the UI display
  * vocabulary it overlaps.

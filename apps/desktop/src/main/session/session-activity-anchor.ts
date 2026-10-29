@@ -38,5 +38,12 @@ import { parseSessionDate } from "./session-instant.js";
 export function servedSessionActivityAt(
   session: Pick<SyncedAgentSession, "lastActivityAt" | "startedAt">
 ): Date {
-  return parseSessionDate(session.lastActivityAt ?? session.startedAt);
+  return parseSessionDate(servedSessionActivityRawAt(session));
+}
+
+/** The unfloored string {@link servedSessionActivityAt} parses. */
+function servedSessionActivityRawAt(
+  session: Pick<SyncedAgentSession, "lastActivityAt" | "startedAt">
+): string {
+  return session.lastActivityAt ?? session.startedAt;
 }

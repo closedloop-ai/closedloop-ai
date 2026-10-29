@@ -55,8 +55,9 @@ describe("User column classification stays exhaustive (ISS-5195)", () => {
 
   it("keeps the encrypted Claude API key off the wire", () => {
     // The specific regression: `claudeApiKeyEncrypted` reached every read-scoped
-    // API key holder for every user in the organization.
+    // API key holder for every user in the organization. ISS-12435 marks the
+    // column `@ignore`, so the client cannot select it at all.
     expect(exposed).not.toContain("claudeApiKeyEncrypted");
-    expect(withheld).toContain("claudeApiKeyEncrypted");
+    expect(modelColumns).not.toContain("claudeApiKeyEncrypted");
   });
 });

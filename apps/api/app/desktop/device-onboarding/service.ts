@@ -38,29 +38,6 @@ export type DesktopDeviceSessionStartOutcome =
   | DesktopDeviceSessionStartResult
   | DesktopDeviceSessionStartRateLimitedResult;
 
-export type DesktopDeviceSessionRecord = {
-  id: string;
-  deviceSessionSecretHash: string;
-  userCode: string;
-  requestIpHash: string | null;
-  webAppOrigin: string;
-  gatewayId: string;
-  gatewayPublicKeyPem: string;
-  machineName: string;
-  platform: string;
-  desktopVersion: string;
-  desktopSecurityUpgradeProtocolVersion: number;
-  status: string;
-  userId: string | null;
-  organizationId: string | null;
-  onboardingAttemptId: string | null;
-  deniedAt: Date | null;
-  approvedAt: Date | null;
-  expiresAt: Date;
-  createdAt: Date;
-  updatedAt: Date;
-};
-
 function hashSecret(secret: string): string {
   return createHash("sha256").update(secret, "utf8").digest("hex");
 }
@@ -134,6 +111,10 @@ export const desktopDeviceOnboardingService = {
               status: DesktopDeviceSessionStatus.Pending,
               expiresAt,
             },
+            // The id is the whole answer: every other field of the started
+            // session is already in hand here, and an unnarrowed create would
+            // materialize the secret hash this method just wrote.
+            select: { id: true },
           })
         );
 
@@ -157,10 +138,14 @@ export const desktopDeviceOnboardingService = {
     throw lastError;
   },
 
-  getByUserCode(userCode: string): Promise<DesktopDeviceSessionRecord | null> {
+  getByUserCode(userCode: string): Promise<DeviceSessionLookupRow | null> {
     return withDb((db) =>
       db.desktopOnboardingDeviceSession.findUnique({
         where: { userCode },
+        // ISS-9268: both consumers answer the browser approval page out of this
+        // row, and neither reads a credential — an unnarrowed read carried
+        // `deviceSessionSecretHash` into process memory for no reader.
+        select: DEVICE_SESSION_LOOKUP_SELECT,
       })
     );
   },
@@ -169,10 +154,11 @@ export const desktopDeviceOnboardingService = {
     userCode: string;
     userId: string;
     organizationId: string;
-  }): Promise<DesktopDeviceSessionRecord | null> {
+  }): Promise<DeviceSessionApprovalRow | null> {
     return withDb.tx(async (db) => {
       const session = await db.desktopOnboardingDeviceSession.findUnique({
         where: { userCode: input.userCode },
+        select: DEVICE_SESSION_CLAIM_SELECT,
       });
       const now = new Date();
       if (
@@ -212,6 +198,11 @@ export const desktopDeviceOnboardingService = {
         data: {
           onboardingAttemptId: attempt.onboardingAttemptId,
         },
+        // ISS-9195: a write's RETURNING is disclosure exactly as a read's is,
+        // and this row's is the approval response body. Unnarrowed it carried
+        // `deviceSessionSecretHash` into process memory for a payload of four
+        // presentation fields.
+        select: DEVICE_SESSION_APPROVAL_SELECT,
       });
     });
   },
@@ -220,7 +211,7 @@ export const desktopDeviceOnboardingService = {
     userCode: string;
     userId: string;
     organizationId: string;
-  }): Promise<DesktopDeviceSessionRecord | null> {
+  }): Promise<DeviceSessionLookupRow | null> {
     const now = new Date();
     const result = await withDb((db) =>
       db.desktopOnboardingDeviceSession.updateMany({
@@ -273,21 +264,39 @@ export const desktopDeviceOnboardingService = {
           id: input.deviceSessionId,
           deviceSessionSecretHash: hashSecret(input.deviceSessionSecret),
         },
+        // Poll answers with a status word plus the approved-handoff triple; the
+        // secret hash it matched on is a predicate, never part of that answer.
+        select: DEVICE_SESSION_POLL_SELECT,
       })
     );
     if (!row) {
       return null;
     }
-    if (
-      row.expiresAt <= new Date() &&
-      row.status === DesktopDeviceSessionStatus.Pending
-    ) {
-      await withDb((db) =>
-        db.desktopOnboardingDeviceSession.update({
-          where: { id: row.id },
-          data: { status: DesktopDeviceSessionStatus.Expired },
-        })
-      );
+    // ISS-8132: expiry is reported off `expiresAt` ALONE, so poll and
+    // `/desktop/session/exchange` run one clock. Gating the report on
+    // `status === Pending` let an approved-but-expired row poll as `approved`
+    // while exchange refused the same row on `expiresAt` with a non-retryable
+    // 401 — poll said go, exchange said never. The persisted fold below stays
+    // scoped to Pending: flipping an Approved row to Expired would discard the
+    // approval record for no read that needs it, and approve()/deny() already
+    // refuse an expired row on `expiresAt` alone.
+    if (row.expiresAt <= new Date()) {
+      if (row.status === DesktopDeviceSessionStatus.Pending) {
+        // `updateMany` with the status in the WHERE, not `update` by id: the
+        // status above came from a stale read, and at the TTL boundary a
+        // browser approval can commit between the two. An unconditional write
+        // would stamp Expired over that Approved row and strand the onboarding
+        // attempt it just minted.
+        await withDb((db) =>
+          db.desktopOnboardingDeviceSession.updateMany({
+            where: {
+              id: row.id,
+              status: DesktopDeviceSessionStatus.Pending,
+            },
+            data: { status: DesktopDeviceSessionStatus.Expired },
+          })
+        );
+      }
       return { status: DesktopDeviceSessionStatus.Expired };
     }
     if (
@@ -310,3 +319,81 @@ export const desktopDeviceOnboardingService = {
     return { status: DesktopDeviceSessionStatus.Pending };
   },
 };
+
+/** The columns `approve` validates before it claims the row. */
+type DeviceSessionClaimRow = {
+  id: string;
+  status: string;
+  expiresAt: Date;
+  webAppOrigin: string;
+  gatewayId: string;
+};
+
+const DEVICE_SESSION_CLAIM_SELECT = {
+  id: true,
+  status: true,
+  expiresAt: true,
+  webAppOrigin: true,
+  gatewayId: true,
+} as const satisfies Record<keyof DeviceSessionClaimRow, true>;
+
+/** The columns `poll` folds into its status answer. */
+type DeviceSessionPollRow = {
+  id: string;
+  status: string;
+  expiresAt: Date;
+  onboardingAttemptId: string | null;
+  webAppOrigin: string;
+};
+
+const DEVICE_SESSION_POLL_SELECT = {
+  id: true,
+  status: true,
+  expiresAt: true,
+  onboardingAttemptId: true,
+  webAppOrigin: true,
+} as const satisfies Record<keyof DeviceSessionPollRow, true>;
+
+/** The columns `approve` answers the browser approval page with. */
+export type DeviceSessionApprovalRow = {
+  status: string;
+  machineName: string;
+  platform: string;
+  webAppOrigin: string;
+};
+
+const DEVICE_SESSION_APPROVAL_SELECT = {
+  status: true,
+  machineName: true,
+  platform: true,
+  webAppOrigin: true,
+} as const satisfies Record<keyof DeviceSessionApprovalRow, true>;
+
+/**
+ * The columns the user-code lookup answers with — the union of what its two
+ * consumers read, and nothing else. `deny` takes the four the approve route
+ * serializes; the session route serializes those plus three more of its own.
+ *
+ * Narrowing the TYPE alongside the select is what makes this safe: this row is
+ * returned verbatim, so a consumer reaching for a dropped column now fails
+ * typecheck instead of silently reading `undefined`.
+ */
+type DeviceSessionLookupRow = {
+  userCode: string;
+  machineName: string;
+  platform: string;
+  webAppOrigin: string;
+  status: string;
+  createdAt: Date;
+  expiresAt: Date;
+};
+
+const DEVICE_SESSION_LOOKUP_SELECT = {
+  userCode: true,
+  machineName: true,
+  platform: true,
+  webAppOrigin: true,
+  status: true,
+  createdAt: true,
+  expiresAt: true,
+} as const satisfies Record<keyof DeviceSessionLookupRow, true>;

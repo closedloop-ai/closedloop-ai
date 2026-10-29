@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import { createSqliteDashboardQueries } from "../src/main/database/dashboard-queries.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { deferred } from "./deferred.js";
 
 /**
- * ISS-6501: `getWorkflowData`'s seven raw aggregates must be issued as ONE
+ * ISS-6501: `getWorkflowData`'s three raw aggregates must be issued as ONE
  * concurrent batch.
  *
  * None of them consumes another's result, so a serial `await` chain left the
@@ -21,14 +21,13 @@ import { deferred } from "./deferred.js";
 
 /**
  * The width of the batch under test: `depthRow`, `durationRow`,
- * `subagentTypes`, `edges`, `toolTransitions`, `toolCounts`, `cooccurrence`.
- * Collapsing two of them into one query is a real change and should be a
- * visible one here.
+ * `subagentTypes`. Collapsing two of them into one query is a real change and
+ * should be a visible one here.
  */
-const WORKFLOW_RAW_AGGREGATES = 7;
+const WORKFLOW_RAW_AGGREGATES = 3;
 /**
  * The 1-based dispatch that fails in the drain test. FIRST in the batch, so a
- * `Promise.all` that unwound on it would settle the whole op with all SIX
+ * `Promise.all` that unwound on it would settle the whole op with BOTH
  * siblings still on the pool — the widest form of the leak under test.
  */
 const FAILING_READ_DISPATCH = 1;
@@ -54,7 +53,7 @@ const DRAIN_TEST_TIMEOUT_MS = 30_000;
  * {@link EARLY_ARRAY_FAILURE_MESSAGE}.
  */
 const EARLY_ARRAY_FAILING_DISPATCH = 2;
-const LATE_ARRAY_FAILING_DISPATCH = 5;
+const LATE_ARRAY_FAILING_DISPATCH = 3;
 const EARLY_ARRAY_FAILURE_MESSAGE = "earlier aggregate in array order failed";
 const LATE_ARRAY_FAILURE_MESSAGE = "later aggregate failed sooner in time";
 const NOW = "2026-06-22T00:00:00.000Z";
@@ -199,7 +198,7 @@ test("ISS-6501: getWorkflowData issues its independent raw aggregates concurrent
 
     const { tracked, state } = trackPeakReads(db.prisma);
     const dashboard = createSqliteDashboardQueries(tracked);
-    const workflow = await dashboard.getWorkflowData(new Date(NOW));
+    const workflow = await dashboard.getWorkflowData();
 
     // A serial `await` chain peaks at 1 here regardless of how many reads it
     // makes. Asserted as a FLOOR on the batch width rather than as
@@ -215,19 +214,13 @@ test("ISS-6501: getWorkflowData issues its independent raw aggregates concurrent
     );
 
     // The batch must also land in its declared order. `depthRow`/`durationRow`
-    // and `edges`/`cooccurrence` are pairwise type-identical, so a transposed
-    // destructure would typecheck and silently swap two facets.
+    // are type-identical, so a transposed destructure would typecheck and
+    // silently swap the two facets.
     assert.equal(workflow.stats.avgDepth, 1.5);
     assert.equal(workflow.stats.avgDurationSec, 90);
-    // An edge's source is a PARENT agent's type, so 'auditor' — a leaf here —
-    // can never appear as one; the co-occurrence pairs do carry it.
-    assert.deepEqual(workflow.orchestration.edges, [
-      { source: "main", target: "worker", weight: 2 },
-      { source: "worker", target: "auditor", weight: 1 },
-    ]);
-    assert.ok(
-      workflow.cooccurrence.some((pair) => pair.source === "auditor"),
-      "co-occurrence pairs are sorted by agent type, so 'auditor' leads two of them"
+    assert.deepEqual(
+      workflow.orchestration.subagentTypes.map((row) => row.subagentType),
+      ["worker", "auditor"]
     );
   } finally {
     await db.close();
@@ -240,7 +233,7 @@ test("ISS-6501: getWorkflowData issues its independent raw aggregates concurrent
  *
  * `dashboard.getWorkflowData` holds a `BOUNDED_READ_OPS` permit for the life of
  * the op, so a bare `Promise.all` — which rejects the instant one read fails —
- * returned the permit while the other six reads were still queued on the reader
+ * returned the permit while the other two reads were still queued on the reader
  * pool. Retries could then stack detached work past the lane's ceiling of 2.
  */
 test("ISS-6501: a failed raw aggregate drains its sibling reads before unwinding", {
@@ -260,7 +253,7 @@ test("ISS-6501: a failed raw aggregate drains its sibling reads before unwinding
     );
     const dashboard = createSqliteDashboardQueries(tracked);
 
-    const call = dashboard.getWorkflowData(new Date(NOW));
+    const call = dashboard.getWorkflowData();
     // Attached in the same turn the call is made, so the rejection is always
     // handled and the flag records settlement rather than the assertion timing
     // deciding it.
@@ -324,7 +317,7 @@ test("ISS-6501: the drained batch rethrows the first failure in array order", {
     );
     const dashboard = createSqliteDashboardQueries(tracked);
 
-    const call = dashboard.getWorkflowData(new Date(NOW));
+    const call = dashboard.getWorkflowData();
     // Attached in the same turn as the call so the rejection is always handled,
     // never left to race the awaits below.
     const observed = call.then(

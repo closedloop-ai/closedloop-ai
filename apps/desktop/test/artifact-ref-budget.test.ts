@@ -14,15 +14,16 @@
  * so they survive.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import {
   ArtifactRefMethod,
   ArtifactRefRelation,
   ArtifactRefTargetKind,
+  BRANCH_PUSH_METHOD_VALUES,
   MAX_SYNCED_ARTIFACT_REFS_PRODUCER,
   MIN_SYNCED_DOCUMENT_REFS_PRODUCER,
   type SyncedArtifactRef,
 } from "@repo/api/src/types/session-artifact-link";
+import { describe, test } from "vitest";
 import { boundNonCommitArtifactRefs } from "../src/main/database/artifact-ref-budget.js";
 
 function makePrRef(prNumber: number): SyncedArtifactRef {
@@ -501,4 +502,36 @@ describe("ISS-6479: pasted-URL refs are shed before commits and command refs", (
       "nothing else wanted the slots, so the URL refs still ride along"
     );
   });
+
+  test("a late push-method ref survives an over-budget session (ISS-8148)", () => {
+    // The push ref is the NEWEST ref of an over-budget session — exactly what
+    // oldest-first shedding used to drop. Losing it is not one ref of many:
+    // the cloud's branch write gate and its durable materialization retry
+    // both heal on this ref arriving, so shedding it left a deferred branch
+    // permanently unhealable (the retry reschedules to dead-letter waiting on
+    // evidence that never re-arrives).
+    const olderOthers = Array.from(
+      { length: MAX_SYNCED_ARTIFACT_REFS_PRODUCER + 20 },
+      (_, i) => makePrRef(i + 1)
+    );
+    const pushRef = makePushRef(0);
+
+    const kept = boundNonCommitArtifactRefs([...olderOthers, pushRef]);
+
+    assert.equal(kept.length, MAX_SYNCED_ARTIFACT_REFS_PRODUCER);
+    assert.ok(
+      kept.includes(pushRef),
+      "the push-method ref is shed-protected within the non-document budget"
+    );
+  });
 });
+
+function makePushRef(index: number): SyncedArtifactRef {
+  return {
+    kind: ArtifactRefTargetKind.Branch,
+    repositoryFullName: "acme/repo",
+    branchName: `feat/pushed-${index}`,
+    method: BRANCH_PUSH_METHOD_VALUES[0],
+    relation: ArtifactRefRelation.Output,
+  };
+}

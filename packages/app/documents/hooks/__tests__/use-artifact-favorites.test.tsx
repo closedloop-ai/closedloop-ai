@@ -1,9 +1,14 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
-import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
-  artifactFavoriteKeys,
+  createTestQueryClient,
+  createWrapper,
+  createWrapperWithClient,
+} from "@repo/app/shared/test-utils";
+import { renderHook, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import { assignedArtifactTreeKeys } from "../../../projects/hooks/use-assigned-artifact-tree";
+import { artifactFavoriteKeys } from "../artifact-favorite-keys";
+import { documentKeys } from "../document-keys";
+import {
   useFavoriteArtifacts,
   useIsFavoriteArtifact,
   useToggleFavoriteArtifact,
@@ -19,15 +24,6 @@ const mockApiClient = {
 vi.mock("../../../shared/api/use-api-client", () => ({
   useApiClient: () => mockApiClient,
 }));
-
-function createWrapper() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-  return ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  );
-}
 
 describe("Artifact Favorite Query Hooks", () => {
   beforeEach(() => {
@@ -163,6 +159,56 @@ describe("Artifact Favorite Mutation Hooks", () => {
         {}
       );
       expect(mockApiClient.delete).not.toHaveBeenCalled();
+    });
+
+    // ISS-12600: a favorites-scoped Documents card keeps its query key when the
+    // favorite set changes, so the toggle must refetch the card reads.
+    test("refetches the Documents summary and cost reads", async () => {
+      mockApiClient.post.mockResolvedValueOnce({ favorited: true });
+      const queryClient = createTestQueryClient();
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+      const { result } = renderHook(() => useToggleFavoriteArtifact(), {
+        wrapper: createWrapperWithClient(queryClient),
+      });
+
+      result.current.mutate({ artifactId: "artifact-123", isFavorite: false });
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: documentKeys.summaries(),
+      });
+    });
+
+    // ISS-10472: Favorites is a SERVER facet on the My Tasks All tab, so the
+    // tree read that drew the page and counted its total is a view the star
+    // moves. Asserted on the seeded page entry rather than on the invalidate
+    // call, so it is the prefix reaching the cache that goes red — not merely
+    // that a key was named.
+    test("refetches the assigned tree the All tab pages from", async () => {
+      mockApiClient.delete.mockResolvedValueOnce({ favorited: false });
+      const queryClient = createTestQueryClient();
+      const pageKey = assignedArtifactTreeKeys.page("user-1", {
+        limit: 50,
+        offset: 0,
+        search: "",
+        facets: { favoritesOnly: true },
+      });
+      // `createTestQueryClient` sets `gcTime: 0`, which collects an
+      // observer-less entry the moment it is written — the seeded page would be
+      // gone before the mutation ran, and the assertion below would read
+      // `undefined` rather than the invalidation it is checking.
+      queryClient.setQueryDefaults(pageKey, {
+        gcTime: Number.POSITIVE_INFINITY,
+      });
+      queryClient.setQueryData(pageKey, { nodes: [], externalParents: [] });
+      const { result } = renderHook(() => useToggleFavoriteArtifact(), {
+        wrapper: createWrapperWithClient(queryClient),
+      });
+
+      result.current.mutate({ artifactId: "artifact-123", isFavorite: true });
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      expect(queryClient.getQueryState(pageKey)?.isInvalidated).toBe(true);
     });
   });
 });

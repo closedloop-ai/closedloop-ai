@@ -5,9 +5,9 @@
  * the node-free `shared/sync-lane-contract.ts`; this module is the main-process
  * half that turns it into queries, row fields, and the failure decision.
  *
- * WHY THIS EXISTS. Two lanes persist an outbox — the per-session metadata lane
- * (`agent_session_sync_outbox`, FEA-3473) and the invocation parts lane
- * (`agent_component_invocation_sync_outbox`) — and both were written to
+ * WHY THIS EXISTS. The durable desktop outbox lanes — the per-session metadata
+ * lane (`agent_session_sync_outbox`, FEA-3473), the invocation parts lane
+ * (`agent_component_invocation_sync_outbox`), and the routine lane — were written to
  * `TranscriptSyncState`'s crash-correct discipline (FEA-2714/2715) by COPY. That
  * propagated the discipline through review vigilance alone, and it had already
  * drifted: two hand-rolled exponential-backoff ladders re-derived what the shared
@@ -31,6 +31,10 @@
 
 import { exponentialBackoffMs } from "../../shared/exponential-backoff.js";
 import { OutboxStatus } from "../../shared/sync-lane-contract.js";
+import {
+  isSyncRetryBudgetSpent,
+  SyncRetryBudgetKind,
+} from "../../shared/sync-retry-budget.js";
 
 /**
  * The READY predicate shared by every outbox drain: rows for one `sourceKey` that
@@ -55,6 +59,34 @@ export function readyOutboxWhere(
     status: OutboxStatus.Pending,
     OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: nowIso } }],
   };
+}
+
+/** Invocation-only durable fields that extend the shared outbox mechanics. */
+export type InvocationOutboxExtensionFields = {
+  permanentAttemptCount: number;
+  laneStalledSince: string | null;
+  deadLetterRecoveryCount: number | null;
+};
+
+/** Session-only durable engine fields that extend the shared outbox mechanics. */
+export type SessionOutboxExtensionFields = {
+  permanentAttemptCount: number;
+  laneStalledSince: string | null;
+  deadLetterRecoveryCount: number;
+};
+
+/** Scope a write to rows that are still pending, preserving each lane's identity. */
+export function pendingOutboxWriteWhere<TIdentity extends object>(
+  identity: TIdentity
+): TIdentity & { status: OutboxStatus } {
+  return { ...identity, status: OutboxStatus.Pending };
+}
+
+/** Scope a write to rows already parked as dead letters. */
+export function deadLetteredOutboxWriteWhere<TIdentity extends object>(
+  identity: TIdentity
+): TIdentity & { status: OutboxStatus } {
+  return { ...identity, status: OutboxStatus.DeadLettered };
 }
 
 /** The row fields written when an outbox row is terminally abandoned. */
@@ -123,14 +155,110 @@ export function outboxRetryFields(input: {
   };
 }
 
+/** Retry fields for the invocation lane's shared plus lane-specific counters. */
+export function invocationOutboxRetryFields(input: {
+  attemptCount: number;
+  permanentAttemptCount: number;
+  nextAttemptAt: string;
+  reason: string;
+  nowIso: string;
+  laneStalledSince: string | null;
+}): ReturnType<typeof outboxRetryFields> &
+  Pick<
+    InvocationOutboxExtensionFields,
+    "permanentAttemptCount" | "laneStalledSince"
+  > {
+  return {
+    ...outboxRetryFields(input),
+    permanentAttemptCount: input.permanentAttemptCount,
+    laneStalledSince: input.laneStalledSince,
+  };
+}
+
+/** Retry fields for the session lane's shared plus engine counters. */
+export function sessionOutboxRetryFields(input: {
+  attemptCount: number;
+  permanentAttemptCount?: number | null;
+  nextAttemptAt: string;
+  reason: string;
+  nowIso: string;
+  laneStalledSince: string | null;
+}): ReturnType<typeof outboxRetryFields> &
+  Pick<SessionOutboxExtensionFields, "laneStalledSince"> &
+  Partial<Pick<SessionOutboxExtensionFields, "permanentAttemptCount">> {
+  return {
+    ...outboxRetryFields(input),
+    ...(input.permanentAttemptCount === null ||
+    input.permanentAttemptCount === undefined
+      ? {}
+      : { permanentAttemptCount: input.permanentAttemptCount }),
+    laneStalledSince: input.laneStalledSince,
+  };
+}
+
+/** Dead-letter fields for invocation rows, clearing lane-wide stall state. */
+export function invocationOutboxDeadLetterFields(input: {
+  attemptCount: number;
+  permanentAttemptCount: number;
+  reason: string;
+  nowIso: string;
+}): OutboxDeadLetterFields &
+  Pick<
+    InvocationOutboxExtensionFields,
+    "permanentAttemptCount" | "laneStalledSince"
+  > {
+  return {
+    ...outboxDeadLetterFields({
+      reason: input.reason,
+      nowIso: input.nowIso,
+      attemptCount: input.attemptCount,
+    }),
+    permanentAttemptCount: input.permanentAttemptCount,
+    laneStalledSince: null,
+  };
+}
+
+/** Dead-letter fields for session rows, preserving both durable engine counters. */
+export function sessionOutboxDeadLetterFields(input: {
+  attemptCount: number;
+  permanentAttemptCount: number | null;
+  deadLetterRecoveryCount: number | null;
+  reason: string;
+  nowIso: string;
+}): OutboxDeadLetterFields &
+  Partial<
+    Pick<
+      SessionOutboxExtensionFields,
+      "permanentAttemptCount" | "deadLetterRecoveryCount"
+    >
+  > {
+  return {
+    ...outboxDeadLetterFields({
+      reason: input.reason,
+      nowIso: input.nowIso,
+      attemptCount: input.attemptCount,
+    }),
+    ...(input.permanentAttemptCount === null
+      ? {}
+      : { permanentAttemptCount: input.permanentAttemptCount }),
+    ...(input.deadLetterRecoveryCount === null
+      ? {}
+      : { deadLetterRecoveryCount: input.deadLetterRecoveryCount }),
+  };
+}
+
 /**
- * The fields that flip a RECOVERED dead-letter back to `pending` and restart its
- * bounded budget from scratch — the durable twin of a lane's in-memory
- * failure-state reset (FEA-3697).
+ * The fields that flip a row back to `pending` and restart its bounded budget
+ * from scratch — the durable twin of a lane's in-memory failure-state reset
+ * (FEA-3697).
  *
- * Callers must scope the write to rows that are currently `dead_lettered`, so a
- * re-pend can never reset the budget of an in-flight `pending` retry out from
- * under it.
+ * Two callers, each scoping to a DIFFERENT prior status: a recovered dead-letter
+ * (`sqliteReEnqueueRecoveredDeadLetter`, `dead_lettered`) and a withheld session
+ * that gained activity (`sqliteRePendWithheldOutbox`, `withheld` — ISS-7246).
+ * What every caller must do is scope the write to ONE known prior status and
+ * never to `pending`: an unscoped re-pend would reset the budget of an in-flight
+ * retry out from under it, and a `withheld`-scoped one must not be able to
+ * resurrect a dead-letter (or the reverse).
  */
 export function outboxRePendFields(nowIso: string): {
   status: OutboxStatus;
@@ -142,6 +270,21 @@ export function outboxRePendFields(nowIso: string): {
   return {
     status: OutboxStatus.Pending,
     attemptCount: 0,
+    nextAttemptAt: null,
+    lastError: null,
+    updatedAt: nowIso,
+  };
+}
+
+/** Re-pend a recovered row without restarting lane-owned retry counters. */
+export function outboxPreserveCountersRePendFields(nowIso: string): {
+  status: OutboxStatus;
+  nextAttemptAt: null;
+  lastError: null;
+  updatedAt: string;
+} {
+  return {
+    status: OutboxStatus.Pending,
     nextAttemptAt: null,
     lastError: null,
     updatedAt: nowIso,
@@ -189,7 +332,11 @@ export type OutboxFailureDecision =
  * / `target_not_owned` (FEA-3425).
  *
  * Backoff comes from the shared {@link exponentialBackoffMs} ladder so this and
- * every other desktop retry schedule stay one source of truth (FEA-3795).
+ * every other desktop retry schedule stay one source of truth (FEA-3795), and
+ * since ISS-8615 the exhaustion test itself comes from the shared budget table
+ * (`shared/sync-retry-budget.ts`) — this is that table's `Attempts` arm, the
+ * only one gated by `permanent`, and its siblings are what a lane reaches for
+ * when a failure class is bounded by elapsed time rather than by tries.
  */
 export function decideOutboxFailure(input: {
   attemptCount: number;
@@ -200,7 +347,15 @@ export function decideOutboxFailure(input: {
   maxMs: number;
 }): OutboxFailureDecision {
   const attemptCount = input.attemptCount + 1;
-  if (input.permanent && attemptCount >= input.maxAttempts) {
+  const budgetSpent = isSyncRetryBudgetSpent(
+    {
+      kind: SyncRetryBudgetKind.Attempts,
+      permanent: input.permanent,
+      maxAttempts: input.maxAttempts,
+    },
+    { attemptCount, originMs: null, nowMs: input.nowMs }
+  );
+  if (budgetSpent) {
     return { outcome: OutboxFailureOutcome.DeadLetter, attemptCount };
   }
   return {
@@ -209,5 +364,33 @@ export function decideOutboxFailure(input: {
     nextAttemptAtMs:
       input.nowMs +
       exponentialBackoffMs(attemptCount, input.baseMs, input.maxMs),
+  };
+}
+
+/**
+ * ISS-7246: the fields that move a row to `withheld` — there is nothing
+ * substantive to send yet, so the lane owes it nothing until local activity says
+ * otherwise.
+ *
+ * The budget is CLEARED rather than carried: a withheld row was never attempted,
+ * and leaving a burned `attempt_count` or a stale `next_attempt_at` on it would
+ * hand a future re-pend a budget it never spent. Callers must scope the write to
+ * rows that are currently `pending`, so this can never overwrite a
+ * `dead_lettered` row — the same guard {@link outboxRePendFields} carries in the
+ * other direction.
+ */
+export function outboxWithheldFields(nowIso: string): {
+  status: OutboxStatus;
+  attemptCount: number;
+  nextAttemptAt: null;
+  lastError: null;
+  updatedAt: string;
+} {
+  return {
+    status: OutboxStatus.Withheld,
+    attemptCount: 0,
+    nextAttemptAt: null,
+    lastError: null,
+    updatedAt: nowIso,
   };
 }

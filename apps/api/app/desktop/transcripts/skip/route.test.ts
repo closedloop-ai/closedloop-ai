@@ -13,16 +13,11 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
       handler({ user: mocks.user, clerkUserId: null }, request),
 }));
 
+// ISS-7097: the reason vocabulary lives in its own leaf module now, so this
+// mock no longer has to hand-copy it to satisfy the route helper's import.
 vi.mock("../service", () => ({
   transcriptSyncService: {
     markPermanentlySkipped: mocks.markPermanentlySkipped,
-  },
-  TranscriptSyncErrorReason: {
-    Forbidden: "forbidden",
-    RateLimited: "rate_limited",
-    InvalidRequest: "invalid_request",
-    StaleUpload: "stale_upload",
-    Internal: "internal",
   },
 }));
 
@@ -50,7 +45,7 @@ describe("POST /desktop/transcripts/skip", () => {
     vi.clearAllMocks();
   });
 
-  it("returns the recorded terminal state on success", async () => {
+  it("returns the recorded terminal state and forwards the caller's user and org to the skip write", async () => {
     const value = {
       status: "skipped",
       permanentFailureReason: "too_large",
@@ -65,7 +60,10 @@ describe("POST /desktop/transcripts/skip", () => {
       expect.objectContaining({
         request: expect.objectContaining({ reason: "too_large" }),
         organizationId: "org-1",
-      })
+        userId: "user-1",
+      }),
+      // ISS-12552: a session caller records nothing, so no record callback.
+      undefined
     );
   });
 
@@ -89,7 +87,8 @@ describe("POST /desktop/transcripts/skip", () => {
     expect(mocks.markPermanentlySkipped).toHaveBeenCalledWith(
       expect.objectContaining({
         request: expect.objectContaining({ reason: "retries_exhausted" }),
-      })
+      }),
+      undefined
     );
   });
 

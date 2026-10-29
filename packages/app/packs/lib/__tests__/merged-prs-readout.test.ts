@@ -6,10 +6,12 @@
  * unknown rather than folded to "not truncated" (the version-skew case that
  * would silently restore the full-cohort claim).
  */
-import { COHORT_SCAN_CAP } from "@repo/api/src/types/analytics";
 import { describe, expect, it } from "vitest";
 import { mergedPrsTileInfo, mergedPrsTileValue } from "../merged-prs-readout";
 import type { PackPerformance } from "../pack-view";
+
+/** Any digit: the caveat must name no cap size (ISS-9853). */
+const ANY_DIGIT = /\d/;
 
 /** A count large enough that the thousands separator is part of the contract. */
 const MERGED_PRS_FLOOR = 996;
@@ -56,12 +58,16 @@ describe("mergedPrsTileValue (ISS-6462)", () => {
 });
 
 describe("mergedPrsTileInfo (ISS-6462)", () => {
-  it("names the scanned population and the cap when the count is capped", () => {
+  it("names the read that bounded the count when the count is a floor", () => {
     const info = mergedPrsTileInfo(perf({ mergedPrsTruncated: true }));
 
     expect(info.what).toContain("At least this many");
-    // The cap is read off the shared constant, never restated in copy.
-    expect(info.how).toContain(COHORT_SCAN_CAP.toLocaleString("en-US"));
+    // ISS-9853: the caveat no longer names a NUMBER. Two producers reach this
+    // state — an older server's first 2,000 sessions in arbitrary order, and a
+    // current server's lane-bounded id set — so the one true thing to say is
+    // that a single bounded read decided the population.
+    expect(info.how).toContain("a single bounded read");
+    expect(info.how).not.toMatch(ANY_DIGIT);
     expect(info.how).toContain("may be higher");
   });
 

@@ -43,7 +43,7 @@ import {
   type ConvertedComponentIdentity,
   resolveConversionCapability,
 } from "@repo/api/src/types/harness-conversion.ts";
-import type { HarnessName } from "@repo/crewd/model";
+import type { HarnessName } from "@repo/api/src/types/harness-name.ts";
 import {
   classifyStreamRunRetry,
   type StreamRunResult,

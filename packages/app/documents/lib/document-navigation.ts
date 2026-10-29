@@ -7,23 +7,46 @@ import {
 } from "@repo/api/src/types/document";
 
 /**
- * Artifact types that support internal navigation to an editor/detail page.
+ * The org-relative route builder for each {@link DocumentType}, or null for a
+ * type with no list/detail surface. Keyed by every member, so adding a
+ * DocumentType fails `tsc` until it is given a route or an explicit null
+ * (ISS-11262); navigability derives from this map rather than a hand-kept list.
  *
- * DOC routes to `/documents/[slug]`, which now renders the DOC editor in place
- * (ISS-4382). Templates remain absent: they have no list/detail surface yet.
+ * Every navigable document opens at `/documents/[slug]` (ISS-12855); the prefix
+ * stays single-sourced in TYPE_ROUTE_PREFIX. Template has no detail route.
  */
-export const NAVIGABLE_TYPES = new Set<DocumentType>([
-  DocumentType.Prd,
-  DocumentType.ImplementationPlan,
-  DocumentType.Feature,
-  DocumentType.Doc,
-]);
+const DOCUMENT_ROUTE_BUILDERS: Readonly<
+  Record<DocumentType, ((slug: string) => string | null) | null>
+> = {
+  [DocumentType.Prd]: (slug) => getDocumentTypeRoute(DocumentType.Prd, slug),
+  [DocumentType.ImplementationPlan]: (slug) =>
+    getDocumentTypeRoute(DocumentType.ImplementationPlan, slug),
+  [DocumentType.Feature]: (slug) =>
+    getDocumentTypeRoute(DocumentType.Feature, slug),
+  [DocumentType.Doc]: (slug) => getDocumentTypeRoute(DocumentType.Doc, slug),
+  [DocumentType.Template]: null,
+};
+
+function routeBuilderFor(
+  type: string
+): ((slug: string) => string | null) | null {
+  return Object.hasOwn(DOCUMENT_ROUTE_BUILDERS, type)
+    ? DOCUMENT_ROUTE_BUILDERS[type as DocumentType]
+    : null;
+}
+
+/** Artifact types that support internal navigation to an editor/detail page. */
+export const NAVIGABLE_TYPES: ReadonlySet<DocumentType> = new Set(
+  (Object.keys(DOCUMENT_ROUTE_BUILDERS) as DocumentType[]).filter(
+    (type) => DOCUMENT_ROUTE_BUILDERS[type] !== null
+  )
+);
 
 export function isNavigableDocument(artifact: Pick<Document, "type">): boolean {
   return NAVIGABLE_TYPES.has(artifact.type);
 }
 
-// These resolvers return ORG-RELATIVE routes (e.g. `/prds/slug`). Callers turn
+// These resolvers return ORG-RELATIVE routes (e.g. `/documents/slug`). Callers turn
 // them into absolute paths via the org seam: a React surface composes with
 // `useOrgPath()`'s `buildOrgPath`, while a slug-holding caller (page/pure util)
 // uses `withOrgSlug(orgSlug, route)` below. This keeps the resolvers free of the
@@ -31,26 +54,8 @@ export function isNavigableDocument(artifact: Pick<Document, "type">): boolean {
 export function getDocumentRoute(
   artifact: Pick<Document, "type" | "slug">
 ): string | null {
-  switch (artifact.type) {
-    case DocumentType.Prd:
-      return `/prds/${artifact.slug}`;
-    case DocumentType.ImplementationPlan:
-      return `/implementation-plans/${artifact.slug}`;
-    // FEA-4137: the Feature artifact is now "Issue", routing under /issues/.
-    // Legacy /features/[slug] links redirect there — 308 once the path already
-    // carries its org prefix, 302 while the redirect still has to inject the
-    // caller's (ISS-4570). Delegate to getDocumentTypeRoute so the prefix has
-    // ONE source of truth (TYPE_ROUTE_PREFIX) and this switch cannot drift.
-    case DocumentType.Feature:
-      return getDocumentTypeRoute(artifact.type, artifact.slug);
-    // ISS-4382: DOC now has a real editor at `/documents/[slug]`. Delegate to
-    // getDocumentTypeRoute so the "documents" prefix stays single-sourced in
-    // TYPE_ROUTE_PREFIX rather than re-inlined here.
-    case DocumentType.Doc:
-      return getDocumentTypeRoute(artifact.type, artifact.slug);
-    default:
-      return null;
-  }
+  const build = routeBuilderFor(artifact.type);
+  return build === null ? null : build(artifact.slug);
 }
 
 /**
@@ -128,8 +133,8 @@ export function withOrgSlug(
  * the SSOT prefix map, then delegates to {@link getDocumentTypeRoute} so the
  * route-prefix join stays single-sourced. The slug's prefix is normalized to its
  * canonical (upper) case before it is embedded, so a lowercase branch-name slug
- * (`fea-1952`) yields `/issues/FEA-1952` — which matches the case-sensitive
- * by-slug lookup — not a 404-ing `/issues/fea-1952`. Returns null for a non-typed
+ * (`fea-1952`) yields `/documents/FEA-1952` — which matches the case-sensitive
+ * by-slug lookup — not a 404-ing `/documents/fea-1952`. Returns null for a non-typed
  * slug or a prefix with no navigable route (e.g. `PRO-`/`WRK-`/`SES-`) — the
  * caller then renders the slug as a non-clickable label. Callers compose with an
  * org slug via {@link withOrgSlug} exactly as the `documentType`-bearing path does.

@@ -1,5 +1,6 @@
 import { formatDeltaPct } from "@closedloop-ai/loops-api/insights";
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
+import { TOTAL_ESTIMATED_COST_ALIAS_LABEL } from "@repo/api/src/types/total-estimated-cost-copy";
 import {
   KpiDeltaPlaceholder,
   NO_COMPARISON_CHIP_LABEL,
@@ -8,11 +9,15 @@ import {
   SummaryCardRow,
   summaryCardClass,
 } from "@repo/app/shared/components/summary-card-row";
-import { WithUnifiedDeltaPill } from "@repo/app/shared/feature-flags/metric-delta-treatment-fixtures";
+import {
+  WithNeutralDeltaPill,
+  WithUnifiedDeltaPill,
+} from "@repo/app/shared/feature-flags/metric-delta-treatment-fixtures";
 import { useMetricDeltaTreatment } from "@repo/app/shared/feature-flags/use-metric-delta-treatment";
 import { formatCurrencyTileValue } from "@repo/app/shared/lib/format-utils";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
 import {
+  DELTA_PILL_GEOMETRY_CLASS,
   DELTA_SENTIMENT_CAPTION,
   DeltaSentiment,
   deltaPillClass,
@@ -26,10 +31,6 @@ import { expect, within } from "storybook/test";
 import type { SessionSummaryDeltas } from "../../lib/session-summary-deltas";
 import { resolveCostCardPresentation } from "./cost-card-presentation";
 import {
-  SESSIONS_COST_HONEST_METRIC_CARD_LABEL,
-  SESSIONS_COST_METRIC_CARD_LABEL,
-} from "./cost-metric-card";
-import {
   createAgentSessionUsageSummaryFixture,
   createSessionSummaryDeltasFixture,
 } from "./session-list-fixtures";
@@ -42,9 +43,10 @@ import {
   costDeltaKey,
   deliveryComparableDeltas,
   deltaSlotProps,
+  honestSummaryDeltaPlaceholder,
   resolveComparableDeltas,
   type SessionsDeltaKey,
-  SUMMARY_NO_PRIOR_PERIOD,
+  shippedSummaryDeltaPlaceholder,
 } from "./sessions-summary-delta-slots";
 
 /**
@@ -52,36 +54,35 @@ import {
  *
  * The module under study is three pure functions plus one JSX constant, not a
  * component. What it decides, though, is entirely visual: whether a card shows a
- * graded movement chip, the "No prior period" placeholder, the delivery pair's
- * "No comparison" pill, or an empty footer. Four outcomes a reader has to be able
- * to tell apart, and that a unit test asserting the returned object shape cannot
- * show.
+ * graded movement chip, the "No prior period" placeholder, ISS-7525's declined
+ * "No comparison" line, the delivery pair's "No comparison" pill, or an empty
+ * footer. Five outcomes a reader has to be able to tell apart, and that a unit
+ * test asserting the returned object shape cannot show. The last two share a
+ * label on purpose — one noun for one concept (ISS-4995) — and differ in the
+ * affordance the card they sit on already uses.
  *
  * So the stories mount a card and reproduce `AlwaysAvailableCards`' wiring
  * verbatim: `resolveComparableDeltas`, then `deltaSlotProps`, then the spread,
- * with `SUMMARY_NO_PRIOR_PERIOD` supplied only when a comparable object survived.
+ * with the gate picking the slot's affordance
  * What renders here is what the strip renders. Change the wiring in
  * `sessions-summary-cards.tsx` and these stories go stale visibly rather than
  * quietly.
  *
  * The distinction each story exists for: an "All time" range, a metric with no
- * entry, and a suppressed comparison are three different facts, and two of them
- * are NOT allowed to borrow the third's wording.
+ * entry, a comparison the producer measured and declined, and a suppressed
+ * comparison are four different facts, and none of them is allowed to borrow
+ * another's wording.
  */
 
 /**
- * The two cost entries, named so {@link CostBasisPair} can state which basis it
- * expects each card to have resolved to without re-typing a delta key. They move
- * in OPPOSITE directions on purpose: a card that grades the wrong basis then
- * renders a chip pointing the wrong way, which is a visible failure rather than
- * a plausible one — the #4480 defect was one figure graded against another.
+ * The cost entry, named so {@link CostBasisPair} can state the basis it expects
+ * each card to have resolved to without re-typing a delta key. It moves the
+ * OPPOSITE way from its rowmates on purpose: a card that grades the wrong key
+ * then renders a chip pointing the wrong way, which is a visible failure rather
+ * than a plausible one — the #4480 defect was one figure graded against another.
  */
-const HONEST_COST_DELTA = {
+const TOTAL_COST_DELTA = {
   delta: -12,
-  deltaPolarity: MetricPolarity.LowerIsBetter,
-} as const;
-const COLLAPSED_COST_DELTA = {
-  delta: 18,
   deltaPolarity: MetricPolarity.LowerIsBetter,
 } as const;
 
@@ -90,20 +91,28 @@ const COLLAPSED_COST_DELTA = {
  * always-available card.
  */
 const BOUNDED_DELTAS: SessionSummaryDeltas = {
-  apiCost: COLLAPSED_COST_DELTA,
   label: "vs. prior 30 days",
-  meteredCost: HONEST_COST_DELTA,
+  totalCost: TOTAL_COST_DELTA,
   sessions: { delta: 24, deltaPolarity: MetricPolarity.HigherIsBetter },
   tokens: { delta: 61, deltaPolarity: MetricPolarity.Neutral },
 };
 
 /**
- * A SETTLED usage payload whose metered + unknown split reconciles with the API
- * total. That reconciliation is the precondition `resolveCostCardPresentation`
- * tests before it will take the honest basis, so this fixture is what makes the
- * honest branch reachable rather than assumed.
+ * The same landed read with spend moving UP, for {@link SpendRiseReadsAsWorse}.
+ * {@link BOUNDED_DELTAS} grades cost DOWN, which is the improvement case.
  */
-const RECONCILING_USAGE = createAgentSessionUsageSummaryFixture(
+const RISING_SPEND_DELTAS: SessionSummaryDeltas = {
+  ...BOUNDED_DELTAS,
+  totalCost: { delta: 18, deltaPolarity: MetricPolarity.LowerIsBetter },
+};
+
+/**
+ * A SETTLED payload whose three lanes reconcile with `totalEstimatedCost`, which
+ * since ISS-8791 is the whole precondition for the breakdown basis — its flag is
+ * gone. Break the reconciliation and this fixture drops to the collapsed basis
+ * below, and {@link CostBasisPair} then renders one label twice.
+ */
+const BREAKDOWN_BASIS_USAGE = createAgentSessionUsageSummaryFixture(
   AgentSessionViewerScope.Organization,
   {
     totalEstimatedCost: 16_867,
@@ -114,25 +123,39 @@ const RECONCILING_USAGE = createAgentSessionUsageSummaryFixture(
   }
 );
 
-/** The Cost card as the honesty flag renders it: the metered basis. */
-const HONEST_COST_PRESENTATION = resolveCostCardPresentation(
-  true,
-  RECONCILING_USAGE
+/**
+ * The same cohort from a producer that cannot split the bucket at all, which is
+ * what reaches the collapsed API basis now that neither elevated mode is gated
+ * on a flag.
+ */
+const COLLAPSED_BASIS_USAGE = createAgentSessionUsageSummaryFixture(
+  AgentSessionViewerScope.Organization,
+  {
+    totalEstimatedCost: 16_867,
+    subscriptionEstimatedCost: 42,
+    apiEstimatedCost: 16_825,
+    meteredEstimatedCost: 42,
+    unknownEstimatedCost: undefined,
+  }
 );
 
-/** The same payload with the flag off: the collapsed API basis. */
+/** The Cost card on the breakdown basis: the total under its own label. */
+const BREAKDOWN_COST_PRESENTATION = resolveCostCardPresentation(
+  BREAKDOWN_BASIS_USAGE
+);
+
+/** The mode an unsplittable payload falls to: the same total, minus the lanes. */
 const COLLAPSED_COST_PRESENTATION = resolveCostCardPresentation(
-  false,
-  RECONCILING_USAGE
+  COLLAPSED_BASIS_USAGE
 );
 
 /** The caption every card in these stories carries, so only the slot varies. */
 const IN_RANGE_DETAIL = "in the active filter set";
 
 const meta = {
-  title: "App Core/Agents/Sessions Summary Delta Slots",
+  title: "Composites v1.0/Sessions/Sessions Summary Delta Slots",
   component: SessionsDeltaSlotCard,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (
@@ -147,6 +170,12 @@ const meta = {
     detail: IN_RANGE_DETAIL,
     label: SESSIONS_METRIC_CARD_LABEL,
     value: "1,284",
+  },
+  argTypes: {
+    deltaKey: {
+      control: { type: "select" },
+      options: ["sessions", "totalCost", "prsShipped", "tokens"],
+    },
   },
 } satisfies Meta<typeof SessionsDeltaSlotCard>;
 
@@ -170,6 +199,13 @@ const REGRESSION_VERDICT = DELTA_SENTIMENT_CAPTION[DeltaSentiment.Regression];
  * change to the constant's wording fails these stories, which is the intent.
  */
 const NO_PRIOR_PERIOD_COPY = "No prior period";
+
+/**
+ * ISS-7525's counterpart, restated here for the same reason and with the same
+ * consequence: these stories name the shipped words rather than import the node
+ * that holds them, so a wording change has to come past this file.
+ */
+const DECLINED_COPY = "No comparison";
 
 /**
  * The settled, comparable case: a bounded range, a landed prior read, and a
@@ -221,8 +257,9 @@ export const NeutralMovement: Story = {
  */
 export const SpendRiseReadsAsWorse: Story = {
   args: {
-    deltaKey: "apiCost",
-    label: SESSIONS_COST_METRIC_CARD_LABEL,
+    deltaKey: "totalCost",
+    deltas: RISING_SPEND_DELTAS,
+    label: TOTAL_ESTIMATED_COST_ALIAS_LABEL,
     value: "$16,825",
   },
   play: async ({ canvasElement }) => {
@@ -254,16 +291,72 @@ export const AllTimeHasNoPriorPeriod: Story = {
 };
 
 /**
- * A bounded range where THIS card has no entry: a prior read that has not landed,
- * or a baseline too small for `pctDelta` to divide by.
+ * A bounded range where THIS card has no entry and no comparison rode the
+ * response at all — the host compares, and nothing came back to compare with.
  *
- * Renders identically to {@link AllTimeHasNoPriorPeriod} on purpose. The host
- * compares, and this one card cannot, which is the same thing to say. The two
- * stories exist separately because the CAUSES are different and someone reading
- * one of them will want to know the other reaches the same pixels.
+ * Renders identically to {@link AllTimeHasNoPriorPeriod}, which is now the
+ * narrow claim it always should have been: both really are "no prior period in
+ * hand". The case that used to share these pixels and should not — a prior
+ * window measured and declined — is {@link ComparisonDeclined} below.
  */
 export const NoEntryForThisCard: Story = {
   args: { deltas: { label: BOUNDED_DELTAS.label } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(NO_PRIOR_PERIOD_COPY)).toBeVisible();
+  },
+};
+
+/**
+ * ISS-7525 — the settled-but-DECLINED comparison, the state this slot used to
+ * deny outright.
+ *
+ * A prior window exists for this range, the producer measured it, and it
+ * emitted no percent for this card: the base was too near zero to divide by, or
+ * the movement ran past the display ceiling `pctDelta` refuses to clamp. Saying
+ * "No prior period" here is false about the data, not merely terse — the prior
+ * period is right there in the response, carrying the dates it was measured
+ * over.
+ *
+ * Read this against {@link NoEntryForThisCard}: the same empty slot, two
+ * different facts, and now two different sentences. The distinction is carried
+ * entirely by the WORDS — same muted caption token, same slot geometry, no hue
+ * (WCAG 1.4.1) — so it survives a screen reader and a monochrome render alike.
+ *
+ * Flag-gated (`sessions-summary-honest-loading`, default off), so this story
+ * pins the flag ON and its rowmates above pin the shipped closed default.
+ */
+export const ComparisonDeclined: Story = {
+  args: {
+    deltas: { label: BOUNDED_DELTAS.label, priorPeriodMeasured: true },
+    honestLoadingEnabled: true,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(DECLINED_COPY)).toBeVisible();
+    await expect(
+      canvas.queryByText(NO_PRIOR_PERIOD_COPY)
+    ).not.toBeInTheDocument();
+    await expect(
+      canvas.queryByTestId(DELTA_CHIP_TEST_ID)
+    ).not.toBeInTheDocument();
+  },
+};
+
+/**
+ * The SAME declined payload with the gate closed — the shipped default, and the
+ * old wording verbatim.
+ *
+ * Its whole job is to prove the change is behind the flag rather than beside
+ * it: this story and {@link ComparisonDeclined} differ in exactly one arg.
+ */
+export const ComparisonDeclinedFlagOff: Story = {
+  args: { deltas: { label: BOUNDED_DELTAS.label, priorPeriodMeasured: true } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(NO_PRIOR_PERIOD_COPY)).toBeVisible();
+    await expect(canvas.queryByText(DECLINED_COPY)).not.toBeInTheDocument();
+  },
 };
 
 /**
@@ -304,27 +397,26 @@ export const SuppressedOnFailedRead: Story = {
  * #4480: the same delta object read on the two bases the Cost card's headline can
  * take, side by side in a real `SummaryCardRow`.
  *
- * `resolveCostCardPresentation` picks the metered figure when the honesty flag is
- * on and the producer sent a usable split, and the API figure otherwise. One
- * "cost" delta would have graded whichever basis this module happened to choose
- * against whatever the card actually rendered, two different figures under one
- * chip. The movements deliberately point OPPOSITE ways, so a card reading the
- * wrong key is visible at a glance instead of being plausible.
+ * `resolveCostCardPresentation` used to pick between two figures, and one "cost"
+ * delta would have graded whichever basis this module happened to choose against
+ * whatever the card actually rendered, two different figures under one chip. The
+ * cost movement deliberately points the OPPOSITE way from its rowmates, so a
+ * card reading the wrong key is visible at a glance instead of being plausible.
  *
  * PR #4814 review: nothing here spells a delta key. An earlier draft passed the
- * literals `"meteredCost"` and `"apiCost"`, which made the story a COPY of
- * production's mapping rather than a reader of it — flip
- * `sessions-summary-cards.tsx` to grade the metered chip against the API
- * headline and this canvas would have gone on showing the correct pairing. Both
+ * basis literals directly, which made the story a COPY of production's mapping
+ * rather than a reader of it — re-point `costDeltaKey` at another entry and this
+ * canvas would have gone on showing the correct pairing. Both
  * cards are now built from a real `resolveCostCardPresentation` result: the
  * label and the headline come off that object, and the delta key comes from the
  * shared `costDeltaKey` the production strip calls, so the story moves when the
  * wiring moves.
  */
 export const CostBasisPair: Story = {
+  tags: ["!manifest"],
   render: () => (
     <SummaryCardRow>
-      {[HONEST_COST_PRESENTATION, COLLAPSED_COST_PRESENTATION].map(
+      {[BREAKDOWN_COST_PRESENTATION, COLLAPSED_COST_PRESENTATION].map(
         (presentation) => (
           <SessionsDeltaSlotCard
             cardClassName={summaryCardClass()}
@@ -341,25 +433,27 @@ export const CostBasisPair: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    // The two cards must not be the same card: the honest basis carries its own
-    // label, and a regression that collapsed the presentation would render the
-    // fallback label twice.
+    // ISS-10597's ruling collapsed the two bases onto ONE label and ONE figure,
+    // so this canvas no longer contrasts two names — it shows that the two modes
+    // agree. Two cards, one label, and since 2026-09-20 that label is ruling 7's
+    // alias, which the resolver returns for both modes.
     await expect(
-      canvas.getByText(SESSIONS_COST_HONEST_METRIC_CARD_LABEL)
-    ).toBeVisible();
-    await expect(
-      canvas.getByText(SESSIONS_COST_METRIC_CARD_LABEL)
-    ).toBeVisible();
+      canvas.getAllByText(TOTAL_ESTIMATED_COST_ALIAS_LABEL)
+    ).toHaveLength(2);
 
-    // `BOUNDED_DELTAS` points the two bases in OPPOSITE directions, so the pair
-    // of rendered chips is a direct read of which key each card chose. Swap the
-    // mapping in `costDeltaKey` and these two swap with it. Expectations go
-    // through `formatDeltaPct`, the same SSOT the chip renders with, so this
-    // pins the KEY each card resolved and not the chip's formatting.
+    // `BOUNDED_DELTAS` points cost the opposite way from its rowmates, which is
+    // what keeps this discriminating now that the labels match: both cards must
+    // grade the TOTAL movement, so a mode re-pointed at any other entry renders
+    // that rowmate's percentage instead. Expectations go through
+    // `formatDeltaPct`, the same SSOT the chip renders with, so this pins the KEY
+    // each card resolved rather than the chip's formatting.
+    //
+    // ISS-10734 retired the `apiCost` entry this used to contrast against, so a
+    // mode pointed there now fails `tsc` rather than this canvas.
     const chips = canvas.getAllByTestId(DELTA_CHIP_TEST_ID);
     expect(chips.map((chip) => chip.textContent)).toEqual([
-      formatDeltaPct(HONEST_COST_DELTA.delta),
-      formatDeltaPct(COLLAPSED_COST_DELTA.delta),
+      formatDeltaPct(TOTAL_COST_DELTA.delta),
+      formatDeltaPct(TOTAL_COST_DELTA.delta),
     ]);
   },
 };
@@ -456,9 +550,13 @@ const DELIVERY_COMPARED_DELTAS: SessionSummaryDeltas = {
  * `deltaLabel` trio (or, when no movement survives, a bag carrying only
  * `deltaTreatment` — ISS-5842 replaced the former empty object, so the
  * presentation family no longer depends on whether a card happens to have a
- * delta), and `SUMMARY_NO_PRIOR_PERIOD` is offered as the placeholder only when a
- * comparable object survived, which is what makes the suppressed states render an
- * empty footer rather than a claim.
+ * delta), and the gate picks between `honestSummaryDeltaPlaceholder` and
+ * `shippedSummaryDeltaPlaceholder` — which is
+ * what makes the suppressed states render an empty footer rather than a claim,
+ * and (ISS-7525) what tells a declined comparison apart from an absent one.
+ * Calling the real resolver rather than naming a constant is deliberate: a story
+ * that hard-codes the placeholder cannot go stale when the resolver's answer
+ * changes, which is the one thing these stories exist to notice.
  */
 function SessionsDeltaSlotCard({
   cardClassName,
@@ -467,6 +565,7 @@ function SessionsDeltaSlotCard({
   deltas,
   detail,
   errored = false,
+  honestLoadingEnabled = false,
   label,
   showingLocalFallback = false,
   value,
@@ -477,6 +576,13 @@ function SessionsDeltaSlotCard({
   deltas: SessionSummaryDeltas | undefined;
   detail: string;
   errored?: boolean;
+  /**
+   * ISS-7525: the `sessions-summary-honest-loading` gate, as
+   * `AlwaysAvailableCards` resolves it. Passed as a prop rather than read from a
+   * provider so a single story can pin the flag-ON slot; default OFF keeps every
+   * story above rendering the shipped closed-default wording.
+   */
+  honestLoadingEnabled?: boolean;
   label: string;
   showingLocalFallback?: boolean;
   value: string | null;
@@ -499,7 +605,11 @@ function SessionsDeltaSlotCard({
       className={cardClassName}
       detail={detail}
       {...deltaSlotProps(comparableDeltas, deltaKey, deltaTreatment)}
-      deltaPlaceholder={comparableDeltas ? SUMMARY_NO_PRIOR_PERIOD : undefined}
+      deltaPlaceholder={
+        honestLoadingEnabled
+          ? honestSummaryDeltaPlaceholder(comparableDeltas)
+          : shippedSummaryDeltaPlaceholder(comparableDeltas)
+      }
       label={label}
       value={value}
     />
@@ -574,11 +684,11 @@ const UNIFIED_PILL_TONE_CARDS = [
   },
   {
     // Spend rising is a regression, so the third pill is the destructive tone.
-    deltaKey: "apiCost",
+    deltaKey: "totalCost",
     deltas: createSessionSummaryDeltasFixture({
-      apiCost: { delta: 18, deltaPolarity: MetricPolarity.LowerIsBetter },
+      totalCost: { delta: 18, deltaPolarity: MetricPolarity.LowerIsBetter },
     }),
-    label: SESSIONS_COST_METRIC_CARD_LABEL,
+    label: TOTAL_ESTIMATED_COST_ALIAS_LABEL,
     sentiment: deltaSentiment(18, MetricPolarity.LowerIsBetter),
     value: "$412",
   },
@@ -589,6 +699,138 @@ const UNIFIED_PILL_TONE_CARDS = [
   sentiment: DeltaSentiment;
   value: string;
 }>;
+
+/**
+ * ISS-6493 — the baseline row of the treatment matrix: the same three tones with
+ * NO gate at all, which is what every user sees today.
+ *
+ * This exists so the matrix is one wall rather than three stories a reader holds
+ * in their head. {@link NeutralMovement} above is also `Legacy`, but it is one
+ * card rather than the three-tone row and it sits ten stories away, so it cannot
+ * be read against the pilled rows. These three — this story,
+ * {@link NeutralPillTones} and {@link UnifiedPillTones} — render the identical
+ * card set in reading order with exactly one variable between them, so the
+ * middle card is the defect: bare here, pilled in both rows below.
+ *
+ * It mounts no flag provider, which IS the flag-off case:
+ * `useFeatureFlagEnabledOptional` resolves false without one, so this is the
+ * shipped `Legacy` default rather than a treatment spelled by hand.
+ */
+export const LegacyTones: Story = {
+  tags: ["!manifest"],
+  render: () => (
+    <SummaryCardRow>
+      {UNIFIED_PILL_TONE_CARDS.map((tone) => (
+        <SessionsDeltaSlotCard
+          cardClassName={summaryCardClass()}
+          deltaKey={tone.deltaKey}
+          deltas={tone.deltas}
+          detail={IN_RANGE_DETAIL}
+          key={tone.label}
+          label={tone.label}
+          value={tone.value}
+        />
+      ))}
+    </SummaryCardRow>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const chips = canvas.getAllByTestId(DELTA_CHIP_TEST_ID);
+    await expect(chips).toHaveLength(UNIFIED_PILL_TONE_CARDS.length);
+
+    for (const [index, tone] of UNIFIED_PILL_TONE_CARDS.entries()) {
+      const chip = chips[index];
+      const geometry = deltaPillGeometryClass(
+        tone.sentiment,
+        MetricDeltaTreatment.Legacy
+      );
+      if (geometry) {
+        // A scored tone is pilled here too — only the neutral one is not, which
+        // is exactly the row-level inconsistency ISS-6493 removes.
+        for (const className of unifiedPillClassNames(geometry)) {
+          await expect(chip).toHaveClass(className);
+        }
+      } else {
+        // The one tone Legacy leaves bare. Named rather than inferred, so this
+        // branch cannot quietly start describing a scored card.
+        await expect(tone.sentiment).toBe(DeltaSentiment.Neutral);
+        for (const className of unifiedPillClassNames(
+          DELTA_PILL_GEOMETRY_CLASS
+        )) {
+          await expect(chip).not.toHaveClass(className);
+        }
+      }
+    }
+  },
+};
+
+/**
+ * ISS-6493 — the SAME three tones again, on the gate that can actually ship.
+ *
+ * The state matrix is the point, and it only reads as one with all three
+ * treatments on the wall: {@link NeutralMovement} is `Legacy`, the shipped
+ * default, where the middle card is bare; this story is `NeutralPill`, where it
+ * takes the pill; {@link UnifiedPillTones} is `UnifiedPill`, which pills it too
+ * AND drops the verdict word. Put side by side, the pair of pilled stories shows
+ * exactly what ISS-6493 buys and what it deliberately leaves behind.
+ *
+ * That leaving-behind is the whole reason this treatment exists, so it is what
+ * the `play` checks hardest. `metric-delta-unified-pill` is blocked on #4823
+ * because a `+38%` higher-is-better and a `+38%` lower-is-better become
+ * separable by hue alone once "better" / "worse" is gone. This gate must not
+ * inherit that debt — a neutral tone grades nothing, so pilling it costs no cue
+ * — and a canvas is where a designer can actually confirm the words are still
+ * there beside the scored pills.
+ */
+export const NeutralPillTones: Story = {
+  tags: ["!manifest"],
+  render: () => (
+    <WithNeutralDeltaPill>
+      <SummaryCardRow>
+        {UNIFIED_PILL_TONE_CARDS.map((tone) => (
+          <SessionsDeltaSlotCard
+            cardClassName={summaryCardClass()}
+            deltaKey={tone.deltaKey}
+            deltas={tone.deltas}
+            detail={IN_RANGE_DETAIL}
+            key={tone.label}
+            label={tone.label}
+            value={tone.value}
+          />
+        ))}
+      </SummaryCardRow>
+    </WithNeutralDeltaPill>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const chips = canvas.getAllByTestId(DELTA_CHIP_TEST_ID);
+    await expect(chips).toHaveLength(UNIFIED_PILL_TONE_CARDS.length);
+
+    for (const [index, tone] of UNIFIED_PILL_TONE_CARDS.entries()) {
+      const chip = chips[index];
+      // AC1 on a canvas: one geometry for every tone, the neutral one included.
+      for (const className of unifiedPillClassNames(
+        deltaPillGeometryClass(tone.sentiment, MetricDeltaTreatment.NeutralPill)
+      )) {
+        await expect(chip).toHaveClass(className);
+      }
+      // …with colour as the only thing that varies between them.
+      for (const className of unifiedPillClassNames(
+        deltaPillClass(tone.sentiment, MetricDeltaTreatment.NeutralPill)
+      )) {
+        await expect(chip).toHaveClass(className);
+      }
+      // AC3, and the line between this ticket and the blocked one: a scored tone
+      // still spells its verdict out. `UnifiedPillTones` renders these same
+      // cards with no word at all, so this assertion is what separates the two
+      // stories rather than duplicating one.
+      const verdict = DELTA_SENTIMENT_CAPTION[tone.sentiment];
+      if (verdict) {
+        await expect(canvas.getAllByText(verdict).length).toBeGreaterThan(0);
+      }
+    }
+  },
+};
 
 /**
  * ISS-5842 — the SAME three tones with `metric-delta-unified-pill` ON.
@@ -608,6 +850,7 @@ const UNIFIED_PILL_TONE_CARDS = [
  * claim this story exists to let a designer check.
  */
 export const UnifiedPillTones: Story = {
+  tags: ["!manifest"],
   render: () => (
     <WithUnifiedDeltaPill>
       <SummaryCardRow>

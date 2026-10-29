@@ -19,7 +19,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { after, test } from "node:test";
+import { afterAll, test } from "vitest";
 import {
   buildTranscriptAppUrl,
   ensureTranscriptCached,
@@ -57,7 +57,7 @@ function freshCacheDir(): string {
   return path.join(testRoot, `case-${counter}`);
 }
 
-after(() => {
+afterAll(() => {
   rmSync(testRoot, { recursive: true, force: true });
 });
 

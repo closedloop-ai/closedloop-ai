@@ -30,7 +30,7 @@
  * measure; the per-statement autocommit count is unchanged and is not claimed.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { isCanonicalUtcTimestamp } from "../src/main/database/session-timestamp-form.js";
 import {
   normalizeStoredTimestampFormats,

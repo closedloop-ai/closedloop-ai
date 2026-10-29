@@ -8,13 +8,13 @@
  */
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { test } from "vitest";
 import { persistNormalizedPullRequests } from "../src/main/database/write-core-pull-requests.js";
 import { makeSession } from "./normalized-session-test-utils.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
 
-const REPO = "closedloop-ai/example-repo";
+const REPO = "closedloop-ai/closedloop-ai";
 const PR_NUMBER = "11829";
 const PR_URL = `https://github.com/${REPO}/pull/${PR_NUMBER}`;
 const NOW = "2026-08-10T00:00:00.000Z";

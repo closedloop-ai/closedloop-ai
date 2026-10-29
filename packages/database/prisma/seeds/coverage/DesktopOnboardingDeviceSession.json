@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Device-onboarding handshake state read only by the Desktop onboarding and session services."
+}

@@ -1,25 +1,40 @@
 "use client";
 
 import type { BranchPageDetail } from "@repo/api/src/types/branch";
+import {
+  isUnobservedPullRequest,
+  observedPullRequestState,
+} from "@repo/api/src/types/branch-associated-pull-request";
 import type { ReviewDecision } from "@repo/api/src/types/branch-checks";
 import { ReviewDecision as ReviewDecisionValue } from "@repo/api/src/types/branch-checks";
 import {
   BranchSelectedPullRequestChecksAvailability,
+  type BranchSelectedPullRequestChecksResponse,
   BranchSelectedPullRequestChecksSummary,
 } from "@repo/api/src/types/branch-selected-pull-request-checks";
+import {
+  type BranchSelectedPullRequestChecksQuery,
+  branchSelectedPullRequestChecksQueryForDetail,
+} from "@repo/api/src/types/branch-selected-pull-request-files";
 import {
   type SelectedPullRequestCheck,
   SelectedPullRequestCheckCategory,
 } from "@repo/api/src/types/selected-pull-request-checks-evidence";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { BRANCH_DETAIL_MEASURED_CHECKS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { Chip } from "@repo/design-system/components/ui/chip";
+import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { ToneLabel } from "@repo/design-system/components/ui/tone-label";
 import { ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
 import { useState } from "react";
+import { useBranchSelectedPullRequestChecks } from "../../hooks/use-branch-selected-pull-request-checks";
 import {
   deriveLifecycleBadge,
   type LifecycleBadge,
   LifecycleTone,
 } from "../../lib/merge-status-derivation";
+import { BranchPrMeasuredChecks } from "./branch-pr-measured-checks";
+import { BranchPrStatusRow } from "./branch-pr-status-row";
 
 export type BranchPrStatusPanelProps = {
   detail: BranchPageDetail;
@@ -38,7 +53,8 @@ const ToneVariant: Record<
   [LifecycleTone.Gated]: "muted",
 };
 
-const ReviewDecisionLabel: Record<ReviewDecision, string> = {
+/** Also the Details tab's Review decision row (ISS-12252). */
+export const ReviewDecisionLabel: Record<ReviewDecision, string> = {
   [ReviewDecisionValue.Approved]: "Approved",
   [ReviewDecisionValue.ChangesRequested]: "Changes requested",
   [ReviewDecisionValue.Commented]: "Commented",
@@ -51,8 +67,22 @@ export function BranchPrStatusPanel({ detail }: BranchPrStatusPanelProps) {
   if (!selected) {
     return null;
   }
+  // ISS-8422, two mechanisms and one defect. `prState` must not be
+  // `selected.state`: that is the placeholder OPEN an unobserved row reads off
+  // its column default. And `status` must not be `detail.status` for such a row
+  // either — this badge renders ONLY when a pull request is selected and is
+  // presented as that pull request's lifecycle, while `persistedBadge` reads
+  // `status` FIRST and `BranchPageDetail.status` is never null. So the
+  // branch-level word ("Open" on web, "Draft" on desktop) printed as a confident
+  // claim about a pull request nobody observed, inches from a box reading
+  // "Unconfirmed", and the Gated "Status unavailable" tone that exists for
+  // exactly this case was unreachable. Nulling both reaches it.
+  const observedState = observedPullRequestState(selected);
   const badge = deriveLifecycleBadge({
-    persisted: { prState: selected.state, status: detail.status },
+    persisted: {
+      prState: observedState,
+      status: isUnobservedPullRequest(selected) ? null : detail.status,
+    },
   });
   const reviewLabel = selected.reviewDecision
     ? ReviewDecisionLabel[selected.reviewDecision]
@@ -67,19 +97,77 @@ export function BranchPrStatusPanel({ detail }: BranchPrStatusPanelProps) {
         </span>
       </div>
       <div className="flex flex-col gap-2 py-1">
-        {reviewLabel ? <StatusRow label="Review" value={reviewLabel} /> : null}
-        <ChecksEvidence detail={detail} />
+        {reviewLabel ? (
+          <BranchPrStatusRow label="Review" value={reviewLabel} />
+        ) : null}
+        <SelectedPullRequestChecks detail={detail} />
       </div>
     </section>
   );
 }
 
+/**
+ * ISS-8241 Half A: which checks question this box answers.
+ *
+ * ON, the selected pull request's OWN measured projection. OFF, the live
+ * provider read that shipped, byte-identical. The two never render together —
+ * one box, one answer — so a reader is never shown a fresh number and a measured
+ * one side by side with nothing to say which is the pull request's.
+ */
+function SelectedPullRequestChecks({ detail }: { detail: BranchPageDetail }) {
+  const measured = useFeatureFlagEnabledOptional(
+    BRANCH_DETAIL_MEASURED_CHECKS_FEATURE_FLAG_KEY
+  );
+  return measured ? (
+    <BranchPrMeasuredChecks detail={detail} />
+  ) : (
+    <ChecksEvidence detail={detail} />
+  );
+}
+
+/**
+ * ISS-12278 (Marisol Ashgrove ruling, 2026-10-08, PRD-792 open question 2): checks
+ * no longer ride inside the cloud detail read, so they load after it. A detail
+ * that still carries them inline — the desktop local source, or an older
+ * server — renders exactly that value.
+ */
 function ChecksEvidence({ detail }: { detail: BranchPageDetail }) {
-  const [open, setOpen] = useState(false);
-  const response = detail.selectedPullRequestChecks;
-  if (!response) {
-    return <UnavailableChecks />;
+  const inline = detail.selectedPullRequestChecks;
+  if (inline) {
+    return <ChecksEvidenceResponse response={inline} />;
   }
+  const query = branchSelectedPullRequestChecksQueryForDetail(detail);
+  return query ? (
+    <LazyChecksEvidence branchId={detail.id} query={query} />
+  ) : (
+    <UnavailableChecks />
+  );
+}
+
+function LazyChecksEvidence({
+  branchId,
+  query,
+}: {
+  branchId: string;
+  query: BranchSelectedPullRequestChecksQuery;
+}) {
+  const checks = useBranchSelectedPullRequestChecks(branchId, query);
+  if (checks.isPending) {
+    return <LoadingChecks />;
+  }
+  return checks.data ? (
+    <ChecksEvidenceResponse response={checks.data} />
+  ) : (
+    <UnavailableChecks />
+  );
+}
+
+function ChecksEvidenceResponse({
+  response,
+}: {
+  response: BranchSelectedPullRequestChecksResponse;
+}) {
+  const [open, setOpen] = useState(false);
   if (
     response.status === BranchSelectedPullRequestChecksAvailability.Unavailable
   ) {
@@ -185,35 +273,30 @@ function checkStatusCounts(
   return counts;
 }
 
+function LoadingChecks() {
+  return (
+    <BranchPrStatusRow
+      label="Checks"
+      value={<Skeleton className="inline-block h-4 w-16 align-middle" />}
+    />
+  );
+}
+
 function UnavailableChecks() {
   return (
-    <StatusRow
+    <BranchPrStatusRow
       label="Checks"
       value={<span className="text-muted-foreground">Unavailable</span>}
     />
   );
 }
 
-function LifecycleBadgeChip({ badge }: { badge: LifecycleBadge }) {
+/** The pull request lifecycle chip; also the Details tab's Pull request row (ISS-12252). */
+export function LifecycleBadgeChip({ badge }: { badge: LifecycleBadge }) {
   return (
     <Chip size="sm" variant={ToneVariant[badge.tone]}>
       {badge.label}
     </Chip>
-  );
-}
-
-function StatusRow({
-  label,
-  value,
-}: {
-  label: string;
-  value: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 text-sm">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="text-right">{value}</span>
-    </div>
   );
 }
 

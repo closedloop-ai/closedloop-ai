@@ -87,12 +87,33 @@ const TASK_EXTRACTION_MAX_OUTPUT_TOKENS = 128_000;
 const TASK_EXTRACTION_TEMPERATURE = 0;
 
 /**
+ * Wall-clock ceiling for the extraction call, applied as an `abortSignal` on
+ * the `generateObject` call.
+ *
+ * Without it a slow or hung generation is unbounded — the AI SDK retries a
+ * failed request up to its default 3 attempts, serially — so the request runs
+ * until the platform hard-kills the function and the caller gets an opaque 504
+ * instead of the JSON error envelope the export route contract declares.
+ *
+ * Sized well UNDER the deployed route's platform function cap (Vercel
+ * `maxDuration`, 300s — set explicitly on
+ * apps/api/app/integrations/linear/export/route.ts) rather than merely below
+ * it: this call sits directly ahead of `exportImplementationPlan`'s
+ * non-idempotent Linear issue fan-out, so every second spent hanging here is a
+ * second taken from the part of the request that has external side effects.
+ * The rest of the budget is left for that fan-out — a split, not a bound on the
+ * fan-out itself, which is still unbounded.
+ */
+export const TASK_EXTRACTION_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes (<300s cap)
+
+/**
  * Extract tasks from an implementation plan using LLM analysis.
  *
  * @param markdown - The implementation plan markdown content
  * @returns Array of extracted tasks with metadata
  *
- * @throws Error if LLM call fails
+ * @throws Error if the LLM call fails or outlives
+ * {@link TASK_EXTRACTION_TIMEOUT_MS}
  *
  * @example
  * ```typescript
@@ -116,6 +137,7 @@ export async function extractTasksWithLLM(
     maxOutputTokens: TASK_EXTRACTION_MAX_OUTPUT_TOKENS,
     temperature: TASK_EXTRACTION_TEMPERATURE,
     system: TASK_EXTRACTION_SYSTEM_PROMPT,
+    abortSignal: AbortSignal.timeout(TASK_EXTRACTION_TIMEOUT_MS),
     prompt: `<implementation_plan>
 ${escapeXmlClosingTags(markdown)}
 </implementation_plan>`,

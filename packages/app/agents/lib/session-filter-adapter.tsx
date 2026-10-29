@@ -5,22 +5,18 @@ import {
 } from "@repo/api/src/agent-session-filters";
 import { SESSION_AUTONOMY_TIER_FILTER_OPTIONS } from "@repo/api/src/session-autonomy-tiers";
 import type { AgentSessionUsageSummary } from "@repo/api/src/types/agent-session";
+import { ArtifactStatusVocabulary } from "@repo/api/src/types/artifact-status-contract";
+import { TOTAL_ESTIMATED_COST_ALIAS_LABEL } from "@repo/api/src/types/total-estimated-cost-copy";
+import { UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY } from "@repo/api/src/types/universal-artifact-status-flag";
+import { ArtifactStatus } from "@repo/app/shared/components/artifact-status/artifact-status";
+import { artifactStatusLabel } from "@repo/app/shared/components/artifact-status/artifact-status-presentation";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { artifactStatusFacet } from "@repo/app/shared/lib/artifact-status-adapter";
+import { ArtifactStatusVariant } from "@repo/app/shared/lib/artifact-status-view-contract";
 import type {
   FilterFacetGroup,
   TableFilterOption,
 } from "@repo/design-system/components/ui/table-filters";
-import {
-  CircleDollarSignIcon,
-  CircleDotIcon,
-  CpuIcon,
-  FolderGitIcon,
-  FolderKanbanIcon,
-  GaugeIcon,
-  GitCompareIcon,
-  GitPullRequestIcon,
-  TerminalIcon,
-  UserIcon,
-} from "lucide-react";
 // Branches owns repo-name formatting; the sessions filter reuses the canonical branch-row shortRepoName to avoid a duplicate implementation.
 import { shortRepoName } from "../../branches/lib/branch-row";
 import { toggleFacetValue } from "../../shared/lib/facet-filter";
@@ -138,10 +134,11 @@ export function writeSessionFacetFilterParams(
 
 /** Options for {@link sessionFilterFacetGroups}. */
 export type SessionFilterFacetOptions = {
+  /** Host-owned raw status option ids for a client-held row corpus. */
+  statusOptions?: TableFilterOption[];
   /**
-   * Include the Changes and Pull request facets (FEA-2505). Gated by the
-   * `sessions-change-pr-filters` flag at the call site so the two facets roll
-   * out independently of the always-on facets.
+   * Include the Changes and Pull request facets (FEA-2505). Kept host-selectable
+   * so a surface that cannot honor these dimensions does not offer dead facets.
    */
   includeChangePrFilters?: boolean;
   /**
@@ -358,8 +355,7 @@ export function sessionFilterFacetGroups(
     {
       id: "status",
       label: "Status",
-      icon: <CircleDotIcon className="size-4" />,
-      options: STATUS_OPTIONS,
+      options: options?.statusOptions ?? STATUS_OPTIONS,
       selectedValues: filters.statuses,
       onToggle: (value) =>
         onChange({
@@ -373,7 +369,6 @@ export function sessionFilterFacetGroups(
     {
       id: "owner",
       label: "Owner",
-      icon: <UserIcon className="size-4" />,
       options: ownerOptions(usage, filters.userIds, options?.resolveOwnerName),
       selectedValues: filters.userIds,
       onToggle: (value) =>
@@ -385,7 +380,6 @@ export function sessionFilterFacetGroups(
     {
       id: "autonomy",
       label: "Autonomy",
-      icon: <GaugeIcon className="size-4" />,
       options: AUTONOMY_OPTIONS,
       selectedValues: filters.autonomyTiers,
       onToggle: (value) =>
@@ -397,7 +391,6 @@ export function sessionFilterFacetGroups(
     {
       id: "harness",
       label: "Harness",
-      icon: <TerminalIcon className="size-4" />,
       options: breakdownOptions(usage?.byHarness, (entry) => entry.harness),
       selectedValues: filters.harnesses,
       onToggle: (value) =>
@@ -409,7 +402,6 @@ export function sessionFilterFacetGroups(
     {
       id: "model",
       label: "Model",
-      icon: <CpuIcon className="size-4" />,
       // FEA-4303: source the Model facet options from `modelFilterOptions`
       // (grouped by the PRIMARY displayed model), NOT `byModel` (which spans
       // secondary/subagent models). The filter predicate matches the primary
@@ -430,8 +422,10 @@ export function sessionFilterFacetGroups(
     },
     {
       id: "cost",
-      label: "Cost",
-      icon: <CircleDollarSignIcon className="size-4" />,
+      // ISS-10667: the authorized alias, read from the record rather than
+      // re-typed. Ungated because both states render it — this facet is one of
+      // the three sites measured as unable to hold the canonical phrase.
+      label: TOTAL_ESTIMATED_COST_ALIAS_LABEL,
       options: COST_OPTIONS,
       selectedValues: filters.costBuckets,
       onToggle: (value) =>
@@ -443,7 +437,6 @@ export function sessionFilterFacetGroups(
     {
       id: "repo",
       label: "Repository",
-      icon: <FolderGitIcon className="size-4" />,
       options: repositoryOptions(usage, filters.repositories),
       selectedValues: filters.repositories,
       onToggle: (value) =>
@@ -454,15 +447,12 @@ export function sessionFilterFacetGroups(
     },
   ];
 
-  // Changes / Pull request roll out behind the sessions-change-pr-filters flag
-  // (FEA-2505); when off they are omitted entirely so the selections stay empty
-  // and no filter is applied. Inserted before Repository to keep the
-  // session-shape facets (changes, PR) adjacent to the other session facets.
+  // Inserted before Repository to keep the session-shape facets (changes, PR)
+  // adjacent to the other session facets.
   if (options?.includeChangePrFilters) {
     groups.splice(groups.length - 1, 0, {
       id: "changes",
       label: "Changes",
-      icon: <GitCompareIcon className="size-4" />,
       options: CHANGE_PRESENCE_OPTIONS,
       selectedValues: filters.changePresence,
       onToggle: (value) =>
@@ -474,7 +464,6 @@ export function sessionFilterFacetGroups(
     groups.splice(groups.length - 1, 0, {
       id: "pr",
       label: "Pull request",
-      icon: <GitPullRequestIcon className="size-4" />,
       options: PR_ASSOCIATION_OPTIONS,
       selectedValues: filters.prAssociation,
       onToggle: (value) =>
@@ -493,7 +482,6 @@ export function sessionFilterFacetGroups(
     groups.push({
       id: "project",
       label: "Project",
-      icon: <FolderKanbanIcon className="size-4" />,
       options: projectOptions(
         usage,
         filters.projectIds,
@@ -510,6 +498,51 @@ export function sessionFilterFacetGroups(
   }
 
   return groups;
+}
+
+/** Selects the complete legacy or champion Sessions status option shape. */
+export function useSessionFilterFacetGroups(
+  filters: SessionFacetFilters,
+  onChange: (next: SessionFacetFilters) => void,
+  usage?: AgentSessionUsageSummary,
+  options?: SessionFilterFacetOptions
+): FilterFacetGroup[] {
+  const champion = useFeatureFlagEnabledOptional(
+    UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY
+  );
+  const groups = sessionFilterFacetGroups(filters, onChange, usage, options);
+  if (!champion) {
+    return groups;
+  }
+  return groups.map((group) =>
+    group.id === "status"
+      ? { ...group, options: championSessionStatusOptions(group.options) }
+      : group
+  );
+}
+
+function championSessionStatusOptions(
+  options: readonly TableFilterOption[]
+): TableFilterOption[] {
+  return options.map((option) => {
+    const facet = artifactStatusFacet(
+      ArtifactStatusVocabulary.Session,
+      option.id
+    );
+    const label = artifactStatusLabel(facet);
+    return {
+      ...option,
+      content: (
+        <ArtifactStatus
+          facet={facet}
+          variant={ArtifactStatusVariant.FilterOption}
+        />
+      ),
+      id: option.id,
+      label,
+      searchText: label,
+    };
+  });
 }
 
 /**

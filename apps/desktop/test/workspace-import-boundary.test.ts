@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import { collectTsFiles } from "./helpers/collect-ts-files.js";
 
 // PLN-999 guardrail. The desktop main/preload/shared graph is bundled by
-// electron-vite, which inlines `@repo/*` workspace TypeScript from SOURCE. A
+// Vite, which inlines the `WORKSPACE_INLINE` `@repo/*` packages from SOURCE.
+// The rest (`@repo/app`, `@closedloop-ai/design-system`, `@repo/navigation`) stay
+// external and cannot load in main; Biome bans them there (ISS-12135). A
 // `@repo/...` import that reaches into `/dist/` or carries a `.js` extension is
 // exactly the brittle pattern the bundling migration removed: it only "worked"
 // for type-only imports (erased at compile) and crashed at load for value

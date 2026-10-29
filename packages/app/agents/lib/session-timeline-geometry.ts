@@ -13,8 +13,8 @@
  *
  * This module is the single derivation all three now read
  * ({@link resolveSessionTimelineWindow}), plus the geometry that consumes it —
- * extracted out of the (grandfathered, over-ceiling)
- * `agent-session-detail-view.tsx` so the window lives beside the math it drives.
+ * extracted out of `agent-session-detail-view.tsx` so the window lives beside
+ * the math it drives.
  *
  * It imports `projectActivitySegments` — which lives under `components/activity`
  * but is a pure, surface-agnostic projection — deliberately: the Activity-phases
@@ -119,13 +119,14 @@ export type SessionTimelineWindow = {
  *
  * Where reconciliation with the caption does NOT hold, and deliberately so
  * (whitlockk review, ISS-4833): when the tiling is TRUNCATED
- * (`activitySegmentRowsTruncated`, or the row cap) it is a start-ordered PREFIX,
- * so a transcript that continues past it legitimately widens this window beyond
- * the phase-only span the caption formats. The axis has to cover everything
- * drawn; the caption reports the phases' own span and already carries its
- * "later phases truncated" note. The two totals differing on that path is the
- * honest reading of partial data, not drift — so this module claims
- * reconciliation only for a complete tiling.
+ * (`AgentSessionDetail.activitySegmentRowsTruncated`) it is a start-ordered
+ * PREFIX, so a transcript that continues past it legitimately widens this
+ * window beyond the tiling's own span. The axis has to cover everything drawn;
+ * the flag itself is not read here — the Session Timeline legend discloses it
+ * (ISS-9858) — and the projection this module reads carries only the span
+ * bounds. The two totals differing on that path is the honest reading of
+ * partial data, not drift — so this module claims reconciliation only for a
+ * complete tiling.
  *
  * Degradation, in order:
  *   - no plotted rows at all (an older/pre-backfill detail, or a session whose
@@ -167,7 +168,6 @@ export function resolveSessionTimelineWindow(
 /** The fields a window resolver reads. Structural so tests need no full detail. */
 export type SessionTimelineWindowSource = {
   readonly activitySegmentRows?: AgentSessionDetail["activitySegmentRows"];
-  readonly activitySegmentRowsTruncated?: boolean | null;
   readonly endedAt?: Date | string | null;
   /**
    * ISS-5075: `turnItems` is a chronological PREFIX (the detail read hit its row
@@ -475,26 +475,23 @@ export function getTimedRowBounds(
 }
 
 /**
- * The Activity-phases tiling's own span — the SAME `spanStartMs`/`spanEndMs`
- * that `session-activity-segments.tsx` formats into the "phases span …" caption
- * printed directly beneath the axis. `null` when the session carries no usable
- * tiling.
+ * The activity tiling's own span — the projection's published
+ * `spanStartMs`/`spanEndMs`. `null` when the session carries no usable tiling.
  *
- * ISS-5137: this is the single-sourcing that keeps the two adjacent captions
- * from stating different numbers for the same session. The axis does not
- * re-derive a span from a subset of the projection's segments; it reads the
- * projection's published bounds, so "the span the phases strip covers" has
- * exactly one definition and both captions render it. Idle spans are rendered on
- * that strip and measured by that caption, so they are part of the span it
- * reports — see {@link resolveSessionTimelineWindow} for why that outranks
- * ISS-4833's idle exclusion.
+ * ISS-5137 introduced this single-sourcing to stop the axis caption and the
+ * "phases span …" caption beneath it stating different numbers for one session;
+ * ISS-7867 retired that second caption, and the axis remains the one reader of
+ * these bounds. The rule it encodes still holds: the axis does not re-derive a
+ * span from a subset of the projection's segments, it reads the projection's
+ * published bounds, so the tiling's covered span has exactly one definition.
+ * Idle spans are part of the span the projection reports — see
+ * {@link resolveSessionTimelineWindow} for why that outranks ISS-4833's idle
+ * exclusion.
  */
 function getPhaseTilingSpan(
   session: SessionTimelineWindowSource
 ): { endMs: number; startMs: number } | null {
-  const phases = projectActivitySegments(session.activitySegmentRows, {
-    rowsTruncated: session.activitySegmentRowsTruncated,
-  });
+  const phases = projectActivitySegments(session.activitySegmentRows);
   if (phases.spanStartMs === null || phases.spanEndMs === null) {
     return null;
   }
@@ -591,4 +588,35 @@ function demoteUnrepairedJumpRows(buckets: ActivityBucket[]): ActivityBucket[] {
   return buckets.map((bucket) =>
     bucket.tl0 == null ? bucket : { ...bucket, tl0: null }
   );
+}
+
+/**
+ * ISS-7115: each timed transcript row's INSTANT, keyed by its `_row`.
+ *
+ * `_row` is not a reading-order ordinal, and nothing may treat it as one.
+ * `projectAgentSessionTurnItems` returns the turns sorted by TIME, and mints a
+ * sub-session turn with `_row = timeline.length + index` — a high ordinal on an
+ * early instant — which is the same divergence {@link alignBucketRowsToTranscript}
+ * already tracks bucket `tl0` by timestamp to survive. So the `_row` sequence a
+ * reader scrolls DOWN through is non-monotonic wherever a sub-session sits, and
+ * comparing two `_row` values answers "which came first?" wrongly there.
+ *
+ * The transcript renders in that same time order, so a row's instant is both
+ * the honest answer to "when did this happen?" and monotonic under a forward
+ * scroll. Anything placing the reader on the timeline's clock asks this map
+ * rather than comparing ordinals.
+ *
+ * Untimed rows are absent rather than present with a fabricated instant — the
+ * caller's fallback is a real code path, not an error case.
+ */
+export function buildTraceRowInstants(
+  items: readonly TurnItem[]
+): ReadonlyMap<number, number> {
+  const instants = new Map<number, number>();
+  for (const item of items) {
+    if (hasTimedTraceRow(item)) {
+      instants.set(item._row, getTurnItemMs(item));
+    }
+  }
+  return instants;
 }

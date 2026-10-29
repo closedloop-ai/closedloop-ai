@@ -47,6 +47,13 @@ vi.mock("../../agent-sessions/service", () => ({
   agentSessionsService: { listByArtifactIds: mocks.listByArtifactIds },
 }));
 
+import { buildServiceDb } from "@/__tests__/support/agent-components/service-db-double";
+import {
+  matchesOrphanWhere,
+  type OrphanUsageShape,
+  sortByRecency,
+  takeRows,
+} from "@/__tests__/support/agent-components/usage-lane-doubles";
 import { agentComponentsService } from "../service";
 import {
   buildPopulationDb,
@@ -54,13 +61,6 @@ import {
   makeInventoryRow,
   ORG_A,
 } from "./org-population-fixtures";
-import { buildServiceDb } from "./service-db-double";
-import {
-  matchesOrphanWhere,
-  type OrphanUsageShape,
-  sortByRecency,
-  takeRows,
-} from "./usage-lane-doubles";
 
 const ORG = "org-facet-invariants";
 

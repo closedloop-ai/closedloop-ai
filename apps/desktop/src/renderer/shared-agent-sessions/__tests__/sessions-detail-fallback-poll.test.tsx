@@ -14,11 +14,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyDesktopSessionsListPollDefaults,
   DESKTOP_SESSIONS_DETAIL_REFETCH_INTERVAL_MS,
+  DESKTOP_SESSIONS_HIDDEN_REFETCH_INTERVAL_MS,
 } from "../sessions-list-poll-defaults";
 
 /**
  * FEA-3481 (G4 / AC-8) — a desktop detail view open on a permanently-hidden
- * renderer must reflect a new sync within one poll interval.
+ * renderer must reflect a new sync within one poll interval. Since the operator
+ * ruling of 2026-10-05 that interval is the slow hidden cadence
+ * (`DESKTOP_SESSIONS_HIDDEN_REFETCH_INTERVAL_MS`); a visible renderer keeps the
+ * detail cadence.
  *
  * The shared live bridge that refreshes an open detail is visibility-gated: it
  * defers its flush while `document.hidden` is true and only replays the backlog
@@ -174,7 +178,7 @@ function renderDetail(
 }
 
 describe("desktop detail fallback poll (FEA-3481 G4 / AC-8)", () => {
-  it("reflects a new sync on a hidden renderer within one poll interval, without the bridge firing", async () => {
+  it("reflects a new sync on a hidden renderer within one hidden poll interval, without the bridge firing", async () => {
     const fake = liveDetailSource();
     let latestName: string | null | undefined;
     const onName = (name?: string | null) => {
@@ -200,13 +204,53 @@ describe("desktop detail fallback poll (FEA-3481 G4 / AC-8)", () => {
     });
     const afterEmit = fake.detailCalls();
 
-    // Within one detail poll interval the fallback poll refetches the open
-    // detail and the view reflects the new sync — even though the window stayed
-    // hidden the whole time.
+    // Hidden: no re-poll at the visible detail cadence (operator ruling,
+    // 2026-10-05)…
     await advance(DESKTOP_SESSIONS_DETAIL_REFETCH_INTERVAL_MS);
+    await settle();
+    expect(fake.detailCalls()).toBe(afterEmit);
+    expect(latestName).toBe("before sync");
+
+    // …but within one hidden poll interval the fallback poll refetches the open
+    // detail and the view reflects the new sync, even though the window stayed
+    // hidden the whole time.
+    await advance(DESKTOP_SESSIONS_HIDDEN_REFETCH_INTERVAL_MS);
     await settle();
     expect(fake.detailCalls()).toBeGreaterThan(afterEmit);
     expect(latestName).toBe("after sync");
+  });
+
+  it("refetches an open detail on re-show and returns to the detail cadence (review cid 4185860589)", async () => {
+    const fake = liveDetailSource();
+    hiddenValue = true;
+    renderDetail(fake.source, () => {});
+    await settle();
+    const whileHidden = fake.detailCalls();
+
+    // Re-show with nothing queued on the live bridge: only the focus refetch
+    // can read here, and it must not wait out the 60s hidden interval.
+    hiddenValue = false;
+    act(() => {
+      globalThis.dispatchEvent(new Event("visibilitychange"));
+    });
+    await settle();
+    const afterShow = fake.detailCalls();
+    expect(afterShow).toBeGreaterThan(whileHidden);
+
+    await advance(DESKTOP_SESSIONS_DETAIL_REFETCH_INTERVAL_MS);
+    await settle();
+    expect(fake.detailCalls()).toBeGreaterThan(afterShow);
+  });
+
+  it("polls an open detail at the detail cadence while the renderer is visible", async () => {
+    const fake = liveDetailSource();
+    renderDetail(fake.source, () => {});
+    await settle();
+    const afterMount = fake.detailCalls();
+
+    await advance(DESKTOP_SESSIONS_DETAIL_REFETCH_INTERVAL_MS);
+    await settle();
+    expect(fake.detailCalls()).toBeGreaterThan(afterMount);
   });
 
   it("does not poll a detail with no active observer (cost stays O(open details))", async () => {

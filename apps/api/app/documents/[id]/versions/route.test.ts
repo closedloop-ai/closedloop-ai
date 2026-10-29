@@ -26,6 +26,10 @@ const mockCreateNewVersionWithInlineImages = vi.hoisted(() => vi.fn());
 const mockResetDocumentRoom = vi.hoisted(() => vi.fn());
 const mockWithAnyAuthOptions = vi.hoisted(() => [] as unknown[]);
 
+// ISS-12552: these cases record no operation receipt.
+vi.mock("@/lib/attribution-evidence-policy-feature", () => ({
+  isAttributionEvidenceEnabledForOrganization: vi.fn(async () => false),
+}));
 vi.mock("@repo/observability/log", () => ({
   log: {
     error: vi.fn(),
@@ -45,7 +49,10 @@ vi.mock("@/app/documents/document-service", () => ({
 }));
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
-  withAnyAuth: (handler: any, options?: unknown) => {
+  withAnyAuth: (
+    handler: (...args: unknown[]) => Promise<Response>,
+    options?: unknown
+  ) => {
     mockWithAnyAuthOptions.push(options);
     return (request: Request, context: { params: Promise<{ id: string }> }) => {
       const requiredScopes = (
@@ -88,10 +95,76 @@ vi.mock("../../room-utils", () => ({
 }));
 
 import { isMcpAttachmentUploadEnabled } from "@/app/documents/attachment-upload-feature";
+import { documentService } from "@/app/documents/document-service";
 import { resolveDocumentId } from "@/lib/identifier-utils";
 import { documentVersionService } from "../../document-version-service";
 import { resetDocumentRoom } from "../../room-utils";
-import { POST } from "./route";
+import { GET, POST } from "./route";
+
+describe("GET /documents/:id/versions", () => {
+  const listedVersions = [
+    { version: 2, content: "CURRENT body" },
+    { version: 1, content: "ORIGINAL body" },
+  ].map((row) => ({
+    createdAt: new Date("2026-08-21T00:00:00.000Z"),
+    createdById: "test-user-id",
+    documentId: "FEA-42",
+    id: `version-${row.version}`,
+    ...row,
+  }));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAuthContext = createTestAuthContext();
+    vi.mocked(resolveDocumentId).mockImplementation(async (id: string) => id);
+    vi.mocked(documentService.findByIdSimple).mockResolvedValue({
+      id: "FEA-42",
+    } as never);
+    // The service selects no content, so the mock must not invent one — a mock
+    // richer than production would let a content leak here look clean.
+    vi.mocked(documentVersionService.listVersions).mockImplementation(
+      async () => listedVersions.map(({ content, ...rest }) => rest) as never
+    );
+  });
+
+  it("lists versions as metadata, never bodies", async () => {
+    const response = await GET(
+      createMockRequest({
+        url: "http://localhost:3002/api/documents/FEA-42/versions",
+      }),
+      createMockRouteContext({ id: "FEA-42" })
+    );
+    const body = await response.json();
+
+    expect(documentVersionService.listVersions).toHaveBeenCalledWith("FEA-42");
+    expect(body.data).toHaveLength(2);
+    // `not.toHaveProperty` rather than `=== undefined`: the point is that the
+    // key is ABSENT, which is what keeps the response bounded.
+    for (const row of body.data) {
+      expect(row).not.toHaveProperty("content");
+    }
+    expect(body.data.map((row: { version: number }) => row.version)).toEqual([
+      2, 1,
+    ]);
+  });
+
+  it("ignores a caller-supplied includeContent rather than honouring it", async () => {
+    const response = await GET(
+      createMockRequest({
+        url: "http://localhost:3002/api/documents/FEA-42/versions?includeContent=true",
+      }),
+      createMockRouteContext({ id: "FEA-42" })
+    );
+    const body = await response.json();
+
+    // The opt-in was removed because it made one request an unbounded bulk body
+    // fetch. A caller still passing it must not resurrect that path.
+    expect(documentVersionService.listVersions).toHaveBeenCalledWith("FEA-42");
+    for (const row of body.data) {
+      expect(row).not.toHaveProperty("content");
+    }
+  });
+});
 
 describe("POST /documents/:id/versions", () => {
   beforeEach(() => {
@@ -144,7 +217,8 @@ describe("POST /documents/:id/versions", () => {
       "FEA-42",
       mockAuthContext.user.organizationId,
       mockAuthContext.user.id,
-      "Plain update"
+      "Plain update",
+      undefined
     );
     expect(
       documentVersionService.createNewVersionWithInlineImages
@@ -177,7 +251,8 @@ describe("POST /documents/:id/versions", () => {
       "FEA-42",
       mockAuthContext.user.organizationId,
       mockAuthContext.user.id,
-      content
+      content,
+      undefined
     );
     expect(
       documentVersionService.createNewVersionWithInlineImages
@@ -209,7 +284,8 @@ describe("POST /documents/:id/versions", () => {
       "FEA-42",
       mockAuthContext.user.organizationId,
       mockAuthContext.user.id,
-      content
+      content,
+      undefined
     );
     expect(
       documentVersionService.createNewVersionWithInlineImages
@@ -262,7 +338,8 @@ describe("POST /documents/:id/versions", () => {
       mockAuthContext.user.organizationId,
       mockAuthContext.user.id,
       "Content [[diagram]]",
-      [makeInlineImageInput()]
+      [makeInlineImageInput()],
+      undefined
     );
   });
 

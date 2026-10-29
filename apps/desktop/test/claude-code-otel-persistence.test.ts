@@ -2,19 +2,22 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
-import { DATA_REVISION } from "../src/main/collectors/engine/data-revision.js";
+import { test } from "vitest";
+import { effectiveDataRevision } from "../src/main/collectors/engine/effective-data-revision.js";
 import { deterministicEventId } from "../src/main/database/deterministic-event-id.js";
 import type { PrismaClient } from "../src/main/database/generated/client.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import {
-  type ClaudeCodeOtelPersistenceWarning,
   ClaudeCodeOtelSignalType,
   ClaudeCodeOtelTableName,
   ClaudeCodeOtelWarningSignalType,
   ClaudeCodePermissionDecision,
   ClaudeCodePermissionSource,
+  ClaudeCodePluginLifecycle,
+} from "../src/main/otel/claude-code-otel-signal-contract.js";
+import {
+  type ClaudeCodeOtelPersistenceWarning,
   persistClaudeCodeOtelSignals,
 } from "../src/main/otel/claude-code-persistence.js";
 import {
@@ -62,7 +65,7 @@ test("persists Claude Code OTel cost, permission, API request, and token usage s
     assert.equal(costRows[0].model, MODEL);
     assert.equal(Number(costRows[0].cost_usd), 1.25);
     assert.equal(costRows[0].observed_at, "2026-06-18T19:00:00.000Z");
-    assert.equal(costRows[0].data_revision, DATA_REVISION);
+    assert.equal(costRows[0].data_revision, effectiveDataRevision());
 
     const permissionRows = await selectRows(
       db,
@@ -75,7 +78,7 @@ test("persists Claude Code OTel cost, permission, API request, and token usage s
       ClaudeCodePermissionDecision.Allow
     );
     assert.equal(permissionRows[0].source, ClaudeCodePermissionSource.Hook);
-    assert.equal(permissionRows[0].data_revision, DATA_REVISION);
+    assert.equal(permissionRows[0].data_revision, effectiveDataRevision());
 
     const apiRows = await selectRows(db, ClaudeCodeOtelTableName.ApiRequest);
     assert.equal(apiRows.length, 1);
@@ -85,7 +88,7 @@ test("persists Claude Code OTel cost, permission, API request, and token usage s
     assert.equal(Number(apiRows[0].tokens_cache_creation), 2);
     assert.equal(Number(apiRows[0].cost_usd), 1.75);
     assert.equal(apiRows[0].duration_ms, 2500);
-    assert.equal(apiRows[0].data_revision, DATA_REVISION);
+    assert.equal(apiRows[0].data_revision, effectiveDataRevision());
 
     assert.deepEqual(await db.tokenUsage.getBySession(SESSION_ID), [
       {
@@ -375,6 +378,106 @@ test("Date.parse-parseable malformed timestamps are rejected before writes", asy
   }
 });
 
+test("ISS-7352 items C and G: each new signal type round-trips through the persister", async () => {
+  // The normalizer narrows, but this Zod contract is what ADMITS a row, and it
+  // is a real boundary: the db-host receives whatever IPC hands it, where the
+  // TypeScript union guarantees nothing. Each of the six new types is driven
+  // through the persister directly, so a schema that silently stopped
+  // recognizing one would fail here rather than in production.
+  const { db, cleanup } = await openTestDatabase();
+  try {
+    await seedSession(db, SESSION_ID);
+    const warnings: ClaudeCodeOtelPersistenceWarning[] = [];
+
+    const summary = await persistClaudeCodeOtelSignals(
+      {
+        prisma: db.prisma,
+        events: [
+          makeMcpServerConnection(),
+          makeAuthEvent(),
+          makePluginEvent(),
+          makeLinesOfCode(),
+          makeSessionStart(),
+          makeToolResult(),
+        ],
+      },
+      { now: () => NOW, warn: (warning) => warnings.push(warning) }
+    );
+
+    assert.deepEqual(summary, { accepted: 6, rejected: 0 });
+    assert.deepEqual(warnings, []);
+    for (const tableName of [
+      ClaudeCodeOtelTableName.McpServerConnection,
+      ClaudeCodeOtelTableName.AuthEvent,
+      ClaudeCodeOtelTableName.PluginEvent,
+      ClaudeCodeOtelTableName.LinesOfCode,
+      ClaudeCodeOtelTableName.SessionStart,
+      ClaudeCodeOtelTableName.ToolResult,
+    ]) {
+      assert.equal(await countRows(db, tableName), 1, tableName);
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("ISS-7352 items C and G: a malformed value in a new signal type is rejected without writes", async () => {
+  // The negative sibling of the round-trip above, on the same six derivations.
+  // Each event is well-formed except for ONE field the contract must refuse:
+  // an absent required discriminator, an out-of-range status, a non-integer
+  // count, a bad timestamp, an empty required string, a wrong-typed flag.
+  const { db, cleanup } = await openTestDatabase();
+  try {
+    await seedSession(db, SESSION_ID);
+    const warnings: ClaudeCodeOtelPersistenceWarning[] = [];
+
+    const summary = await persistClaudeCodeOtelSignals(
+      {
+        prisma: db.prisma,
+        events: [
+          // `status` is required — a connection row that cannot say how the
+          // attempt ended carries nothing.
+          makeMcpServerConnection({ status: "   " }),
+          makeAuthEvent({ statusCode: 99_999 }),
+          // `lifecycle` is a closed set WE derive from the event name, not an
+          // external open taxonomy, so an unknown value is a bug not a skew.
+          makePluginEvent({ lifecycle: "uninstalled" }),
+          makeLinesOfCode({ lineCount: 1.5 }),
+          makeSessionStart({ observedAt: "not-a-date" }),
+          makeToolResult({ success: "false" }),
+        ],
+      },
+      { now: () => NOW, warn: (warning) => warnings.push(warning) }
+    );
+
+    assert.deepEqual(summary, { accepted: 0, rejected: 6 });
+    assert.equal(warnings.length, 6);
+    assert.deepEqual(
+      warnings.map((warning) => warning.signalType),
+      [
+        ClaudeCodeOtelSignalType.McpServerConnection,
+        ClaudeCodeOtelSignalType.AuthEvent,
+        ClaudeCodeOtelSignalType.PluginEvent,
+        ClaudeCodeOtelSignalType.LinesOfCode,
+        ClaudeCodeOtelSignalType.SessionStart,
+        ClaudeCodeOtelSignalType.ToolResult,
+      ]
+    );
+    for (const tableName of [
+      ClaudeCodeOtelTableName.McpServerConnection,
+      ClaudeCodeOtelTableName.AuthEvent,
+      ClaudeCodeOtelTableName.PluginEvent,
+      ClaudeCodeOtelTableName.LinesOfCode,
+      ClaudeCodeOtelTableName.SessionStart,
+      ClaudeCodeOtelTableName.ToolResult,
+    ]) {
+      assert.equal(await countRows(db, tableName), 0, tableName);
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
 test("all-invalid batches do not enter the write queue", async () => {
   let writeCalls = 0;
   const prisma: Pick<DesktopPrisma, "write"> = {
@@ -427,7 +530,7 @@ test("accepted database batches use one prisma.write transaction", async () => {
   try {
     await seedSession(db, SESSION_ID);
     let writeCalls = 0;
-    const transactionSizes: number[] = [];
+    const transactions: TransactionContents[] = [];
     // Counts the queue-serialized write and instruments `$transaction` on the
     // REAL client: a structural stand-in cannot honestly satisfy the generated
     // PrismaClient, so the batch runs for real and only the call is observed.
@@ -435,7 +538,7 @@ test("accepted database batches use one prisma.write transaction", async () => {
       write: (callback) => {
         writeCalls += 1;
         return db.prisma.write((client) =>
-          callback(withTransactionCounter(client, transactionSizes))
+          callback(withTransactionCounter(client, transactions))
         );
       },
     };
@@ -450,7 +553,20 @@ test("accepted database batches use one prisma.write transaction", async () => {
 
     assert.deepEqual(summary, { accepted: 2, rejected: 0 });
     assert.equal(writeCalls, 1);
-    assert.deepEqual(transactionSizes, [2]);
+    assert.equal(transactions.length, 1, "one transaction, not one per signal");
+    const [only] = transactions;
+    const acceptedSignals = 2;
+    assert.equal(only?.modelWrites, acceptedSignals);
+    // The rollup rides this SAME transaction on purpose, so a total always
+    // commits with the events it was computed from. Asserted by finding its
+    // statement rather than by a total count: the rollup now also advances the
+    // sync watermark through `advanceSessionSyncWatermark`, whose own statement
+    // count is that helper's business and not this contract's. `makeTokenUsage`
+    // carries no cost, so exactly one session is rolled up.
+    const rollups = (only?.rawStatements ?? []).filter((sql) =>
+      sql.includes("authoritative_cost_usd")
+    );
+    assert.equal(rollups.length, 1);
   } finally {
     await cleanup();
   }
@@ -482,7 +598,7 @@ test("database transaction failure rolls back all accepted events", async () => 
       SESSION_ID,
       "different-model",
       "2026-06-18T18:00:00.000Z",
-      DATA_REVISION,
+      effectiveDataRevision(),
       NOW
     );
 
@@ -626,6 +742,89 @@ function makeApiRequest(overrides: Record<string, unknown>) {
   };
 }
 
+function makeMcpServerConnection(overrides: Record<string, unknown> = {}) {
+  return {
+    type: ClaudeCodeOtelSignalType.McpServerConnection,
+    sessionId: SESSION_ID,
+    observedAt: "2026-06-18T19:00:21.000Z",
+    status: "connected",
+    transportType: "stdio",
+    serverScope: "project",
+    durationMs: 512,
+    isPlugin: true,
+    pluginIdHash: "0f3a1c",
+    ...overrides,
+  };
+}
+
+function makeAuthEvent(overrides: Record<string, unknown> = {}) {
+  return {
+    type: ClaudeCodeOtelSignalType.AuthEvent,
+    sessionId: SESSION_ID,
+    observedAt: "2026-06-18T19:00:23.000Z",
+    action: "login",
+    success: false,
+    authMethod: "oauth",
+    errorCategory: "invalid_grant",
+    statusCode: 401,
+    ...overrides,
+  };
+}
+
+function makePluginEvent(overrides: Record<string, unknown> = {}) {
+  return {
+    type: ClaudeCodeOtelSignalType.PluginEvent,
+    sessionId: SESSION_ID,
+    observedAt: "2026-06-18T19:00:25.000Z",
+    lifecycle: ClaudeCodePluginLifecycle.Installed,
+    pluginName: "design-pack",
+    pluginVersion: "1.2.0",
+    marketplaceName: "closedloop-ai",
+    marketplaceIsOfficial: false,
+    installTrigger: "cli",
+    ...overrides,
+  };
+}
+
+function makeLinesOfCode(overrides: Record<string, unknown> = {}) {
+  return {
+    type: ClaudeCodeOtelSignalType.LinesOfCode,
+    sessionId: SESSION_ID,
+    model: MODEL,
+    observedAt: "2026-06-18T19:00:31.000Z",
+    changeType: "added",
+    lineCount: 120,
+    ...overrides,
+  };
+}
+
+function makeSessionStart(overrides: Record<string, unknown> = {}) {
+  return {
+    type: ClaudeCodeOtelSignalType.SessionStart,
+    sessionId: SESSION_ID,
+    observedAt: "2026-06-18T19:00:33.000Z",
+    startType: "resume",
+    sessionCount: 1,
+    ...overrides,
+  };
+}
+
+function makeToolResult(overrides: Record<string, unknown> = {}) {
+  return {
+    type: ClaudeCodeOtelSignalType.ToolResult,
+    sessionId: SESSION_ID,
+    observedAt: "2026-06-18T19:00:35.000Z",
+    toolName: "Bash",
+    toolUseId: "toolu_01AAA",
+    success: false,
+    errorType: "Error:ENOENT",
+    toolInputSizeBytes: 512,
+    toolResultSizeBytes: 4096,
+    mcpServerScope: "project",
+    ...overrides,
+  };
+}
+
 function makeTokenUsage(overrides: Record<string, unknown>) {
   return {
     type: ClaudeCodeOtelSignalType.TokenUsage,
@@ -640,14 +839,28 @@ function makeTokenUsage(overrides: Record<string, unknown>) {
   };
 }
 
+/** What one instrumented `$transaction` was observed to execute. */
+type TransactionContents = {
+  /** Model-delegate writes — one per accepted signal. */
+  modelWrites: number;
+  /** Raw SQL statements, verbatim, so a specific one can be looked for. */
+  rawStatements: string[];
+};
+
 /**
- * `client` with `$transaction` instrumented: every call records how many
- * operations the batch handed it, then delegates to the real client so the
- * upserts still execute inside the same transaction.
+ * `client` with `$transaction` instrumented: each call appends what it executed,
+ * then delegates to the real client so the writes still land for real.
+ *
+ * It observes the transaction's CONTENTS rather than an argument's length,
+ * because ISS-7229 moved this batch from the array form to the interactive one
+ * — the rollup has to read the stored sync watermark before it can decide how
+ * to advance it, which an array of prepared operations cannot express. The
+ * contract being pinned is unchanged: one write, one transaction, carrying the
+ * accepted signals AND their session rollup together.
  */
 function withTransactionCounter(
   client: PrismaClient,
-  transactionSizes: number[]
+  transactions: TransactionContents[]
 ): PrismaClient {
   return new Proxy(client, {
     get(target, property) {
@@ -656,12 +869,65 @@ function withTransactionCounter(
         return typeof value === "function" ? value.bind(target) : value;
       }
       return (...args: unknown[]) => {
-        const [operations] = args;
-        transactionSizes.push(
-          Array.isArray(operations) ? operations.length : 0
-        );
-        return Reflect.apply(value, target, args);
+        const contents: TransactionContents = {
+          modelWrites: 0,
+          rawStatements: [],
+        };
+        transactions.push(contents);
+        const [operations, ...rest] = args;
+        if (typeof operations !== "function") {
+          contents.modelWrites = Array.isArray(operations)
+            ? operations.length
+            : 0;
+          return Reflect.apply(value, target, args);
+        }
+        const wrapped = (tx: unknown) =>
+          (operations as (tx: unknown) => unknown)(
+            instrumentTransactionClient(tx, contents)
+          );
+        return Reflect.apply(value, target, [wrapped, ...rest]);
       };
+    },
+  });
+}
+
+/**
+ * The interactive transaction client, recording every operation run on it: raw
+ * statements verbatim, and one `modelWrites` tick per delegate method call.
+ */
+function instrumentTransactionClient(
+  tx: unknown,
+  contents: TransactionContents
+): unknown {
+  return new Proxy(tx as object, {
+    get(target, property) {
+      const value = Reflect.get(target, property);
+      if (typeof property === "string" && property.startsWith("$")) {
+        if (typeof value !== "function") {
+          return value;
+        }
+        return (...args: unknown[]) => {
+          if (typeof args[0] === "string") {
+            contents.rawStatements.push(args[0]);
+          }
+          return Reflect.apply(value, target, args);
+        };
+      }
+      if (typeof value !== "object" || value === null) {
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return new Proxy(value, {
+        get(delegate, method) {
+          const operation = Reflect.get(delegate, method);
+          if (typeof operation !== "function") {
+            return operation;
+          }
+          return (...args: unknown[]) => {
+            contents.modelWrites += 1;
+            return Reflect.apply(operation, delegate, args);
+          };
+        },
+      });
     },
   });
 }

@@ -59,6 +59,14 @@ export type EstimateTokenCostResult = {
    * `costUsd` / `cacheWriteCostUsd`. 0 when no one-hour tokens were supplied.
    */
   cacheWriteTtlPremiumUsd: number;
+  /**
+   * ISS-7762: true when `UNKNOWN_MODEL_FALLBACK_TIER` supplied the rate because
+   * genai-prices could not price the model id at all. Forwarded from
+   * `HarnessCostResult.unknownModelFallbackApplied` so the DB writers can stamp
+   * `cost_source` honestly — dropping it here is what let a fallback floor
+   * persist as `genai_prices_v1`.
+   */
+  unknownModelFallbackApplied: boolean;
 };
 
 export function estimateTokenCost(
@@ -86,10 +94,16 @@ export function estimateTokenCost(
     cacheReadCostUsd: result.cacheReadCostUsd ?? 0,
     cacheWriteCostUsd: result.cacheWriteCostUsd ?? 0,
     cacheWriteTtlPremiumUsd: result.cacheWriteTtlPremiumUsd,
+    unknownModelFallbackApplied: result.unknownModelFallbackApplied,
   };
 }
 
-function coerceObservedAt(
+/**
+ * The observation instant as a valid `Date`, or `undefined` for a missing,
+ * empty, or unparseable value. Shared with the pricing-miss seam in
+ * `main/cost/token-cost-pricing-miss.ts`.
+ */
+export function coerceObservedAt(
   observedAt: Date | string | null | undefined
 ): Date | undefined {
   if (observedAt instanceof Date) {

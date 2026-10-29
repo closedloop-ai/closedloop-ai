@@ -10,11 +10,12 @@
  * suites share the fake source in `helpers/invocation-sync-service-fixtures.ts`.
  */
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
 import {
   AGENT_COMPONENT_INVOCATION_SYNC_PROTOCOL_VERSION,
   AgentComponentInvocationSyncRejectReason,
 } from "@repo/api/src/types/agent-component-invocation";
+import { describe, it } from "vitest";
+import { AgentComponentInvocationSyncLocalError } from "../src/main/agent-sync/agent-component-invocation-sync-constants.js";
 import { AgentComponentInvocationSyncService } from "../src/main/agent-sync/agent-component-invocation-sync-service.js";
 import {
   DEAD_LETTER_RETRY_MAX_MS,
@@ -95,7 +96,10 @@ describe("ISS-5789 invocation sync rejection budget", () => {
   // the `permanent` flag.
   for (const { reason, deadLetters } of TERMINAL_BEHAVIOUR_BY_REASON) {
     it(`ISS-5789: ${reason} ${deadLetters ? "dead-letters" : "keeps retrying"} once every budget is spent`, async () => {
-      const source = new FakeSource(part(), BEYOND_EVERY_BUDGET);
+      const source = new FakeSource(
+        part(),
+        BEYOND_EVERY_BUDGET
+      ).withPermanentAttemptCount(BEYOND_EVERY_BUDGET);
       const service = new AgentComponentInvocationSyncService({
         isReady: () => true,
         getSource: () => source,
@@ -141,7 +145,10 @@ describe("ISS-5789 invocation sync rejection budget", () => {
   // cannot interpret is not one we can attribute to this row, so dead-lettering on
   // it would discard data over a version skew.
   it("ISS-5789: an unrecognized reason defers instead of dead-lettering", async () => {
-    const source = new FakeSource(part(), BEYOND_EVERY_BUDGET);
+    const source = new FakeSource(
+      part(),
+      BEYOND_EVERY_BUDGET
+    ).withPermanentAttemptCount(BEYOND_EVERY_BUDGET);
     const service = new AgentComponentInvocationSyncService({
       isReady: () => true,
       getSource: () => source,
@@ -178,7 +185,10 @@ describe("ISS-5789 invocation sync rejection budget", () => {
   // decision, and `maxAttempts` would be undefined too. Same defense-in-depth
   // standing as the case above.
   it("ISS-5789: a prototype-shaped reason resolves to the transient default, not an inherited property", async () => {
-    const source = new FakeSource(part(), BEYOND_EVERY_BUDGET);
+    const source = new FakeSource(
+      part(),
+      BEYOND_EVERY_BUDGET
+    ).withPermanentAttemptCount(BEYOND_EVERY_BUDGET);
     const service = new AgentComponentInvocationSyncService({
       isReady: () => true,
       getSource: () => source,
@@ -213,8 +223,8 @@ describe("ISS-5789 invocation sync rejection budget", () => {
  * was dead-lettered upstream", and the SESSION lane re-attempts a dead-lettered
  * session on its own progressive ladder. If this lane's budget expired first, the
  * part would be abandoned while its parent was still on a recovery path that would
- * have made it deliverable — and since this lane has no dead-letter recovery that
- * loss is permanent.
+ * have made it deliverable — and the resulting age-budgeted dead letter is not
+ * eligible for in-place recovery.
  *
  * Recomputed here from the session lane's ladder rather than read back from the
  * production constant, so the two would disagree if either were changed to stop
@@ -271,7 +281,10 @@ describe("ISS-5789 session_missing horizon vs the session lane's recovery ladder
  */
 describe("ISS-5789 session_missing is bounded by row age, not by the shared attempt counter", () => {
   it("defers while the horizon holds, however many transient attempts preceded it", async () => {
-    const source = new FakeSource(part(), BEYOND_EVERY_BUDGET);
+    const source = new FakeSource(
+      part(),
+      BEYOND_EVERY_BUDGET
+    ).withPermanentAttemptCount(BEYOND_EVERY_BUDGET);
     const service = sessionMissingService(
       source,
       SESSION_MISSING_HORIZON_INTACT_AT
@@ -304,15 +317,74 @@ describe("ISS-5789 session_missing is bounded by row age, not by the shared atte
     assert.equal(source.entries.length, 0);
   });
 
-  // Handling-bad-data: `created_at` is NOT NULL, but it is a text column, so a
-  // corrupt value is reachable at runtime. Abandoning a part on the strength of a
-  // timestamp the lane could not read would discard data over a parse failure.
-  it("keeps retrying rather than abandoning a part whose created_at cannot be read", async () => {
-    const source = new FakeSource(part(), BEYOND_EVERY_BUDGET);
+  // ISS-6209 REVERSES the ISS-5789 expectation that used to live here, which was
+  // "an unreadable `created_at` keeps retrying rather than being abandoned". That
+  // expectation was written to avoid discarding data over a parse failure, and it
+  // did — but it also made the rejection permanently transient, so the row stayed
+  // `pending` on the delivery queue forever, and a permanently-pending row makes
+  // `loadBlockedInvocationDeliverySessionIds` skip that session on EVERY promotion
+  // pass. The escape ISS-5789 named as its justification ("promotion supersedes the
+  // row once a newer generation lands") was therefore disabled by the very state
+  // that expectation created: no later generation could ever be promoted.
+  //
+  // So the behaviour changed deliberately: an unreadable timestamp is now
+  // terminal. It is still not a fabricated age — the row is quarantined BECAUSE it
+  // is unreadable, never aged by a guess — and the loss is one row rather than that
+  // session's entire future. The end-to-end proof that the queue actually unwedges
+  // is `invocation-sync-corrupt-created-at.test.ts`.
+  // Pinned at the INTACT clock, deliberately. At the SPENT clock the sibling case
+  // above already dead-letters on a perfectly READABLE `created_at` with these
+  // exact assertions, so the corrupt fixture line would carry no weight — delete
+  // it and the case would still pass, which is not a test. At the INTACT clock a
+  // readable row DEFERS (proved two cases up), so reaching a terminal state here
+  // can only come from the unreadable classification. The `last_error` assertion
+  // closes the remaining mutation: fabricating an age (letting an unparseable
+  // value fall through to the comparison as 0) would classify `Outlived`, which is
+  // also `permanent` and would still dead-letter — but it would record the ack
+  // reason, not the corruption.
+  it("quarantines a part whose created_at cannot be read instead of deferring forever", async () => {
+    const source = new FakeSource(
+      part(),
+      BEYOND_EVERY_BUDGET
+    ).withPermanentAttemptCount(BEYOND_EVERY_BUDGET);
     source.createdAt = "not-a-timestamp";
     const service = sessionMissingService(
       source,
-      SESSION_MISSING_HORIZON_SPENT_AT
+      SESSION_MISSING_HORIZON_INTACT_AT
+    );
+
+    await service.syncOnce();
+
+    assert.equal(
+      source.deadLetterCalls,
+      1,
+      "an unreadable created_at must reach a terminal state, not defer indefinitely"
+    );
+    assert.equal(
+      source.entries.length,
+      0,
+      "the quarantined row must leave the pending queue so promotion can supersede it"
+    );
+    assert.equal(
+      source.deadLetteredError,
+      AgentComponentInvocationSyncLocalError.CorruptCreatedAt,
+      "the row must name the corruption, not the ack reason that exposed it"
+    );
+  });
+
+  // ISS-6209: quarantining is bounded, NOT immediate. `session_missing`'s most
+  // common cause is an ordering race — a healthy part that simply outran its
+  // parent — and it clears on its own within a couple of backoff rungs. A fresh
+  // part that races its parent AND carries a corrupt timestamp must therefore get
+  // real retries first; collapsing this budget onto `Outlived`'s terminal-on-ack-1
+  // would convert that self-healing transient into permanent loss on the very
+  // first rejection.
+  it("ISS-6209: gives a FRESH unreadable row real retries before quarantining it", async () => {
+    const source = new FakeSource(part());
+    source.createdAt = "not-a-timestamp";
+    const service = sessionMissingService(
+      source,
+      SESSION_MISSING_HORIZON_INTACT_AT
     );
 
     await service.syncOnce();
@@ -320,9 +392,13 @@ describe("ISS-5789 session_missing is bounded by row age, not by the shared atte
     assert.equal(
       source.deadLetterCalls,
       0,
-      "an unreadable created_at must not be treated as an expired horizon"
+      "an unreadable timestamp must not strand a part on its first session_missing"
     );
-    assert.equal(source.entries.length, 1);
+    assert.equal(
+      source.entries.length,
+      1,
+      "the part stays queued for another attempt on the shared ladder"
+    );
   });
 });
 

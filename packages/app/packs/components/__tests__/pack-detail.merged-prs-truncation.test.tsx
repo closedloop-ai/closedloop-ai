@@ -13,7 +13,7 @@ import { PackDetail } from "../pack-detail";
 /**
  * ISS-6462 — the Packs Performance tab rendered `mergedPrs` through
  * `NUMBER_FORMAT.format` with no `+` and no caveat, while the server counts
- * distinct merged PRs over only the first `COHORT_SCAN_CAP` cohort sessions. A
+ * distinct merged PRs over only a bounded sample of the cohort sessions. A
  * pack whose cohort exceeds that cap therefore showed a confident undercount.
  *
  * `merged-prs-readout.test.ts` pins the readout itself; this drives the real

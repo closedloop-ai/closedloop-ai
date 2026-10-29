@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { GitHubOAuthRequiredReason } from "@repo/api/src/types/github";
-import { vi } from "vitest";
+import { test, vi } from "vitest";
 import { fetchGitHubIntegrationStatus } from "../src/main/github/github-integration-status-client.js";
 
 test("fetches GitHub integration status with the signed-in Desktop user token", async () => {

@@ -5,11 +5,14 @@ import {
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { FeatureFlagsCallback } from "posthog-js";
 import type { PostHog } from "posthog-js/react";
+import { createElement } from "react";
+import { renderToString } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const FALLBACK_FEATURE_FLAGS_STORAGE_KEY = "closedloop:e2e-feature-flags";
 const FEATURE_FLAGS_FAIL_OPEN_STORAGE_KEY =
   "closedloop:feature-flags-fail-open";
+const SAMPLE_FLAG_KEY = "sample-feature-flag";
 
 vi.mock("@posthog/next", () => ({
   useFeatureFlag: vi.fn(),
@@ -17,12 +20,16 @@ vi.mock("@posthog/next", () => ({
 }));
 
 afterEach(() => {
+  // Unstub FIRST: two cases below remove `window`/`localStorage` entirely, and
+  // both `cleanup()` and the storage resets need the real globals back to run.
+  // (ISS-7477 made `useFeatureFlag` a real hook, so those cases now go through a
+  // renderer rather than a bare call, and the ordering started to matter.)
+  vi.unstubAllGlobals();
   cleanup();
   localStorage.removeItem(FALLBACK_FEATURE_FLAGS_STORAGE_KEY);
   localStorage.removeItem(FEATURE_FLAGS_FAIL_OPEN_STORAGE_KEY);
   vi.mocked(usePostHogFeatureFlag).mockReset();
   vi.mocked(usePostHog).mockReset();
-  vi.unstubAllGlobals();
 });
 
 /**
@@ -35,22 +42,22 @@ afterEach(() => {
  */
 describe("useFeatureFlag fallback (PostHog disabled)", () => {
   it("resolves an unpinned flag DISABLED with no fixture and no opt-in", async () => {
-    const { useFeatureFlag } = await importClientWithPostHogDisabled();
+    const { readFeatureFlag } = await importClientWithPostHogDisabled();
 
-    expect(useFeatureFlag("comments-v2-feed-sidebar")).toMatchObject({
+    expect(readFeatureFlag(SAMPLE_FLAG_KEY)).toMatchObject({
       enabled: false,
-      key: "comments-v2-feed-sidebar",
+      key: SAMPLE_FLAG_KEY,
     });
   });
 
   it("still fails open to enabled when the blanket opt-in key is set", async () => {
     localStorage.setItem(FEATURE_FLAGS_FAIL_OPEN_STORAGE_KEY, "true");
 
-    const { useFeatureFlag } = await importClientWithPostHogDisabled();
+    const { readFeatureFlag } = await importClientWithPostHogDisabled();
 
-    expect(useFeatureFlag("comments-v2-feed-sidebar")).toMatchObject({
+    expect(readFeatureFlag(SAMPLE_FLAG_KEY)).toMatchObject({
       enabled: true,
-      key: "comments-v2-feed-sidebar",
+      key: SAMPLE_FLAG_KEY,
     });
   });
 
@@ -61,17 +68,17 @@ describe("useFeatureFlag fallback (PostHog disabled)", () => {
     );
     localStorage.setItem(FEATURE_FLAGS_FAIL_OPEN_STORAGE_KEY, "true");
 
-    const { useFeatureFlag } = await importClientWithPostHogDisabled();
+    const { readFeatureFlag } = await importClientWithPostHogDisabled();
 
     // Pinned `false` by the stale fixture, and unlisted in it — the blanket key
     // opens both, or it isn't the documented "open everything" switch.
-    expect(useFeatureFlag("branch-pr")).toMatchObject({
+    expect(readFeatureFlag("branch-pr")).toMatchObject({
       enabled: true,
       key: "branch-pr",
     });
-    expect(useFeatureFlag("comments-v2-feed-sidebar")).toMatchObject({
+    expect(readFeatureFlag(SAMPLE_FLAG_KEY)).toMatchObject({
       enabled: true,
-      key: "comments-v2-feed-sidebar",
+      key: SAMPLE_FLAG_KEY,
     });
   });
 
@@ -81,28 +88,42 @@ describe("useFeatureFlag fallback (PostHog disabled)", () => {
       JSON.stringify({ "branch-pr": true, "interactive-chat": false })
     );
 
-    const { useFeatureFlag } = await importClientWithPostHogDisabled();
+    const { readFeatureFlag } = await importClientWithPostHogDisabled();
 
-    expect(useFeatureFlag("branch-pr")).toMatchObject({
+    expect(readFeatureFlag("branch-pr")).toMatchObject({
       enabled: true,
       key: "branch-pr",
     });
-    expect(useFeatureFlag("interactive-chat")).toMatchObject({
+    expect(readFeatureFlag("interactive-chat")).toMatchObject({
       enabled: false,
       key: "interactive-chat",
     });
-    expect(useFeatureFlag("comments-v2-feed-sidebar")).toMatchObject({
+    expect(readFeatureFlag(SAMPLE_FLAG_KEY)).toMatchObject({
       enabled: false,
-      key: "comments-v2-feed-sidebar",
+      key: SAMPLE_FLAG_KEY,
     });
   });
 
   it("resolves disabled when the E2E fixture is malformed", async () => {
     localStorage.setItem(FALLBACK_FEATURE_FLAGS_STORAGE_KEY, "{");
 
-    const { useFeatureFlag } = await importClientWithPostHogDisabled();
+    const { readFeatureFlag } = await importClientWithPostHogDisabled();
 
-    expect(useFeatureFlag("branch-pr")).toMatchObject({
+    expect(readFeatureFlag("branch-pr")).toMatchObject({
+      enabled: false,
+      key: "branch-pr",
+    });
+  });
+
+  it("ignores the whole E2E fixture when any value is not a boolean", async () => {
+    localStorage.setItem(
+      FALLBACK_FEATURE_FLAGS_STORAGE_KEY,
+      JSON.stringify({ "branch-pr": true, "branch-detail-page": "yes" })
+    );
+
+    const { readFeatureFlag } = await importClientWithPostHogDisabled();
+
+    expect(readFeatureFlag("branch-pr")).toMatchObject({
       enabled: false,
       key: "branch-pr",
     });
@@ -120,9 +141,9 @@ describe("useFeatureFlag fallback (PostHog disabled)", () => {
       variant: undefined,
     });
 
-    const { useFeatureFlag } = await importClientWithPostHogEnabled();
+    const { readFeatureFlag } = await importClientWithPostHogEnabled();
 
-    expect(useFeatureFlag("branch-detail-page")).toMatchObject({
+    expect(readFeatureFlag("branch-detail-page")).toMatchObject({
       enabled: false,
       key: "branch-detail-page",
     });
@@ -133,18 +154,18 @@ describe("useFeatureFlag QA fail-open (PostHog enabled but unresolved)", () => {
   it("stays unresolved (undefined) with no opt-in — production behavior unchanged", async () => {
     vi.mocked(usePostHogFeatureFlag).mockReturnValue(undefined);
 
-    const { useFeatureFlag } = await importClientWithPostHogEnabled();
+    const { readFeatureFlag } = await importClientWithPostHogEnabled();
 
-    expect(useFeatureFlag("branch-pr")).toBeUndefined();
+    expect(readFeatureFlag("branch-pr")).toBeUndefined();
   });
 
   it("fails open to enabled when the blanket opt-in key is set", async () => {
     localStorage.setItem(FEATURE_FLAGS_FAIL_OPEN_STORAGE_KEY, "true");
     vi.mocked(usePostHogFeatureFlag).mockReturnValue(undefined);
 
-    const { useFeatureFlag } = await importClientWithPostHogEnabled();
+    const { readFeatureFlag } = await importClientWithPostHogEnabled();
 
-    expect(useFeatureFlag("branch-pr")).toMatchObject({
+    expect(readFeatureFlag("branch-pr")).toMatchObject({
       enabled: true,
       key: "branch-pr",
     });
@@ -157,10 +178,10 @@ describe("useFeatureFlag QA fail-open (PostHog enabled but unresolved)", () => {
     );
     vi.mocked(usePostHogFeatureFlag).mockReturnValue(undefined);
 
-    const { useFeatureFlag } = await importClientWithPostHogEnabled();
+    const { readFeatureFlag } = await importClientWithPostHogEnabled();
 
-    expect(useFeatureFlag("branch-pr")).toMatchObject({ enabled: true });
-    expect(useFeatureFlag("interactive-chat")).toMatchObject({
+    expect(readFeatureFlag("branch-pr")).toMatchObject({ enabled: true });
+    expect(readFeatureFlag("interactive-chat")).toMatchObject({
       enabled: false,
     });
   });
@@ -173,15 +194,15 @@ describe("useFeatureFlag QA fail-open (PostHog enabled but unresolved)", () => {
     localStorage.setItem(FEATURE_FLAGS_FAIL_OPEN_STORAGE_KEY, "true");
     vi.mocked(usePostHogFeatureFlag).mockReturnValue(undefined);
 
-    const { useFeatureFlag } = await importClientWithPostHogEnabled();
+    const { readFeatureFlag } = await importClientWithPostHogEnabled();
 
-    expect(useFeatureFlag("branch-pr")).toMatchObject({
+    expect(readFeatureFlag("branch-pr")).toMatchObject({
       enabled: true,
       key: "branch-pr",
     });
-    expect(useFeatureFlag("comments-v2-feed-sidebar")).toMatchObject({
+    expect(readFeatureFlag(SAMPLE_FLAG_KEY)).toMatchObject({
       enabled: true,
-      key: "comments-v2-feed-sidebar",
+      key: SAMPLE_FLAG_KEY,
     });
   });
 
@@ -194,9 +215,9 @@ describe("useFeatureFlag QA fail-open (PostHog enabled but unresolved)", () => {
       variant: undefined,
     });
 
-    const { useFeatureFlag } = await importClientWithPostHogEnabled();
+    const { readFeatureFlag } = await importClientWithPostHogEnabled();
 
-    expect(useFeatureFlag("branch-detail-page")).toMatchObject({
+    expect(readFeatureFlag("branch-detail-page")).toMatchObject({
       enabled: false,
       key: "branch-detail-page",
     });
@@ -208,15 +229,15 @@ describe("analytics client normalization and runtime selection", () => {
     vi.mocked(usePostHogFeatureFlag)
       .mockReturnValueOnce(true as never)
       .mockReturnValueOnce("treatment" as never);
-    const { useFeatureFlag } = await importClientWithPostHogEnabled();
+    const { readFeatureFlag } = await importClientWithPostHogEnabled();
 
-    expect(useFeatureFlag("boolean-flag")).toEqual({
+    expect(readFeatureFlag("boolean-flag")).toEqual({
       key: "boolean-flag",
       enabled: true,
       variant: undefined,
       payload: undefined,
     });
-    expect(useFeatureFlag("variant-flag")).toEqual({
+    expect(readFeatureFlag("variant-flag")).toEqual({
       key: "variant-flag",
       enabled: true,
       variant: "treatment",
@@ -240,11 +261,38 @@ describe("analytics client normalization and runtime selection", () => {
   });
 
   it("keeps unresolved flags closed when browser storage is unavailable", async () => {
+    vi.stubGlobal("localStorage", undefined);
+    vi.mocked(usePostHogFeatureFlag).mockReturnValue(undefined);
+    const { readFeatureFlag } = await importClientWithPostHogEnabled();
+
+    expect(readFeatureFlag("branch-pr")).toBeUndefined();
+  });
+
+  // Same closed outcome from the OTHER guard on the same path — no `window` at
+  // all. It renders on the server renderer because the client one this file
+  // otherwise uses needs the `window` this case removes (ISS-7477 made
+  // `useFeatureFlag` a real hook, so there is no longer a bare-call shortcut).
+  //
+  // ISS-8997: both storage keys are seeded BEFORE the window stub so each
+  // `globalThis.window === undefined` guard is load-bearing — without the guard,
+  // `localStorage.getItem` returns the seeded value and the test fails.
+  it("keeps unresolved flags closed with no window at all", async () => {
+    localStorage.setItem(FEATURE_FLAGS_FAIL_OPEN_STORAGE_KEY, "true");
+    localStorage.setItem(
+      FALLBACK_FEATURE_FLAGS_STORAGE_KEY,
+      JSON.stringify({ "branch-pr": true })
+    );
     vi.stubGlobal("window", undefined);
     vi.mocked(usePostHogFeatureFlag).mockReturnValue(undefined);
     const { useFeatureFlag } = await importClientWithPostHogEnabled();
 
-    expect(useFeatureFlag("branch-pr")).toBeUndefined();
+    const markup = renderToString(
+      createElement(() =>
+        createElement("span", null, String(useFeatureFlag("branch-pr")))
+      )
+    );
+
+    expect(markup).toContain("undefined");
   });
 });
 
@@ -363,13 +411,34 @@ function stubPostHogFlagsClient(initialDistinctId: string) {
   };
 }
 
+/**
+ * Render `useFeatureFlag` and hand back its value.
+ *
+ * ISS-7477 made this a genuine React hook: it now reads the customer-view
+ * context, so calling it bare — which used to work only because neither runtime
+ * binding happened to touch a hook — throws "Invalid hook call". The
+ * expectations below are unchanged; only the way the value is obtained is.
+ */
+function featureFlagReader(useFeatureFlag: (flag: string) => unknown) {
+  return (flag: string) => {
+    const { result, unmount } = renderHook(() => useFeatureFlag(flag));
+    const value = result.current;
+    unmount();
+    return value;
+  };
+}
+
 async function importClientWithPostHogDisabled() {
   const originalPostHogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
   Reflect.deleteProperty(process.env, "NEXT_PUBLIC_POSTHOG_KEY");
   vi.resetModules();
 
   try {
-    return await import("./client");
+    const clientModule = await import("./client");
+    return {
+      ...clientModule,
+      readFeatureFlag: featureFlagReader(clientModule.useFeatureFlag),
+    };
   } finally {
     if (originalPostHogKey === undefined) {
       Reflect.deleteProperty(process.env, "NEXT_PUBLIC_POSTHOG_KEY");
@@ -385,7 +454,11 @@ async function importClientWithPostHogEnabled() {
   vi.resetModules();
 
   try {
-    return await import("./client");
+    const clientModule = await import("./client");
+    return {
+      ...clientModule,
+      readFeatureFlag: featureFlagReader(clientModule.useFeatureFlag),
+    };
   } finally {
     if (originalPostHogKey === undefined) {
       Reflect.deleteProperty(process.env, "NEXT_PUBLIC_POSTHOG_KEY");

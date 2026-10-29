@@ -96,6 +96,19 @@ export class TransportTimeoutBudget {
     this.lossSinceLastAck = false;
   }
 
+  /**
+   * The per-id charge map, read-only.
+   *
+   * ISS-7248: this budget's counter is PRIVATE and is handed to the fold through
+   * {@link foldPolicy}, so a diagnostic that enumerates the service's own counter
+   * maps cannot see it — and `transport_timeout` is exactly the class a failed
+   * sync attempt most needs an attempt number for. Exposed read-only rather than
+   * by copying the count into the service, so there stays one owner of the charge.
+   */
+  charges(): ReadonlyMap<string, number> {
+    return this.countById;
+  }
+
   /** Drop one session's charge (dead-letter, recovery, or verified ack). */
   clearFor(id: string): void {
     this.countById.delete(id);

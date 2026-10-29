@@ -8,11 +8,9 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// ---------------------------------------------------------------------------
 // Module mocks — registered before the component import
-// ---------------------------------------------------------------------------
 
-vi.mock("@repo/analytics/components/feature-flagged", () => ({
+vi.mock("@repo/app/shared/feature-flags/feature-flagged", () => ({
   FeatureFlagged: ({ children }: { children: React.ReactNode }) => children,
 }));
 
@@ -88,9 +86,7 @@ import {
   UpdateAndRestartButton,
 } from "./update-and-restart-button";
 
-// ---------------------------------------------------------------------------
 // Top-level regex constants (Biome useTopLevelRegex)
-// ---------------------------------------------------------------------------
 
 const RE_UPDATE_AND_RESTART_BUTTON = /update and restart/i;
 const RE_CONFIRM_BUTTON = /^update & restart$/i;
@@ -99,9 +95,7 @@ const RE_HERE_LINK = /here/i;
 const RE_CHANGELOG_LINK = /changelog/i;
 const RE_OUR_SITE_LINK = /our site/i;
 
-// ---------------------------------------------------------------------------
 // Factories
-// ---------------------------------------------------------------------------
 
 function makeTarget(overrides: Partial<ComputeTarget> = {}): ComputeTarget {
   return {
@@ -127,16 +121,14 @@ function makeReleaseInfo(
 ): ElectronReleaseInfo {
   return {
     downloadUrl:
-      "https://github.com/closedloop-ai/example-repo/releases/download/desktop-v2.0.0/Closedloop-2.0.0-universal.dmg",
+      "https://github.com/closedloop-ai/closedloop-ai/releases/download/desktop-v2.0.0/Closedloop-2.0.0-universal.dmg",
     version: "2.0.0",
     releaseNotes: "## Changes\n- Bug fixes",
     ...overrides,
   };
 }
 
-// ---------------------------------------------------------------------------
 // Default mock return values
-// ---------------------------------------------------------------------------
 
 function setupDefaultMocks(
   releaseInfo: ElectronReleaseInfo | undefined = makeReleaseInfo()
@@ -153,9 +145,7 @@ function setupDefaultMocks(
   });
 }
 
-// ---------------------------------------------------------------------------
 // resolveButtonState unit tests
-// ---------------------------------------------------------------------------
 
 describe("resolveButtonState", () => {
   it("returns hidden when releaseInfo is undefined", () => {
@@ -208,9 +198,7 @@ describe("resolveButtonState", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // UpdateAndRestartButton component tests
-// ---------------------------------------------------------------------------
 
 describe("UpdateAndRestartButton", () => {
   beforeEach(() => {
@@ -223,9 +211,7 @@ describe("UpdateAndRestartButton", () => {
     cleanup();
   });
 
-  // -------------------------------------------------------------------------
   // Hidden states
-  // -------------------------------------------------------------------------
 
   it("renders nothing when releaseInfo is undefined", () => {
     mockUseLatestElectronRelease.mockReturnValue({ data: undefined });
@@ -249,9 +235,7 @@ describe("UpdateAndRestartButton", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  // -------------------------------------------------------------------------
   // Disabled state (offline)
-  // -------------------------------------------------------------------------
 
   it("renders button disabled when target is offline and update is available", () => {
     const target = makeTarget({ isOnline: false });
@@ -264,9 +248,7 @@ describe("UpdateAndRestartButton", () => {
     expect(button).toBeDisabled();
   });
 
-  // -------------------------------------------------------------------------
   // Enabled state
-  // -------------------------------------------------------------------------
 
   it("renders enabled button when update is available and target is online", () => {
     const target = makeTarget();
@@ -279,9 +261,7 @@ describe("UpdateAndRestartButton", () => {
     expect(button).not.toBeDisabled();
   });
 
-  // -------------------------------------------------------------------------
   // Dialog version info
-  // -------------------------------------------------------------------------
 
   it("shows current and new version numbers in the dialog when both are valid semver", () => {
     mockUseLatestElectronRelease.mockReturnValue({
@@ -327,9 +307,7 @@ describe("UpdateAndRestartButton", () => {
     expect(screen.getByText("2.3.1")).toBeInTheDocument();
   });
 
-  // -------------------------------------------------------------------------
   // renderSafeAnchor: strips non-HTTPS hrefs to '#'
-  // -------------------------------------------------------------------------
 
   it("replaces javascript: hrefs in release notes with '#'", () => {
     const releaseNotes = "Click [here](javascript:alert(1)) for info";
@@ -382,9 +360,7 @@ describe("UpdateAndRestartButton", () => {
     expect(link).toHaveAttribute("href", "#");
   });
 
-  // -------------------------------------------------------------------------
   // Confirm once calls mutate once (dialog closes)
-  // -------------------------------------------------------------------------
 
   it("calls mutate exactly once when confirm is clicked and closes the dialog", () => {
     const target = makeTarget();
@@ -415,9 +391,7 @@ describe("UpdateAndRestartButton", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
-  // -------------------------------------------------------------------------
   // sessionStorage commandId restore on mount
-  // -------------------------------------------------------------------------
 
   it("restores commandId from sessionStorage on mount and passes it to useDesktopCommandStatus", () => {
     const targetId = "target-1";

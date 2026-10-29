@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
 import { gunzipSync } from "node:zlib";
 import { SyncPayloadEncoding } from "@repo/api/src/types/agent-session";
+import { test } from "vitest";
 import type { SessionCursorRow } from "../src/main/agent-sync/agent-session-read-model.js";
 import {
   gzipJson,

@@ -1,16 +1,40 @@
 import { ActivityFeedActorKind } from "@repo/api/src/types/artifact-activity-feed";
+import { DocumentType } from "@repo/api/src/types/document";
 import type { User } from "@repo/api/src/types/user";
+import {
+  ACTIVITY_CATALOG,
+  ATLAS,
+  C02_ACTOR_VARIANTS,
+  EMILY,
+  FRONTEND_TAG,
+  JAKE,
+  LONG_VALUE_ROW,
+  MISSING_USER_ROW,
+  ORION,
+  RYAN,
+} from "@repo/app/documents/components/artifact-activity/activity-catalog.fixtures";
+import { ActivityParts } from "@repo/app/documents/components/artifact-activity/activity-parts";
+import {
+  type ActivityTimelineRow,
+  ActivityTimelineRowKind,
+} from "@repo/app/documents/components/artifact-activity/activity-timeline";
 import type { Meta, StoryObj } from "@storybook/react";
+import { expect, within } from "storybook/test";
 import { ActivityActor } from "./activity-actor";
 import { ActivityCardView } from "./activity-card-view";
-import { ActivityDirectoryStatus } from "./activity-directory";
+import {
+  type ActivityLookups,
+  describeActivityParts,
+} from "./activity-formatting";
+import { ActivityDirectoryStatus } from "./activity-types";
 
 /**
- * The activity row's presentational contract, which the string-asserting unit
- * tests cannot see: that the chips truncate rather than wrap, that the pending
- * skeleton reserves the row's real height, that the struck-through "before"
- * side and the arrow read as one pair, and that a renamed-title chip stays
- * inside the rail at dark and light (PR #4329 review, whitlockk).
+ * The comments rail's look of an activity row, and its presentational contract
+ * the string-asserting unit tests cannot see: that long values truncate rather
+ * than wrap, that a pending name holds its place, that the pills sit in the
+ * phrase, and that a renamed title stays inside the rail at dark and light
+ * (PR #4329 review, whitlockk). ISS-12117: the headline is the adapter's phrase,
+ * the same wording the Activity tab shows (one adapter, two looks).
  *
  * Three of these states are all but unreachable on demand in the running app —
  * a lookup mid-flight, a member who has left, and a title long enough to
@@ -32,7 +56,7 @@ const HUMAN_USER = {
   id: "user_b",
   firstName: "Dana",
   lastName: "Reed",
-  email: "dana@example.com",
+  email: "demily@example.com",
 } as User;
 
 const ACTOR = (
@@ -58,76 +82,104 @@ const SYSTEM_ACTOR = (
   />
 );
 
-const LONG_TITLE =
-  "Add session-quality signals to the branch rollup so a reviewer can see PR metrics without opening GitHub";
+/**
+ * The rail's headline is the adapter's phrase (ISS-12117: one adapter, two
+ * looks), drawn by the same `ActivityParts` the Activity tab uses, so these
+ * stories show the rail exactly as production words each row.
+ */
+const USERS = {
+  status: ActivityDirectoryStatus.Ready,
+  find: (id: string) =>
+    [EMILY, JAKE, RYAN].find((user) => user.id === id) ?? null,
+};
+const READY = {
+  users: USERS,
+  projects: {
+    status: ActivityDirectoryStatus.Ready,
+    find: (id: string) => [ATLAS, ORION].find((p) => p.id === id) ?? null,
+  },
+  tags: {
+    status: ActivityDirectoryStatus.Ready,
+    find: (id: string) => (id === FRONTEND_TAG.id ? FRONTEND_TAG : null),
+  },
+  documentType: DocumentType.Feature,
+} satisfies ActivityLookups;
+
+function phrase(row: ActivityTimelineRow, lookups: ActivityLookups = READY) {
+  if (row.kind !== ActivityTimelineRowKind.Activity) {
+    return null;
+  }
+  const { parts, suffix } = describeActivityParts(row.item.event, lookups);
+  return (
+    <>
+      <ActivityParts parts={parts} />
+      {suffix ? (
+        <span className="text-muted-foreground"> · {suffix}</span>
+      ) : null}
+    </>
+  );
+}
 
 const meta = {
   component: ActivityCardView,
   args: {
     actor: ACTOR,
     createdAt: new Date("2026-02-01T09:30:00.000Z"),
-    headline: "updated the priority",
-    change: { before: "Medium", after: "Low" },
-    pending: false,
+    headline: phrase(ACTIVITY_CATALOG.C14.row),
+  },
+  argTypes: {
+    actor: { control: false },
+    headline: { control: false },
+    change: { control: false },
   },
   parameters: { layout: "padded" },
-  tags: ["autodocs"],
-  title: "App Core/Documents/Activity Card View",
+  tags: ["deprecated", "autodocs"],
+  title: "Composites v1.0/Documents/Activity Card View",
 } satisfies Meta<typeof ActivityCardView>;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-/** A creation row: headline only, no before→after pair to show. */
+/** C01: a creation row names the kind it created and its first status. */
 export const Creation: Story = {
-  args: {
-    headline: "created this artifact",
-    change: { before: null, after: null },
-  },
+  args: { headline: phrase(ACTIVITY_CATALOG.C01.row) },
 };
 
-/** Both sides present, so the arrow joins them. */
-export const BeforeAndAfter: Story = {};
+/** C02: both statuses as pills, in the catalog wording. */
+export const BeforeAndAfter: Story = {
+  args: { headline: phrase(ACTIVITY_CATALOG.C02.row) },
+};
 
-/** One-sided change (nothing was set before), so there is no arrow. */
+/** C08: one-sided (nobody was assigned before), so the phrase names one person. */
 export const OneSided: Story = {
-  args: {
-    headline: "updated the assignee",
-    change: { before: null, after: "Dana Reed" },
-  },
+  args: { headline: phrase(ACTIVITY_CATALOG.C08.row) },
 };
 
 /**
- * The org-user lookup is still in flight. The skeletons hold the chips' real
- * geometry so the row does not reflow when the names land — and, critically,
- * the row names nobody meanwhile.
+ * The org-user lookup is still in flight. A placeholder holds the name's
+ * place so the row does not reflow when it lands, and the row names nobody
+ * meanwhile.
  */
 export const AwaitingNames: Story = {
   args: {
-    headline: "updated the assignee",
-    change: { before: "user_a", after: "user_b" },
-    pending: true,
+    headline: phrase(ACTIVITY_CATALOG.C08.row, {
+      users: { status: ActivityDirectoryStatus.Pending, find: () => null },
+    }),
   },
 };
 
 /**
  * The directory settled and this id genuinely is not in it — a member who has
  * since left. This wording is reserved for exactly that case; a failed or empty
- * directory read drops the chips instead of claiming the person is unknown.
+ * directory read says only what changed ("updated the assignee").
  */
 export const UnknownUser: Story = {
-  args: {
-    headline: "updated the assignee",
-    change: { before: "Dana Reed", after: "Unknown user" },
-  },
+  args: { headline: phrase(MISSING_USER_ROW) },
 };
 
-/** A rename long enough that both pills must truncate inside the rail. */
+/** A rename long enough that both values truncate inside the rail. */
 export const LongRenamedTitle: Story = {
-  args: {
-    headline: "updated the title",
-    change: { before: LONG_TITLE, after: `${LONG_TITLE} (v2)` },
-  },
+  args: { headline: phrase(LONG_VALUE_ROW) },
 };
 
 /**
@@ -140,7 +192,41 @@ export const LongRenamedTitle: Story = {
 export const SystemActor: Story = {
   args: {
     actor: SYSTEM_ACTOR,
-    headline: "updated the status",
-    change: { before: "In review", after: "Done" },
+    headline: phrase(ACTIVITY_CATALOG.C04.row),
+  },
+};
+
+/**
+ * An API-key write (Nerys, 2026-10-07): the key owner's avatar and name with
+ * an "API" badge, so it never reads as the owner's own edit.
+ */
+export const AgentActor: Story = {
+  args: {
+    actor: (
+      <ActivityActor
+        actor={{ kind: ActivityFeedActorKind.Agent, id: EMILY.id }}
+        directory={USERS}
+      />
+    ),
+    headline: phrase(C02_ACTOR_VARIANTS.agent),
+  },
+};
+
+/**
+ * A comment row for the Activity tab (ISS-10843): who commented and when, with
+ * a read-only link to the comment. No body, reply or reaction; the comment
+ * itself lives in the comments rail.
+ */
+export const CommentLink: Story = {
+  args: {
+    headline: "commented",
+    link: { href: "#comment-th-1", label: "View comment" },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByRole("link", { name: "View comment" })
+    ).toHaveAttribute("href", "#comment-th-1");
+    await expect(canvas.queryByRole("button")).toBeNull();
   },
 };

@@ -8,12 +8,12 @@
  * pass in isolation from the structural tiler.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import type { ActivitySegmentRecord } from "../src/main/collectors/parsing/activity-segment-classifier.js";
 import {
   ACTIVITY_PHASE,
   type ActivityPhase,
-} from "../src/main/collectors/parsing/activity-taxonomy.js";
+} from "@repo/api/src/types/activity-phase";
+import { test } from "vitest";
+import type { ActivitySegmentRecord } from "../src/main/collectors/parsing/activity-segment-classifier.js";
 import {
   ACTIVITY_SLIVER_MS,
   mergeSlivers,

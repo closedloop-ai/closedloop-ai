@@ -12,7 +12,7 @@
  * ISS-4542: the `sync` method resolves a classified {@link ComponentSyncSendResult}
  * (never throws): `Accepted` only when the whole batch reached the cloud;
  * `LaneFailure` (not signed in / no compute target / no origin / transport /
- * timeout / a bare HTTP 400 version-skew / 401/403/408/429 / any 5xx) which the
+ * timeout / a version-skew 400 / 401/403/408/429 / any 5xx) which the
  * sync lane treats as "pause without advancing the cursor or charging the
  * poison-row budget"; and
  * `BatchRejected` (a permanent per-batch 4xx, or a locally-oversized component)
@@ -44,10 +44,14 @@
  * chunks are still POSTed best-effort first (they upsert idempotently), so the only
  * rows held back are the genuinely-oversized ones.
  */
+import { SyncReason } from "@closedloop-ai/telemetry-contract/sync";
+import {
+  classifyComponentSyncHttpStatus,
+  componentSyncReasonFor,
+} from "../agent-sync/agent-component-sync-classification.js";
 import {
   ComponentSyncSendOutcome,
   type ComponentSyncSendResult,
-  classifyComponentSyncHttpStatus,
 } from "../agent-sync/agent-component-sync-dead-letter.js";
 import type { DesktopAgentComponentsPayload } from "../agent-sync/agent-session-sync-source.js";
 import { resolveDesktopCloudCredential } from "../auth/desktop-cloud-credential.js";
@@ -55,6 +59,14 @@ import {
   createTransitionLogger,
   errorMessage,
 } from "../diagnostics/component-sync-diagnostics.js";
+import { parseRetryAfterMs } from "../transcript/retry-after-header.js";
+import {
+  type BoundedResponseText,
+  extractApiFailureEnvelopeCode,
+  readBoundedResponseText,
+  SessionRequestCredentialKind,
+  sendSessionClApiRequest,
+} from "../util/api-response-utils.js";
 
 const COMPONENTS_SYNC_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -81,6 +93,21 @@ export const COMPONENTS_CHUNK_BYTE_BUDGET =
   COMPONENTS_SYNC_REQUEST_MAX_BYTES - COMPONENTS_CHUNK_ENVELOPE_HEADROOM_BYTES;
 
 const TAG = "components-sync-client";
+
+/**
+ * Largest failure body this lane will READ, let alone parse. Sized well above
+ * any `failure()` envelope this route emits and well below an HTML error page.
+ *
+ * Enforced by {@link readBoundedResponseText} while the body is still arriving,
+ * not after: capping the parse alone would leave a proxy or WAF free to make
+ * this process allocate an arbitrarily large non-2xx body on every failing tick.
+ * Bytes, not characters — a multi-byte body makes those two different numbers,
+ * and bytes are the ones held in memory.
+ */
+const MAX_CODED_FAILURE_BODY_BYTES = 8192;
+
+/** What a failure body that could not be read at all looks like. */
+const UNREAD_FAILURE_BODY: BoundedResponseText = { text: "", truncated: false };
 
 const textEncoder = new TextEncoder();
 
@@ -161,11 +188,29 @@ export type DesktopComponentsClientOptions = {
    * resolves to `false`, matching the sync service's "not-connected → no-op".
    */
   getComputeTargetId: () => string | null;
+  onUnauthorized?: (rejectedToken: string) => void;
 };
 
 type ResolvedRequest = {
-  url: URL;
+  apiOrigin: string;
+  computeTargetId: string;
   token: string;
+};
+
+/**
+ * ISS-6338: one chunk's classified outcome plus the reason its cloud batch event
+ * reports. `reason` is absent on the accepted arm — there is nothing to explain.
+ */
+type ChunkSendOutcome = {
+  outcome: ComponentSyncSendOutcome;
+  reason?: SyncReason;
+  /**
+   * ISS-9698: how long the SERVER asked us to wait, from its `Retry-After`
+   * header. Optional and additive — a server that sends none, or a value
+   * `parseRetryAfterMs` refuses, leaves it absent and the lane's own staged
+   * schedule owns the delay. Absence is never an instruction.
+   */
+  retryAfterMs?: number;
 };
 
 export type DesktopComponentsClient = {
@@ -186,8 +231,6 @@ export type DesktopComponentsClient = {
 export function createDesktopComponentsClient(
   options: DesktopComponentsClientOptions
 ): DesktopComponentsClient {
-  const fetchImpl = options.fetch ?? fetch;
-
   // Transition-based diagnostics: the component lane's skip branches used to be
   // silent (or DEBUG-only), so a first-party auth/transport failure looked
   // identical to "no components collected". We log a branch reason only when the
@@ -243,9 +286,8 @@ export function createDesktopComponentsClient(
       return null;
     }
 
-    let url: URL;
     try {
-      url = new URL("/desktop/components/sync", origin);
+      new URL("/desktop/components/sync", origin);
     } catch {
       note(
         "warn",
@@ -254,8 +296,7 @@ export function createDesktopComponentsClient(
       );
       return null;
     }
-    url.searchParams.set("computeTargetId", computeTargetId);
-    return { url, token };
+    return { apiOrigin: origin, computeTargetId, token };
   };
 
   // POST one sub-cap chunk of components. Resolves a per-chunk
@@ -269,18 +310,26 @@ export function createDesktopComponentsClient(
   const postChunk = async (
     request: ResolvedRequest,
     chunkPayload: DesktopAgentComponentsPayload
-  ): Promise<ComponentSyncSendOutcome> => {
+  ): Promise<ChunkSendOutcome> => {
     let response: Response;
     try {
-      response = await fetchImpl(request.url, {
+      response = await sendSessionClApiRequest({
+        apiOrigin: request.apiOrigin,
+        path: "/desktop/components/sync",
+        query: { computeTargetId: request.computeTargetId },
         method: "POST",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
-          Authorization: `Bearer ${request.token}`,
         },
         body: JSON.stringify(chunkPayload),
-        signal: AbortSignal.timeout(COMPONENTS_SYNC_REQUEST_TIMEOUT_MS),
+        timeoutMs: COMPONENTS_SYNC_REQUEST_TIMEOUT_MS,
+        fetch: options.fetch,
+        credential: {
+          token: request.token,
+          credentialKind: SessionRequestCredentialKind.AccessToken,
+        },
+        onUnauthorized: options.onUnauthorized,
       });
     } catch (error) {
       // Transport/timeout/abort is lane-wide (network down, host unreachable),
@@ -290,22 +339,54 @@ export function createDesktopComponentsClient(
         "request-failed",
         `component sync request failed: ${errorMessage(error)}`
       );
-      return ComponentSyncSendOutcome.LaneFailure;
+      return {
+        outcome: ComponentSyncSendOutcome.LaneFailure,
+        reason: SyncReason.TransportError,
+      };
     }
 
     if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      const outcome = classifyComponentSyncHttpStatus(response.status);
+      // Read under a hard byte cap rather than with `response.text()`: this runs
+      // on every failing tick and the body is whatever the peer chose to send.
+      const { text: body, truncated } = await readBoundedResponseText(
+        response,
+        MAX_CODED_FAILURE_BODY_BYTES
+      ).catch(() => UNREAD_FAILURE_BODY);
+      // ISS-8609: the route's rejections are CODED, and the code outranks the
+      // status. `extractApiFailureEnvelopeCode` (not `extractApiErrorCode`) is
+      // what makes that safe: a 400 can come from a proxy or WAF answering with
+      // its own JSON, and here the value is an INSTRUCTION deciding whether the
+      // poison budget is charged. A body that is not a first-party failure
+      // envelope, is not JSON at all, or ran past the cap yields `undefined` and
+      // the status answers — which is the pre-ISS-8609 fold.
+      const code = truncated ? undefined : failureEnvelopeCode(body);
+      const outcome = classifyComponentSyncHttpStatus(response.status, code);
       note(
         "warn",
         `http-${response.status}`,
-        `component sync returned HTTP ${response.status} (${outcome})${
-          body ? `: ${body.slice(0, 200)}` : ""
-        }`
+        `component sync returned HTTP ${response.status} (${outcome}, code=${
+          code ?? "none"
+        })${body ? `: ${body.slice(0, 200)}` : ""}`
       );
-      return outcome;
+      // ISS-9698: read the hint ONLY for the outcome that can act on it. A
+      // `BatchRejected` is a permanent per-batch verdict that charges the poison
+      // budget and never touches the environmental gate, so carrying a wait on
+      // it would make the field's own contract ("read on the `LaneFailure` arm")
+      // false — and invite a later reader to use its presence as a shortcut for
+      // "was this lane-wide".
+      const retryAfterMs =
+        outcome === ComponentSyncSendOutcome.LaneFailure
+          ? parseRetryAfterMs(response.headers.get("Retry-After"), Date.now())
+          : undefined;
+      return {
+        outcome,
+        reason: componentSyncReasonFor(response.status, code),
+        // Omitted rather than sent as `undefined` when the server said nothing,
+        // so "no hint" and "a hint of zero" stay distinguishable downstream.
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+      };
     }
-    return ComponentSyncSendOutcome.Accepted;
+    return { outcome: ComponentSyncSendOutcome.Accepted };
   };
 
   return {
@@ -320,6 +401,11 @@ export function createDesktopComponentsClient(
           outcome: ComponentSyncSendOutcome.LaneFailure,
           firstUnsentChunkIndex: null,
           chunkCount: 0,
+          // No credential, no compute target, or no usable origin. Only the
+          // first is an auth problem, so this reports the one thing all three
+          // share — the lane could not reach the cloud — rather than pointing an
+          // incident at the auth system for an offline desktop or a bad origin.
+          reason: SyncReason.TransportUnavailable,
         };
       }
 
@@ -347,7 +433,8 @@ export function createDesktopComponentsClient(
           componentCount: chunk.length,
           components: chunk,
         };
-        const chunkOutcome = await postChunk(request, chunkPayload);
+        const chunkResult = await postChunk(request, chunkPayload);
+        const chunkOutcome = chunkResult.outcome;
         if (chunkOutcome !== ComponentSyncSendOutcome.Accepted) {
           note(
             "warn",
@@ -358,11 +445,7 @@ export function createDesktopComponentsClient(
                 : "permanent per-batch rejection — charging the dead-letter budget"
             }`
           );
-          return {
-            outcome: chunkOutcome,
-            firstUnsentChunkIndex: index,
-            chunkCount: chunks.length,
-          };
+          return failedChunkResult(chunkResult, index, chunks.length);
         }
       }
 
@@ -383,6 +466,7 @@ export function createDesktopComponentsClient(
           outcome: ComponentSyncSendOutcome.BatchRejected,
           firstUnsentChunkIndex: chunks.length,
           chunkCount: chunks.length,
+          reason: SyncReason.LocallyOversized,
         };
       }
 
@@ -411,4 +495,51 @@ export function createDesktopComponentsClient(
       };
     },
   };
+}
+
+/**
+ * Widen one failing chunk's outcome into the batch result the caller sees.
+ *
+ * `reason` and `retryAfterMs` are both OMITTED when the chunk carried none,
+ * never sent as `undefined`: the lane reads absence as "nothing was said" and a
+ * present-but-empty field would read as something the server actually asked for.
+ */
+function failedChunkResult(
+  chunk: ChunkSendOutcome,
+  index: number,
+  chunkCount: number
+): ComponentSyncSendResult {
+  return {
+    outcome: chunk.outcome,
+    firstUnsentChunkIndex: index,
+    chunkCount,
+    ...(chunk.reason ? { reason: chunk.reason } : {}),
+    ...(chunk.retryAfterMs === undefined
+      ? {}
+      : { retryAfterMs: chunk.retryAfterMs }),
+  };
+}
+
+/**
+ * The machine-readable `code` from an already-read response body, or `undefined`
+ * when the body carries none this lane may act on (ISS-8609).
+ *
+ * `undefined` rather than `null` because that is what `classifySyncFailure`'s
+ * optional parameter means by "the server said nothing" — passing `null` would
+ * make it look up a key that no profile can hold.
+ */
+function failureEnvelopeCode(body: string): string | undefined {
+  // Size is already the reader's business: the caller declines a `truncated`
+  // body outright, so anything arriving here fitted under
+  // `MAX_CODED_FAILURE_BODY_BYTES` and only its shape is still in question.
+  if (!body) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  return extractApiFailureEnvelopeCode(parsed) ?? undefined;
 }

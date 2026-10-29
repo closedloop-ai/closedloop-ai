@@ -52,10 +52,6 @@ vi.mock("@/app/search/search-index-service", () => ({
   documentProjection: vi.fn(),
   searchIndexService: { indexAfterCommit: vi.fn() },
 }));
-vi.mock("../generation-status-helpers", () => ({
-  mergeLoopStatuses: vi.fn().mockResolvedValue(undefined),
-  suppressDismissedFailuresForDocumentMap: vi.fn().mockResolvedValue(undefined),
-}));
 
 import { createDocumentRecord, documentService } from "../document-service";
 

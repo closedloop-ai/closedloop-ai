@@ -11,6 +11,7 @@
  * a new call site cannot silently omit one.
  */
 import type { TranscriptSyncStore } from "../database/transcript-sync-store.js";
+import type { SignedInUserIdentity } from "../util/user-identity.js";
 import type {
   TranscriptFileRef,
   TranscriptFileStat,
@@ -22,6 +23,8 @@ export type TranscriptObserveDeps = {
   statFile: (path: string) => Promise<TranscriptFileStat | null>;
   hashPath: (path: string) => string;
   getComputeTargetId: () => string | null;
+  /** ISS-7096: the signed-in identity pair for the store's ownership gate. */
+  getSyncIdentity?: () => SignedInUserIdentity | null;
   now: () => string;
 };
 
@@ -42,6 +45,7 @@ export async function observeTranscriptRef(
     size: fileStat?.size ?? null,
     syncClass,
     currentComputeTargetId: deps.getComputeTargetId(),
+    signedInIdentity: deps.getSyncIdentity?.() ?? null,
     now: deps.now(),
   });
 }

@@ -11,21 +11,36 @@ export type MetricInfo = {
 
 export const METRIC_INFO: Record<string, MetricInfo> = {
   "kpi:merged": {
-    what: "Pull requests merged in the selected period.",
-    how: "Counts PRs whose merge date falls in the range.",
-    sessions: "Merge events are linked to their authoring agent session.",
+    what: "Pull-request volume. The cloud dashboard counts PRs merged in the period ('Merged PRs').",
+    how: "On the cloud dashboard, counts PRs whose merge date falls in the range.",
+    // ISS-5505 (review): the cloud count is NOT session-derived. Its query
+    // (`mergedPrWhere` in apps/api/app/insights/merged-pr-queries.ts) scopes the
+    // PR/branch projection by org/user/team and filters on `prState` MERGED plus
+    // `mergedAt` in range — no authoring-session link anywhere. Saying otherwise
+    // claimed a provenance the count does not have.
+    sessions:
+      "Cloud reads merge state and merge dates from the provider's PR record, over the pull requests on branches in scope — no authoring-session link is required, so a merged PR no captured session ever touched still counts.",
   },
   "kpi:ttm": {
-    what: "How long delivery takes. The two surfaces measure different intervals: the cloud dashboard measures time to merge, the desktop dashboard measures time to open a PR.",
-    how: "On the cloud dashboard, median of merge time minus the branch's creation time, across merged PRs only. On desktop, median of a PR's first-observed time minus its linked session's start — the session that created the PR when available, otherwise the earliest linked session — across all captured PRs (merged or not).",
-    sessions:
-      "Cloud reads branch-creation and merge timestamps from PR state. Desktop reads the PR's first-observed time and the start of its linked session (the creating session when available, otherwise the earliest linked one) from local session logs.",
+    // ISS-6849: the cloud median is taken over the MERGED_PR_SCAN_CAP-bounded
+    // row scan (`fetchMergedPrs`, apps/api/app/insights/merged-pr-queries.ts),
+    // not over every merged PR in the range. State that edge here, in the
+    // wording `kpi:pr-size` already uses for the same scan.
+    what: "How long delivery takes. The cloud dashboard measures time to merge.",
+    how: "On the cloud dashboard, median of merge time minus the branch's creation time, across merged PRs only; it reads at most the newest 25,000 merged-PR rows in the range, so a very wide range can leave older merged PRs out of the median altogether.",
+    sessions: "Cloud reads branch-creation and merge timestamps from PR state.",
   },
   "kpi:kloc": {
-    what: "Thousands of lines changed. The two surfaces measure different PR populations: the cloud dashboard sums merged PRs ('KLOC merged'), the desktop dashboard sums all captured PRs ('KLOC captured').",
-    how: "On both surfaces, sum of additions + deletions (gross), divided by 1,000 and rounded to one decimal. Cloud sums merged branches only; desktop sums every captured PR in the window (merged or not), folding un-enriched PRs in as 0. Either surface shows a dash instead of a number when it has no line counts to sum — cloud when no merged PR carries both counts, desktop when no captured PR carries either. A dash means unknown, not zero.",
+    what: "Thousands of lines changed. The cloud dashboard sums merged PRs ('KLOC merged').",
+    // ISS-5503: PLN-1535 M4 deleted the branch-file-cache derivation this copy
+    // used to describe — it gave every merged PR on a branch that branch's whole
+    // line total, so a two-PR branch counted twice.
+    how: "Sum of additions + deletions (gross), divided by 1,000 and rounded to one decimal. Cloud sums merged PRs only, each contributing its own diff exactly once after duplicate projections of the same PR are collapsed, and it reads at most the newest 25,000 merged-PR rows in the range — the cut is taken on those rows, before the duplicates are collapsed, so fewer than that many distinct PRs can survive it and a very wide range can leave older merged PRs out of the sum altogether. It shows a dash instead of a number when it has no line counts to sum — when no merged PR carries both counts. A dash means unknown, not zero.",
+    // ISS-5503 (review): the cloud line counts are GitHub's, read from the
+    // projected pull request, which the fixed "From session logs" heading above
+    // this field overstates.
     sessions:
-      "Cloud reads line counts from the merged branch's file changes. Desktop reads added + removed line counts from each captured PR harvested from local session logs.",
+      "Cloud reads each merged PR's own additions + deletions as GitHub reported them on that pull request's projected record, not from its branch.",
   },
   "kpi:cost": {
     // ISS-4994: "spend" claimed this was money billed. It is the estimated cost of
@@ -44,21 +59,17 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
     sessions: "Merged and closed PRs are read from PR state.",
   },
   "kpi:pr-size": {
-    // ISS-5502: neither producer medians "per merged branch" from branch file
-    // diffs — PLN-1535 M4 moved cloud onto each PR's own projected counts, and
-    // desktop was always a captured-PR median. Names both populations, like the
-    // sibling `kpi:kloc` / `kpi:ttm` entries, and both edges that shrink them:
-    // cloud's MERGED_PR_SCAN_CAP row scan (merged-pr-queries.ts) and desktop's
-    // non-delivery gate (non-delivery-artifacts.ts), which drops a PR whose only
-    // session links are reviews OR prose mentions.
-    what: "Median size of a PR. The two surfaces measure different PR populations: the cloud dashboard medians merged PRs, the desktop dashboard medians captured PRs (merged or not).",
-    how: "On both surfaces, median of additions + deletions across the PRs whose size is known. Cloud medians merged PRs — deduplicated so a PR seen by more than one source counts once — and skips any PR missing either count; it reads at most the newest 25,000 merged PRs in the range, so a very wide range can leave older merged PRs out of the median altogether. Desktop medians the captured PRs it holds both counts for, dropping any PR it only ever saw reviewed or only ever saw mentioned in prose. Either surface shows a dash when no PR it read has a known size — which is not proof that no PR in the range has one. A dash means unknown, not zero.",
+    // ISS-5502: not a median "per merged branch" from branch file diffs —
+    // PLN-1535 M4 moved cloud onto each PR's own projected counts. Cloud's median
+    // no longer passes MERGED_PR_SCAN_CAP (ISS-11589).
+    what: "Median size of a PR. The cloud dashboard medians merged PRs.",
+    how: "Median of additions + deletions across the PRs whose size is known. Cloud medians merged PRs — deduplicated so a PR seen by more than one source counts once — and skips any PR missing either count; it reads the merged-PR rows in the range. It shows a dash when no PR it read has a known size — which is not proof that no PR in the range has one. A dash means unknown, not zero.",
     // The popover heading over this field is the fixed literal "From session
     // logs" (info-tip.tsx), and neither line count is read from one — so this
     // field says where they DO come from rather than leaving the heading to
     // assert an origin the producers contradict.
     sessions:
-      "Neither figure is read from a session log. Cloud takes additions and deletions from each merged PR's own record. Desktop uses local session logs only to decide which PRs it captured; their line counts come from the PR record synced down from the cloud.",
+      "Neither figure is read from a session log. Cloud takes additions and deletions from each merged PR's own record.",
   },
   "kpi:sessions": {
     what: "Agent sessions run in the period.",
@@ -113,49 +124,120 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
     sessions: "Summed from each session's recorded tool invocations.",
   },
   "chart:prTrend": {
+    // ISS-6849: cloud buckets the deduped rows of the same capped scan
+    // (`bucketCountByDay` over `dedupedMerged`, apps/api/app/insights/service
+    // .ts), so this trend is bounded by the cap beside a headline "Merged PRs"
+    // count that is exact and uncapped. ISS-12408 added a second divergence the
+    // `how` below does not state: the scan is not gated on Product eligibility,
+    // so the trend can also sum ABOVE the headline. ISS-12485.
     what: "Pull-request delivery volume over time.",
-    how: "On desktop, each PR captured from local sessions is bucketed by the local day it was first observed and split into Agent-raised vs Manual/untracked. On the cloud dashboard, merged PRs are bucketed by merge day.",
+    how: "On the cloud dashboard, merged PRs are bucketed by merge day, over at most the newest 25,000 merged-PR rows in the range — so a very wide range can leave older merged PRs out of their day's bar altogether.",
     sessions:
       "Agent-raised means a captured session created the PR (PR-creation evidence on the artifact link). PRs without that evidence — raised by hand, on another machine, or by a bot — fall in Manual/untracked.",
   },
   "chart:klocTrend": {
-    what: "Thousands of lines changed over time. The two surfaces measure different PR populations: the cloud dashboard sums merged PRs ('KLOC merged'), the desktop dashboard sums all captured PRs ('KLOC captured').",
-    how: "Both sum additions + deletions (gross) and divide by 1,000. The cloud dashboard buckets merged PRs by merge day and leaves a merged PR it cannot size out of that day's sum — so a day plots as 0 whether nothing merged or nothing that merged could be sized, and any window holding unsized PRs reads as a lower bound over the PRs with known line counts. Desktop buckets every captured PR by the local day it was first observed, and shows no chart at all when no captured PR carries line counts — an unknown period, not a flat line at zero.",
+    what: "Thousands of changed lines over time. The cloud dashboard buckets merged PRs ('KLOC merged').",
+    how: "Sums additions + deletions (gross) and divides by 1,000. The cloud dashboard buckets merged PR totals by merge day and leaves a merged PR it cannot size out of that day's sum — so a day plots as 0 whether nothing merged or nothing that merged could be sized, and any window holding unsized PRs reads as a lower bound over the PRs with known line counts. The cloud dashboard also reads at most the newest 25,000 merged-PR rows in the range, so a very wide range can leave older merged PRs out of their day's total altogether.",
+    // ISS-5503: same per-PR derivation as the volume KPI above — bucketKlocByDay
+    // reads mergedPullRequestLoc over the deduped merged PRs, not the branch
+    // file cache.
+    // Provenance matches the KPI's.
     sessions:
-      "Cloud line counts come from branch file changes on the session's merged PR. Desktop line counts come from each captured PR harvested from local session logs.",
+      "Cloud reads each merged PR's own additions + deletions as GitHub reported them, collapsed to one contribution per pull request before bucketing.",
   },
   "chart:prByRepo": {
+    // ISS-6849: cloud counts the deduped merged PRs of the
+    // MERGED_PR_SCAN_CAP-bounded scan (`buildPrByRepoBuckets` over
+    // `dedupedMerged`, apps/api/app/insights/service.ts).
     what: "Merged PRs grouped by repository.",
-    how: "Merged PRs counted per source repository.",
-    sessions: "Repo comes from the session that opened each PR.",
+    how: "On the cloud dashboard, merged PRs are counted per source repository, over at most the newest 25,000 merged-PR rows in the range — so a very wide range can leave older merged PRs out of the chart altogether.",
+    // ISS-6845 (review): the bucket label is read off the PR row itself —
+    // `pr.repository?.name`, else the short name from `pr.repositoryFullName`
+    // (`buildPrByRepoBuckets`, apps/api/app/insights/service/buckets.ts) — and
+    // `artifacts.repo_full_name` in the desktop query. Neither producer resolves
+    // a repo through a session. But a session does gate the POPULATION on both
+    // surfaces — `orgMergedPullRequestMembershipSql` (apps/api/lib/pull-request-
+    // population.ts) has required a session link since ISS-8153, and desktop
+    // inner-joins its `relation='created'` links — so this must not overcorrect
+    // into "no session is involved". Attribute and membership are separate
+    // claims; name which one the session answers.
+    //
+    // ISS-6845 (review 2): and the membership claim LEADS, because this field's
+    // heading is the fixed literal "From session logs" (info-tip.tsx). A body
+    // that opens by denying session provenance reads as a flat contradiction of
+    // the heading above it — the same bad claim, now made twice. Answering the
+    // heading first with what the session actually decides is what retires it.
+    sessions:
+      "A session link decides whether a merged PR is charted at all: one no captured session touched is absent rather than bucketed under its repo. The repository label itself is read off each pull request's own record — the repository named on the PR — rather than resolved through that session.",
   },
   "chart:meanTimeToMerge": {
+    // ISS-6849: this histogram buckets the SAME capped `ttms` array the
+    // median-TTM KPI medians, so it carries the same disclosure — and the same
+    // UNIT. Cloud feeds `lifespanHistogram` one duration per DEDUPED MERGED PR
+    // (`ttms` over `dedupedMerged`, apps/api/app/insights/service.ts);
+    // branch-keyed prose reads as one sample per branch, which is the
+    // branch-file-cache arithmetic PLN-1535 M4 deleted.
     what: "Distribution of delivery latency, using the same interval as the Time-to-merge/PR KPI.",
-    how: "On the cloud dashboard, merged PRs are bucketed by branch-creation → merge duration. On desktop, captured PRs are bucketed by authoring-session-start → PR-opened duration.",
-    sessions:
-      "Cloud timestamps come from PR state (branch creation, merge); desktop timestamps come from the authoring session's start and the PR's first-observed time in local session logs.",
+    how: "On the cloud dashboard, one branch-creation → merge duration per merged PR is bucketed — the sample is the PR, not the branch, so two merged PRs on one branch contribute two — over at most the newest 25,000 merged-PR rows in the range, so a very wide range can leave older merged PRs out of the distribution altogether.",
+    sessions: "Cloud timestamps come from PR state (branch creation, merge).",
   },
   "chart:prByState": {
-    what: "PRs grouped by lifecycle state.",
-    how: "PRs counted by their current state.",
-    sessions: "Status comes from PR state on each session's proposal.",
+    // ISS-6845 (review): both producers are `mergedStateBuckets(<merged count>)`,
+    // whose population is already filtered to merged PRs — so "grouped by state"
+    // only ever resolves to one bucket, and to none at a count of zero. Said in
+    // both fields rather than left for the reader to infer from a chart that
+    // never shows a second bar.
+    what: "PRs grouped by lifecycle state. It charts a merged-only population, so there is only ever one bucket to group into.",
+    // ISS-6845 (review 2): "nothing renders" was wrong. `mergedStateBuckets`
+    // returns `[]` at a count of zero, and `renderCategory` (tile-content.tsx)
+    // turns an empty bucket list into the tile's empty state — a card is still
+    // on the dashboard. The claim that holds is about the BUCKET.
+    how: "Counts PRs by their current state. The single Merged bucket is sized by the merged-PR count, and no state bucket is produced at all when no PR merged in the range — the tile shows its empty state rather than a zero-height bar.",
+    // Same attribute-vs-membership split as `chart:prByRepo` above — and the
+    // same heading-first ordering, for the same reason: the state is the PR
+    // record's, but the count sizing the bucket is the session-linked, verified
+    // merged population (ISS-8153), and that is what the "From session logs"
+    // heading is owed.
+    sessions:
+      "A session link decides which merged PRs reach the count the Merged bucket is sized by. The state itself is read off each pull request's own record rather than a session's proposal.",
   },
   "chart:checkStatus": {
     what: "CI health across every branch we observed active in the selected period.",
-    how: "The range picks which branches are counted by their last activity; each is grouped by its checks status right now. Counts every non-deleted branch, so it can be broader than the Branches list's session-linked filter.",
-    sessions: "Check outcomes are captured from CI events on the session's PR.",
+    how: "The range picks which branches are counted by their last activity; each is grouped by its checks status right now.",
+    // ISS-6845: `fetchCheckStatusBuckets` groups `BranchDetail.checksStatus`
+    // over the Branches list population for the period (ISS-11915,
+    // insights-branch-population.ts) — the status stored on the branch, not CI
+    // events on a session's PR.
+    sessions:
+      "No session log feeds this donut. The check outcome is read from each branch's own record — the checks status stored on the branch as it stands now — rather than from CI events on a session's PR.",
   },
   "chart:branchLifespan": {
-    what: "How long branches live before merge.",
-    how: "Merged branches bucketed by open-to-merge duration.",
-    sessions:
-      "Creation and close times come from the sessions that first touched and last closed the branch.",
+    // ISS-6849: this histogram buckets the very same duration array the
+    // time-to-merge histogram does (`lifespanHistogram(ttms)` in
+    // apps/api/app/insights/service.ts), so it inherits cloud's capped scan and
+    // the same UNIT — one duration per merged PR, never per branch: two merged
+    // PRs on one branch are two samples.
+    //
+    // ISS-6845: same array also means `sessions` is the Time-to-merge
+    // distribution's word for word. The ONLY difference is the band edges —
+    // day-scale (< 1d / 1–7d / > 7d) against that chart's hour-scale five
+    // (`LIFESPAN_HISTOGRAM_BUCKETS`, packages/loops-api/src/insights.ts) —
+    // which is what `what` names and what `how` closes on, so a reader looking
+    // at two charts of the same intervals is owed the reason they disagree on
+    // shape.
+    what: "The same delivery latency as the Time-to-merge chart, in day-scale bands. Despite the name, the bands count pull requests rather than branches.",
+    how: "On the cloud dashboard, one branch-creation → merge duration per merged PR is bucketed — the sample is the PR, not the branch, so two merged PRs on one branch contribute two — over at most the newest 25,000 merged-PR rows in the range, so a very wide range can leave older merged PRs out of the distribution altogether. Same intervals as the Time-to-merge chart, grouped into wider day-scale bands.",
+    sessions: "Cloud timestamps come from PR state (branch creation, merge).",
   },
   "chart:branchesWithoutPr": {
     what: "Whether every branch we observed active in the selected period has a pull request.",
-    how: "The range picks which branches are counted by their last activity; each is split by whether it has a PR right now. Counts every non-deleted branch, so it can be broader than the Branches list's session-linked filter.",
+    how: "The range picks which branches are counted by their last activity; each is split by whether it has a PR right now.",
+    // ISS-6845: the split is `branchHasAnyPullRequestWhere` /
+    // `branchHasNoPullRequestWhere` (branch-canonical-pull-request.ts) — the
+    // pull-request rows owned by the branch's own artifact, over the Branches
+    // list population for the period (ISS-11915).
     sessions:
-      "PR association is taken from session metadata linking a branch to its proposal.",
+      "No session log feeds this donut. The PR association is read from each branch's own record — whether any pull request is attached to that branch — rather than from session metadata.",
   },
   "chart:eventActivity": {
     what: "Session activity over time.",
@@ -167,9 +249,20 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
     how: "Session events are bucketed by event day.",
     sessions: "Events come from the local or synced session event stream.",
   },
+  // ISS-9842: `chart:eventsByType` is the ring and `chart:eventsByType:bar`
+  // is the leaderboard. Both read the same desktop query, which keeps the 12
+  // most common types in Local mode (`local-insights.ts`, LIMIT 12), but only
+  // the ring folds the rest into an Other slice — the bar drops them. One
+  // shared sentence was describing the ring's residual on a tile that has none,
+  // so each tile states its own retained population.
   "chart:eventsByType": {
     what: "Session events grouped by event type.",
-    how: "Counts events by normalized event type.",
+    how: "Counts events by normalized event type. Synced data lists every type. Local data keeps the 12 most common types and folds the rest into one Other slice on the ring that names how many types it holds.",
+    sessions: "Event type is recorded on each session event.",
+  },
+  "chart:eventsByType:bar": {
+    what: "Session events grouped by event type.",
+    how: "Counts events by normalized event type. Synced data lists every type. Local data keeps the 12 most common types and drops the rest, so the bars are a leaderboard, not the whole population.",
     sessions: "Event type is recorded on each session event.",
   },
   "chart:userBreakdown": {
@@ -213,9 +306,18 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
     how: "Input, output, cache-read, and cache-write tokens are summed separately. The total is larger than the Tokens metric, which counts input and output only.",
     sessions: "Token classes are recorded in session token usage.",
   },
+  // ISS-9842: `chart:toolUsage` is the leaderboard and `chart:toolUsage:donut`
+  // is the ring. Same split as `chart:eventsByType` above: the desktop query
+  // keeps the 20 most-used tools in Local mode (`local-insights-agents.ts`,
+  // LIMIT 20); the ring folds the rest into an Other slice, the bar drops them.
   "chart:toolUsage": {
     what: "Tool usage grouped by tool name.",
-    how: "Counts tool-bearing session events by tool name.",
+    how: "Counts tool-bearing session events by tool name. Synced data lists every tool. Local data keeps the 20 most-used tools and drops the rest, so the bars are a leaderboard, not the whole population.",
+    sessions: "Tool names are recorded on tool invocation events.",
+  },
+  "chart:toolUsage:donut": {
+    what: "Tool usage share by tool name.",
+    how: "Counts tool-bearing session events by tool name. Synced data lists every tool. Local data keeps the 20 most-used tools and folds the rest into one Other slice on the share ring that names how many tools it holds.",
     sessions: "Tool names are recorded on tool invocation events.",
   },
   "chart:agentsByStatus": {
@@ -235,10 +337,35 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
   },
 };
 
-export function getMetricInfo(tileId: string): MetricInfo | undefined {
-  if (METRIC_INFO[tileId]) {
-    return METRIC_INFO[tileId];
+/**
+ * ISS-8184: the LOC-terminology registry — the whole table, not a patch, so a
+ * caller holds one shape or the other and never composes them itself.
+ *
+ * Only the two volume entries differ: their labels are quoted in the copy, and
+ * the `how` text no longer describes a divide-by-1,000 that the LOC operand does
+ * not perform.
+ */
+export const LOC_TERMINOLOGY_METRIC_INFO: Record<string, MetricInfo> = {
+  ...METRIC_INFO,
+  "kpi:kloc": {
+    ...(METRIC_INFO["kpi:kloc"] as MetricInfo),
+    what: "Lines changed. The cloud dashboard sums merged PRs ('Merged LOC').",
+    how: "Sum of additions + deletions (gross). Cloud sums merged PRs only, each contributing its own diff exactly once after duplicate projections of the same PR are collapsed, and it reads at most the newest 25,000 merged-PR rows in the range — the cut is taken on those rows, before the duplicates are collapsed, so fewer than that many distinct PRs can survive it and a very wide range can leave older merged PRs out of the sum altogether. It shows a dash instead of a number when it has no line counts to sum — when no merged PR carries both counts. A dash means unknown, not zero.",
+  },
+  "chart:klocTrend": {
+    ...(METRIC_INFO["chart:klocTrend"] as MetricInfo),
+    what: "Changed lines over time. The cloud dashboard buckets merged PRs ('Merged LOC').",
+    how: "Sums additions + deletions (gross). The cloud dashboard buckets merged PR totals by merge day and leaves a merged PR it cannot size out of that day's sum — so a day plots as 0 whether nothing merged or nothing that merged could be sized, and any window holding unsized PRs reads as a lower bound over the PRs with known line counts. The cloud dashboard also reads at most the newest 25,000 merged-PR rows in the range, so a very wide range can leave older merged PRs out of their day's total altogether.",
+  },
+};
+
+export function getMetricInfo(
+  tileId: string,
+  registry: Record<string, MetricInfo> = METRIC_INFO
+): MetricInfo | undefined {
+  if (registry[tileId]) {
+    return registry[tileId];
   }
   const [kind, key] = tileId.split(":");
-  return kind && key ? METRIC_INFO[`${kind}:${key}`] : undefined;
+  return kind && key ? registry[`${kind}:${key}`] : undefined;
 }

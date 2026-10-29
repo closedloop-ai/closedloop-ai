@@ -1,17 +1,23 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
+  CommentSurface,
+  CommentTargetType,
   ThreadStatus,
-  type TraceComment,
-  type TraceCommentReply,
+  TRACE_COMMENT_ID_MAX_LENGTH,
+  traceCommentTargetIdSchema,
 } from "@repo/api/src/types/comment.js";
+import { CommentAnchorKind } from "@repo/api/src/types/comment-anchor-kind.js";
+import {
+  type CommentThreadDto,
+  commentApiPaths,
+} from "@repo/api/src/types/comment-thread-dto.js";
+import { SlugPrefix } from "@repo/api/src/types/slug-prefix.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
   asRecord,
   buildPaginatedPayload,
   buildQuery,
-  encodePathSegment,
-  extractArrayItems,
   MAX_PAGE_LIMIT,
   readNumber,
   readString,
@@ -19,12 +25,10 @@ import {
 } from "./tool-utils.js";
 
 export const sessionCommentInputSchema = {
-  sessionId: z
-    .string()
-    .uuid()
+  sessionId: traceCommentTargetIdSchema
     .optional()
     .describe(
-      "Agent-session artifact id UUID from list-agent-sessions. SES-* slugs are not accepted."
+      "Agent-session identity the API resolves: either the artifact id UUID from list-agent-sessions, or the desktop-local external session id it reports for a session that has no cloud artifact. Artifact display slugs (SES-123) are not accepted."
     ),
   sessionUrl: z
     .string()
@@ -38,7 +42,7 @@ export const sessionCommentInputSchema = {
     .uuid()
     .optional()
     .describe(
-      "Optional compute target UUID for resolving a desktop-local external session id through the existing API route."
+      "Optional compute target UUID that scopes an external sessionId to one device you own. Omit it unless you actually have that UUID: supplying a wrong one makes the route stop at that device instead of falling back to a search across your own sessions, turning a resolvable id into a 404."
     ),
   status: z
     .enum([ThreadStatus.Open, ThreadStatus.Resolved])
@@ -78,23 +82,22 @@ export function registerListSessionComments(
     "list-session-comments",
     {
       description:
-        "List read-only trace comments for one agent session. Accepts exactly one UUID sessionId or canonical /sessions/{uuid} URL, reuses the existing authorized session trace-comment API, then applies optional OPEN/RESOLVED filtering and offset pagination over the fresh response.",
+        "List read-only trace comments for one agent session. Accepts exactly one sessionId (a cloud artifact id UUID or a desktop-local external session id) or canonical /sessions/{uuid} URL, reads every page of the session's comments with optional OPEN/RESOLVED filtering, then applies offset pagination.",
       inputSchema: sessionCommentInputSchema,
     },
     (input) =>
       withErrorHandling(async () => {
         const sessionId = resolveSessionCommentSessionId(input);
-        const response = await apiClient.get<TraceComment[]>(
-          `/agent-sessions/${encodePathSegment(sessionId)}/trace-comments`,
-          buildSessionCommentsQuery(input)
+        const threads = await readSessionCommentThreads(
+          apiClient,
+          sessionId,
+          input
         );
-        const items = extractArrayItems<TraceComment>(response).filter(
-          (item) => input.status === undefined || item.status === input.status
-        );
-        const payload = buildPaginatedPayload(items, {
+        const payload = buildPaginatedPayload(threads, {
           limit: input.limit,
           offset: input.offset,
-          mapItem: shapeSessionComment,
+          mapItem: (thread: CommentThreadDto) =>
+            shapeSessionComment(thread, sessionId),
         });
         return {
           content: [
@@ -114,46 +117,117 @@ export function resolveSessionCommentSessionId(
     throw new Error("Provide exactly one of sessionId or sessionUrl.");
   }
   if (input.sessionId !== undefined) {
-    const parsed = sessionUrlIdSchema.safeParse(input.sessionId);
-    if (!parsed.success) {
-      throw new Error(
-        "sessionId must be a UUID; SES-* slugs are not accepted."
-      );
-    }
-    return parsed.data;
+    return checkedSessionId(input.sessionId);
   }
   return extractSessionIdFromUrl(input.sessionUrl ?? "");
 }
 
+/** One page of the unified read, as the legacy session route scoped it: session-detail threads. */
 export function buildSessionCommentsQuery(
-  input: ListSessionCommentsInput
+  input: ListSessionCommentsInput,
+  cursor?: string
 ): Record<string, string> {
-  return buildQuery({ computeTargetId: input.computeTargetId });
+  return buildQuery({
+    computeTargetId: input.computeTargetId,
+    status: input.status,
+    surface: CommentSurface.SessionDetail,
+    limit: String(MAX_PAGE_LIMIT),
+    cursor,
+  });
 }
 
-export function shapeSessionComment(value: TraceComment) {
-  const row = asRecord(value);
+/**
+ * Every thread on the session, following `nextCursor` to the end so `total`
+ * counts all of them. Threads without a trace anchor are left out, as the
+ * legacy route left out a thread whose anchor it could not read.
+ */
+async function readSessionCommentThreads(
+  apiClient: ApiClient,
+  sessionId: string,
+  input: ListSessionCommentsInput
+): Promise<CommentThreadDto[]> {
+  const path = commentApiPaths.artifactComments(sessionId);
+  const threads: CommentThreadDto[] = [];
+  let cursor: string | undefined;
+  let pages = 0;
+  // lc-debt: total walks every page; add a count to the unified read if a session's thread count makes MCP slow.
+  do {
+    pages += 1;
+    if (pages > MAX_SESSION_COMMENT_PAGES) {
+      throw new Error(
+        `The session's comments did not end within ${MAX_SESSION_COMMENT_PAGES} pages.`
+      );
+    }
+    const page = readThreadsPage(
+      await apiClient.get<unknown>(
+        path,
+        buildSessionCommentsQuery(input, cursor)
+      )
+    );
+    threads.push(
+      ...page.threads.filter(
+        (thread) => thread.anchor?.kind === CommentAnchorKind.Trace
+      )
+    );
+    const nextCursor = page.nextCursor ?? undefined;
+    if (nextCursor !== undefined && nextCursor === cursor) {
+      throw new Error("The comments API returned the same page cursor twice.");
+    }
+    cursor = nextCursor;
+  } while (cursor);
+  return threads;
+}
+
+/** 10,000 threads at the largest page; past it the cursor is not advancing. */
+const MAX_SESSION_COMMENT_PAGES = 100;
+
+function readThreadsPage(payload: unknown): {
+  threads: CommentThreadDto[];
+  nextCursor: string | null;
+} {
+  const page = asRecord(payload);
+  if (!Array.isArray(page.threads)) {
+    throw new Error(
+      "Expected a { threads: [] } page from the artifact comments API."
+    );
+  }
   return {
-    id: readString(row.id),
-    threadId: readString(row.threadId),
-    body: readString(row.body),
-    status: readString(row.status),
-    resolvedAt: readString(row.resolvedAt),
-    resolvedById: readString(row.resolvedById),
-    resolvedByName: readString(row.resolvedByName),
-    resolvedByAvatarUrl: readString(row.resolvedByAvatarUrl),
-    target: shapeTarget(row.target),
-    artifactId: readString(row.artifactId),
-    anchor: shapeAnchor(row.anchor),
-    createdAt: readString(row.createdAt),
-    updatedAt: readString(row.updatedAt),
-    editedAt: readString(row.editedAt),
-    authorId: readString(row.authorId),
-    authorName: readString(row.authorName),
-    authorAvatarUrl: readString(row.authorAvatarUrl),
-    replies: Array.isArray(row.replies)
-      ? row.replies.map((reply) => shapeSessionCommentReply(reply))
-      : [],
+    threads: page.threads as CommentThreadDto[],
+    nextCursor: readString(page.nextCursor),
+  };
+}
+
+/** A thread in the item shape the tool has always returned: its root comment, with replies under it. */
+export function shapeSessionComment(
+  value: CommentThreadDto,
+  sessionId: string
+) {
+  const thread = asRecord(value);
+  const comments: unknown[] = Array.isArray(thread.comments)
+    ? thread.comments
+    : [];
+  const root = asRecord(comments[0]);
+  const author = asRecord(root.author);
+  const resolvedBy = asRecord(thread.resolvedBy);
+  return {
+    id: readString(root.id),
+    threadId: readString(thread.id),
+    body: readString(root.body),
+    status: readString(thread.status),
+    resolvedAt: readString(thread.resolvedAt),
+    resolvedById: readString(resolvedBy.id),
+    resolvedByName: readString(resolvedBy.name),
+    resolvedByAvatarUrl: readString(resolvedBy.avatarUrl),
+    target: { type: CommentTargetType.Session, id: sessionId },
+    artifactId: readString(thread.artifactId),
+    anchor: shapeAnchor(thread.anchor),
+    createdAt: readString(root.createdAt),
+    updatedAt: readString(root.updatedAt),
+    editedAt: readString(root.editedAt),
+    authorId: readString(author.id),
+    authorName: readString(author.name),
+    authorAvatarUrl: readString(author.avatarUrl),
+    replies: comments.slice(1).map((reply) => shapeSessionCommentReply(reply)),
   };
 }
 
@@ -185,14 +259,6 @@ function extractSessionIdFromUrl(sessionUrl: string): string {
   return parsed.data;
 }
 
-function shapeTarget(value: unknown) {
-  const target = asRecord(value);
-  return {
-    type: readString(target.type),
-    id: readString(target.id),
-  };
-}
-
 function shapeAnchor(value: unknown) {
   const anchor = asRecord(value);
   const actor = asRecord(anchor.actor);
@@ -215,8 +281,9 @@ function shapeAnchor(value: unknown) {
   };
 }
 
-function shapeSessionCommentReply(value: TraceCommentReply) {
+function shapeSessionCommentReply(value: unknown) {
   const reply = asRecord(value);
+  const author = asRecord(reply.author);
   return {
     id: readString(reply.id),
     threadId: readString(reply.threadId),
@@ -224,8 +291,40 @@ function shapeSessionCommentReply(value: TraceCommentReply) {
     createdAt: readString(reply.createdAt),
     updatedAt: readString(reply.updatedAt),
     editedAt: readString(reply.editedAt),
-    authorId: readString(reply.authorId),
-    authorName: readString(reply.authorName),
-    authorAvatarUrl: readString(reply.authorAvatarUrl),
+    authorId: readString(author.id),
+    authorName: readString(author.name),
+    authorAvatarUrl: readString(author.avatarUrl),
   };
+}
+
+/**
+ * The tool's one narrowing over the shared target-id contract: an artifact
+ * DISPLAY SLUG (`SES-123`, `ISS-42`, any letter case) is neither an artifact id
+ * nor an external session id, so none of the route's three lookups can resolve
+ * one. Reject it here with a message naming what to pass instead of letting it
+ * become an opaque 404. Built from the canonical prefix set so a new or renamed
+ * prefix is covered without editing this file, and case-insensitive because
+ * slugs are written lowercase in branch-derived contexts.
+ */
+const ARTIFACT_SLUG_PATTERN = new RegExp(
+  String.raw`^(${Object.values(SlugPrefix).join("|")})-\d+$`,
+  "i"
+);
+
+function checkedSessionId(sessionId: string): string {
+  const parsed = traceCommentTargetIdSchema.safeParse(sessionId);
+  if (!parsed.success) {
+    throw new Error(
+      `sessionId must be 1-${TRACE_COMMENT_ID_MAX_LENGTH} characters: an agent-session artifact id, or a desktop-local external session id.`
+    );
+  }
+  if (parsed.data !== parsed.data.trim()) {
+    throw new Error("sessionId must not have leading or trailing whitespace.");
+  }
+  if (ARTIFACT_SLUG_PATTERN.test(parsed.data)) {
+    throw new Error(
+      "sessionId must be an agent-session artifact id or a desktop-local external session id; artifact slugs such as SES-123 are not accepted."
+    );
+  }
+  return parsed.data;
 }

@@ -1,3 +1,4 @@
+import { parseRepositoryFullName } from "@repo/api/src/types/branch-repository";
 import {
   type GetBranchesResponse,
   GitHubCredentialKind,
@@ -11,6 +12,7 @@ import { RepositoryDefaultSource } from "@repo/api/src/types/repository-default-
 import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import type { PublicRepository } from "@repo/database";
 import { withDb } from "@repo/database";
+import { boundedFetch } from "@repo/github/bounded-fetch";
 import { log } from "@repo/observability/log";
 import { v7 as uuidv7 } from "uuid";
 import { z } from "zod";
@@ -24,6 +26,11 @@ import {
   mapGitHubRepositoryDefaultAuthority,
   repositoryDefaultAuthorityPersistenceData,
 } from "@/lib/github/repository-default-authority";
+import type { OrganizationWriteOutcome } from "@/lib/organization-write-receipt";
+import {
+  type RecordWriteInTransaction,
+  writeRecorded,
+} from "@/lib/record-write-in-transaction";
 import { refreshExistingPublicRepositoryAuthority } from "./authority-persistence";
 
 type GitHubRepoApiResponse = {
@@ -51,6 +58,14 @@ const GITHUB_API_HEADERS = {
 const GITHUB_BRANCHES_PAGE_HEADERS = {
   Accept: "text/html,application/xhtml+xml",
 } as const;
+/**
+ * Hard ceiling on the branch pages scraped per request. A page whose branch
+ * names were all seen already does not grow the collected list, so `has_more`
+ * alone can keep the loop going without ever reaching `limit`. The route caps
+ * `limit` at 100 and a page carries 20 branches, so 10 pages leaves headroom
+ * over the widest legitimate request.
+ */
+export const PUBLIC_BRANCHES_MAX_PAGES = 10;
 
 const publicGitHubBranchSchema = z.object({
   name: z.string(),
@@ -89,7 +104,7 @@ async function fetchPublicBranchesPage(
   name: string,
   page: number
 ) {
-  const response = await fetch(
+  const response = await boundedFetch(
     `https://github.com/${owner}/${name}/branches/active?page=${page}`,
     {
       headers: GITHUB_BRANCHES_PAGE_HEADERS,
@@ -107,14 +122,20 @@ async function getPublicRepositoryBranches(
   owner: string,
   name: string,
   limit = 20
-): Promise<GetBranchesResponse["branches"]> {
+): Promise<GetBranchesResponse> {
   const branches: GetBranchesResponse["branches"] = [];
   const seenBranchNames = new Set<string>();
   let page = 1;
-  let hasMore = true;
+  // `null` until a page has actually been read, so a request that never scrapes
+  // cannot report a more-pages signal this function never observed.
+  let upstreamHasMore: boolean | null = null;
   let defaultBranchName: string | null = null;
 
-  while (branches.length < limit && hasMore) {
+  while (
+    branches.length < limit &&
+    upstreamHasMore !== false &&
+    page <= PUBLIC_BRANCHES_MAX_PAGES
+  ) {
     const branchPage = await fetchPublicBranchesPage(owner, name, page);
     defaultBranchName ??= branchPage.appPayload.repo.defaultBranch;
 
@@ -130,8 +151,23 @@ async function getPublicRepositoryBranches(
       });
     }
 
-    hasMore = branchPage.payload.has_more;
+    upstreamHasMore = branchPage.payload.has_more;
     page += 1;
+  }
+
+  const hasMore = upstreamHasMore === true;
+  // The scrape gave up on its own ceiling while GitHub still had pages, so the
+  // caller's `limit` was never satisfied and this list is not the whole set.
+  const truncated = hasMore && branches.length < limit;
+
+  if (truncated) {
+    log.warn("[public-repositories] Branch page scrape hit the page cap", {
+      owner,
+      name,
+      limit,
+      collected: branches.length,
+      maxPages: PUBLIC_BRANCHES_MAX_PAGES,
+    });
   }
 
   branches.sort(
@@ -157,7 +193,13 @@ async function getPublicRepositoryBranches(
     });
   }
 
-  return branches.slice(0, limit);
+  // Absent rather than `false` when nothing was truncated: a client on an older
+  // bundle reads the omission as today's unmarked success.
+  return {
+    branches: branches.slice(0, limit),
+    ...(hasMore ? { hasMore } : {}),
+    ...(truncated ? { truncated } : {}),
+  };
 }
 
 /**
@@ -191,17 +233,8 @@ export function parseGitHubRepoUrl(
   }
 
   // Now we expect exactly owner/repo
-  const parts = normalized.split("/");
-  if (parts.length !== 2) {
-    return null;
-  }
-
-  const [owner, name] = parts;
-  if (!(owner && name)) {
-    return null;
-  }
-
-  return { owner, name };
+  const identity = parseRepositoryFullName(normalized);
+  return identity ? { owner: identity.owner, name: identity.repo } : null;
 }
 
 export const publicRepositoryService = {
@@ -228,7 +261,8 @@ export const publicRepositoryService = {
   async addPublicRepository(
     organizationId: string,
     userId: string,
-    url: string
+    url: string,
+    recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
   ): Promise<
     Result<PublicRepository, StatusCode | AddPublicRepositoryErrorCode>
   > {
@@ -287,18 +321,23 @@ export const publicRepositoryService = {
     });
 
     try {
-      const repo = await withDb((db) =>
-        db.publicRepository.create({
-          data: {
-            organizationId,
-            githubRepoId: String(repoData.id),
-            fullName: repoData.full_name,
-            owner: repoData.owner.login,
-            name: repoData.name,
-            htmlUrl: repoData.html_url,
-            ...repositoryDefaultAuthorityPersistenceData(defaultAuthority),
-          },
-        })
+      const repo = await writeRecorded(
+        recordWrite,
+        () =>
+          withDb((db) =>
+            db.publicRepository.create({
+              data: {
+                organizationId,
+                githubRepoId: String(repoData.id),
+                fullName: repoData.full_name,
+                owner: repoData.owner.login,
+                name: repoData.name,
+                htmlUrl: repoData.html_url,
+                ...repositoryDefaultAuthorityPersistenceData(defaultAuthority),
+              },
+            })
+          ),
+        () => ({ changed: true })
       );
 
       log.info("[public-repositories] Added public repository", {
@@ -325,10 +364,16 @@ export const publicRepositoryService = {
    */
   async removePublicRepository(
     organizationId: string,
-    id: string
+    id: string,
+    recordWrite?: RecordWriteInTransaction<OrganizationWriteOutcome>
   ): Promise<void> {
-    await withDb((db) =>
-      db.publicRepository.deleteMany({ where: { id, organizationId } })
+    await writeRecorded(
+      recordWrite,
+      () =>
+        withDb((db) =>
+          db.publicRepository.deleteMany({ where: { id, organizationId } })
+        ),
+      ({ count }) => ({ changed: count > 0 })
     );
 
     log.info("[public-repositories] Removed public repository", {
@@ -363,6 +408,9 @@ export const publicRepositoryService = {
           id: repositoryId,
           organizationId,
         },
+        // Only the coordinates the GitHub call and its failure log need — the
+        // twelve `defaultBranch*` authority-snapshot columns are unread here.
+        select: { owner: true, name: true, fullName: true },
       })
     );
 
@@ -371,13 +419,11 @@ export const publicRepositoryService = {
     }
 
     try {
-      const branches = await getPublicRepositoryBranches(
+      return await getPublicRepositoryBranches(
         repository.owner,
         repository.name,
         limit
       );
-
-      return { branches };
     } catch (error) {
       log.error("[public-repositories] Failed to fetch public repo branches", {
         repositoryId,
@@ -433,6 +479,14 @@ async function lookupGitHubRepository(
     intent: GitHubAccessIntent.ReadAsUser,
   });
   if (!resolved.ok) {
+    // PLN-1742 M6: name the denial before falling back — this branch now
+    // absorbs Clerk-lane denials too, and a silent collapse would make a
+    // credential regression look like ordinary unconnected-user traffic.
+    log.info("[public-repositories] Resolver denied; reading unauthenticated", {
+      owner,
+      name,
+      reason: resolved.error.reason,
+    });
     return await lookupGitHubRepositoryUnauthenticated(owner, name);
   }
   try {
@@ -480,24 +534,40 @@ async function lookupGitHubRepositoryUnauthenticated(
   owner: string,
   name: string
 ): Promise<PublicRepoLookup> {
-  const response = await fetch(
-    `https://api.github.com/repos/${owner}/${name}`,
-    {
-      headers: GITHUB_API_HEADERS,
+  let repo: GitHubRepoApiResponse;
+  try {
+    const response = await boundedFetch(
+      `https://api.github.com/repos/${owner}/${name}`,
+      {
+        headers: GITHUB_API_HEADERS,
+      }
+    );
+    if (!response.ok) {
+      if (response.status === 404) {
+        return { status: PublicRepoLookupStatus.NotFound };
+      }
+      log.error("[public-repositories] GitHub API error", {
+        owner,
+        name,
+        status: response.status,
+      });
+      return { status: PublicRepoLookupStatus.Error };
     }
-  );
-  if (!response.ok) {
-    if (response.status === 404) {
-      return { status: PublicRepoLookupStatus.NotFound };
-    }
-    log.error("[public-repositories] GitHub API error", {
+    // `fetch` resolves once the headers land, so consuming the body is its own
+    // failure domain: a stalled stream or unparseable JSON has to reach the same
+    // Error result as a failed round trip rather than reject out of the lookup.
+    repo = (await response.json()) as GitHubRepoApiResponse;
+  } catch (error) {
+    // A timed-out or otherwise failed read must stay inside the lookup's result
+    // contract, as the authenticated branch above already does —
+    // `addPublicRepository` reports errors as values, not throws.
+    log.error("[public-repositories] Unauthenticated repo lookup failed", {
       owner,
       name,
-      status: response.status,
+      error: error instanceof Error ? error.message : "Unknown error",
     });
     return { status: PublicRepoLookupStatus.Error };
   }
-  const repo = (await response.json()) as GitHubRepoApiResponse;
   if (repo.private) {
     return { status: PublicRepoLookupStatus.NotPublic };
   }

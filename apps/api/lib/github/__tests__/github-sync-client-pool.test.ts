@@ -14,10 +14,6 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
-vi.mock("@/lib/integration-encryption", () => ({
-  decryptIntegrationToken: vi.fn(),
-}));
-
 vi.mock("@repo/github/installation-auth", () => ({
   getInstallationOctokit: vi.fn(),
 }));
@@ -26,6 +22,33 @@ vi.mock("@repo/observability/log", () => ({
   log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
+const poolObservationMocks = vi.hoisted(() => ({
+  observePoolRequestFailure: vi.fn(),
+}));
+
+vi.mock(
+  "@/lib/github/github-sync-pool-observations",
+  async (importOriginal) => {
+    const original =
+      await importOriginal<
+        typeof import("@/lib/github/github-sync-pool-observations")
+      >();
+    return {
+      ...original,
+      observePoolRequestFailure: poolObservationMocks.observePoolRequestFailure,
+    };
+  }
+);
+
+vi.mock("@repo/auth/server", () => ({
+  clerkClient: vi.fn(),
+}));
+
+vi.mock("@/lib/github/installation-repository-lookup", () => ({
+  findCoveringInstallation: vi.fn(),
+}));
+
+import { clerkClient } from "@repo/auth/server";
 import { withDb } from "@repo/database";
 import { GitHubSyncHealthState } from "@/lib/github/github-access";
 import {
@@ -33,19 +56,23 @@ import {
   getGitHubSyncClient,
 } from "@/lib/github/github-sync-client-pool";
 import { GitHubSyncRepoAccessOutcome } from "@/lib/github/github-sync-pool-observations";
+import { findCoveringInstallation } from "@/lib/github/installation-repository-lookup";
 import {
   drawnLogin,
   makePoolDb,
-  mockDecrypt,
   mockGetInstallationOctokit,
   NOW,
   POOL_INPUT,
   poolConnectionFixture,
   type WithDbMock,
+  wireClerkServedToken,
   wireDb,
 } from "./github-access-test-fixtures";
 
 const mockWithDb = withDb as unknown as WithDbMock;
+const mockClerkClient = clerkClient as unknown as ReturnType<typeof vi.fn>;
+const mockFindCoveringInstallation =
+  findCoveringInstallation as unknown as ReturnType<typeof vi.fn>;
 
 // Selection and draw: tier-1 installation short-circuit, pool qualification,
 // ordering, and the CAS draw claim. The write-back half (rate-limit windows,
@@ -54,17 +81,14 @@ const mockWithDb = withDb as unknown as WithDbMock;
 describe("getGitHubSyncClient (selection and draw)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockDecrypt.mockImplementation((encrypted: string) =>
-      Promise.resolve(encrypted.replace("encrypted-", "token-"))
-    );
+    mockFindCoveringInstallation.mockResolvedValue(null);
+    wireClerkServedToken(mockClerkClient);
   });
 
   it("uses the org installation when it covers the target repo (tier 1)", async () => {
     const db = makePoolDb([]);
-    db.gitHubInstallation.findUnique.mockResolvedValue({
+    mockFindCoveringInstallation.mockResolvedValue({
       installationId: "install-77",
-      status: "ACTIVE",
-      repositories: [{ id: "repo-row" }],
     });
     wireDb(mockWithDb, db);
     const octokit = { rest: {} };
@@ -76,6 +100,12 @@ describe("getGitHubSyncClient (selection and draw)", () => {
     if (result.ok) {
       expect(result.value.kind).toBe(GitHubCredentialKind.Installation);
       expect(result.value.actingAs).toEqual({ installationId: "install-77" });
+      // ISS-6578: the tier-1 probe is the index-servable lookup, given the
+      // target's `owner/repo` verbatim for the reader to normalize.
+      expect(mockFindCoveringInstallation).toHaveBeenCalledWith(
+        "org-1",
+        "Acme/Widgets"
+      );
       // Pool state is a property of user tokens — installation-lane
       // observations are deliberate no-ops.
       await result.value.recordRateLimit({
@@ -99,10 +129,8 @@ describe("getGitHubSyncClient (selection and draw)", () => {
 
   it("classifies tier-1 installation-token acquisition failures", async () => {
     const db = makePoolDb([]);
-    db.gitHubInstallation.findUnique.mockResolvedValue({
+    mockFindCoveringInstallation.mockResolvedValue({
       installationId: "install-77",
-      status: "ACTIVE",
-      repositories: [{ id: "repo-row" }],
     });
     wireDb(mockWithDb, db);
     mockGetInstallationOctokit.mockRejectedValue(
@@ -363,6 +391,123 @@ describe("getGitHubSyncClient (selection and draw)", () => {
     expect(drawnLogin(result)).toBe("bob");
   });
 
+  it("denies with contention, never not_connected, when every claim is lost (ISS-8270)", async () => {
+    const db = makePoolDb([
+      poolConnectionFixture({
+        id: "a",
+        login: "alice",
+        lastUsedAt: new Date("2026-07-30T10:00:00.000Z"),
+      }),
+    ]);
+    db.gitHubUserConnection.updateMany.mockResolvedValue({ count: 0 });
+    wireDb(mockWithDb, db);
+
+    const result = await getGitHubSyncClient(POOL_INPUT, { now: NOW });
+
+    // The credential was served — only the LRU claim was lost — so the one
+    // reason that would re-tier the repo is the one reason this cannot be.
+    expect(result).toEqual({
+      ok: false,
+      error: { reason: GitHubAccessDenialReason.Contention },
+    });
+  });
+
+  it("gives concurrent draws on a one-connection pool one winner and contention losers (ISS-8270)", async () => {
+    const db = makePoolDb([
+      poolConnectionFixture({
+        id: "a",
+        login: "alice",
+        lastUsedAt: new Date("2026-07-30T10:00:00.000Z"),
+      }),
+    ]);
+    // The CAS these sweeps race: the first claim moves `lastUsedAt`, so every
+    // later claim against the same snapshot matches zero rows.
+    let claims = 0;
+    db.gitHubUserConnection.updateMany.mockImplementation(() => {
+      claims += 1;
+      return Promise.resolve({ count: claims === 1 ? 1 : 0 });
+    });
+    wireDb(mockWithDb, db);
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        getGitHubSyncClient(POOL_INPUT, { now: NOW })
+      )
+    );
+
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    expect(
+      results
+        .filter((result) => !result.ok)
+        .map((result) => (result.ok ? null : result.error.reason))
+    ).toEqual([
+      GitHubAccessDenialReason.Contention,
+      GitHubAccessDenialReason.Contention,
+      GitHubAccessDenialReason.Contention,
+      GitHubAccessDenialReason.Contention,
+    ]);
+  });
+
+  it("prefers contention over a peer candidate's Clerk outage (ISS-8270)", async () => {
+    const served = wireClerkServedToken(mockClerkClient);
+    served.mockRejectedValueOnce(new Error("clerk down"));
+    const db = makePoolDb([
+      poolConnectionFixture({
+        id: "a",
+        login: "alice",
+        lastUsedAt: new Date("2026-07-30T10:00:00.000Z"),
+      }),
+      poolConnectionFixture({
+        id: "b",
+        login: "bob",
+        lastUsedAt: new Date("2026-07-30T11:00:00.000Z"),
+      }),
+    ]);
+    db.gitHubUserConnection.updateMany.mockResolvedValue({ count: 0 });
+    wireDb(mockWithDb, db);
+
+    const result = await getGitHubSyncClient(POOL_INPUT, { now: NOW });
+
+    // Alice's owner could not be served; Bob's could, and a peer sweep took
+    // him. A live credential exists, so the answer is timing, not an outage.
+    expect(result).toEqual({
+      ok: false,
+      error: { reason: GitHubAccessDenialReason.Contention },
+    });
+  });
+
+  it("preserves the provider error when failure bookkeeping rejects", async () => {
+    const db = makePoolDb([poolConnectionFixture({ id: "a", login: "alice" })]);
+    wireDb(mockWithDb, db);
+    poolObservationMocks.observePoolRequestFailure.mockRejectedValueOnce(
+      new Error("bookkeeping failed")
+    );
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ message: "provider failed" }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        })
+      )
+    );
+
+    const result = await getGitHubSyncClient(POOL_INPUT, {
+      now: NOW,
+      fetch: fetchMock,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    await expect(
+      result.value.octokit.rest.repos.get({ owner: "Acme", repo: "widgets" })
+    ).rejects.toMatchObject({ status: 500 });
+    expect(
+      poolObservationMocks.observePoolRequestFailure
+    ).toHaveBeenCalledTimes(1);
+  });
+
   it("ignores verdict rows earned by the other credential family", async () => {
     // A stale OAuth-family denial must not exclude the connection now that
     // its stored scopes derive the App family.
@@ -382,28 +527,98 @@ describe("getGitHubSyncClient (selection and draw)", () => {
 
     expect(drawnLogin(result)).toBe("alice");
   });
+});
 
-  it("skips an undecryptable token and draws the next candidate", async () => {
-    const broken = poolConnectionFixture({
+// PLN-1742: TOKEN ACQUISITION is Clerk's alone since the M5 tail removed the
+// stored fallback. Candidate selection, ranking, the CAS draw claim and the
+// budget policy are untouched by where the bytes come from.
+describe("getGitHubSyncClient (Clerk token acquisition)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWithDb.mockImplementation((fn: (db: unknown) => unknown) =>
+      fn({ user: { findUnique: vi.fn().mockResolvedValue({ clerkId: "c" }) } })
+    );
+  });
+
+  function wireClerk(answer: { data: unknown[] }) {
+    mockClerkClient.mockResolvedValue({
+      users: {
+        getUserOauthAccessToken: vi.fn().mockResolvedValue(answer),
+      },
+    });
+  }
+
+  it("draws a registry row once Clerk can serve its owner", async () => {
+    // The row the in-house OAuth flow never wrote. Before the Clerk source it
+    // had no token to decrypt and could never be drawn; that is precisely the
+    // pool starvation the Clerk source removes.
+    const registryOnly = poolConnectionFixture({
       id: "a",
       login: "alice",
-      lastUsedAt: null,
+      scopes: ["repo"],
     });
-    const working = poolConnectionFixture({
-      id: "b",
-      login: "bob",
-      lastUsedAt: new Date("2026-07-30T11:00:00.000Z"),
-    });
-    wireDb(mockWithDb, makePoolDb([broken, working]));
-    mockDecrypt.mockImplementation((encrypted: string) => {
-      if (encrypted === "encrypted-a") {
-        return Promise.reject(new Error("kms denied"));
-      }
-      return Promise.resolve("token-b");
+    const db = makePoolDb([registryOnly]);
+    db.user = {
+      findUnique: vi.fn().mockResolvedValue({ clerkId: "c" }),
+    };
+    wireDb(mockWithDb, db);
+    wireClerk({
+      data: [{ token: "gho", scopes: ["repo"], externalAccountId: "eac" }],
     });
 
     const result = await getGitHubSyncClient(POOL_INPUT, { now: NOW });
 
-    expect(drawnLogin(result)).toBe("bob");
+    expect(drawnLogin(result)).toBe("alice");
+    // The draw claim is unchanged — still CAS'd on the ranked LRU snapshot.
+    expect(db.gitHubUserConnection.updateMany).toHaveBeenCalledWith({
+      where: { id: "a", organizationId: "org-1", lastUsedAt: null },
+      data: { lastUsedAt: NOW },
+    });
+  });
+
+  it("reports not_connected when Clerk can serve none of the candidates", async () => {
+    // Rows exist, so this is not an empty pool — but none of them can produce
+    // a token, and telling the caller "revoked" would send them to reconnect
+    // a credential we never held.
+    const db = makePoolDb([
+      poolConnectionFixture({ id: "a", login: "alice" }),
+      poolConnectionFixture({ id: "b", login: "bob" }),
+    ]);
+    wireDb(mockWithDb, db);
+    wireClerk({ data: [] });
+
+    const result = await getGitHubSyncClient(POOL_INPUT, { now: NOW });
+
+    expect(result).toEqual({
+      ok: false,
+      error: { reason: GitHubAccessDenialReason.NotConnected },
+    });
+  });
+
+  it("reports unavailable — not not_connected — when Clerk is down for every candidate", async () => {
+    // The reconcile cron backs off on `unavailable` but RE-TIERS the repo on
+    // `not_connected`, so collapsing a Clerk outage into the durable reason
+    // demotes every repo in the org over a transient 503.
+    const db = makePoolDb([
+      poolConnectionFixture({ id: "a", login: "alice" }),
+      poolConnectionFixture({ id: "b", login: "bob" }),
+    ]);
+    wireDb(mockWithDb, db);
+    mockClerkClient.mockResolvedValue({
+      users: {
+        getUserOauthAccessToken: vi
+          .fn()
+          .mockRejectedValue(
+            Object.assign(new Error("clerk"), { status: 503 })
+          ),
+      },
+    });
+
+    const result = await getGitHubSyncClient(POOL_INPUT, { now: NOW });
+
+    expect(result).toEqual({
+      ok: false,
+      error: { reason: GitHubAccessDenialReason.Unavailable },
+    });
   });
 });

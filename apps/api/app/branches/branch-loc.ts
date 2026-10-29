@@ -1,13 +1,14 @@
 import { BranchStatus } from "@repo/api/src/types/branch";
 import { isLocEnriched } from "@repo/lib/branches/loc-per-dollar";
+import type { BranchFileChangeTotals } from "./branch-read-service/file-change-totals-read";
 
 /**
  * Branch changed-LOC (lines-of-change) resolution for the Branches read service.
  *
- * These helpers are the SSOT for turning per-file diff counts and connected-PR
- * diff stats into the branch's changed-LOC totals — the numbers the detail
+ * These helpers are the SSOT for turning folded file-cache diff counts and
+ * connected-PR diff stats into the branch's changed-LOC totals — the numbers the detail
  * Value-per-$ card and the analytics Median PR size KPI read. They are kept in
- * this sibling module (not the grandfathered `branch-read-service.ts`) so the
+ * this sibling module (not `branch-read-service.ts`) so the
  * cohesive LOC logic and its focused tests live together and the service file
  * stays smaller (FEA-4229; whitlockk / codex review). Every helper preserves null —
  * it never fabricates a count — so an un-enriched or partial cache reads as
@@ -27,62 +28,20 @@ export type PullRequestLocDetail = {
 };
 
 /**
- * Aggregate per-file diff counts into a branch total, PRESERVING completeness.
- *
- * A `null` per-file count means that file's LOC never enriched, so the cache is
- * PARTIAL and the branch total is not a trustworthy enriched size. Coercing the
- * missing count to 0 (the old `?? 0`) would synthesize a bogus enriched-looking
- * total (e.g. `{ additions: 0, deletions: 0 }`) that `isLocEnriched` reads as
- * "enriched", suppressing the complete-PR-total fallback in `resolveDetailLoc`
- * and letting a nonempty partial cache masquerade as a real size. Instead, a
- * dimension is `null` (un-enriched) when ANY contributing file's count is null —
- * the same all-or-nothing rule the desktop producer's `completeArtifactLoc`
- * applies, so both surfaces resolve the same LOC/$ precedence (whitlockk review).
- */
-export function sumFileChanges(
-  changes: readonly {
-    additions: number | null;
-    deletions: number | null;
-  }[]
-): LocTotals {
-  if (changes.length === 0) {
-    return { additions: null, deletions: null, filesChanged: null };
-  }
-  return {
-    additions: sumOrNullWhenPartial(changes.map((change) => change.additions)),
-    deletions: sumOrNullWhenPartial(changes.map((change) => change.deletions)),
-    filesChanged: changes.length,
-  };
-}
-
-/**
- * Sum a per-file count column, returning `null` if ANY entry is `null` so a
- * partial cache never collapses to a false-complete zero total.
- */
-export function sumOrNullWhenPartial(
-  values: readonly (number | null)[]
-): number | null {
-  let total = 0;
-  for (const value of values) {
-    if (value == null) {
-      return null;
-    }
-    total += value;
-  }
-  return total;
-}
-
-/**
  * Resolve the branch's CURRENT file-cache LOC totals, gating on cache currency.
  *
  * `refreshBranchFileChangeCache` deliberately PRESERVES the previous file-change
  * rows and leaves `fileCacheHeadSha` on the OLD sha when a refresh for a new
  * `headSha` fails or is still pending (file-cache-service.ts `markCacheRefreshFailed`
- * clears neither the rows nor the sha). So a non-empty `fileChanges` cache is NOT
+ * clears neither the rows nor the sha). So a non-empty file-change cache is NOT
  * proof the totals describe the branch's current head — they may be a STALE prior
  * head's diff (davetho review). Summing those rows and treating any non-null pair
  * as "enriched/current" makes the list/detail LOC and the analytics median report
  * the old sha's size for the new head, disagreeing with GitHub again.
+ *
+ * The sums arrive already folded by {@link getBranchFileChangeTotals}, which
+ * owns the all-or-nothing completeness rule (any un-enriched file makes the
+ * whole dimension `null`). This function owns only the CURRENCY gate.
  *
  * This gates the file-cache totals on `fileCacheHeadSha === headSha`: only a cache
  * refreshed FOR the current head counts. A stale (old-sha) or never-synced (null
@@ -92,17 +51,40 @@ export function sumOrNullWhenPartial(
  * with no head sha at all (never pushed) likewise cannot match, so it reads UNKNOWN.
  */
 export function currentFileTotals(
-  changes: readonly {
-    additions: number | null;
-    deletions: number | null;
-  }[],
+  totals: BranchFileChangeTotals,
   fileCacheHeadSha: string | null,
-  headSha: string | null
+  headSha: string | null,
+  fileCacheCapped = false
 ): LocTotals {
   if (!(headSha && fileCacheHeadSha) || fileCacheHeadSha !== headSha) {
     return { additions: null, deletions: null, filesChanged: null };
   }
-  return sumFileChanges(changes);
+  // ISS-10298: the sums now arrive from their OWN statement, so the row's claim
+  // that its cache is current is not by itself evidence that THESE rows are the
+  // ones it was claiming about. A refresh committing between the two reads is
+  // what this catches; `headSha` is also null when the fold saw rows for more
+  // than one head, which is the same unknown.
+  if (totals.headSha !== fileCacheHeadSha) {
+    return { additions: null, deletions: null, filesChanged: null };
+  }
+  // ISS-6127: a CAPPED cache is fresh and its rows are individually complete, so
+  // every per-file guard passes and the sum comes out confident and short. The
+  // provider withheld files it will not name, which makes the branch's LOC
+  // UNKNOWN in exactly the sense this function already models for a stale cache
+  // — so it takes the same exit, and every consumer downstream (the median, the
+  // LOC/$ numerator and its paired denominator, the display fallback) inherits
+  // the right answer without learning a second vocabulary.
+  if (fileCacheCapped) {
+    return { additions: null, deletions: null, filesChanged: null };
+  }
+  if (totals.fileCount === 0) {
+    return { additions: null, deletions: null, filesChanged: null };
+  }
+  return {
+    additions: totals.additions,
+    deletions: totals.deletions,
+    filesChanged: totals.fileCount,
+  };
 }
 
 /**
@@ -167,30 +149,4 @@ export function resolveDetailLoc(
     };
   }
   return fileTotals;
-}
-
-/**
- * The Value-per-$ NUMERATOR over a branch corpus: total gross churn (additions +
- * DELETIONS — removed lines are work delivered) summed over the LOC-ENRICHED
- * branches only, plus how many of them there were.
- *
- * Un-enriched branches are EXCLUDED, never folded in as 0: their LOC is UNKNOWN,
- * and the matching denominator (`sumLocEnrichedSpend`) likewise keeps only the
- * enriched share of each session's spend, so both sides of the ratio cover the
- * same set of branches. `enrichedCount` is what gates the KPI — a 0 there means
- * Unavailable ("no enrichment"), never a computed 0.
- */
-export function sumEnrichedChurn(
-  rows: readonly { additions: number | null; deletions: number | null }[]
-): { enrichedCount: number; churn: number } {
-  let enrichedCount = 0;
-  let churn = 0;
-  for (const row of rows) {
-    if (!isLocEnriched(row)) {
-      continue;
-    }
-    enrichedCount += 1;
-    churn += row.additions + row.deletions;
-  }
-  return { enrichedCount, churn };
 }

@@ -6,7 +6,7 @@ import {
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import { Lock } from "lucide-react";
 import { type ReactNode, useCallback, useState } from "react";
-import { useFileAccessBlocks } from "../../hooks/use-ingest-progress";
+import { useFileAccessBlocks } from "../../hooks/use-file-access-blocks";
 
 /**
  * FEA-3639: when a harness's local transcript root exists but the OS is blocking

@@ -5,17 +5,20 @@
   "type": "module",
   "scripts": {
     "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
-    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo"
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=*.{ts,tsx}'"
   },
   "dependencies": {
-    "@nosecone/next": "1.4.0",
+    "@nosecone/next": "1.13.0",
     "@t3-oss/env-nextjs": "^0.13.11",
-    "nosecone": "1.4.0",
-    "zod": "^4.3.6"
+    "nosecone": "1.13.0",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
+    "@repo/vitest-config": "workspace:*",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.9"
+    "vitest": "^5.0.2"
   }
 }

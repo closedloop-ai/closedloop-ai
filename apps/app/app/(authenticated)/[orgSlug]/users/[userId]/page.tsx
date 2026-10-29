@@ -6,7 +6,6 @@ import type {
   UserProfileHeadline,
 } from "@repo/api/src/types/user";
 import { DashboardCard } from "@repo/app/insights/components/overview/dashboard-card";
-import { formatTokenCount } from "@repo/app/shared/lib/format-utils";
 import { getUserDisplayName } from "@repo/app/shared/lib/user-utils";
 import { MilestonesSection } from "@repo/app/users/components/milestones-section";
 import { StandingSection } from "@repo/app/users/components/standing-section";
@@ -48,7 +47,7 @@ type PageProps = {
   params: Promise<{ orgSlug: string; userId: string }>;
 };
 
-const SKELETON_KEYS = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
+const SKELETON_KEYS = ["s1", "s2", "s3"];
 
 // The contribution heatmap is a trailing-year grid by definition and is
 // deliberately NOT re-scoped by the headline range toggle. Stating its own
@@ -271,7 +270,7 @@ function HeadlineGrid({
     // Match the real card footprint (label + text-3xl value ≈ h-28) and the
     // final count so the grid doesn't reflow when stats resolve.
     return (
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-3">
         {SKELETON_KEYS.map((key) => (
           <Skeleton className="h-28" key={key} />
         ))}
@@ -289,33 +288,10 @@ function HeadlineGrid({
     );
   }
   return (
-    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+    <div className="grid gap-4 md:grid-cols-3">
       <StatTile label="Artifacts created" value={headline.totalDocuments} />
       <StatTile label="PRs landed" value={headline.totalPRsLanded} />
       <StatTile label="Comments" value={headline.totalComments} />
-      <StatTile
-        info={LOOPS_INITIATED_INFO}
-        label="Loops initiated"
-        value={headline.totalLoops}
-      />
-      <StatTile
-        info={AVG_CONCURRENCY_INFO}
-        label="Avg loop concurrency"
-        value={headline.avgConcurrency}
-      />
-      <StatTile
-        label="Input tokens"
-        value={formatTokenCount(headline.totalTokensInput)}
-      />
-      <StatTile
-        label="Output tokens"
-        value={formatTokenCount(headline.totalTokensOutput)}
-      />
-      <StatTile
-        info={ESTIMATED_COST_INFO}
-        label="Estimated cost"
-        value={`$${headline.totalEstimatedCost.toFixed(2)}`}
-      />
     </div>
   );
 }
@@ -414,25 +390,6 @@ function WidgetBody({
 // the largest type on the profile.
 const STAT_CARD_CLASS_NAME = "[&_[data-slot='card-title']]:text-3xl";
 
-// Info-popover copy for the stats whose labels are internal jargon a visitor
-// can't be expected to decode ("Loops Initiated", "Avg Loop Concurrency") or
-// whose derivation isn't obvious ("Estimated Cost"). Mirrors the prototype,
-// which pairs each ambiguous headline with a MetricCard info popover.
-const LOOPS_INITIATED_INFO = {
-  what: "Autonomous coding runs you kicked off.",
-  how: "Counted from loops started under your account.",
-} as const;
-
-const AVG_CONCURRENCY_INFO = {
-  what: "How many loops ran in parallel on average.",
-  how: "Averaged over the intervals where at least one loop was active.",
-} as const;
-
-const ESTIMATED_COST_INFO = {
-  what: "Approximate model spend across your sessions.",
-  how: "Derived from token usage priced at each model's published rate.",
-} as const;
-
 // One section heading for all profile sections so they read at the same level.
 // The window label rides the heading as a subordinate span (not a separate
 // caption line) so each section states the window it covers: the toggle's range
@@ -509,25 +466,10 @@ function ActivityPanel({
   );
 }
 
-function StatTile({
-  label,
-  value,
-  info,
-}: {
-  label: string;
-  value: string | number;
-  info?: { what: string; how?: string };
-}) {
-  // Hand the raw value to MetricCard's own formatMetricValue: it applies
-  // thousands grouping to integers AND preserves the one-decimal signal the
-  // API deliberately returns for avg concurrency (2.4), which a pre-round to a
-  // whole number would erase. Pre-formatted strings (tokens, cost) pass through.
+function StatTile({ label, value }: { label: string; value: number }) {
+  // Hand the raw value to MetricCard's own formatMetricValue, which applies
+  // thousands grouping to integers.
   return (
-    <MetricCard
-      className={STAT_CARD_CLASS_NAME}
-      info={info}
-      label={label}
-      value={value}
-    />
+    <MetricCard className={STAT_CARD_CLASS_NAME} label={label} value={value} />
   );
 }

@@ -21,10 +21,10 @@ import { WidgetState } from "../components/widget-state";
  */
 
 /** The caption once the total has actually arrived. */
-const CAPTION_WITH_TOTAL = /of session spend in range/i;
+const CAPTION_WITH_TOTAL = /of session cost in range/i;
 /** The caption before/without a total — deliberately names no figure. */
 const CAPTION_NO_TOTAL =
-  /^Session spend in range, keyed on how each session ended/i;
+  /^Session cost in range, keyed on how each session ended/i;
 const UNAVAILABLE_COPY = /the outcome split cannot be shown/i;
 const BARE_84 = /^84$/;
 

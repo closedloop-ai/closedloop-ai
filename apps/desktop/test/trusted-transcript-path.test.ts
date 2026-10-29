@@ -13,12 +13,13 @@ import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { after, before, describe, test } from "node:test";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import {
   isPendingTrustedTranscriptPath,
   resolveTrustedClaudeTranscriptPath,
@@ -36,7 +37,7 @@ describe("resolveTrustedClaudeTranscriptPath", () => {
   let prevClaudeHome: string | undefined;
   let prevCodexHome: string | undefined;
 
-  before(() => {
+  beforeAll(() => {
     root = mkdtempSync(path.join(tmpdir(), "trusted-transcript-"));
     claudeHome = path.join(root, ".claude");
     projectsRoot = path.join(claudeHome, "projects");
@@ -57,7 +58,7 @@ describe("resolveTrustedClaudeTranscriptPath", () => {
     process.env.CODEX_HOME = codexHome;
   });
 
-  after(() => {
+  afterAll(() => {
     if (prevClaudeHome === undefined) {
       delete process.env.CLAUDE_HOME;
     } else {
@@ -220,7 +221,7 @@ describe("resolveTrustedClaudeTranscriptPath with materialized OpenCode root", (
   let materializedRoot: string;
   let outsideDir: string;
 
-  before(() => {
+  beforeAll(() => {
     root = mkdtempSync(path.join(tmpdir(), "trusted-opencode-"));
     materializedRoot = path.join(root, "transcript-materialized", "opencode");
     outsideDir = path.join(root, "outside");
@@ -229,7 +230,7 @@ describe("resolveTrustedClaudeTranscriptPath with materialized OpenCode root", (
     setMaterializedOpencodeTranscriptRoot(materializedRoot);
   });
 
-  after(() => {
+  afterAll(() => {
     // Clear the module-level root so later suites see the default (Claude/Codex).
     setMaterializedOpencodeTranscriptRoot(null);
   });
@@ -248,6 +249,30 @@ describe("resolveTrustedClaudeTranscriptPath with materialized OpenCode root", (
     );
     writeFileSync(fp, "{}\n");
     assert.equal(resolveTrustedClaudeTranscriptPath(fp), realpathSync(fp));
+  });
+
+  test("canonicalizes a late-created materialized root under a symlinked parent", () => {
+    const lateRoot = mkdtempSync(path.join(tmpdir(), "trusted-opencode-late-"));
+    const realStateDir = path.join(lateRoot, "real-user-data");
+    const linkedStateDir = path.join(lateRoot, "linked-user-data");
+    mkdirSync(realStateDir);
+    symlinkSync(realStateDir, linkedStateDir);
+    const registeredRoot = path.join(
+      linkedStateDir,
+      "transcript-materialized",
+      "opencode"
+    );
+    setMaterializedOpencodeTranscriptRoot(registeredRoot);
+    const fp = path.join(registeredRoot, "opencode-late", "main.jsonl");
+
+    try {
+      mkdirSync(path.dirname(fp), { recursive: true });
+      writeFileSync(fp, "{}\n");
+      assert.equal(resolveTrustedClaudeTranscriptPath(fp), realpathSync(fp));
+    } finally {
+      setMaterializedOpencodeTranscriptRoot(materializedRoot);
+      rmSync(lateRoot, { recursive: true, force: true });
+    }
   });
 
   test("rejects a .jsonl symlink under the materialized root escaping to a secret", () => {

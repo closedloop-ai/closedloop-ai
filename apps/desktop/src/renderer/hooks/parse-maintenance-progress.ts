@@ -1,5 +1,4 @@
 /**
- * @file parse-maintenance-progress.ts
  * @description ISS-6241: validate the post-boot maintenance phase at the IPC
  * boundary, now that it carries NUMBERS the splash renders as "N of M".
  *

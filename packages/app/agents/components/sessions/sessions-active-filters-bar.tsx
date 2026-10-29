@@ -13,7 +13,7 @@ import {
 import {
   DEFAULT_SESSION_FACET_FILTERS,
   type SessionFacetFilters,
-  sessionFilterFacetGroups,
+  useSessionFilterFacetGroups,
   withoutOwnerFacetValue,
 } from "../../lib/session-filter-adapter";
 
@@ -69,6 +69,19 @@ type SessionsActiveFiltersBarProps = {
 };
 
 /**
+ * ISS-10301: NO PRODUCTION CALLER. The v1 `SessionsToolbar` was the last one, and
+ * the live v2 toolbar renders the chip row inside the shared `ListSurfaceToolbarV2`
+ * (`sessions-list-toolbar-v2.tsx`), so the chip row itself is not a lost
+ * capability. Left standing rather than deleted with the v1 stack because
+ * `__tests__/sessions-owner-name-resolution.test.tsx` pins the ISS-4974 contract
+ * — never fabricate an owner name, never fetch the roster reflexively — through
+ * this component, and that contract is LIVE: `useSessionOwnerNameResolver` is
+ * read by `apps/app/components/agent-sessions/sessions-list-v2-host.tsx`.
+ * Removing this file means re-pointing that suite at the resolver on the v2 path,
+ * which is its own reviewable change; deleting both together would drop real
+ * coverage of a live contract.
+ */
+/**
  * Sessions active-filter chip row (ISS-4605, follow-up from ISS-4481 / PR #4048).
  *
  * Renders one removable chip per active facet *value* — Status, Owner, Autonomy,
@@ -98,14 +111,9 @@ export function SessionsActiveFiltersBar({
   onRemoveScopeUser,
   includeProjectFilter,
 }: SessionsActiveFiltersBarProps) {
-  // Derive chips over the FULL facet set — always including Changes / Pull
-  // request — regardless of the `sessions-change-pr-filters` flag that gates the
-  // Filter popover. An active `changes=`/`pr=` selection can arrive from a shared
-  // list URL while the flag is off for this viewer; gating the chip row on the
-  // flag (as the popover does) would leave that filter silently narrowing the
-  // list with no chip to name or remove it, and would let "Clear all" wipe a
-  // facet the row never showed. The chip row's job is to surface EVERY active
-  // filter, so it must not inherit the popover's roll-out gate.
+  // Derive chips over the FULL facet set. An active `changes=`/`pr=` selection
+  // can arrive from a shared list URL even on a host that does not offer those
+  // facets in its popover; the chip row still has to name and remove it.
   // ISS-4974: resolves an Owner name off the org roster for a selected owner (or
   // `?userId=` scope) the active date window has no usage row for. Returns
   // `undefined` while its flag is off, the roster has not loaded, or the surface
@@ -127,7 +135,7 @@ export function SessionsActiveFiltersBar({
     selectedProjectIds: filters.projectIds,
     usage,
   });
-  const groups = sessionFilterFacetGroups(filters, onFiltersChange, usage, {
+  const groups = useSessionFilterFacetGroups(filters, onFiltersChange, usage, {
     includeChangePrFilters: true,
     includeProjectFilter,
     resolveOwnerName,
@@ -167,10 +175,10 @@ export function SessionsActiveFiltersBar({
   const handleClearAll =
     onClearAll ?? (() => onFiltersChange(DEFAULT_SESSION_FACET_FILTERS));
 
+  // max-h-16 (≈2 rows) + overflow-y-auto so a many-chip row scrolls internally
+  // instead of wrapping to several lines and pushing the table out of the
+  // pinned toolbar (which sits outside the scroll region on both surfaces).
   return (
-    // max-h-16 (≈2 rows) + overflow-y-auto so a many-chip row scrolls internally
-    // instead of wrapping to several lines and pushing the table out of the
-    // pinned toolbar (which sits outside the scroll region on both surfaces).
     <div className="flex max-h-16 flex-wrap items-center gap-1 overflow-y-auto">
       {chips.map((chip) => (
         <FilterChip

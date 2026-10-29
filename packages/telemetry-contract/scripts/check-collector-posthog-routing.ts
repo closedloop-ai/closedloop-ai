@@ -8,10 +8,10 @@ import {
   type ConsoleErrorLike,
   describeError,
   diffFindings,
+  errorAnnotation,
   isRecord,
   isStringArray,
   readCommittedArtifact,
-  repoRootAnnotationPath,
 } from "./collector-codegen-common";
 import {
   CollectorPosthogIdentityPath,
@@ -82,8 +82,8 @@ export function evaluateCollectorPosthogRouting(
     );
   }
 
-  findings.push(...checkFragmentStructure(input.fragmentSource, expected));
   findings.push(
+    ...checkFragmentStructure(input.fragmentSource, expected),
     ...checkIdentityManifestStructure(identityManifestSource),
     ...checkIdentityFragmentStructure(identityFragmentSource)
   );
@@ -381,9 +381,7 @@ export function runCollectorPosthogRoutingCheck(
   });
 
   for (const finding of findings) {
-    stderr.error(
-      `::error file=${repoRootAnnotationPath(finding.file)}::${finding.message}`
-    );
+    stderr.error(errorAnnotation(finding.file, finding.message));
   }
 
   return findings.length === 0 ? 0 : 1;

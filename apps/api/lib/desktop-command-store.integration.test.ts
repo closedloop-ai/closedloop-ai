@@ -41,122 +41,6 @@ async function seedComputeTarget(): Promise<string> {
   return target.id;
 }
 
-const relayOperation = (params: unknown, streaming?: boolean) =>
-  ({
-    operationId: "health_check",
-    params,
-    ...(streaming === undefined ? {} : { streaming }),
-  }) as Parameters<typeof desktopCommandStore.createFromRelayOperation>[1];
-
-describeIfDb("desktopCommandStore — relay payload mapping", () => {
-  it("falls back to safe defaults when params and request are not records", async () => {
-    await autoRollbackTransaction(async () => {
-      const targetId = await seedComputeTarget();
-
-      const { command } = await desktopCommandStore.createFromRelayOperation(
-        targetId,
-        relayOperation("not-an-object")
-      );
-
-      // A malformed relay payload must still produce a well-formed command
-      // rather than throwing at the boundary.
-      expect(command.requestPayload.method).toBe("POST");
-      expect(command.requestPayload.path).toBe("/api/gateway");
-      expect(command.requestPayload.headers).toEqual({});
-      expect(command.requestPayload.body).toBeNull();
-    });
-  });
-
-  it("keeps a supported method and rewrites an unsupported one to POST", async () => {
-    await autoRollbackTransaction(async () => {
-      const targetId = await seedComputeTarget();
-
-      const kept = await desktopCommandStore.createFromRelayOperation(
-        targetId,
-        relayOperation({
-          request: { method: "DELETE", path: "/api/gateway/x" },
-        })
-      );
-      const rewritten = await desktopCommandStore.createFromRelayOperation(
-        targetId,
-        relayOperation({ request: { method: "TRACE", path: "/api/gateway/y" } })
-      );
-
-      expect(kept.command.requestPayload.method).toBe("DELETE");
-      expect(rewritten.command.requestPayload.method).toBe("POST");
-    });
-  });
-
-  it("drops header entries whose value is not a string", async () => {
-    await autoRollbackTransaction(async () => {
-      const targetId = await seedComputeTarget();
-
-      const { command } = await desktopCommandStore.createFromRelayOperation(
-        targetId,
-        relayOperation({
-          request: {
-            path: "/api/gateway/x",
-            headers: { keep: "yes", drop: 42, alsoDrop: null },
-          },
-        })
-      );
-
-      expect(command.requestPayload.headers).toEqual({ keep: "yes" });
-    });
-  });
-
-  it("drops optional params whose type is wrong and keeps well-typed ones", async () => {
-    await autoRollbackTransaction(async () => {
-      const targetId = await seedComputeTarget();
-
-      const bad = await desktopCommandStore.createFromRelayOperation(
-        targetId,
-        relayOperation({
-          request: { path: "/api/gateway/a" },
-          timeoutMs: "soon",
-          lockKey: 7,
-          requiresApproval: "yes",
-          approvalReason: 42,
-        })
-      );
-      const good = await desktopCommandStore.createFromRelayOperation(
-        targetId,
-        relayOperation({
-          request: { path: "/api/gateway/b" },
-          timeoutMs: 5000,
-          lockKey: "repo:acme/web",
-          requiresApproval: true,
-          approvalReason: "destructive",
-        })
-      );
-
-      expect(bad.command.requestPayload.timeoutMs).toBeUndefined();
-      expect(bad.command.requestPayload.lockKey).toBeUndefined();
-      expect(bad.command.requestPayload.requiresApproval).toBeUndefined();
-      expect(bad.command.requestPayload.approvalReason).toBeUndefined();
-      expect(good.command.requestPayload).toMatchObject({
-        timeoutMs: 5000,
-        lockKey: "repo:acme/web",
-        requiresApproval: true,
-        approvalReason: "destructive",
-      });
-    });
-  });
-
-  it("carries the operation's streaming flag through", async () => {
-    await autoRollbackTransaction(async () => {
-      const targetId = await seedComputeTarget();
-
-      const { command } = await desktopCommandStore.createFromRelayOperation(
-        targetId,
-        relayOperation({ request: { path: "/api/gateway/s" } }, true)
-      );
-
-      expect(command.requestPayload.streaming).toBe(true);
-    });
-  });
-});
-
 describeIfDb("desktopCommandStore — idempotency", () => {
   const input = (over: Record<string, unknown> = {}) =>
     ({
@@ -213,12 +97,15 @@ describeIfDb("desktopCommandStore — idempotency", () => {
         input({ idempotencyKey: "k3" })
       );
 
+      // The class is the contract, not merely "it threw": the route maps to
+      // 409 by class name alone, so a bare `.rejects.toThrow()` stays green
+      // when a raw Prisma P2002 escapes and the 409 becomes a 500.
       await expect(
         desktopCommandStore.createCommand(
           targetId,
           input({ idempotencyKey: "k3", path: "/api/gateway/different" })
         )
-      ).rejects.toThrow();
+      ).rejects.toThrow(desktopCommandStore.IdempotencyConflictError);
     });
   });
 
@@ -261,7 +148,7 @@ describeIfDb("desktopCommandStore — idempotency", () => {
 
       await expect(
         desktopCommandStore.createCommand(targetId, input({ commandId }))
-      ).rejects.toThrow();
+      ).rejects.toThrow(desktopCommandStore.ClientCommandIdConflictError);
     });
   });
 });

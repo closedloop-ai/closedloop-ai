@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { validateOutboundUrlForSurface } from "../src/server/outbound-url-policy.js";
 
 test("attachment policy allows only current S3 virtual-hosted HTTPS form", () => {
@@ -15,18 +15,6 @@ test("attachment policy allows only current S3 virtual-hosted HTTPS form", () =>
     decision.diagnostics.hostname,
     "closedloop-files.s3.us-east-1.amazonaws.com"
   );
-});
-
-test("support upload policy allows only current S3 virtual-hosted HTTPS form", () => {
-  const decision = validateOutboundUrlForSurface(
-    "loop_support_upload",
-    "https://closedloop-files.s3.us-east-1.amazonaws.com/path/to/object.txt?X-Amz-Credential=secret"
-  );
-
-  assert.equal(decision.allowed, true);
-  assert.equal(decision.diagnostics.surface, "loop_support_upload");
-  assert.equal(decision.diagnostics.reason, "allowed");
-  assert.equal(decision.diagnostics.destinationClass, "s3_virtual_hosted");
 });
 
 test("attachment policy denies unsafe attachment URL variants", () => {
@@ -104,57 +92,6 @@ test("attachment policy denies unsafe attachment URL variants", () => {
         testCase.url
       );
     }
-  }
-});
-
-test("support upload policy denies unsafe URL variants", () => {
-  const denied = [
-    "http://closedloop-files.s3.us-east-1.amazonaws.com/file.txt",
-    "https://user:pass@closedloop-files.s3.us-east-1.amazonaws.com/file.txt",
-    "https://example.com/file.txt",
-    "https://s3.us-east-1.amazonaws.com/closedloop-files/file.txt",
-    "https://10.0.0.1/file.txt",
-    "https://169.254.169.254/latest/meta-data",
-    "https://127.0.0.1/file.txt",
-  ];
-
-  for (const url of denied) {
-    const decision = validateOutboundUrlForSurface("loop_support_upload", url);
-    assert.equal(decision.allowed, false, url);
-    assert.equal(decision.diagnostics.surface, "loop_support_upload");
-  }
-});
-
-test("deploy health policy allows loopback and localhost destinations only", () => {
-  const allowed = [
-    "http://localhost:3000/",
-    "https://app.localhost:3000/health",
-    "http://127.0.0.1:5173/",
-    "http://127.42.0.1:5173/",
-    "http://[::1]:3000/",
-  ];
-
-  for (const url of allowed) {
-    const decision = validateOutboundUrlForSurface("deploy_health_check", url);
-    assert.equal(decision.allowed, true, url);
-    assert.equal(decision.diagnostics.destinationClass, "loopback", url);
-    assert.equal(decision.diagnostics.reason, "allowed", url);
-  }
-});
-
-test("deploy health policy denies external and private destinations", () => {
-  const denied = [
-    "https://example.com/",
-    "http://10.0.0.1/",
-    "http://192.168.1.10/",
-    "http://169.254.169.254/latest/meta-data",
-    "http://[fe80::1]/",
-    "ftp://localhost:3000/",
-  ];
-
-  for (const url of denied) {
-    const decision = validateOutboundUrlForSurface("deploy_health_check", url);
-    assert.equal(decision.allowed, false, url);
   }
 });
 

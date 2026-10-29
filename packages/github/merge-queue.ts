@@ -12,6 +12,10 @@
 import "server-only";
 import type { Octokit } from "@octokit/rest";
 import { z } from "zod";
+// Explicit `.ts`: this module is reached from `never-scheduled-runs.ts`, which
+// `scripts/ci/ready-to-enqueue.ts` executes under plain `node` — and node
+// resolves ESM specifiers literally rather than probing extensions.
+import { graphqlFailureDetail } from "./open-pull-requests-partial-read.ts";
 
 /**
  * 100 is the GraphQL connection page maximum. It is NOT assumed to be the whole
@@ -52,22 +56,7 @@ const ROLLUP_PAGE_SIZE = 100;
  * and the drift would present as a required context looking reported when it was
  * not — a false-healthy, not a parse error.
  */
-export const ROLLUP_CONTEXT_FIELDS = `
-  __typename
-  ... on CheckRun {
-    name
-    conclusion
-    completedAt
-    startedAt
-    checkSuite { createdAt app { databaseId } }
-  }
-  ... on StatusContext {
-    context
-    state
-    createdAt
-    creator { __typename }
-  }
-`;
+export const ROLLUP_CONTEXT_FIELDS = rollupContextFields("app { databaseId }");
 
 const MERGE_QUEUE_QUERY = `
   query($owner: String!, $name: String!, $branch: String!, $first: Int!, $rollupFirst: Int!) {
@@ -77,7 +66,10 @@ const MERGE_QUEUE_QUERY = `
           totalCount
           nodes {
             state
-            pullRequest { number }
+            position
+            enqueuedAt
+            estimatedTimeToMerge
+            pullRequest { number author { login } }
             headCommit {
               committedDate
               oid
@@ -206,7 +198,39 @@ const TolerantStatusCheckRollupSchema =
  */
 const MergeQueueEntrySchema = z.object({
   state: z.string(),
-  pullRequest: z.object({ number: z.number().int() }).nullable(),
+  /**
+   * ISS-10417 — the human-facing scalars, each `.catch(null)` on top of its
+   * nullability. They are read by the queue board
+   * (`scripts/ci/merge-queue-board.ts`) and by nothing the stall cron derives,
+   * so the tolerance this whole file applies to the rollup applies to them with
+   * more force.
+   *
+   * `nullish()` alone was not that tolerance, only its absent case (@whitlockk,
+   * review of #7458): a BAD scalar — a string `position`, a fractional
+   * `estimatedTimeToMerge` — still failed the whole response as `Malformed` and
+   * took the sampler's age and depth gauges down with it, to protect a report
+   * that is allowed to say "unknown". `.catch(null)` degrades the one unreadable
+   * field to absent instead, which every consumer already renders: a caught
+   * `position` withholds the board's own-vs-inherited attribution outright, and
+   * a caught `estimatedTimeToMerge` prints as no estimate rather than as a
+   * number. Scoped to these display scalars — `number`, `state`, `headCommit`
+   * and `committedDate` stay strict, because a bad value there has no honest
+   * unknown rendering and the read really is malformed.
+   *
+   * `estimatedTimeToMerge` is GitHub's own estimate in SECONDS, and null is a
+   * real state it returns — never rendered as a zero, which would be the
+   * plausible-but-wrong number AGENTS.md forbids.
+   */
+  position: z.number().int().nullish().catch(null),
+  enqueuedAt: z.string().nullish().catch(null),
+  estimatedTimeToMerge: z.number().int().nullish().catch(null),
+  pullRequest: z
+    .object({
+      number: z.number().int(),
+      /** NULL for a deleted account — GitHub's `Actor` is nullable. */
+      author: z.object({ login: z.string() }).nullish().catch(null),
+    })
+    .nullable(),
   headCommit: z
     .object({
       committedDate: z.string().datetime(),
@@ -290,7 +314,14 @@ export async function getMergeQueueState(
   } catch (error) {
     return {
       status: MergeQueueReadStatus.Failed,
-      detail: error instanceof Error ? error.message : String(error),
+      // Same refusal as the open-PR read: this query selects the same
+      // `ROLLUP_CONTEXT_FIELDS` under a nested rollup, the same cron calls both
+      // (`apps/api/app/cron/sample-merge-queue-stall/route.ts`), and a scope
+      // GitHub refuses on `statusCheckRollup` there refuses it here. The
+      // flattened message repeats one line per entry and names nothing, so this
+      // reads the same shared detail rather than diagnosing it twice
+      // (ISS-10438, raised by tamsinb on #7409).
+      detail: graphqlFailureDetail(error),
     };
   }
 
@@ -519,4 +550,31 @@ export async function getRequiredContexts(
     status: RequiredContextsReadStatus.Failed,
     detail: `branch rules exceeded ${RULES_MAX_PAGES} pages`,
   };
+}
+
+/**
+ * The same selection with the check suite's node `id` in place of its `app`
+ * (ISS-11906). GitHub refuses `CheckSuite.app` to `GITHUB_TOKEN` when the
+ * suite's app is private, so a reader on that token resolves the integration
+ * through `check-suite-integrations.ts` instead.
+ */
+export const SUITE_ID_ROLLUP_CONTEXT_FIELDS = rollupContextFields("id");
+
+function rollupContextFields(checkSuiteIdentity: string): string {
+  return `
+  __typename
+  ... on CheckRun {
+    name
+    conclusion
+    completedAt
+    startedAt
+    checkSuite { createdAt ${checkSuiteIdentity} }
+  }
+  ... on StatusContext {
+    context
+    state
+    createdAt
+    creator { __typename }
+  }
+`;
 }

@@ -9,7 +9,8 @@ import { createPageMetadata } from "@/lib/site";
 export const generateMetadata = async () =>
   createPageMetadata(
     "Pricing",
-    "Simple pricing that explains the open source surface and hosted control plane."
+    "Simple pricing that explains the open source surface and hosted control plane.",
+    "/pricing"
   );
 
 const PricingPage = () => (

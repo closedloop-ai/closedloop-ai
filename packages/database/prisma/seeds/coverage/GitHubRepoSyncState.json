@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Per-repo cursor for the pull-request reconciler cron (PLN-1535); no screen reads it."
+}

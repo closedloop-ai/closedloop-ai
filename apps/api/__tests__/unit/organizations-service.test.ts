@@ -11,27 +11,22 @@ vi.mock("@/lib/auth/clerk-service", () => ({
 
 import { organizationsService } from "@/app/organizations/service";
 
-const MOCK_ORG = {
+const MOCK_ORG_IDENTITY = {
   id: "org-1",
   clerkId: "clerk_org_1",
-  name: "Test Org",
-  slug: "test-org",
-  active: true,
-  searchIncludeTranscripts: false,
-  settings: {},
-  createdAt: new Date(),
-  updatedAt: new Date(),
 };
+
+const IDENTITY_SELECT = { id: true, clerkId: true };
 
 describe("organizationsService.findBySlug", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("returns the organization when slug matches", async () => {
+  it("returns the organization identity when slug matches", async () => {
     const mockDb = {
       organization: {
-        findUnique: vi.fn().mockResolvedValue(MOCK_ORG),
+        findUnique: vi.fn().mockResolvedValue(MOCK_ORG_IDENTITY),
       },
     };
     mockWithDbCall(mockDb);
@@ -40,8 +35,9 @@ describe("organizationsService.findBySlug", () => {
 
     expect(mockDb.organization.findUnique).toHaveBeenCalledWith({
       where: { slug: "test-org" },
+      select: IDENTITY_SELECT,
     });
-    expect(result).toEqual(MOCK_ORG);
+    expect(result).toEqual(MOCK_ORG_IDENTITY);
   });
 
   it("returns null when slug does not match", async () => {
@@ -56,6 +52,7 @@ describe("organizationsService.findBySlug", () => {
 
     expect(mockDb.organization.findUnique).toHaveBeenCalledWith({
       where: { slug: "nonexistent" },
+      select: IDENTITY_SELECT,
     });
     expect(result).toBeNull();
   });

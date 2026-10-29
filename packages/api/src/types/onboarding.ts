@@ -42,6 +42,11 @@ export type OnboardingState = {
   checklistDismissedAt: string | null;
   createdTeamId: string | null;
   createdProjectId: string | null;
+  /**
+   * When this org last minted invitations. The checklist's invite row reads it
+   * so sending an invitation ticks the row before the invitee accepts.
+   */
+  invitesSentAt: string | null;
 };
 
 export type OnboardingStatus = {
@@ -62,7 +67,6 @@ export const ChecklistItemId = {
    */
   DownloadDesktop: "DOWNLOAD_DESKTOP",
   ConnectGitHub: "CONNECT_GITHUB",
-  AddAnthropicKey: "ADD_ANTHROPIC_KEY",
   ConnectGoogle: "CONNECT_GOOGLE",
   InviteMembers: "INVITE_MEMBERS",
 } as const;
@@ -91,6 +95,10 @@ export type OnboardingChecklistItem = {
  * `POST /organizations/invitations`; on accept, the Clerk
  * `organizationMembership.created` webhook syncs a durable MEMBER into the
  * existing org (`handleOrganizationMembershipCreated`).
+ *
+ * This is the ASSIGNABLE set, not the admin-authority set — gating on it would
+ * silently exclude `org:owner`. For "does this role grant admin access", use
+ * `OrgAdminRole` / `isOrgAdminRole` in `./org-admin-role.ts`.
  */
 export const OrgInviteRole = {
   Admin: "org:admin",
@@ -114,7 +122,7 @@ export type InviteMemberResult = {
   email: string;
   /** Clerk invitation id when minted; omitted when the email was skipped/failed. */
   invitationId?: string;
-  status: "invited" | "already_member" | "failed";
+  status: InviteMemberStatus;
   /** Human-readable reason for a non-`invited` status. */
   reason?: string;
 };
@@ -124,3 +132,20 @@ export type InviteMembersResponse = {
   invited: number;
   results: InviteMemberResult[];
 };
+
+/**
+ * The per-email verdicts an invitation batch can carry.
+ *
+ * `AlreadyMember` is a THIRD verdict, not a flavour of failure: the route
+ * returns 200 with it rather than aborting the batch, so a batch where every
+ * address already belongs to the org comes back `invited: 0` with zero
+ * `Failed` entries. A consumer that only inspects `Failed` reads that as a
+ * clean send and claims invitations went out to people who were never invited.
+ */
+export const InviteMemberStatus = {
+  Invited: "invited",
+  AlreadyMember: "already_member",
+  Failed: "failed",
+} as const;
+export type InviteMemberStatus =
+  (typeof InviteMemberStatus)[keyof typeof InviteMemberStatus];

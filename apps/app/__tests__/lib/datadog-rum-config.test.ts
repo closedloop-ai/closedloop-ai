@@ -122,7 +122,8 @@ describe("getDatadogRumConfig", () => {
 
     expect(getDatadogRumConfig()).toMatchObject({
       sessionReplaySampleRate: 0,
-      sessionSampleRate: 100,
+      // ISS-12356(f): the derived default (see DEFAULT_SESSION_SAMPLE_RATE).
+      sessionSampleRate: 42,
     });
   });
 
@@ -183,15 +184,18 @@ describe("getDatadogRumConfig", () => {
       "React #418 hydration mismatch",
       "Minified React error #418; visit https://react.dev/errors/418 for the full message",
     ],
-  ])("drops benign client error class: %s (FEA-2404)", async (_label, message) => {
-    const { scrubDatadogRumEvent } = await loadConfig();
-    const event = {
-      type: "error",
-      error: { message },
-    };
+  ])(
+    "drops benign client error class: %s (FEA-2404)",
+    async (_label, message) => {
+      const { scrubDatadogRumEvent } = await loadConfig();
+      const event = {
+        type: "error",
+        error: { message },
+      };
 
-    expect(scrubDatadogRumEvent(event as never)).toBe(false);
-  });
+      expect(scrubDatadogRumEvent(event as never)).toBe(false);
+    }
+  );
 
   it("matches a benign signature found only in the error stack", async () => {
     const { scrubDatadogRumEvent } = await loadConfig();

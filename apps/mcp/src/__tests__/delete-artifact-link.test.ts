@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { z } from "zod";
 import { registerDeleteArtifactLink } from "../tools/delete-artifact-link.js";
+import { expectIssue, UUID_REJECTION } from "./fixtures/zod-issues.js";
 
 const LINK_ID = "019fab70-1b64-700a-9f59-e5ed36b238c4";
 
@@ -18,11 +19,24 @@ function registeredHandler() {
     | undefined;
 }
 
-function registeredLinkIdSchema() {
-  const config = registerTool.mock.calls[0]?.[1] as {
+/**
+ * The config the tool registered with. The presence check is what turns "the
+ * register function never registered anything" into that sentence, instead of a
+ * `Cannot read properties of undefined` from whichever reader got there first.
+ */
+function registeredConfig() {
+  const call = registerTool.mock.calls[0];
+  if (!call) {
+    throw new Error("No tool was registered");
+  }
+  return call[1] as {
+    description: string;
     inputSchema: { linkId: z.ZodTypeAny };
   };
-  return config.inputSchema.linkId;
+}
+
+function registeredLinkIdSchema() {
+  return registeredConfig().inputSchema.linkId;
 }
 
 describe("delete-artifact-link MCP tool", () => {
@@ -49,12 +63,10 @@ describe("delete-artifact-link MCP tool", () => {
   // rather than the bare word "PRODUCES", which also appears in the surrounding
   // prose and so would survive the warning being deleted.
   it("states the lineage consequence and the idempotence guarantee", () => {
-    const { description } = registerTool.mock.calls[0]?.[1] as {
-      description: string;
-    };
+    const { description } = registeredConfig();
 
     expect(description).toContain("changes lineage");
-    expect(description).toContain("roll-ups");
+    expect(description).toContain("re-shaping the project tree");
     expect(description).toContain("succeeds quietly");
   });
 
@@ -77,8 +89,8 @@ describe("delete-artifact-link MCP tool", () => {
 
     // The API column is `@db.Uuid`, so a slug or malformed id would surface as
     // an opaque server error rather than a usable message.
-    expect(schema.safeParse("PRD-42").success).toBe(false);
-    expect(schema.safeParse("../documents/PRD-42").success).toBe(false);
+    expectIssue(schema.safeParse("PRD-42"), [], UUID_REJECTION);
+    expectIssue(schema.safeParse("../documents/PRD-42"), [], UUID_REJECTION);
     expect(schema.safeParse(LINK_ID).success).toBe(true);
   });
 

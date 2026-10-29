@@ -4,11 +4,11 @@ import type { ApiClient } from "../api-client.js";
 import {
   asRecord,
   buildPaginatedPayload,
-  describeIdOrSlug,
   encodePathSegment,
   MAX_PAGE_LIMIT,
   readNumber,
   readString,
+  requiredIdOrSlug,
   withErrorHandling,
 } from "./tool-utils.js";
 
@@ -22,11 +22,11 @@ export function registerListDocumentVersions(
       description:
         "List saved versions for a document by UUID or slug (PRD-*, PLN-*, FEA-*). Pass the user's slug verbatim.",
       inputSchema: {
-        documentId: z
-          .string()
-          .describe(
-            describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
-          ),
+        documentId: requiredIdOrSlug(
+          "Document",
+          ["PRD-7", "PLN-12", "FEA-42"],
+          "Use list-documents to find one."
+        ),
         limit: z
           .number()
           .int()

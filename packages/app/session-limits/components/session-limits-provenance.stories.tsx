@@ -18,8 +18,9 @@ import { SessionLimitsProvenance } from "./session-limits-provenance";
  * a snapshot that stopped refreshing must read as "the figures are from THEN".
  */
 const meta = {
-  title: "App Core/Session Limits/Session Limits Provenance",
+  title: "Composites v1.0/Session Limits/Session Limits Provenance",
   component: SessionLimitsProvenance,
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },

@@ -7,12 +7,20 @@ import type {
 } from "@repo/api/src/types/search";
 import { ArtifactSubtype, ArtifactType, withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
+import {
+  orgCheckedUserSelect,
+  projectAssigneeInOrganization,
+} from "@/lib/user-org-membership";
 
 const SEARCH_LIMIT = 25;
+// ISS-9780: `updatedAt` alone is tie-prone and this is a bounded top-N, so which
+// of a set of same-instant rows made the cut was planner-dependent. `id` makes
+// the ordering total. Deliberately NOT `as const`: that makes `orderBy` a
+// readonly tuple, which Prisma's mutable `…OrderByWithRelationInput[]` rejects.
 const SEARCH_ORDER = {
-  orderBy: { updatedAt: "desc" },
+  orderBy: [{ updatedAt: "desc" as const }, { id: "desc" as const }],
   take: SEARCH_LIMIT,
-} as const;
+};
 
 const artifactSearchSelect = {
   id: true,
@@ -233,12 +241,12 @@ async function searchProjects(
         status: true,
         priority: true,
         updatedAt: true,
-        assignee: basicUserSelect,
+        assignee: orgCheckedUserSelect,
         teams: {
           select: {
             team: { select: { id: true, name: true } },
           },
-          orderBy: { createdAt: "asc" },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
           take: 1,
         },
       },
@@ -256,7 +264,10 @@ async function searchProjects(
       priority: r.priority,
       teamName: r.teams[0]?.team.name ?? null,
       teamId: r.teams[0]?.team.id ?? null,
-      assignee: r.assignee,
+      assignee: projectAssigneeInOrganization(
+        { id: r.id, organizationId },
+        r.assignee
+      ),
       updatedAt: r.updatedAt,
     })),
     (r) => r.slug

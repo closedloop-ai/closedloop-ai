@@ -20,7 +20,7 @@ import { scheduleCheckRunRetry } from "@/lib/branch-status-check-retry";
 import { persistBranchStatusChecksFromRollup } from "@/lib/branch-status-checks";
 import type { GitHubWebhookObservationContext } from "@/lib/github/github-webhook-observation";
 import { readWithInstallationClient } from "@/lib/github/installation-client";
-import { githubAppGraphqlFetchProvenance } from "@/lib/github-fetch-provenance";
+import { graphqlFetchProvenance } from "@/lib/github-fetch-provenance";
 import {
   GitHubBranchActivityEventName,
   persistGitHubBranchActivity,
@@ -241,7 +241,7 @@ export async function handleCheckRun(
       organizationId: branch.organizationId,
       headSha,
       rollup,
-      fetchProvenance: githubAppGraphqlFetchProvenance({
+      fetchProvenance: graphqlFetchProvenance({
         resultReason: rollup.ok
           ? GitHubSyncResultReason.Success
           : GitHubSyncResultReason.ProviderUnavailable,
@@ -312,19 +312,26 @@ export async function handleCheckRun(
     });
   }
 
-  logCheckRunTerminalEvent(event, {
-    branchArtifactId: branch.id,
-    checksStatusChanged: persistResult.checksStatusChanged,
-    installationId,
-    newStatus: persistResult.nextChecksStatus,
-    outcome: persistResult.checksStatusChanged
-      ? "processed_checks_changed"
-      : "processed",
-    previousStatus: persistResult.previousChecksStatus,
-    providerStatus: rollupResult.status,
-    repositoryId: branch.repositoryId,
-    retryAfterSeconds,
-  });
+  // ISS-8450 AC2: only a delivery whose rollup read succeeded is routine
+  // success. A failed read keeps info even though its outcome still says
+  // processed, because it is the failure path AC2 keeps visible.
+  logCheckRunTerminalEvent(
+    event,
+    {
+      branchArtifactId: branch.id,
+      checksStatusChanged: persistResult.checksStatusChanged,
+      installationId,
+      newStatus: persistResult.nextChecksStatus,
+      outcome: persistResult.checksStatusChanged
+        ? "processed_checks_changed"
+        : "processed",
+      previousStatus: persistResult.previousChecksStatus,
+      providerStatus: rollupResult.status,
+      repositoryId: branch.repositoryId,
+      retryAfterSeconds,
+    },
+    rollup.ok
+  );
 
   return NextResponse.json({
     message: "Event processed successfully",
@@ -341,11 +348,14 @@ function buildCheckRunRetryIdempotencyKey(event: CheckRunEvent): string {
   ].join(":");
 }
 
+// `api.webhooks.check_runs` and `api.webhooks.github` count this message at
+// either level: neither metric filter pins a status.
 function logCheckRunTerminalEvent(
   event: CheckRunEvent,
-  metadata: Record<string, unknown>
+  metadata: Record<string, unknown>,
+  routineSuccess = false
 ): void {
-  log.info("[handleCheckRun] Completed check_run webhook handling", {
+  const fields = {
     action: event.action,
     check_run_name: event.check_run.name,
     checkRunId: event.check_run.id,
@@ -357,5 +367,10 @@ function logCheckRunTerminalEvent(
     repositoryFullName: event.repository.full_name,
     repositoryGithubId: event.repository.id,
     ...metadata,
-  });
+  };
+  if (routineSuccess) {
+    log.debug("[handleCheckRun] Completed check_run webhook handling", fields);
+    return;
+  }
+  log.info("[handleCheckRun] Completed check_run webhook handling", fields);
 }

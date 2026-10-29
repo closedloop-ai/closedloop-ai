@@ -4,37 +4,44 @@
  * desktop-local implementations of the same list/detail/usage/analytics/pageData
  * contracts the cloud serves over HTTP, including the FEA-1997 IPC perf
  * instrumentation and the org-directory warm-up owner attribution depends on.
- * Extracted verbatim out of the shrink-only grandfathered
+ * Extracted verbatim out of
  * `agent-dashboard-design-system-runtime.ts`; the registrar is still the SOLE
  * registrar of these channels (a duplicate `ipcMain.handle` throws).
  */
 
-import { ipcMain } from "electron";
-import { SHARED_AGENT_SESSIONS_IPC_CHANNELS } from "../../shared/shared-agent-sessions-contract.js";
+import { type IpcMainInvokeEvent, ipcMain } from "electron";
+import { runWithReadCancellationToken } from "../../shared/db-host-read-cancellation.js";
+import { readCancellationTokenOf } from "../../shared/read-cancellation-contract.js";
+import {
+  SHARED_AGENT_SESSIONS_IPC_CHANNELS,
+  type SharedAgentSessionsCancelReadResult,
+} from "../../shared/shared-agent-sessions-contract.js";
 import { SHARED_BRANCHES_IPC_CHANNELS } from "../../shared/shared-branches-contract.js";
 import { getSharedBranchAnalytics } from "../branch/branch-analytics-read.js";
 import { getSharedBranchCohortAnalytics } from "../branch/branch-cohort-analytics.js";
 import { getSharedBranchTrace } from "../branch/shared-branch-trace.js";
 import {
-  type BranchCloudHydrationSource,
   getSharedBranchDetail,
   getSharedBranches,
   getSharedBranchesPageData,
   getSharedBranchUsage,
 } from "../branch/shared-branches-api.js";
-import { FAIL_CLOSED_BRANCH_CLOUD_HYDRATION_SOURCE } from "../branch/shared-branches-cloud-hydration.js";
-import { withDisplayedStatusParityScope } from "../session/displayed-status-parity-gate.js";
+import { parseBranchListSnapshot } from "../database/branch-list-snapshot-read.js";
 import { ensureOrgDirectory } from "../session/org-directory-cache.js";
 import { getSharedAgentSessionDetail } from "../session/shared-agent-session-detail-read.js";
+import { getSharedAgentSessionEventsPage } from "../session/shared-agent-session-events-page-read.js";
+import { getSharedAgentSessionInvocationTree } from "../session/shared-agent-session-invocation-tree-read.js";
 import {
   getSharedAgentSessionAnalytics,
-  getSharedAgentSessions,
   getSharedAgentSessionUsage,
 } from "../session/shared-agent-sessions-api.js";
 import { getSharedAgentSessionsPageData } from "../session/shared-agent-sessions-page-data.js";
-import { DesktopIpcOperation } from "../telemetry/app-otel-runtime.js";
+import { DesktopIpcOperation } from "../telemetry/app-otel-runtime-ipc.js";
 import {
+  coerceSharedAgentSessionsListRequest,
+  coerceSharedAgentSessionsQuery,
   coerceSharedBranchDetailRequest,
+  coerceSharedBranchesQuery,
   coerceSharedQuery,
   toBranchSyncSource,
 } from "./agent-dashboard-ipc-coercion.js";
@@ -43,8 +50,12 @@ import {
   type WithDb,
 } from "./agent-dashboard-ipc-handler-wrappers.js";
 import { instrumentIpcPerf } from "./agent-dashboard-ipc-perf.js";
-import type { AgentDashboardDesignSystemRuntimeOptions } from "./agent-dashboard-runtime-options.js";
+import type {
+  AgentDashboardDesignSystemRuntimeOptions,
+  InvokeStoreOp,
+} from "./agent-dashboard-runtime-options.js";
 import { resolveIngestStateDir } from "./agent-dashboard-runtime-paths.js";
+import { readAgentDashboardSessionList } from "./agent-dashboard-session-list-projection.js";
 import { resolveLocalTranscriptSummaries } from "./local-transcript-detail-gate.js";
 import { buildSharedAgentSessionsListOptions } from "./rebuild-sync-compute-target.js";
 
@@ -52,13 +63,18 @@ import { buildSharedAgentSessionsListOptions } from "./rebuild-sync-compute-targ
 export function registerSharedSessionAndBranchIpcHandlers(deps: {
   withDb: WithDb;
   options: AgentDashboardDesignSystemRuntimeOptions;
-  cloudHydration: BranchCloudHydrationSource | undefined;
+  invokeStoreOp: InvokeStoreOp;
+  /**
+   * ISS-9802 — forward a renderer cancellation token to the db-host child, which
+   * relays it to the store thread where the work actually is. Injected rather
+   * than reached through `agentDatabase`, because the db-host PROXY only speaks
+   * dotted op paths and a cancellation is not an op.
+   */
+  cancelDbHostRead: (token: string) => void;
 }): void {
-  const { withDb, options, cloudHydration } = deps;
-  const branchEligibilitySource =
-    cloudHydration ?? FAIL_CLOSED_BRANCH_CLOUD_HYDRATION_SOURCE;
-  // FEA-2211: surface a failed perf `session_count` COUNT (best-effort; falls
-  // back to 0) so a silent zero is observable in the desktop log.
+  const { withDb, options, invokeStoreOp, cancelDbHostRead } = deps;
+  // FEA-2211: surface a failed perf `session_count` COUNT (best-effort; answers
+  // unknown) so the dropped wide event is observable in the desktop log.
   const onSessionCountError = (error: unknown): void =>
     options.log?.(
       "agent-dashboard",
@@ -71,10 +87,18 @@ export function registerSharedSessionAndBranchIpcHandlers(deps: {
   // before session reads so the local `user_id`s resolve to display identities.
   // TTL-guarded and awaited only on a cold cache, so steady-state reads are
   // unaffected; missing key/origin resolves owners to null (unattributed).
-  const orgDirectoryFetchOptions = {
-    getApiOrigin: () => options.getApiOrigin?.(),
-    getApiKey: () => options.getApiKey?.(),
-  };
+  const orgDirectoryFetchOptions =
+    options.getAccountAdmission && options.getAccessToken
+      ? {
+          getApiOrigin: () => options.getApiOrigin?.(),
+          getAccountAdmission: options.getAccountAdmission,
+          getAccessToken: options.getAccessToken,
+          isAuthoritativelySignedOut: options.isDesktopSessionSignedOut,
+        }
+      : {
+          getApiOrigin: () => options.getApiOrigin?.(),
+          getApiKey: () => options.getApiKey?.(),
+        };
   ipcMain.handle(
     SHARED_AGENT_SESSIONS_IPC_CHANNELS.list,
     withDb(
@@ -83,14 +107,10 @@ export function registerSharedSessionAndBranchIpcHandlers(deps: {
         options.emitIpcPerf,
         async (agentDatabase, request: unknown) => {
           await ensureOrgDirectory(orgDirectoryFetchOptions);
-          // ISS-4556: see `withDisplayedStatusParityScope` — one read, one gate
-          // decision, so the rows, the facet, and the sort cannot disagree.
-          return withDisplayedStatusParityScope(() =>
-            getSharedAgentSessions(
-              agentDatabase.syncSource,
-              coerceSharedQuery(request),
-              buildSharedAgentSessionsListOptions(agentDatabase, options)
-            )
+          return readAgentDashboardSessionList(
+            agentDatabase,
+            options,
+            coerceSharedAgentSessionsListRequest(request)
           );
         },
         ipcPerfOptions
@@ -105,7 +125,7 @@ export function registerSharedSessionAndBranchIpcHandlers(deps: {
         options.emitIpcPerf,
         (agentDatabase, id: unknown) =>
           getSharedAgentSessionDetail(agentDatabase.syncSource, id, {
-            branchEligibilitySource,
+            ...buildSharedAgentSessionsListOptions(agentDatabase, options),
             resolveLocalTranscripts: (externalSessionId) =>
               resolveLocalTranscriptSummaries(
                 agentDatabase.transcriptSync,
@@ -123,27 +143,100 @@ export function registerSharedSessionAndBranchIpcHandlers(deps: {
       instrumentIpcPerf(
         DesktopIpcOperation.Usage,
         options.emitIpcPerf,
-        async (agentDatabase, request: unknown) => {
-          await ensureOrgDirectory(orgDirectoryFetchOptions);
-          return withDisplayedStatusParityScope(() =>
-            getSharedAgentSessionUsage(
-              agentDatabase.syncSource,
-              coerceSharedQuery(request)
-            )
-          );
-        },
+        (agentDatabase, request: unknown) =>
+          // ISS-9802: everything this read awaits runs under the renderer's
+          // token, so `DbHostClient.invoke` can stamp it on the request and a
+          // later cancel can reach the scan itself.
+          runWithReadCancellationToken(
+            readCancellationTokenOf(request),
+            async () => {
+              await ensureOrgDirectory(orgDirectoryFetchOptions);
+              return getSharedAgentSessionUsage(
+                agentDatabase.syncSource,
+                coerceSharedAgentSessionsQuery(request)
+              );
+            }
+          ),
         ipcPerfOptions
-      )
+      ),
+      // ISS-8773: this is the channel `agent-dashboard-ipc-handler-wrappers.ts`
+      // names as the one that spammed `Error occurred in handler for …` when the
+      // db-host died under it, and it is a pure read, so it is exactly what
+      // ISS-5808's redrive was built for. Parking on `DbHostClient.ready` and
+      // resuming on the replacement child answers the summary cards instead of
+      // round-tripping a transport error to the renderer.
+      DB_HOST_EXIT_REDRIVE_READ
     )
   );
   ipcMain.handle(
     SHARED_AGENT_SESSIONS_IPC_CHANNELS.analytics,
     withDb((agentDatabase, request: unknown) =>
-      withDisplayedStatusParityScope(() =>
+      // ISS-9802: the heaviest read on the Sessions surface, and the one the
+      // token exists for — `aggregateAnalytics` yields between its statements,
+      // so a cancel lands at the next one instead of after the whole scan.
+      runWithReadCancellationToken(readCancellationTokenOf(request), () =>
         getSharedAgentSessionAnalytics(
           agentDatabase.syncSource,
-          coerceSharedQuery(request)
+          coerceSharedAgentSessionsListRequest(request)
         )
+      )
+    )
+  );
+  // ISS-9802: the renderer's abort, as a message that CAN cross the bridge.
+  //
+  // Deliberately NOT through `withDb`, unlike every read beside it. That wrapper
+  // awaits `getAgentDatabase()`, which parks on `DbHostClient.ready` for the
+  // whole crash-ladder backoff — so a cancel would block on the very condition
+  // the user is aborting — and on success it reports a RENDERER READ
+  // (`onRendererDbRead`), which would hold the DATA_REVISION rebuild's adaptive
+  // write pause open for a call that reads nothing. It takes the identical
+  // sender-trust gate directly instead: a cancellation acts on another caller's
+  // in-flight work, so an untrusted frame must never reach it.
+  ipcMain.handle(
+    SHARED_AGENT_SESSIONS_IPC_CHANNELS.cancelRead,
+    (event: IpcMainInvokeEvent, request: unknown) => {
+      if (!options.isTrustedSender(event.sender)) {
+        throw new Error("untrusted sender");
+      }
+      const token = readCancellationTokenOf(request);
+      if (!token) {
+        // A missing or malformed token names no read. Answering `false` rather
+        // than throwing keeps a best-effort cancel from ever costing the caller
+        // anything, and reports admission honestly instead of claiming a
+        // cancellation that reached nothing.
+        return {
+          requested: false,
+        } satisfies SharedAgentSessionsCancelReadResult;
+      }
+      cancelDbHostRead(token);
+      // `true` means FORWARDED, never "the read stopped": only the store thread
+      // knows whether the op was still running, and it answers nothing here.
+      return { requested: true } satisfies SharedAgentSessionsCancelReadResult;
+    }
+  );
+  // ISS-9857: one keyset page of raw events past the detail's bounded prefix.
+  // Deliberately NOT wrapped in `instrumentIpcPerf`: `DesktopIpcOperation` is a
+  // closed OTel contract, and widening it for this read is a telemetry change
+  // ISS-9857 does not own — `analytics` above is the precedent.
+  ipcMain.handle(
+    SHARED_AGENT_SESSIONS_IPC_CHANNELS.events,
+    withDb((agentDatabase, request: unknown) =>
+      getSharedAgentSessionEventsPage(
+        agentDatabase.syncSource,
+        coerceSharedQuery(request)
+      )
+    )
+  );
+  // ISS-10737: the session's whole invocation tree for the Trace tab. Not
+  // wrapped in `instrumentIpcPerf` for the same reason its `events` sibling is
+  // not: `DesktopIpcOperation` is a closed OTel contract, and widening it for
+  // this read is a telemetry change ISS-10737 does not own.
+  ipcMain.handle(
+    SHARED_AGENT_SESSIONS_IPC_CHANNELS.invocationTree,
+    withDb((agentDatabase, request: unknown) =>
+      getSharedAgentSessionInvocationTree(
+        agentDatabase.syncSource,
+        coerceSharedQuery(request)
       )
     )
   );
@@ -153,25 +246,44 @@ export function registerSharedSessionAndBranchIpcHandlers(deps: {
   // standalone list handler does.
   ipcMain.handle(
     SHARED_AGENT_SESSIONS_IPC_CHANNELS.pageData,
-    withDb(async (agentDatabase, request: unknown) => {
-      await ensureOrgDirectory(orgDirectoryFetchOptions);
-      // ISS-4556: the widest cohort of all — this one call resolves the list, the
-      // usage aggregate, and the facet-scoped counts for a single screen, in
-      // separate modules that would otherwise each resolve the gate on their own.
-      return withDisplayedStatusParityScope(() =>
-        getSharedAgentSessionsPageData(
-          agentDatabase.syncSource,
-          coerceSharedQuery(request),
-          // PRD-536 E6 (FEA-4157) / ISS-4647: thread the SAME options the
-          // standalone list handler passes. `SessionsView` reads through THIS
-          // channel, so anything only the standalone handler passes is invisible on
-          // the actual Sessions page — that is how FEA-4157's missing compute
-          // target mislabelled every pending-upload row as `synced`. The shared
-          // builder is why the two handlers cannot drift again.
-          buildSharedAgentSessionsListOptions(agentDatabase, options)
-        )
-      );
-    }, DB_HOST_EXIT_REDRIVE_READ)
+    withDb(
+      // ISS-12039: the read the Sessions page takes its rows from, so its
+      // user-initiated reads are the dead-end rate's `page_data` operations.
+      instrumentIpcPerf(
+        DesktopIpcOperation.PageData,
+        options.emitIpcPerf,
+        (agentDatabase, request: unknown) =>
+          runWithReadCancellationToken(
+            readCancellationTokenOf(request),
+            async () => {
+              await ensureOrgDirectory(orgDirectoryFetchOptions);
+              // ISS-4556: the page-data adapter brackets list, usage and facet
+              // reads with the DB-host writer revision before returning them.
+              const parsedRequest =
+                coerceSharedAgentSessionsListRequest(request);
+              return getSharedAgentSessionsPageData(
+                agentDatabase.syncSource,
+                parsedRequest,
+                // PRD-536 E6 (FEA-4157) / ISS-4647: thread the SAME options the
+                // standalone list handler passes. `SessionsView` reads through THIS
+                // channel, so anything only the standalone handler passes is invisible on
+                // the actual Sessions page — that is how FEA-4157's missing compute
+                // target mislabelled every pending-upload row as `synced`. The shared
+                // builder is why the two handlers cannot drift again.
+                buildSharedAgentSessionsListOptions(agentDatabase, options),
+                () =>
+                  readAgentDashboardSessionList(
+                    agentDatabase,
+                    options,
+                    parsedRequest
+                  )
+              );
+            }
+          ),
+        ipcPerfOptions
+      ),
+      DB_HOST_EXIT_REDRIVE_READ
+    )
   );
 
   // Branches (PLN-983 / Epic A) — A2 is the SOLE registrar of these four
@@ -184,11 +296,12 @@ export function registerSharedSessionAndBranchIpcHandlers(deps: {
     withDb(async (agentDatabase, request: unknown) => {
       // Owner attribution: warm the cloud org directory so each branch's
       // dominant linked-session owner resolves to a display name.
-      await ensureOrgDirectory(orgDirectoryFetchOptions);
+      if (!isLocalBranchRead(request)) {
+        await ensureOrgDirectory(orgDirectoryFetchOptions);
+      }
       return getSharedBranches(
         toBranchSyncSource(agentDatabase),
-        coerceSharedQuery(request),
-        branchEligibilitySource
+        coerceSharedBranchesQuery(request)
       );
     })
   );
@@ -199,19 +312,15 @@ export function registerSharedSessionAndBranchIpcHandlers(deps: {
       return getSharedBranchDetail(
         toBranchSyncSource(agentDatabase),
         request?.id ?? null,
-        branchEligibilitySource,
         request ?? {}
       );
     })
   );
   ipcMain.handle(
     SHARED_BRANCHES_IPC_CHANNELS.trace,
+    // The cloud-mode trace uses REST; this IPC channel is the local adapter.
     withDb((agentDatabase, id: unknown) =>
-      getSharedBranchTrace(
-        toBranchSyncSource(agentDatabase),
-        id,
-        branchEligibilitySource
-      )
+      getSharedBranchTrace(toBranchSyncSource(agentDatabase), id)
     )
   );
   ipcMain.handle(
@@ -219,8 +328,7 @@ export function registerSharedSessionAndBranchIpcHandlers(deps: {
     withDb((agentDatabase, request: unknown) =>
       getSharedBranchUsage(
         toBranchSyncSource(agentDatabase),
-        coerceSharedQuery(request),
-        branchEligibilitySource
+        coerceSharedBranchesQuery(request)
       )
     )
   );
@@ -229,8 +337,7 @@ export function registerSharedSessionAndBranchIpcHandlers(deps: {
     withDb((agentDatabase, request: unknown) =>
       getSharedBranchAnalytics(
         toBranchSyncSource(agentDatabase),
-        coerceSharedQuery(request),
-        branchEligibilitySource
+        coerceSharedBranchesQuery(request)
       )
     )
   );
@@ -239,20 +346,51 @@ export function registerSharedSessionAndBranchIpcHandlers(deps: {
     withDb((agentDatabase, request: unknown) =>
       getSharedBranchCohortAnalytics(
         toBranchSyncSource(agentDatabase),
-        request,
-        branchEligibilitySource
+        withoutLocalBranchReadHint(request)
       )
     )
   );
   ipcMain.handle(
     SHARED_BRANCHES_IPC_CHANNELS.pageData,
     withDb(async (agentDatabase, request: unknown) => {
-      await ensureOrgDirectory(orgDirectoryFetchOptions);
+      if (!isLocalBranchRead(request)) {
+        await ensureOrgDirectory(orgDirectoryFetchOptions);
+      }
       return getSharedBranchesPageData(
         toBranchSyncSource(agentDatabase),
-        coerceSharedQuery(request),
-        branchEligibilitySource
+        coerceSharedBranchesQuery(request),
+        async (snapshotRequest) =>
+          parseBranchListSnapshot(
+            await invokeStoreOp("branches.listSnapshot", [snapshotRequest])
+          )
       );
     }, DB_HOST_EXIT_REDRIVE_READ)
   );
+}
+
+function isLocalBranchRead(request: unknown): boolean {
+  return (
+    typeof request === "object" &&
+    request !== null &&
+    !Array.isArray(request) &&
+    Object.hasOwn(request, "skipCloudHydration") &&
+    Reflect.get(request, "skipCloudHydration") === true
+  );
+}
+
+function withoutLocalBranchReadHint(request: unknown): unknown {
+  if (
+    typeof request !== "object" ||
+    request === null ||
+    Array.isArray(request) ||
+    !Object.hasOwn(request, "skipCloudHydration")
+  ) {
+    return request;
+  }
+  const fields = request as Record<string, unknown>;
+  if (typeof fields.skipCloudHydration !== "boolean") {
+    return request;
+  }
+  const { skipCloudHydration: _skipCloudHydration, ...cohortRequest } = fields;
+  return cohortRequest;
 }

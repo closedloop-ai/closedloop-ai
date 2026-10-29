@@ -1,4 +1,8 @@
 import { BranchProvenance } from "@repo/api/src/types/branch";
+import { TOTAL_ESTIMATED_COST_LABEL } from "@repo/api/src/types/total-estimated-cost-copy";
+import type { SessionTableRow } from "@repo/app/agents/lib/session-list-row";
+import { TOTAL_ESTIMATED_COST_SESSIONS_COLUMN_LABELS } from "@repo/app/agents/lib/sessions-total-estimated-cost-columns";
+import { provenanceChipLabel } from "@repo/app/shared/components/provenance-chip";
 import {
   columnBoundariesPx as boundariesForTemplate,
   trackWidthsPx as widthsForTemplate,
@@ -19,17 +23,19 @@ import {
 // migration can read the same list the table renders by.
 import {
   SESSIONS_LEGIBLE_COLUMN_BUDGET_PX,
+  SESSIONS_OWNER_COLUMN_ID,
   SESSIONS_OWNER_COLUMN_WIDTH_PX,
   SESSIONS_UPDATED_COLUMN_ID,
 } from "../../../lib/sessions-table-columns";
+import { SessionsTable } from "../session-detail-table";
 import { createSessionTableRowFixture } from "../session-list-fixtures";
-import { SessionsTable, type SessionTableRow } from "../sessions-table";
+import { sessionsColumnLabel } from "./sessions-column-label.test-helpers";
 
 vi.mock("@repo/design-system/components/ui/tooltip", () => tooltipMockModule);
 
 /**
  * ISS-5315: the shared Sessions table renders exactly the column set and order
- * the Sessions prototype specifies (`apps/prototypes/app/p/sessions/components/
+ * the promoted Sessions prototype specified (`packages/app/agents/components/sessions/web-master-legacy-preview/components/
  * sessions-table.tsx` on `prototype/generic-artifacts-web-master`), so the web
  * app and the desktop renderer cannot drift from it or from each other:
  * Session (lead), Status, Owner, Autonomy, Repository, Linked branches, Harness,
@@ -78,7 +84,7 @@ const EXPECTED_HEADERS_IN_ORDER = [
   "Harness",
   "Model",
   "Duration",
-  "Cost",
+  TOTAL_ESTIMATED_COST_LABEL,
   // ISS-5770: Started takes the prototype's slot just before Last active. It
   // still ships HIDDEN — this is the declared render order, which a bare mount
   // (no `visibleColumns`) draws in full.
@@ -229,7 +235,7 @@ describe("SessionsTable column set + order — prototype reconciliation (FEA-400
       />
     );
     const labels = headerLabelsInOrder();
-    expect(labels).not.toContain("Owner");
+    expect(labels).not.toContain(sessionsColumnLabel(SESSIONS_OWNER_COLUMN_ID));
     expect(labels).toContain("Status");
     // Autonomy is exempt from the filter and always renders.
     expect(labels).toContain("Autonomy");
@@ -267,7 +273,7 @@ describe("SessionsTable column set + order — prototype reconciliation (FEA-400
     render(
       <SessionsTable items={[ROW]} mode="expanded" renderName={renderName} />
     );
-    expect(columnRightEdgePx("Cost")).toBeGreaterThan(
+    expect(columnRightEdgePx(TOTAL_ESTIMATED_COST_LABEL)).toBeGreaterThan(
       SESSIONS_LEGIBLE_COLUMN_BUDGET_PX
     );
   });
@@ -329,9 +335,11 @@ describe("SessionsTable column set + order — prototype reconciliation (FEA-400
       />
     );
     const labels = headerLabelsInOrder();
-    expect(labels.indexOf("Cost")).toBeGreaterThan(labels.indexOf("PR"));
+    expect(labels.indexOf(TOTAL_ESTIMATED_COST_LABEL)).toBeGreaterThan(
+      labels.indexOf("PR")
+    );
     // Documents the consequence: the user's own order is NOT re-budgeted.
-    expect(columnRightEdgePx("Cost")).toBeGreaterThan(
+    expect(columnRightEdgePx(TOTAL_ESTIMATED_COST_LABEL)).toBeGreaterThan(
       SESSIONS_LEGIBLE_COLUMN_BUDGET_PX
     );
   });
@@ -348,8 +356,14 @@ describe("SessionsTable column set + order — prototype reconciliation (FEA-400
     // ISS-5770: the menu list is DERIVED from SESSIONS_COLUMN_SPECS, so this
     // agreement now holds by construction rather than by two lists being kept in
     // step by hand. Pinned anyway — construction can be undone.
+    // Resolved through the same map the HEADER renders from, because the two do
+    // not agree on one column: the header spells Cost with the canonical dollar
+    // phrase while the menu offers the spec's word. That disagreement is real and
+    // is raised on ISS-10636 rather than settled here; comparing raw labels would
+    // drop the column from this list and stop the ORDER contract from biting.
     const menuLabels: string[] = sessionsToggleableColumns().map(
-      (column) => column.label
+      (column) =>
+        TOTAL_ESTIMATED_COST_SESSIONS_COLUMN_LABELS[column.id] ?? column.label
     );
     const renderedToggleableLabels = renderedLabels.filter((label) =>
       menuLabels.includes(label)
@@ -373,6 +387,10 @@ describe("SessionsTable column set + order — prototype reconciliation (FEA-400
   // Sessions listing must not grow a pill in the name cell just because the
   // column the chips lived in went away.
   it("renders the provenance chip only on a mount that opts in (ISS-5666 / ISS-5770)", () => {
+    const agentLabel = provenanceChipLabel(BranchProvenance.Agent);
+    if (agentLabel === null) {
+      throw new Error("Agent provenance renders no chip label");
+    }
     const { unmount } = render(
       <SessionsTable
         items={[{ ...ROW, provenance: BranchProvenance.Agent }]}
@@ -381,7 +399,7 @@ describe("SessionsTable column set + order — prototype reconciliation (FEA-400
         showProvenanceChip
       />
     );
-    expect(screen.getByText("Agent")).toBeInTheDocument();
+    expect(screen.getByText(agentLabel)).toBeInTheDocument();
     unmount();
 
     render(
@@ -391,7 +409,7 @@ describe("SessionsTable column set + order — prototype reconciliation (FEA-400
         renderName={renderName}
       />
     );
-    expect(screen.queryByText("Agent")).not.toBeInTheDocument();
+    expect(screen.queryByText(agentLabel)).not.toBeInTheDocument();
   });
 
   it("SESSIONS_GLANCEABLE_COLUMNS drives an Owner-free glanceable table", () => {
@@ -404,7 +422,9 @@ describe("SessionsTable column set + order — prototype reconciliation (FEA-400
         visibleColumns={SESSIONS_GLANCEABLE_COLUMNS}
       />
     );
-    expect(headerLabelsInOrder()).not.toContain("Owner");
+    expect(headerLabelsInOrder()).not.toContain(
+      sessionsColumnLabel(SESSIONS_OWNER_COLUMN_ID)
+    );
   });
 
   /**
@@ -427,7 +447,9 @@ describe("SessionsTable column set + order — prototype reconciliation (FEA-400
         visibleColumns={SESSIONS_GLANCEABLE_COLUMNS}
       />
     );
-    expect(headerLabelsInOrder()).not.toContain("Updated");
+    expect(headerLabelsInOrder()).not.toContain(
+      sessionsColumnLabel(SESSIONS_UPDATED_COLUMN_ID)
+    );
   });
 
   /**
@@ -489,7 +511,7 @@ describe("SessionsTable whole-column fold (ISS-4889)", () => {
     // are rendered whole, and Cost — which ISS-5315 moved past it — begins after
     // the boundary rather than straddling it.
     expect(columnBoundariesPx()).toContain(CARD_FALLBACK_BREAKPOINT);
-    expect(columnLeftEdgePx("Cost")).toBeGreaterThanOrEqual(
+    expect(columnLeftEdgePx(TOTAL_ESTIMATED_COST_LABEL)).toBeGreaterThanOrEqual(
       CARD_FALLBACK_BREAKPOINT
     );
   });
@@ -552,11 +574,13 @@ describe("SessionsTable whole-column fold (ISS-4889)", () => {
 
     // The user's order still wins — Cost stays where they left it.
     const labels = headerLabelsInOrder();
-    expect(labels.indexOf("Cost")).toBeGreaterThan(labels.indexOf("PR"));
+    expect(labels.indexOf(TOTAL_ESTIMATED_COST_LABEL)).toBeGreaterThan(
+      labels.indexOf("PR")
+    );
     // But it is no longer cut in half: the fold lands on a boundary, and Cost's
     // whole track now begins past it — scrollable, never rendered mid-glyph.
     expect(columnBoundariesPx()).toContain(DESKTOP_CONTENT_WIDTH_PX);
-    expect(columnLeftEdgePx("Cost")).toBeGreaterThanOrEqual(
+    expect(columnLeftEdgePx(TOTAL_ESTIMATED_COST_LABEL)).toBeGreaterThanOrEqual(
       DESKTOP_CONTENT_WIDTH_PX
     );
   });

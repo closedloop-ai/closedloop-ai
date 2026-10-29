@@ -1,0 +1,23 @@
+-- ISS-12775: serves the Branches list's Collaborator identity
+-- (`branchCollaboratorIdentityCtesSql`, apps/api/app/branches/branch-list-sql/
+-- branch-list-identity-sql.ts). Its four comment reads need only a live
+-- comment's thread, id, created_at and author:
+--   PR comments:      c.thread_id = gcp.thread_id AND c.id = gcp.comment_id
+--   branch, session and direct comments: c.thread_id = t.id
+--   all four:         AND c.deleted_at IS NULL
+-- Prod, largest org, 90-day page: a cold run read about 7,500 `comments` heap
+-- pages (~1.8 KB rows, 2.7 s) to fetch those few columns for 24,371 PR comments.
+-- Partial on `deleted_at IS NULL` so the filter is implied and the index holds
+-- only live rows.
+--
+-- EXPLAIN (ANALYZE, BUFFERS), scratch DB shaped on prod's plan (3,757 branches,
+-- 23,457 PR comments, 70,630 comments with ~1.7 KB bodies), shared buffers cold:
+--   before: Index Scan using comments_pkey, 21,077 pages read (14,079 of them
+--   `comments` heap).
+--   after: Index Only Scan on this index for all four reads, Heap Fetches 0,
+--   7,313 pages read. Index 5.3 MB against a 138 MB heap.
+--
+-- CONCURRENTLY, so this file is ONE bare statement: do not add BEGIN/COMMIT or a
+-- `DO` block. NO `IF NOT EXISTS`, per scripts/lint/destructive-migrations/
+-- index-ddl.ts: a retry over an INVALID remnant must fail closed (42P07).
+CREATE INDEX CONCURRENTLY "comments_thread_live_cover_idx" ON "comments"("thread_id", "id", "created_at", "author_id") WHERE "deleted_at" IS NULL;

@@ -28,7 +28,6 @@ async function collectDeterministicProjection(ctx: EphemeralDbContext) {
       comments: await prisma.comment.count({
         where: { thread: { organizationId } },
       }),
-      loops: await prisma.loop.count({ where: { organizationId } }),
     },
     nativeThread: await prisma.commentThread.findUnique({
       where: { id: nativeThreadId },
@@ -80,37 +79,40 @@ describe.skipIf(!DATABASE_URL_SET)(
       SeedProfileName.Local,
       SeedProfileName.E2e,
       SeedProfileName.CiPreview,
-    ])("recreates the same persisted projection across clean %s runs", async (profile) => {
-      const plan = resolveSeedRunPlan({
-        profile,
-        auditMode: SeedAuditMode.IdempotentSeedOrg,
-      });
+    ])(
+      "recreates the same persisted projection across clean %s runs",
+      async (profile) => {
+        const plan = resolveSeedRunPlan({
+          profile,
+          auditMode: SeedAuditMode.IdempotentSeedOrg,
+        });
 
-      await runSeed(
-        ctx.prisma,
-        { organizationId: ctx.organizationId, userId: ctx.userId },
-        plan
-      );
-      const firstProjection = await collectDeterministicProjection(ctx);
+        await runSeed(
+          ctx.prisma,
+          { organizationId: ctx.organizationId, userId: ctx.userId },
+          plan
+        );
+        const firstProjection = await collectDeterministicProjection(ctx);
 
-      await teardownEphemeralDb(ctx);
-      ctx = null as unknown as EphemeralDbContext;
-      ctx = await setupEphemeralDb();
+        await teardownEphemeralDb(ctx);
+        ctx = null as unknown as EphemeralDbContext;
+        ctx = await setupEphemeralDb();
 
-      await runSeed(
-        ctx.prisma,
-        { organizationId: ctx.organizationId, userId: ctx.userId },
-        plan
-      );
-      const secondProjection = await collectDeterministicProjection(ctx);
+        await runSeed(
+          ctx.prisma,
+          { organizationId: ctx.organizationId, userId: ctx.userId },
+          plan
+        );
+        const secondProjection = await collectDeterministicProjection(ctx);
 
-      expect(getCountsOutOfRange(secondProjection.counts, plan)).toEqual([]);
-      expect(secondProjection).toEqual(firstProjection);
-      expect(secondProjection.nativeThread).toMatchObject({
-        source: ThreadSource.NATIVE,
-        roomId: null,
-        status: ThreadStatus.OPEN,
-      });
-    });
+        expect(getCountsOutOfRange(secondProjection.counts, plan)).toEqual([]);
+        expect(secondProjection).toEqual(firstProjection);
+        expect(secondProjection.nativeThread).toMatchObject({
+          source: ThreadSource.NATIVE,
+          roomId: null,
+          status: ThreadStatus.OPEN,
+        });
+      }
+    );
   }
 );

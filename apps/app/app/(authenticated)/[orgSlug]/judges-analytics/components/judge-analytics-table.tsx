@@ -109,7 +109,7 @@ export function JudgeAnalyticsTable({
                 const nameLink = (
                   <Link
                     className="underline decoration-dotted hover:decoration-solid"
-                    href={`/${orgSlug}/judges-analytics/${judge.promptName}?reportType=${reportType}`}
+                    href={`/${orgSlug}/judges-analytics/${encodeURIComponent(judge.promptName)}?reportType=${reportType}`}
                   >
                     {judge.judgeName}
                   </Link>

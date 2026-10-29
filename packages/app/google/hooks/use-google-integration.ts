@@ -6,6 +6,7 @@ import type {
   ImportGoogleDocsInput,
   ImportGoogleDocsResponse,
 } from "@repo/api/src/types/google";
+import { LONG_RUNNING_API_TIMEOUT_MS } from "@repo/api/src/types/long-running-api-timeout";
 import {
   type UseMutationOptions,
   type UseQueryOptions,
@@ -13,17 +14,12 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { LONG_RUNNING_API_TIMEOUT_MS } from "../../shared/api/api-timeout";
 import { useApiClient } from "../../shared/api/use-api-client";
-
-export const GDRIVE_FOLDER_ID_REGEX = /^[a-zA-Z0-9_-]{28,40}$/;
 
 // Query keys
 export const googleKeys = {
   all: ["google"] as const,
   status: () => [...googleKeys.all, "status"] as const,
-  folderFiles: (folderId: string) =>
-    [...googleKeys.all, "folderFiles", folderId] as const,
 };
 
 // Queries
@@ -44,6 +40,16 @@ export function useGoogleIntegrationStatus(
 }
 
 // Mutations
+
+/**
+ * The only caller, `GoogleDriveCard`, reports every rejected disconnect with its
+ * own toast (ISS-10316). The shared client's default toast would be a second
+ * message for the same failure.
+ */
+const SUPPRESS_DEFAULT_ERROR_TOAST = {
+  suppressDefaultErrorToast: true,
+} as const;
+
 export function useDisconnectGoogle(
   options?: UseMutationOptions<GoogleDisconnectResponse>
 ) {
@@ -51,6 +57,7 @@ export function useDisconnectGoogle(
   const apiClient = useApiClient();
 
   return useMutation({
+    meta: SUPPRESS_DEFAULT_ERROR_TOAST,
     mutationFn: () =>
       apiClient.delete<GoogleDisconnectResponse>("/integrations/google"),
     onSuccess: () => {
@@ -91,27 +98,6 @@ export function useImportGoogleDocs(
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["documents"] });
     },
-    ...options,
-  });
-}
-
-export function useGDriveFolderFiles(
-  folderId: string,
-  options?: Omit<
-    UseQueryOptions<{ id: string; name: string }[]>,
-    "queryKey" | "queryFn" | "enabled"
-  >
-) {
-  const apiClient = useApiClient();
-
-  return useQuery({
-    queryKey: googleKeys.folderFiles(folderId),
-    queryFn: () =>
-      apiClient.get<{ id: string; name: string }[]>(
-        `/integrations/google/files?folderId=${encodeURIComponent(folderId)}`
-      ),
-    enabled: folderId.length > 0 && GDRIVE_FOLDER_ID_REGEX.test(folderId),
-    staleTime: 30 * 1000,
     ...options,
   });
 }

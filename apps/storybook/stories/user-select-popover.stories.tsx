@@ -4,9 +4,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
 
 const meta = {
-  title: "Design System/Primitives/User Select Popover",
+  title: "Composites v1.0/Inputs/User Select Popover",
   component: UserSelectPopover,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   args: {
     onSelect: () => {},
     users: mockUsers,
@@ -28,7 +28,6 @@ export const Default: Story = {
       <UserSelectPopover
         {...args}
         onSelect={(user) => setValue(user)}
-        users={mockUsers}
         value={value}
       />
     );
@@ -48,7 +47,6 @@ export const IconOnly: Story = {
       <UserSelectPopover
         {...args}
         onSelect={(user) => setValue(user)}
-        users={mockUsers}
         value={value}
       />
     );

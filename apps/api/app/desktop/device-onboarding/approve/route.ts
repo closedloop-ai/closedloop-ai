@@ -5,8 +5,14 @@ import {
   desktopContractError,
   desktopContractSuccess,
 } from "@/app/desktop/contract";
-import { isDesktopManagedPopEnforcementEnabled } from "@/lib/auth/desktop-managed-pop";
+import {
+  DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES,
+  readBoundedJsonBody,
+} from "@/app/desktop/route-helpers";
+import { evaluateDesktopManagedPopEnforcement } from "@/lib/auth/desktop-managed-pop";
 import { resolveSessionUser } from "@/lib/auth/session-user";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
+import { popEnforcementRejection } from "../device-onboarding-route-helpers";
 import { desktopDeviceOnboardingService } from "../service";
 
 const approvalRequestValidator = z
@@ -16,31 +22,33 @@ const approvalRequestValidator = z
   })
   .strict();
 
-export async function POST(request: Request) {
+async function handlePost(request: Request) {
   const session = await resolveSessionUser().catch(() => null);
   if (!session) {
     return desktopContractError(401, "SESSION_REQUIRED", false);
   }
 
-  const rawBody = await request.json().catch(() => null);
+  const { rawBody } = await readBoundedJsonBody(
+    request,
+    DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES
+  );
   const parsedBody = approvalRequestValidator.safeParse(rawBody);
   if (!parsedBody.success) {
     return desktopContractError(400, "INVALID_DEVICE_SESSION_APPROVAL", false);
   }
 
   const userCode = parsedBody.data.userCode.toUpperCase();
-  if (
-    parsedBody.data.action === "approve" &&
-    !(await isDesktopManagedPopEnforcementEnabled({
-      userId: session.user.id,
-      clerkUserId: session.clerkUserId,
-    }))
-  ) {
-    return desktopContractError(
-      403,
-      "DESKTOP_SECURITY_UPGRADE_DISABLED",
-      false
+  if (parsedBody.data.action === "approve") {
+    const rejection = popEnforcementRejection(
+      await evaluateDesktopManagedPopEnforcement({
+        userId: session.user.id,
+        clerkUserId: session.clerkUserId,
+      }),
+      session.user.organizationId
     );
+    if (rejection) {
+      return rejection;
+    }
   }
 
   const row = await (parsedBody.data.action === "approve"
@@ -71,3 +79,5 @@ export async function POST(request: Request) {
     webAppOrigin: row.webAppOrigin,
   });
 }
+
+export const POST = withRequestCompleted(handlePost);

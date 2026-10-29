@@ -1,5 +1,7 @@
 import {
   FilledStatusCircle,
+  STATUS_APPEARANCE_NAMES,
+  StatusAppearanceIcon,
   StatusDash,
   StatusRing,
 } from "@repo/design-system/components/ui/status-icon-primitives";
@@ -14,9 +16,11 @@ import type { ReactNode } from "react";
  * compose these to render their own status vocabularies.
  */
 const meta = {
-  title: "Design System/Primitives/Status Icon Primitives",
+  title: "Composites v1.0/Feedback & Status/Status Icon Primitives",
   component: StatusRing,
-  tags: ["autodocs"],
+  // Every story here is a side-by-side comparison swatch row, not one concept
+  // per story — kept out of the AI manifest for that reason.
+  tags: ["deprecated", "autodocs", "!manifest"],
   parameters: { layout: "centered" },
 } satisfies Meta<typeof StatusRing>;
 
@@ -124,6 +128,13 @@ export const Filled: Story = {
           label="Exclamation"
         />
       </Swatch>
+      <Swatch label="bolt">
+        <FilledStatusCircle
+          fill="var(--destructive)"
+          glyph="bolt"
+          label="Bolt"
+        />
+      </Swatch>
     </div>
   ),
 };
@@ -161,6 +172,80 @@ export const Dash: Story = {
           size={16}
         />
       </Swatch>
+    </div>
+  ),
+};
+
+/**
+ * Derived, not hand-listed: a copied array of a union typechecks while one
+ * short, and this row is the review surface for whether two names are
+ * separable at 16px. A silently incomplete row is a review surface that lies.
+ */
+const APPEARANCES = STATUS_APPEARANCE_NAMES;
+
+/**
+ * The named visual vocabulary every status-icon family resolves through. A
+ * domain adapter maps each of its own statuses to one of these names and
+ * supplies the label; this registry decides what the mark draws.
+ *
+ * Mounted as one row on purpose, because whether two of these separate at 16px
+ * is only visible side by side. The three terminal glyphs part by shape. The
+ * two empty rings do NOT — `blank-ring` and `empty-ring` are the same
+ * silhouette about 1.5:1 apart on track tone, which is inherited and recorded
+ * in the ledger rather than fixed here. Do not read this row as a guarantee
+ * that every pair is separable.
+ */
+export const Appearances: Story = {
+  args: { percentage: 50, color: "var(--progress-foreground)", label: "Ring" },
+  render: () => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+      {([16, 20] as const).map((size) => (
+        <div
+          key={size}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 16,
+            flexWrap: "wrap",
+          }}
+        >
+          {APPEARANCES.map((appearance) => (
+            <Swatch key={appearance} label={appearance}>
+              <StatusAppearanceIcon
+                appearance={appearance}
+                label={appearance}
+                size={size}
+              />
+            </Swatch>
+          ))}
+        </div>
+      ))}
+    </div>
+  ),
+};
+
+/** The spinner replaces a ring appearance's arc; a glyph appearance ignores it. */
+export const AppearancesThinking: Story = {
+  args: { percentage: 50, color: "var(--progress-foreground)", label: "Ring" },
+  render: () => (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 16,
+        flexWrap: "wrap",
+      }}
+    >
+      {APPEARANCES.map((appearance) => (
+        <Swatch key={appearance} label={appearance}>
+          <StatusAppearanceIcon
+            appearance={appearance}
+            label={appearance}
+            size={20}
+            thinking
+          />
+        </Swatch>
+      ))}
     </div>
   ),
 };

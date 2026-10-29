@@ -19,7 +19,7 @@
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   parseChatSessionFile,
   parseChatSessionFileGated,
@@ -707,5 +707,49 @@ test("parseChatSessionFileGated returns exactly what the ungated parse returns",
     await parseChatSessionFileGated(writeChat("a scalar root"), null),
     null,
     "the gate passes a null decision through unchanged"
+  );
+});
+
+/**
+ * ISS-8565: the chat assembler folded the session model onto a plain `{}`, so a
+ * chat whose `model` was literally `__proto__` lost its ENTIRE token aggregate —
+ * and unlike OpenCode this assembler has no series fallback to recover it.
+ */
+test("chat tokensByModel keeps a __proto__ session model (ISS-8565)", () => {
+  const parsed = parseChatOk({
+    model: "__proto__",
+    messages: [
+      {
+        role: "assistant",
+        timestamp: T0,
+        usage: { input_tokens: 1000, output_tokens: 500 },
+      },
+    ],
+  });
+
+  assert.deepEqual(Object.keys(parsed.tokensByModel), ["__proto__"]);
+  // biome-ignore lint/suspicious/noProto: ISS-8565 regression — the hostile key IS the subject under test
+  assert.equal(parsed.tokensByModel.__proto__?.input, 1000);
+  // biome-ignore lint/suspicious/noProto: ISS-8565 regression — the hostile key IS the subject under test
+  assert.equal(parsed.tokensByModel.__proto__?.output, 500);
+  assert.equal(Object.getPrototypeOf(parsed.tokensByModel), Object.prototype);
+});
+
+/** ISS-8565: an ordinary session model must still fold byte-identically. */
+test("chat tokensByModel folds an ordinary model unchanged (ISS-8565)", () => {
+  const parsed = parseChatOk({
+    model: "gpt-5-codex",
+    messages: [
+      {
+        role: "assistant",
+        timestamp: T0,
+        usage: { input_tokens: 1000, output_tokens: 500 },
+      },
+    ],
+  });
+
+  assert.equal(
+    JSON.stringify(parsed.tokensByModel),
+    '{"gpt-5-codex":{"input":1000,"output":500,"cacheRead":0,"cacheWrite":0}}'
   );
 });

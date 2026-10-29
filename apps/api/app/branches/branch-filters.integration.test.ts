@@ -4,19 +4,25 @@ import {
   BranchSessionPresence,
   BranchStatus,
 } from "@repo/api/src/types/branch";
+import {
+  BranchActivityAtomVersion,
+  BranchActivityAttributionKind,
+  BranchActivityEvidenceCompleteness,
+  BranchActivitySource,
+} from "@repo/api/src/types/branch-activity";
 import { FileChangeStatus } from "@repo/api/src/types/branch-view";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import {
   SessionArtifactLinkKind,
   SessionPrRelationType,
 } from "@repo/api/src/types/session-artifact-link";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { ArtifactType, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { persistedGitHubRepositoryAuthority } from "@/__tests__/fixtures/repository-default-authority";
 import {
-  autoRollbackTransaction,
-  createTestOrganization,
+  createCommittedTestOrganizationTracker,
   createTestUser,
   linkValidSessionToBranch,
 } from "@/__tests__/utils/db-helpers";
@@ -28,12 +34,15 @@ import { branchReadService } from "@/app/branches/branch-read-service";
  * live in raw-SQL candidate predicates over `artifact_links` and
  * `branch_file_changes`. Seeds a single org with four branches whose linked-
  * session presence and LOC totals are known, then asserts each filter narrows
- * the returned id set to exactly the expected branches. Runs inside
- * `autoRollbackTransaction`, so nothing persists.
+ * the returned id set to exactly the expected branches. Committed fixtures let
+ * the production list/analytics reads own their repeatable-read transaction.
  */
 
 const hasDatabase = Boolean(keys().DATABASE_URL);
 const describeIfDb = hasDatabase ? describe : describe.skip;
+const committedOrganizations = createCommittedTestOrganizationTracker();
+
+afterEach(() => committedOrganizations.cleanup());
 
 /**
  * How the seeded session→branch link should classify. `wrote` is an active-write
@@ -58,6 +67,13 @@ type SeedBranchInput = {
   branchName: string;
   link: SeedLinkKind;
   artifactStatus?: GitHubPRState;
+  deletedAt?: Date;
+  /** When the linked Session was last active; defaults to 2026-07-01. */
+  sessionAt?: Date;
+  /** An eligible activity atom at this instant; omitted = no atom. */
+  atomAt?: Date;
+  /** Makes the selected PR a merged one with diff stats, merged at this instant. */
+  selectedPrMergedAt?: Date;
   selectedPrState?: GitHubPRState;
   selectedPrSnapshotCount?: number;
   /** Per-file [additions, deletions] rows; empty ⇒ no file-change rows (LOC unavailable). */
@@ -95,8 +111,25 @@ async function seedBranch(
         firstPushedAt: new Date("2026-07-01T00:00:00.000Z"),
         pushSource: BranchPushSource.Session,
         lastActivityAt: new Date("2026-07-01T00:00:00.000Z"),
+        deletedAt: input.deletedAt ?? null,
       },
+      select: { artifactId: true },
     });
+    if (input.atomAt) {
+      await db.branchActivityAtom.create({
+        data: {
+          organizationId,
+          branchArtifactId: artifact.id,
+          version: BranchActivityAtomVersion.V1,
+          source: BranchActivitySource.GitHead,
+          sourceEventId: `event-${artifact.id}`,
+          occurredAt: input.atomAt,
+          attributionKind: BranchActivityAttributionKind.Branch,
+          completeness: BranchActivityEvidenceCompleteness.Complete,
+        },
+        select: { branchArtifactId: true },
+      });
+    }
     const repositoryFullName = `acme/${input.branchName}`;
     await db.publicRepository.create({
       data: {
@@ -109,6 +142,7 @@ async function seedBranch(
         name: input.branchName,
         htmlUrl: `https://github.com/${repositoryFullName}`,
       },
+      select: { id: true },
     });
     if (input.selectedPrState) {
       const currentPullRequestId = await seedSelectedPullRequestSnapshots(
@@ -117,11 +151,13 @@ async function seedBranch(
         artifact.id,
         input.branchName,
         input.selectedPrState,
-        input.selectedPrSnapshotCount ?? 1
+        input.selectedPrSnapshotCount ?? 1,
+        input.selectedPrMergedAt
       );
       await db.branchDetail.update({
         where: { artifactId: artifact.id },
         data: { currentPullRequestDetailId: currentPullRequestId },
+        select: { artifactId: true },
       });
     }
     if (input.fileChanges.length > 0) {
@@ -150,7 +186,8 @@ async function seedSelectedPullRequestSnapshots(
   branchArtifactId: string,
   branchName: string,
   selectedPrState: GitHubPRState,
-  snapshotCount: number
+  snapshotCount: number,
+  mergedAt?: Date
 ): Promise<string> {
   const isClosed = selectedPrState === GitHubPRState.Closed;
   const repositoryFullName = `acme/${branchName}`;
@@ -159,7 +196,13 @@ async function seedSelectedPullRequestSnapshots(
     branchArtifactId,
     number: 1,
     prState: selectedPrState,
+    // ISS-8422: the PR-opened timestamp is what tells a FETCHED row from the
+    // factless stub the desktop lane writes. `pr_state` alone cannot: the column
+    // is NOT NULL with a `@default(OPEN)`, so a row nobody measured carries the
+    // same value this fixture sets deliberately.
+    githubCreatedAt: new Date("2026-07-01T00:00:00.000Z"),
     closedAt: isClosed ? new Date("2026-07-02T00:00:00.000Z") : null,
+    ...(mergedAt ? { mergedAt, additions: 40, deletions: 2 } : {}),
     ...persistedPullRequestHeadAuthority(branchArtifactId, repositoryFullName),
   };
   if (snapshotCount === 1) {
@@ -230,7 +273,7 @@ async function seedSessionLink(
       organizationId,
       type: ArtifactType.SESSION,
       name: `session-for-${input.branchName}`,
-      status: BranchStatus.Open,
+      status: SESSION_STATUS.ACTIVE,
     },
     select: { id: true },
   });
@@ -254,13 +297,16 @@ async function seedSessionLink(
     await db.sessionDetail.create({
       data: {
         artifactId: session.id,
-        userId: input.userId,
         computeTargetId: computeTarget.id,
         externalSessionId: `ext-${input.branchName}`,
         harness: "claude",
-        sessionStartedAt: new Date("2026-07-01T00:00:00.000Z"),
-        sessionUpdatedAt: new Date("2026-07-01T00:00:00.000Z"),
+        sessionStartedAt:
+          input.sessionAt ?? new Date("2026-07-01T00:00:00.000Z"),
+        lastActivityAt: input.sessionAt ?? new Date("2026-07-01T00:00:00.000Z"),
+        sessionUpdatedAt:
+          input.sessionAt ?? new Date("2026-07-01T00:00:00.000Z"),
       },
+      select: { artifactId: true },
     });
   }
   const wrote =
@@ -284,6 +330,7 @@ async function seedSessionLink(
             relationTypes: [SessionPrRelationType.Reviewed],
           },
     },
+    select: { id: true },
   });
 }
 
@@ -293,7 +340,7 @@ describeIfDb(
   "branch list filters — linked session + LOC range (FEA-4003)",
   () => {
     it("accepts legacy sessionPresence values without changing the canonical corpus", async () => {
-      await autoRollbackTransaction(async () => {
+      await committedOrganizations.run(async () => {
         const organizationId = await createTestOrganization();
         const user = await createTestUser(organizationId);
         const withSession = await seedBranch(organizationId, {
@@ -341,7 +388,7 @@ describeIfDb(
     });
 
     it("excludes an orphaned wrote link (no SessionDetail) from the corpus until its session hydrates", async () => {
-      await autoRollbackTransaction(async () => {
+      await committedOrganizations.run(async () => {
         const organizationId = await createTestOrganization();
         const user = await createTestUser(organizationId);
         // An active `wrote` link whose source SESSION has NO SessionDetail row
@@ -395,13 +442,14 @@ describeIfDb(
           await db.sessionDetail.create({
             data: {
               artifactId: link.sourceId,
-              userId: user.id,
               computeTargetId: computeTarget.id,
               externalSessionId: "ext-orphaned-wrote",
               harness: "claude",
               sessionStartedAt: new Date("2026-07-01T00:00:00.000Z"),
+              lastActivityAt: new Date("2026-07-01T00:00:00.000Z"),
               sessionUpdatedAt: new Date("2026-07-01T00:00:00.000Z"),
             },
+            select: { artifactId: true },
           });
         });
 
@@ -431,7 +479,7 @@ describeIfDb(
     });
 
     it("excludes a branch whose only link is reviewed-derived (no valid session)", async () => {
-      await autoRollbackTransaction(async () => {
+      await committedOrganizations.run(async () => {
         const organizationId = await createTestOrganization();
         // Legacy `branch_participation: null` link whose metadata derives
         // reviewed-only. `accumulateSessionLink` skips it, so its branch has an
@@ -465,7 +513,7 @@ describeIfDb(
     });
 
     it("filters branches by an inclusive LOC-change range and EXCLUDES unavailable LOC", async () => {
-      await autoRollbackTransaction(async () => {
+      await committedOrganizations.run(async () => {
         const organizationId = await createTestOrganization();
         const user = await createTestUser(organizationId);
         // FEA-4225: every branch must have a valid linked session to be eligible,
@@ -529,7 +577,7 @@ describeIfDb(
 
 describeIfDb("branch list status filtering — selected PR precedence", () => {
   it("reconciles PR-less local merged rows without overriding selected PR snapshots", async () => {
-    await autoRollbackTransaction(async () => {
+    await committedOrganizations.run(async () => {
       const organizationId = await createTestOrganization();
       const user = await createTestUser(organizationId);
       const localMerged = await seedBranch(organizationId, {
@@ -610,7 +658,7 @@ describeIfDb(
   "branch list eligibility — requires a linked session (FEA-4225)",
   () => {
     it("surfaces only the session-linked branch, then the newly-linked one exactly once", async () => {
-      await autoRollbackTransaction(async () => {
+      await committedOrganizations.run(async () => {
         const organizationId = await createTestOrganization();
         const user = await createTestUser(organizationId);
         // Identical remote head evidence (both push-qualified via seedBranch's
@@ -691,6 +739,49 @@ describeIfDb(
   }
 );
 
+describeIfDb("deleted branches (ISS-11589)", () => {
+  it("keeps a deleted branch in the list, the analytics cohort and detail, and counts it as not active", async () => {
+    await committedOrganizations.run(async () => {
+      const organizationId = await createTestOrganization();
+      const user = await createTestUser(organizationId);
+      const live = await seedBranch(organizationId, {
+        branchName: "live",
+        link: SeedLinkKind.Wrote,
+        fileChanges: [[10, 5]],
+        userId: user.id,
+      });
+      // `applyDeleteTransition` stores Closed on a deleted, unmerged branch.
+      const deleted = await seedBranch(organizationId, {
+        branchName: "deleted",
+        link: SeedLinkKind.Wrote,
+        artifactStatus: GitHubPRState.Closed,
+        deletedAt: new Date("2026-07-02T00:00:00.000Z"),
+        fileChanges: [[3, 2]],
+        userId: user.id,
+      });
+
+      const list = await branchReadService.listBranches(
+        organizationId,
+        LIST_QUERY
+      );
+      expect(new Set(list.items.map((item) => item.id))).toEqual(
+        new Set([live, deleted])
+      );
+      expect(list.total).toBe(2);
+
+      const analytics = await branchReadService.getBranchAnalytics(
+        organizationId,
+        LIST_QUERY
+      );
+      expect(analytics.activeBranchCount.value).toBe(1);
+
+      expect(
+        await branchReadService.getBranchDetail(organizationId, deleted)
+      ).not.toBeNull();
+    });
+  });
+});
+
 function persistedPullRequestHeadAuthority(
   branchArtifactId: string,
   repositoryFullName: string
@@ -720,4 +811,8 @@ function persistedPullRequestHeadAuthority(
     headRepositoryDefaultBranchObservedAt: authority.defaultBranchObservedAt,
     headRepositoryDefaultBranchEventAt: authority.defaultBranchEventAt,
   };
+}
+
+function createTestOrganization(): Promise<string> {
+  return committedOrganizations.create();
 }

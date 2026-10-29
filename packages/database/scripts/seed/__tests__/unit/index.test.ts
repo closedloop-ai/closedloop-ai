@@ -3,15 +3,32 @@
  *
  * Covers:
  *  TS-U.8  runSeed invokes all domain seed modules (seedCoreEntities,
- *          seedExecutionEntities, seedIntegrationEntities, seedEvaluationEntities,
+ *          seedIntegrationEntities, seedEvaluationEntities,
  *          seedCustomizationEntities) in dependency order inside a transaction
  *
  * Module dependencies are fully mocked so no database or real seed logic runs.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { CustomizationSeedResult } from "../../customization";
 
 const PROFILE_AUDIT_FAILED_RE = /Profile target audit failed/;
+
+const { customizationSeedResult } = vi.hoisted(() => {
+  const result: CustomizationSeedResult = {
+    textFieldId: "mock-text-field",
+    numberFieldId: "mock-number-field",
+    enumFieldId: "mock-enum-field",
+    multiEnumFieldId: "mock-multi-enum-field",
+    dateFieldId: "mock-date-field",
+    peopleFieldId: "mock-people-field",
+    referenceFieldId: "mock-reference-field",
+    referenceMultiFieldId: "mock-reference-multi-field",
+    enumOptionIds: [],
+    multiEnumOptionIds: [],
+  };
+  return { customizationSeedResult: result };
+});
 
 // Mock all domain seed modules BEFORE importing runSeed so vi.mock() hoisting works.
 vi.mock("../../core", () => ({
@@ -24,9 +41,6 @@ vi.mock("../../core", () => ({
     branchArtifactId: "mock-branch-artifact",
   }),
 }));
-vi.mock("../../execution", () => ({
-  seedExecutionEntities: vi.fn().mockResolvedValue(undefined),
-}));
 vi.mock("../../integrations", () => ({
   seedIntegrationEntities: vi.fn().mockResolvedValue(undefined),
 }));
@@ -34,8 +48,7 @@ vi.mock("../../evaluation", () => ({
   seedEvaluationEntities: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../../customization", () => ({
-  // Returns a partial CustomizationSeedResult — sufficient for orchestration tests.
-  seedCustomizationEntities: vi.fn().mockResolvedValue({} as any),
+  seedCustomizationEntities: vi.fn().mockResolvedValue(customizationSeedResult),
 }));
 vi.mock("../../extended", () => ({
   seedExtendedEntities: vi.fn().mockResolvedValue(undefined),
@@ -44,7 +57,6 @@ vi.mock("../../extended", () => ({
 import { seedCoreEntities } from "../../core";
 import { seedCustomizationEntities } from "../../customization";
 import { seedEvaluationEntities } from "../../evaluation";
-import { seedExecutionEntities } from "../../execution";
 import { seedExtendedEntities } from "../../extended";
 import { runSeed } from "../../index";
 import { seedIntegrationEntities } from "../../integrations";
@@ -57,17 +69,13 @@ import {
 import { baselineContext } from "../fixtures/baseline-org";
 import { createMockPrisma } from "../fixtures/mock-prisma";
 
-// Shorthand to access mock call records without fighting Prisma's fluent types.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyDelegate = any;
-
 /**
  * Builds a mock PrismaClient with all count queries returning 1 so the
  * runSeed post-seed verification step does not throw.
  */
 function buildRunSeedMock() {
   const prisma = createMockPrisma();
-  const p = prisma as AnyDelegate;
+  const p = vi.mocked(prisma, true);
 
   // Every model in the summary section must have count() return >= 1.
   const countModels = [
@@ -77,7 +85,6 @@ function buildRunSeedMock() {
     "artifact",
     "documentVersion",
     "slugCounter",
-    "loop",
     "gitHubInstallation",
     "gitHubInstallationRepository",
     "gitHubUserConnection",
@@ -98,7 +105,6 @@ function buildRunSeedMock() {
     "artifactLink",
     "artifactRating",
     "fileAttachment",
-    "loopEvent",
     "prompt",
   ] as const;
 
@@ -114,7 +120,6 @@ function buildRunSeedMock() {
   p.comment.count.mockResolvedValue(
     SEED_PROFILES[SeedProfileName.Local].comments
   );
-  p.loop.count.mockResolvedValue(SEED_PROFILES[SeedProfileName.Local].loops);
 
   return prisma;
 }
@@ -132,22 +137,17 @@ describe("runSeed — orchestration order (TS-U.8)", () => {
       githubRepositoryId: "mock-github-repository",
       branchArtifactId: "mock-branch-artifact",
     });
-    vi.mocked(seedExecutionEntities).mockResolvedValue(undefined);
     vi.mocked(seedIntegrationEntities).mockResolvedValue(undefined);
     vi.mocked(seedEvaluationEntities).mockResolvedValue(undefined);
-    vi.mocked(seedCustomizationEntities).mockResolvedValue({} as any);
+    vi.mocked(seedCustomizationEntities).mockResolvedValue(
+      customizationSeedResult
+    );
   });
 
   it("calls seedCoreEntities inside the transaction", async () => {
     const prisma = buildRunSeedMock();
     await runSeed(prisma, baselineContext);
     expect(seedCoreEntities).toHaveBeenCalledOnce();
-  });
-
-  it("calls seedExecutionEntities after seedCoreEntities inside the transaction", async () => {
-    const prisma = buildRunSeedMock();
-    await runSeed(prisma, baselineContext);
-    expect(seedExecutionEntities).toHaveBeenCalledOnce();
   });
 
   it("calls seedIntegrationEntities inside the transaction", async () => {
@@ -170,7 +170,7 @@ describe("runSeed — orchestration order (TS-U.8)", () => {
 
   it("wraps all domain calls in a single $transaction", async () => {
     const prisma = buildRunSeedMock();
-    const p = prisma as AnyDelegate;
+    const p = vi.mocked(prisma, true);
     await runSeed(prisma, baselineContext);
     expect(p.$transaction.mock.calls.length).toBe(1);
   });
@@ -189,11 +189,7 @@ describe("runSeed — orchestration order (TS-U.8)", () => {
     const prisma = buildRunSeedMock();
     await runSeed(prisma, baselineContext);
 
-    // seedExecutionEntities receives coreResult as its third argument
-    const executionCall = vi.mocked(seedExecutionEntities).mock.calls[0];
-    expect(executionCall[2]).toEqual(mockCoreResult);
-
-    // seedIntegrationEntities receives coreResult too
+    // seedIntegrationEntities receives coreResult as its third argument
     const integrationCall = vi.mocked(seedIntegrationEntities).mock.calls[0];
     expect(integrationCall[2]).toEqual(mockCoreResult);
   });
@@ -201,16 +197,14 @@ describe("runSeed — orchestration order (TS-U.8)", () => {
   it("passes the resolved plan to every domain module", async () => {
     const prisma = buildRunSeedMock();
     const plan = resolveSeedRunPlan({ profile: SeedProfileName.Minimal });
-    const p = prisma as AnyDelegate;
+    const p = vi.mocked(prisma, true);
     p.project.count.mockResolvedValue(plan.targets.projects);
     p.artifact.count.mockResolvedValue(plan.targets.artifacts);
     p.comment.count.mockResolvedValue(plan.targets.comments);
-    p.loop.count.mockResolvedValue(plan.targets.loops);
 
     await runSeed(prisma, baselineContext, plan);
 
     expect(vi.mocked(seedCoreEntities).mock.calls[0][2]).toEqual(plan);
-    expect(vi.mocked(seedExecutionEntities).mock.calls[0][3]).toEqual(plan);
     expect(vi.mocked(seedIntegrationEntities).mock.calls[0][3]).toEqual(plan);
     expect(vi.mocked(seedEvaluationEntities).mock.calls[0][3]).toEqual(plan);
     expect(vi.mocked(seedCustomizationEntities).mock.calls[0][3]).toEqual(plan);
@@ -218,23 +212,17 @@ describe("runSeed — orchestration order (TS-U.8)", () => {
 
   it("runs perf profile seeding without wrapping all modules in one transaction", async () => {
     const prisma = buildRunSeedMock();
-    const p = prisma as AnyDelegate;
+    const p = vi.mocked(prisma, true);
     const plan = resolveSeedRunPlan({ profile: SeedProfileName.Perf });
     p.project.count.mockResolvedValue(plan.targets.projects);
     p.artifact.count.mockResolvedValue(plan.targets.artifacts);
     p.comment.count.mockResolvedValue(plan.targets.comments);
-    p.loop.count.mockResolvedValue(plan.targets.loops);
 
     await runSeed(prisma, baselineContext, plan);
 
     expect(p.$transaction).not.toHaveBeenCalled();
     expect(
       vi.mocked(seedCoreEntities).mock.invocationCallOrder[0]
-    ).toBeLessThan(
-      vi.mocked(seedExecutionEntities).mock.invocationCallOrder[0]
-    );
-    expect(
-      vi.mocked(seedExecutionEntities).mock.invocationCallOrder[0]
     ).toBeLessThan(
       vi.mocked(seedIntegrationEntities).mock.invocationCallOrder[0]
     );
@@ -245,7 +233,7 @@ describe("runSeed — orchestration order (TS-U.8)", () => {
 
   it("treats out-of-range counts as informational for IdempotentSeedOrg reruns", async () => {
     const prisma = buildRunSeedMock();
-    const p = prisma as AnyDelegate;
+    const p = vi.mocked(prisma, true);
     // Simulate rerunning the minimal profile against an org that still holds
     // local-profile-sized rows from a previous seed: counts are far above
     // minimal targetRanges, which would throw under CleanOrg but must be
@@ -259,8 +247,6 @@ describe("runSeed — orchestration order (TS-U.8)", () => {
     p.comment.count.mockResolvedValue(
       SEED_PROFILES[SeedProfileName.Local].comments
     );
-    p.loop.count.mockResolvedValue(SEED_PROFILES[SeedProfileName.Local].loops);
-
     const plan = resolveSeedRunPlan({
       profile: SeedProfileName.Minimal,
       auditMode: SeedAuditMode.IdempotentSeedOrg,
@@ -273,7 +259,7 @@ describe("runSeed — orchestration order (TS-U.8)", () => {
 
   it("throws on out-of-range counts under CleanOrg audit mode", async () => {
     const prisma = buildRunSeedMock();
-    const p = prisma as AnyDelegate;
+    const p = vi.mocked(prisma, true);
     p.project.count.mockResolvedValue(
       SEED_PROFILES[SeedProfileName.Local].projects
     );
@@ -283,8 +269,6 @@ describe("runSeed — orchestration order (TS-U.8)", () => {
     p.comment.count.mockResolvedValue(
       SEED_PROFILES[SeedProfileName.Local].comments
     );
-    p.loop.count.mockResolvedValue(SEED_PROFILES[SeedProfileName.Local].loops);
-
     const plan = resolveSeedRunPlan({
       profile: SeedProfileName.Minimal,
       auditMode: SeedAuditMode.CleanOrg,

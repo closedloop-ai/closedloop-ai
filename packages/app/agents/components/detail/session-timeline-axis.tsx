@@ -15,7 +15,7 @@ import { isSameDay } from "date-fns";
 
 /**
  * ISS-4675: the Session Timeline's axis row, extracted from
- * `agent-session-detail-view.tsx` (a shrink-only grandfathered file) into its own
+ * `agent-session-detail-view.tsx` into its own
  * module along with the {@link getSessionSpan} derivation that feeds it. One
  * responsibility: turning a session's first/last instants and its total span
  * into the three-slot row printed under the activity bars.
@@ -37,8 +37,11 @@ export function SessionTimelineAxis({
   span,
 }: Readonly<{
   /**
-   * ISS-4684: the axis total in the same `Hh Mm` unit system as the "Activity
-   * phases" caption below it, so the two totals visibly reconcile.
+   * ISS-4684 picked this `Hh Mm` unit system so the axis total reconciled with
+   * the "Activity phases" caption that sat below it. ISS-7867 retired that
+   * caption; the unit system stays because Duration is still on the page, and a
+   * total in raw minutes ("5622m" against its "93h 42m") reads as an unrelated
+   * number rather than a second measure of one session.
    */
   axisDurationLabel: string;
   span: SessionSpan;
@@ -47,14 +50,13 @@ export function SessionTimelineAxis({
     <div className="sd3-act-axis">
       <span>{span.first}</span>
       {/*
-        ISS-4675: the qualifier leads (`calendar span 4h 54m`) so this scans as a
-        set with the "Activity phases" caption below it (`phases span 4h 54m`)
-        rather than as an unrelated second Duration — see
+        ISS-4675: the qualifier leads (`calendar span 4h 54m`) so this reads as a
+        measure of the session rather than as an unrelated second Duration — see
         SESSION_TIMELINE_AXIS_SPAN_PREFIX. `sd3-act-span` gives it the foreground
         colour against the muted ticks; both sit at `--text-xs`, because a
-        caption load-bearing enough to disambiguate two contradicting numbers
-        cannot live at a size nobody reads, and neither can the ticks it
-        reconciles. It needs no `justify-self`: the axis grid's middle track is
+        caption load-bearing enough to separate this span from the Duration
+        metric cannot live at a size nobody reads, and neither can the ticks it
+        measures between. It needs no `justify-self`: the axis grid's middle track is
         `auto`, so this cell is already exactly its own width and centred between
         the two `1fr` cheeks by construction (design review — a
         `justify-self-center` here measured as a no-op).
@@ -81,7 +83,25 @@ export type ActivityMarker = {
   kind: "commit" | "fail" | "frust" | "limit" | "pr" | "prompt";
   label: string;
   t: string;
-  tl: number;
+  /**
+   * The transcript row this dot jumps to, when it has one.
+   *
+   * ISS-7632: OPTIONAL, because a marker with no jump target is a state the
+   * runtime genuinely reaches — `normalizePersistedMarkerRow` returns nothing
+   * for a persisted marker it cannot anchor. Declared `number`, that absence
+   * still happened; it was just invisible to the compiler, so the readers that
+   * DO handle it (`?.tl ?? null` in the dot rail and in
+   * `activity-bucket-synthesis`) read as defensive paranoia rather than the
+   * contract they are, and the ISS-5479 fixture had to cast a key away to reach
+   * the state at all.
+   *
+   * Note the producer type `SessionMarker.tl` is declared REQUIRED — the
+   * absence enters at the sync boundary, where a marker parsed from a JSON
+   * column need not match its declaration, which is the case ISS-5479 was
+   * opened for. Widening that wire contract is a cross-repo change and is
+   * deliberately not folded in here.
+   */
+  tl?: number;
   x: number;
   /**
    * ISS-5819 (#4753 review): the marker's ABSOLUTE instant, when the producer
@@ -134,7 +154,7 @@ export type ActivityMarker = {
  * On the windowed branch nothing moves: `axis.start`/`axis.end` there are
  * already `new Date(window.startMs/endMs)`, the two ends of the
  * PLOTTED-ACTIVITY window, so the ticks still name the instants the scale
- * measures between and still reconcile with the "Activity phases" span below.
+ * measures between.
  *
  * ISS-4955: BOTH edges go through the one axis formatter
  * ({@link formatAxisSpan}), so the row can never print a full `Jun 10, 2026 at

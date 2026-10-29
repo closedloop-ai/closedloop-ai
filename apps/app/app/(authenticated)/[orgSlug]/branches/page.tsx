@@ -1,60 +1,111 @@
 "use client";
 
-import { GitHubBackfillMode } from "@repo/api/src/types/github";
+import { branchListCohortKey } from "@repo/api/src/types/branch-list-cohort";
+import {
+  DEFAULT_BRANCH_STATUS_ORDERING,
+  ROOT_FIRST_BRANCH_STATUS_ORDERING,
+} from "@repo/api/src/types/branch-status-order";
 import { GitHubConnectReturnStatus } from "@repo/api/src/types/github-status";
 import {
   BranchDetailTabParam,
   getNotificationEntityPath,
   NotificationEntityKind,
 } from "@repo/api/src/types/notification-routes";
-import { BranchesListBody } from "@repo/app/branches/components/branches-list-body";
-import { BranchesSummaryCards } from "@repo/app/branches/components/branches-summary-cards";
-import { BranchesToolbar } from "@repo/app/branches/components/branches-toolbar";
-import { ConnectGitHubIndicator } from "@repo/app/branches/components/connect-github-indicator";
-import { GitHubConnectReturnNotice } from "@repo/app/branches/components/github-connect-return-notice";
+import { OnboardingAnalyticsPageName } from "@repo/api/src/types/onboarding-analytics";
+import { BranchesListSurfaceV2 } from "@repo/app/branches/components/branches-list-surface-v2";
+import type { BranchesStallCta } from "@repo/app/branches/components/branches-stall-cta";
+import type { BranchesToolbarProps } from "@repo/app/branches/components/branches-toolbar-model";
+import { useBranchesBulkTagActions } from "@repo/app/branches/components/use-branches-bulk-tag-actions";
 import {
-  APPROVED_BRANCH_PAGE_SIZE,
+  useBranchServedStatusOrderingReset,
   useUrlSyncedBranchFilterState,
+  useUrlSyncedBranchServerState,
 } from "@repo/app/branches/hooks/use-branch-filter-state";
-import { useBranchSavedViews } from "@repo/app/branches/hooks/use-branch-saved-views";
+import {
+  useBranchSavedViews,
+  useBranchSavedViewsStore,
+} from "@repo/app/branches/hooks/use-branch-saved-views";
 import { useBranchViewState } from "@repo/app/branches/hooks/use-branch-view-state";
 import {
-  branchesKeys,
   useBranchCohortAnalytics,
   useBranchesPageData,
 } from "@repo/app/branches/hooks/use-branches";
+import { useBranchesCustomFieldsController } from "@repo/app/branches/hooks/use-branches-custom-fields-controller";
 import {
-  bindApprovedBranchCohortAnalytics,
+  bindApprovedBranchCohortAnalyticsOverFilteredRows,
+  bindApprovedBranchCohortAnalyticsOverFilteredRowsWithPartialCohort,
   buildApprovedBranchCohortRequest,
 } from "@repo/app/branches/lib/approved-branch-cohort";
-import { resolveBranchListBanner } from "@repo/app/branches/lib/branch-list-banner";
-import type { BranchRow as RenderBranchRow } from "@repo/app/branches/lib/branch-row";
+import {
+  resolveBranchCohortEvaluationNow,
+  resolveBranchCohortNotice,
+} from "@repo/app/branches/lib/branch-cohort-transparency";
+import { branchFiltersAreActive } from "@repo/app/branches/lib/branch-list-state";
+import {
+  branchListHasCompletePopulation,
+  composeBranchResetView,
+  isBranchPageDataPresentationPending,
+  resolveBranchDisplayRows,
+  resolveBranchPageState,
+  selectPresentedBranchPageData,
+  shouldUseBranchServerControls,
+} from "@repo/app/branches/lib/branch-page-state";
+import type {
+  BranchRowSession,
+  BranchRow as RenderBranchRow,
+} from "@repo/app/branches/lib/branch-row";
 import { adaptBranchRows } from "@repo/app/branches/lib/branch-row-adapter";
 import {
-  type BranchSortDir,
-  type BranchSortKey,
-  filterBranchRowsByWindow,
-  sortBranchRows,
+  buildBranchServerPageFilters,
+  isBranchServerPageResponse,
+} from "@repo/app/branches/lib/branch-server-page-query";
+import type {
+  BranchSortDir,
+  BranchSortKey,
 } from "@repo/app/branches/lib/branch-sort-group";
+import { BRANCHES_PARTIAL_COHORT_METRICS_FEATURE_FLAG_KEY } from "@repo/app/branches/lib/branches-partial-cohort-metrics-flag";
+import { resolveBranchesStallCtaSignals } from "@repo/app/branches/lib/branches-stall-cta";
+import {
+  resolveBranchesSummaryErrored,
+  resolveBranchesSummaryPending,
+} from "@repo/app/branches/lib/branches-summary-state";
 import { selectVisibleWireRows } from "@repo/app/branches/lib/filtered-branch-analytics";
-import { githubKeys } from "@repo/app/github/hooks/use-github-integration";
-import { LONG_RUNNING_API_TIMEOUT_MS } from "@repo/app/shared/api/api-timeout";
-import { useApiClient } from "@repo/app/shared/api/use-api-client";
-import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import {
+  useGitHubConnectAction,
+  useGitHubConnectHrefTarget,
+} from "@repo/app/github/hooks/use-github-connect-action";
+import { usePostConnectBackfill } from "@repo/app/github/hooks/use-post-connect-backfill";
+import { rumPeriodForRange } from "@repo/app/insights/lib/dashboard-range";
+import {
+  useFeatureFlagEnabled,
+  useFeatureFlagGate,
+} from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { useDocumentTitle } from "@repo/app/shared/hooks/use-document-title";
-import { SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import {
+  LIST_LOADING_STALL_THRESHOLDS,
+  useLoadingStall,
+} from "@repo/app/shared/hooks/use-loading-stall";
+import { useSharedTimezoneMode } from "@repo/app/shared/hooks/use-shared-timezone-mode";
+import {
+  ARTIFACT_STATUS_ROOT_ORDER_FEATURE_FLAG_KEY,
+  SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY,
+} from "@repo/app/shared/lib/feature-flags";
 import {
   type DateRange,
-  getStableUtcDateWindowForRange,
+  getStableDateWindowForRange,
 } from "@repo/app/shared/lib/format-utils";
-import { Button } from "@repo/design-system/components/ui/button";
+import { usePageViewedEvent } from "@repo/app/shared/observability/use-page-viewed-event";
 import type { SortDirection } from "@repo/design-system/components/ui/sortable-column-header";
-import { TablePaginationFooter } from "@repo/design-system/components/ui/table-pagination-footer";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
-import { keepPreviousData, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef } from "react";
+import { keepPreviousData } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
+import { useGitHubAuthorizeHref } from "@/hooks/use-github-authorize-href";
 import { useOrgSlug } from "@/hooks/use-org-slug";
+import { useBranchesListUnavailableMonitor } from "@/lib/branches/branches-list-unavailable-monitor";
+import { useRumViewRange } from "@/lib/datadog-rum/view-range";
+import { claimPostConnectBackfill } from "@/lib/github-post-connect-backfill";
+import { WEB_BRANCH_METRIC_SPARKLINE } from "./branch-metric-sparkline-capability";
 
 // Matches desktop's combined page-data cadence and the list's prior (pre-
 // combined-read) 90s tuning — the analytics half no longer gets its own
@@ -79,15 +130,13 @@ export default function BranchesPage() {
     SESSIONS_BRANCHES_TAB_TITLES_FEATURE_FLAG_KEY
   );
   useDocumentTitle(tabTitlesEnabled ? "Branches" : null);
+  usePageViewedEvent(OnboardingAnalyticsPageName.Branches);
   return <BranchesPageContent />;
 }
 
 function BranchesPageContent() {
   const orgSlug = useOrgSlug();
   const searchParams = useSearchParamsValue();
-  const apiClient = useApiClient();
-  const queryClient = useQueryClient();
-  const backfillStartedRef = useRef(false);
   const queryIdentity = useMemo(
     () => ({ cacheScope: `org:${orgSlug}` }),
     [orgSlug]
@@ -103,20 +152,91 @@ function BranchesPageContent() {
     setColumnOrder,
     columnWidths,
     setColumnWidth,
+    pageSize: savedPageSize,
+    setPageSize,
     setSort,
     setDateRange,
     toggleColumn,
-    resetColumns,
-    applyArrangement,
+    resetView,
+    hiddenSummaryCards,
+    toggleSummaryCard,
+    ...groupViewSource
   } = useBranchViewState("branches:web", true);
 
-  // The web list now reads through the HTTP BranchesDataSource. The current
-  // table still applies its time-window client-side so the shared toolbar,
-  // filtering, sorting, and pagination path matches the desktop surface.
-  const { startDate, endDate } = getStableUtcDateWindowForRange(dateRange);
+  // ISS-9619: the reader's day boundary, and the ONE flag read behind it. With
+  // the gate shut this is UTC with no setter, so the toolbar renders no control
+  // and the window below is byte-identical to what shipped.
+  const { timezoneMode, setTimezoneMode, isTimezoneModeReady } =
+    useSharedTimezoneMode("branches:web");
+
+  // ISS-7250: tag the RUM view with the selected window so page-load percentiles
+  // are sliceable by route x range. Gated on the SAME `isViewReady` the read
+  // below is (ISS-4655), not a second signal: until the persisted view restores,
+  // `dateRange` is still the default, and tagging a saved-90d viewer's load `7`
+  // buckets it under a window they never picked.
+  useRumViewRange(isViewReady ? rumPeriodForRange(dateRange) : null);
+
+  // ISS-9447 (review): the named saved-view COLLECTION, restored here rather
+  // than at the `useBranchSavedViews` call below, because its
+  // `isArrangementSettled` is a read gate and that call needs `filters` and
+  // `handleFiltersChange`, which are derived from the very read it gates.
+  const savedViewsStore = useBranchSavedViewsStore("branches:web", true);
+  // ISS-9692: the URL still wins, but a visit that carries no `?pageSize=`
+  // adopts the saved view's — so the choice survives navigating away and coming
+  // back, not just a reload of the same link.
+  const serverControls = useUrlSyncedBranchServerState({
+    groupView: groupViewSource,
+    isArrangementSettled: savedViewsStore.isArrangementSettled,
+    isRestored: isViewReady,
+    onPageSizePersist: setPageSize,
+    persistedPageSize: savedPageSize,
+  });
+  // ISS-9437: the GATE form, not the plain read. `useFeatureFlagEnabled` reads
+  // `false` while PostHog is still answering, which is indistinguishable from a
+  // real "off" — so the client comparator sorted the corpus in vocabulary order
+  // and re-sorted it under the reader when the assignment landed
+  // (marisolashgrove review on #6928). `useBranchServedStatusOrderingReset` cannot
+  // catch that one: `servedStatusOrdering` is null on the combined path.
+  const statusOrderingGate = useFeatureFlagGate(
+    ARTIFACT_STATUS_ROOT_ORDER_FEATURE_FLAG_KEY
+  );
+  const partialCohortMetricsEnabled = useFeatureFlagEnabled(
+    BRANCHES_PARTIAL_COHORT_METRICS_FEATURE_FLAG_KEY
+  );
+  // ISS-10301: the v2 surface owns the page size unconditionally. The fixed
+  // `APPROVED_BRANCH_PAGE_SIZE` was the v1 shell's only page size, and v1 is gone.
+  const branchPageSize = serverControls.pageSize;
+
+  // The web list reads the bounded server-page request through the HTTP
+  // BranchesDataSource. The producer receives the same window, filters, sort,
+  // and page controls the desktop split-page source receives.
+  // ISS-9619: ONE window for this surface, under the chosen boundary. Both the
+  // bounded page read below and the summary/analytics reads take these same two
+  // values, so the cards and the rows cannot describe different spans.
+  const { startDate, endDate } = getStableDateWindowForRange(
+    dateRange,
+    timezoneMode
+  );
   const pageDataFilters = useMemo(
-    () => ({ endDate, startDate }),
-    [endDate, startDate]
+    () =>
+      buildBranchServerPageFilters({
+        filters: serverControls.filters,
+        page: serverControls.page,
+        pageSize: branchPageSize,
+        sortKey,
+        sortDir,
+        startDate,
+        endDate,
+      }),
+    [
+      endDate,
+      branchPageSize,
+      serverControls.filters,
+      serverControls.page,
+      sortDir,
+      sortKey,
+      startDate,
+    ]
   );
   // Combined list + analytics read (FEA-3056 follow-up): the page mounts the
   // table and the summary cards together, so one query shares one underlying
@@ -125,6 +245,13 @@ function BranchesPageContent() {
     data: pageData,
     isPending,
     isError,
+    error: listError,
+    isPlaceholderData,
+    refetch,
+    analyticsPending,
+    analyticsError,
+    refetchAnalytics,
+    servedStatusOrdering,
   } = useBranchesPageData(
     pageDataFilters,
     {
@@ -135,7 +262,26 @@ function BranchesPageContent() {
       // run unrecoverable under its own key. Fails OPEN on a stalled auth
       // hydration (see `VIEW_RESTORE_AUTH_DEADLINE_MS`), so the table degrades
       // to the pre-gate double read rather than to a permanent skeleton.
-      enabled: isViewReady,
+      // ISS-9692 (whitlockk review): `isReadReady` folds `isViewReady` together with
+      // the page-size gate. `isViewReady` alone opened this read on the render
+      // the saved 500 was still resolving, so the first page came back at the
+      // default and was replaced. Composed in the hook so desktop reads the
+      // same answer.
+      // ISS-9437: `statusOrderingGate.isReady` joins the wait so no row can
+      // exist before the order to sort it in does, bounded by the same
+      // `FEATURE_FLAG_RESOLUTION_DEADLINE_MS` — so a flag-service outage still
+      // degrades to the vocabulary-ordered table rather than a skeleton.
+      // ISS-9619 (whitlockk + codex review): and on the day-boundary gate. An
+      // unresolved assignment reads as UTC, so a reader whose stored mode is
+      // `local` fetched this page against the UTC window and refetched it under
+      // the Local one the moment PostHog answered — the same double read, and
+      // the same transiently-wrong population, the two gates above already wait
+      // out. Settles from the same PostHog answer and under the same
+      // `FEATURE_FLAG_RESOLUTION_DEADLINE_MS`, so it adds no new way to stall.
+      enabled:
+        serverControls.isReadReady &&
+        statusOrderingGate.isReady &&
+        isTimezoneModeReady,
       staleTime: WEB_BRANCHES_PAGE_DATA_STALE_TIME_MS,
       refetchOnWindowFocus: true,
       // Keep the previous window's rows on screen while an uncached date
@@ -146,31 +292,95 @@ function BranchesPageContent() {
     },
     queryIdentity
   );
-  const data = pageData?.list;
+  const presentedPageData = selectPresentedBranchPageData(pageData, {
+    isPlaceholderData,
+    isViewReady,
+  });
+  const pageDataPresentationPending = isBranchPageDataPresentationPending({
+    isPending,
+    isPlaceholderData,
+    isError,
+    isViewReady,
+    pageData,
+  });
+  const data = presentedPageData?.list;
+  const serverPageActive = isBranchServerPageResponse(data);
+  const serverControlsActive = shouldUseBranchServerControls(
+    isPending,
+    isPlaceholderData,
+    serverPageActive
+  );
+  // ISS-10350 (codex review): the REQUEST clock is retired, but the producer
+  // still stamps its own instant on the RESPONSE. Judge rows against that, not
+  // the viewer's browser clock — a system clock trailing the API's makes a
+  // genuinely recent `lastActivityAt` look like a future timestamp, which the
+  // adapter drops to an em-dash and the last-active facets then exclude.
+  const evaluationNow = useMemo(
+    () =>
+      resolveBranchCohortEvaluationNow(
+        data?.lastActiveCohort?.evaluationNow,
+        data?.pageInfo?.now
+      ),
+    [data]
+  );
   const rows = useMemo(
     () =>
       adaptBranchRows(data?.items ?? [], {
+        now: evaluationNow,
         preferCanonicalLastActive: true,
       }),
-    [data]
+    [data, evaluationNow]
   );
 
-  // Every branch (merged, agent-worktree, bot) always shows — the client-side
-  // window is the only pre-sort narrowing. Window → sort → filter → paginate.
-  const visibleRows = useMemo(
-    () => filterBranchRowsByWindow(rows, startDate, endDate),
-    [rows, startDate, endDate]
+  // ISS-9437: ONE read of the key on this surface, resolved straight into a
+  // whole ordering. Nothing downstream sees the boolean — the client comparator
+  // takes the shape, so the flag picks between two orderings rather than
+  // steering several derivations that could settle at different moments.
+  const statusOrdering =
+    statusOrderingGate.isReady && statusOrderingGate.enabled
+      ? ROOT_FIRST_BRANCH_STATUS_ORDERING
+      : DEFAULT_BRANCH_STATUS_ORDERING;
+  // ISS-9437: the producer decides the order of a SERVER page, so when it
+  // changes the one it serves, the reader's offset names a slice of a different
+  // list. Reset to the first page rather than leave them somewhere arbitrary.
+  useBranchServedStatusOrderingReset(
+    servedStatusOrdering,
+    serverControls.setPage
   );
 
-  // Client-side sort feeds the filter/pagination hook (window → sort → filter →
-  // paginate).
-  const sortedRows = useMemo(
-    () => sortBranchRows(visibleRows, sortKey, sortDir, true),
-    [visibleRows, sortKey, sortDir]
+  // Every branch class (merged, agent-worktree, bot) remains eligible. The
+  // complete-list fallback applies the window locally; server-page producers
+  // return rows already narrowed for the requested window.
+  const { visibleRows, sortedRows } = useMemo(
+    () =>
+      resolveBranchDisplayRows(rows, {
+        serverPageActive,
+        startDate,
+        endDate,
+        sortKey,
+        sortDir,
+        statusOrdering,
+      }),
+    [
+      endDate,
+      rows,
+      serverPageActive,
+      sortDir,
+      sortKey,
+      startDate,
+      statusOrdering,
+    ]
   );
 
   // FEA-3560: seed-from-URL + URL write-through live inside the hook, shared
   // with the desktop Branches view so the glue can't drift per surface.
+  const legacyState = useUrlSyncedBranchFilterState(
+    sortedRows,
+    branchPageSize,
+    true,
+    evaluationNow,
+    serverControls.writeViewParams
+  );
   const {
     filters,
     page,
@@ -179,13 +389,46 @@ function BranchesPageContent() {
     pagedRows,
     total,
     totalPages,
-    from,
-    to,
+    pageSize: resolvedPageSize,
     handleFiltersChange,
-  } = useUrlSyncedBranchFilterState(
-    sortedRows,
-    APPROVED_BRANCH_PAGE_SIZE,
-    true
+    handleGroupingChange,
+    handleCollapsedGroupsChange,
+  } = resolveBranchPageState({
+    serverPageActive,
+    serverControlsActive,
+    server: serverControls,
+    legacy: legacyState,
+    data,
+    rows,
+    pageSize: branchPageSize,
+  });
+  const hasCompletePopulation = branchListHasCompletePopulation(data);
+  const cohortNotice = useMemo(
+    () =>
+      resolveBranchCohortNotice({
+        rows: filteredRows,
+        total,
+        hasData: presentedPageData !== undefined,
+        hasFiniteWindow: startDate !== undefined,
+        isPlaceholderData,
+        placeholderFailed: isPlaceholderData && isError,
+        completeCorpus: hasCompletePopulation,
+        renderNow: evaluationNow,
+        cohortKey: branchListCohortKey(pageDataFilters),
+        producerCohort: data?.lastActiveCohort,
+      }),
+    [
+      data,
+      evaluationNow,
+      filteredRows,
+      hasCompletePopulation,
+      isError,
+      isPlaceholderData,
+      pageDataFilters,
+      presentedPageData,
+      startDate,
+      total,
+    ]
   );
 
   // FEA-4180: named saved views (order + visibility + sort + filters). Captures
@@ -193,17 +436,28 @@ function BranchesPageContent() {
   // view-state hook (sort/window/columns) and the filter-state hook (facets, via
   // the URL-mirroring `handleFiltersChange`). Keyed to the web surface.
   const savedViews = useBranchSavedViews(
-    "branches:web",
+    savedViewsStore,
     {
       sortKey,
       sortDir,
       dateRange,
       hiddenColumns,
-      columnOrder: [],
+      columnOrder,
+      // ISS-9447 M5: the saved-view store captures the same widths and
+      // rows-per-page the single live view already persisted. `savedPageSize`,
+      // not `branchPageSize` — the reader's stored CHOICE, so a view captured
+      // while the ladder flag is off still records what they picked rather than
+      // the flag-resolved page size they happen to be looking at.
+      columnWidths,
+      pageSize: savedPageSize,
       filters,
+      grouping: serverControls.grouping,
+      collapsedGroups: serverControls.collapsedGroups,
     },
-    { applyArrangement, applyFilters: handleFiltersChange },
-    true
+    {
+      applyArrangement: serverControls.applyArrangement,
+      applyFilters: handleFiltersChange,
+    }
   );
 
   const filteredWireRows = useMemo(
@@ -214,16 +468,25 @@ function BranchesPageContent() {
     () => selectVisibleWireRows(data?.items ?? [], visibleRows),
     [data?.items, visibleRows]
   );
+  // ISS-8127 (davetho review): `isViewReady` settles when the view-state
+  // extras restore, which knows nothing about a NAMED active view — that
+  // arrangement, `dateRange` included, is pushed on one commit later by
+  // `useBranchSavedViews`. Gating only the presentation left that window open,
+  // so a warm cache could still reach the producer under the pre-application
+  // range. A null request is the surface's existing "no cohort yet" state.
+  const cohortArrangementSettled = savedViews.isArrangementSettled;
   const cohortRequest = useMemo(
     () =>
-      buildApprovedBranchCohortRequest({
-        filteredRows: filteredWireRows,
-        unfilteredRows: unfilteredWireRows,
-        filters,
-        dateRange,
-        startDate,
-        endDate,
-      }),
+      serverPageActive || !cohortArrangementSettled
+        ? null
+        : buildApprovedBranchCohortRequest({
+            filteredRows: filteredWireRows,
+            unfilteredRows: unfilteredWireRows,
+            filters,
+            dateRange,
+            startDate,
+            endDate,
+          }),
     [
       filteredWireRows,
       unfilteredWireRows,
@@ -231,16 +494,19 @@ function BranchesPageContent() {
       dateRange,
       startDate,
       endDate,
+      serverPageActive,
+      cohortArrangementSettled,
     ]
   );
   const {
     data: cohortResponse,
     isError: cohortIsError,
     isPending: cohortIsPending,
+    refetch: refetchCohort,
   } = useBranchCohortAnalytics(
     cohortRequest,
     {
-      enabled: pageData?.analytics !== undefined,
+      enabled: presentedPageData?.analytics !== undefined,
       refetchOnWindowFocus: true,
       staleTime: WEB_BRANCHES_PAGE_DATA_STALE_TIME_MS,
     },
@@ -251,46 +517,103 @@ function BranchesPageContent() {
   // exact date-windowed, facet-filtered Branch IDs before pagination. A missing
   // or mismatched producer response retains only row-provable values and never
   // substitutes whole-list Session spend for the selected cohort.
-  const filteredAnalytics = useMemo(
-    () =>
-      bindApprovedBranchCohortAnalytics({
-        analytics: pageData?.analytics,
-        filteredRows: filteredWireRows,
-        unfilteredRows: unfilteredWireRows,
-        filters,
-        sessionCostUsd: data?.sessionCostUsd,
-        request: cohortRequest,
-        response: cohortResponse,
-      }),
-    [
-      pageData?.analytics,
-      filteredWireRows,
-      unfilteredWireRows,
+  const filteredAnalytics = useMemo(() => {
+    if (serverPageActive) {
+      return {
+        analytics: presentedPageData?.analytics,
+        comparisonSuppressedByFilter: false,
+      };
+    }
+    // The gate is read once above and picks a WHOLE binder HERE, at the read
+    // site: the binders never learn a flag exists, and no helper takes one as a
+    // parameter (root AGENTS.md, "One read site per feature flag" — the
+    // receiving half, which the gate cannot see).
+    const bind = partialCohortMetricsEnabled
+      ? bindApprovedBranchCohortAnalyticsOverFilteredRowsWithPartialCohort
+      : bindApprovedBranchCohortAnalyticsOverFilteredRows;
+    return bind({
+      analytics: presentedPageData?.analytics,
+      filteredRows: filteredWireRows,
+      unfilteredRows: unfilteredWireRows,
       filters,
-      data?.sessionCostUsd,
-      cohortRequest,
-      cohortResponse,
-    ]
-  );
+      sessionCostUsd: data?.sessionCostUsd,
+      request: cohortRequest,
+      response: cohortResponse,
+    });
+  }, [
+    presentedPageData?.analytics,
+    filteredWireRows,
+    unfilteredWireRows,
+    filters,
+    data?.sessionCostUsd,
+    cohortRequest,
+    cohortResponse,
+    serverPageActive,
+    partialCohortMetricsEnabled,
+  ]);
 
   // FEA-4177: the analytics half is best-effort — when only it fails the combined
   // read still resolves the list (`isError` stays false so the table renders) and
   // flags `analyticsError`. Surface that as the summary cards' own error so they
   // degrade to "Unavailable" while the table keeps rendering. Guard on missing
   // analytics so a partial resolve never renders stale-zero KPIs.
-  const summaryAnalyticsErrored =
-    ((pageData?.analyticsError ?? false) && !pageData?.analytics) ||
-    (cohortRequest !== null && cohortIsError);
-  const summaryAnalyticsPending =
-    isPending || (cohortRequest !== null && cohortIsPending);
-
-  const handleSort = (column: string, direction: SortDirection) =>
+  // ANALYTICS-only: this is what drives the analytics error strip and its Retry,
+  // which must not appear for a list failure.
+  const summaryAnalyticsErrored = resolveBranchesSummaryErrored({
+    analyticsError,
+    cohortErrored: cohortRequest !== null && cohortIsError,
+    listError: false,
+    pageDataAnalyticsError: presentedPageData?.analyticsError === true,
+  });
+  // What the CARDS answer to. Both halves, because a failure in either stops the
+  // summary being refreshed — routing only the analytics half through the
+  // lifecycle dashed a payload we were holding while the line above it said the
+  // figures were on screen and refreshing.
+  const summaryCardsErrored = resolveBranchesSummaryErrored({
+    analyticsError,
+    cohortErrored: cohortRequest !== null && cohortIsError,
+    listError: isError,
+    pageDataAnalyticsError: presentedPageData?.analyticsError === true,
+  });
+  const summaryAnalyticsPending = resolveBranchesSummaryPending({
+    analyticsPending,
+    // The un-settled arrangement counts as PENDING, not as "no cohort asked
+    // for": with the request withheld the cards would otherwise fall through to
+    // row-provable values for a commit and flash a number built from the
+    // pre-application window — the same lie in a shorter frame (ISS-8127).
+    // Scoped to the cohort path; the server-page path reads page analytics and
+    // never builds a cohort request at all.
+    cohortPending:
+      !(serverPageActive || cohortArrangementSettled) ||
+      (cohortRequest !== null && cohortIsPending),
+    listPending: pageDataPresentationPending,
+    hasData: data !== undefined,
+  });
+  const handleSort = (column: string, direction: SortDirection) => {
     setSort(column as BranchSortKey, direction as BranchSortDir);
+    serverControls.setPage(0);
+  };
 
   const handleDateRangeChange = (next: DateRange) => {
     setDateRange(next);
-    setPage(0);
+    legacyState.setPage(0);
+    serverControls.setPage(0);
   };
+
+  const handlePageSizeChange = (nextPageSize: number) => {
+    serverControls.setPageSize(nextPageSize);
+    legacyState.setPage(0);
+  };
+
+  useEffect(() => {
+    if (!(serverPageActive && data?.pageInfo) || isPlaceholderData) {
+      return;
+    }
+    const repairedPage = data.pageInfo.offset / data.pageInfo.limit;
+    if (repairedPage !== serverControls.page) {
+      serverControls.setPage(repairedPage);
+    }
+  }, [data?.pageInfo, isPlaceholderData, serverControls, serverPageActive]);
 
   const getBranchHref = (item: RenderBranchRow) =>
     `/${orgSlug}/branches/${item.id}`;
@@ -304,183 +627,196 @@ function BranchesPageContent() {
       branchId: item.id,
       tab: BranchDetailTabParam.SessionsTimeline,
     })}`;
-  const connectHref = `/api/integrations/github?returnTo=${encodeURIComponent(
-    `/${orgSlug}/branches`
-  )}`;
+  // ISS-8972: a Linked Sessions CHIP opens that Session's OWN detail — unlike
+  // the count chip beside it, which opens the branch's Sessions tab. Built from
+  // the same notification-route SSOT so the path cannot drift from the one the
+  // session detail route reads, and org-prefixed like every other web route here.
+  const getSessionHref = (session: BranchRowSession) =>
+    `/${orgSlug}${getNotificationEntityPath({
+      kind: NotificationEntityKind.Session,
+      sessionId: session.navigableRef,
+    })}`;
+  const connectHref = useGitHubAuthorizeHref({
+    returnTo: `/${orgSlug}/branches`,
+  });
   const githubStatus = searchParams.get("github");
-  const isResolved = !(isPending || isError);
-  const hasRows = rows.length > 0;
-  const banner = useMemo(
-    () => resolveBranchListBanner(data?.items ?? []),
-    [data]
-  );
-
-  const handleRetry = () => {
-    return Promise.all([
-      queryClient.invalidateQueries(
-        {
-          queryKey: branchesKeys.analyticsRoot(),
-        },
-        { throwOnError: true }
-      ),
-      queryClient.invalidateQueries(
-        { queryKey: branchesKeys.cohortAnalyticsRoot() },
-        { throwOnError: true }
-      ),
-      queryClient.invalidateQueries(
-        { queryKey: branchesKeys.pageDataRoot() },
-        { throwOnError: true }
-      ),
-    ]).catch(() => undefined);
+  // ISS-9429: the ONE narrowing signal both hosts pass. Web used to pass a bare
+  // `rows.length > 0`, so a filtered-away result on the all-time range rendered
+  // "No branches yet" over a populated org; desktop corrected it with a private
+  // helper web could not reach. The correction now lives in one place.
+  const hasActiveFilters = branchFiltersAreActive(filters);
+  // ISS-9725: a failed list read reaches the client monitoring path instead of
+  // being visible only as `isError` on screen. Same signals the body branches
+  // on, so the record cannot describe a screen other than the one drawn.
+  useBranchesListUnavailableMonitor({
+    hasActiveFilters,
+    hasWindow: startDate !== undefined,
+    isError,
+    isPending: pageDataPresentationPending,
+    listError,
+    visibleRowCount: pagedRows.length,
+  });
+  // ISS-5958 D1/D2: a web `(authenticated)` route always has a session behind
+  // it, so this CTA is never a sign-up — only whether the user's OWN grant is
+  // what broke changes the verb. Read unconditionally, not gated on whether the
+  // CTA renders: those are the same instant, so a gate would paint the
+  // first-time verb and swap it to `Reconnect` a roundtrip later, which is the
+  // D2 collapse arriving late (decided 2026-08-21).
+  const githubConnect = useGitHubConnectHrefTarget({
+    authenticated: true,
+    href: connectHref,
+  });
+  // ISS-10645: the RAW action, which `githubConnect.action` cannot report — it
+  // floors `null` to a first-time connect so a rendered CTA always has a verb,
+  // which is right for wording and wrong for gating. Same query key as the
+  // target above, so this is one cached status read rather than a second source.
+  const githubConnectAction = useGitHubConnectAction(true);
+  // No `createAccountAction` is threaded: this listing lives in the Clerk
+  // `(authenticated)` group, so `authenticated: true` above is a fact about the
+  // route and the action can never resolve to `SignUp` — the sign-up arm is
+  // unreachable here by construction rather than by omission.
+  const stallCta: BranchesStallCta = {
+    githubConnect,
+    signals: resolveBranchesStallCtaSignals(githubConnectAction),
   };
 
-  useEffect(() => {
-    if (githubStatus !== GitHubConnectReturnStatus.Connected) {
-      return;
+  // Elapsed loading time may reveal the account CTA, never a pending Retry.
+  const [stallRetryToken, setStallRetryToken] = useState(0);
+  const bulkActions = useBranchesBulkTagActions(pagedRows);
+  // ISS-12663: the org custom-field columns, read off the rows on this page.
+  const customFields = useBranchesCustomFieldsController(pagedRows);
+  const retryInFlight = useRef<Promise<unknown> | null>(null);
+  const handleRetry = () => {
+    if (retryInFlight.current) {
+      return retryInFlight.current;
     }
-    queryClient.invalidateQueries({ queryKey: githubKeys.all });
-    queryClient.invalidateQueries({ queryKey: branchesKeys.all });
-    if (backfillStartedRef.current) {
-      return;
+    if (pageDataPresentationPending) {
+      return Promise.resolve();
     }
-    backfillStartedRef.current = true;
-    // Long-running by design: Apply mode runs the whole backfill (repos ->
-    // branches -> PRs -> projections) synchronously before responding, so it
-    // needs more than the default client deadline.
-    const backfill = apiClient.post(
-      "/integrations/github/backfill",
-      { mode: GitHubBackfillMode.Apply },
-      { timeoutMs: LONG_RUNNING_API_TIMEOUT_MS }
+    setStallRetryToken((token) => token + 1);
+    const pending = Promise.resolve().then(() => refetch());
+    retryInFlight.current = pending;
+    return pending.finally(() => {
+      retryInFlight.current = null;
+    });
+  };
+  const stallPhase = useLoadingStall(
+    pageDataPresentationPending,
+    LIST_LOADING_STALL_THRESHOLDS,
+    stallRetryToken
+  );
+
+  const handleSummaryRetry = () => {
+    return Promise.all([refetchAnalytics(), refetchCohort()]).catch(
+      () => undefined
     );
-    backfill
-      .catch(() => undefined)
-      // ISS-5013: invalidate on SETTLED, not only on success. Apply mode writes
-      // incrementally (repos → branches → PRs → projections), so a run the
-      // client abandoned at the deadline can leave real rows server-side. On
-      // success-only invalidation the list would keep its pre-backfill
-      // population — typically the connect-GitHub or net-new empty treatment —
-      // and assert "nothing here" about an org that now has branches.
-      .finally(() => {
-        queryClient.invalidateQueries({ queryKey: branchesKeys.all });
-      });
-  }, [apiClient, githubStatus, queryClient]);
+  };
 
+  // ISS-7338's claim is threaded in rather than held in a ref: a remount must
+  // not re-fire the Apply run, and only a document navigation — how every real
+  // reconnect arrives — clears it.
+  const claimBackfillStart = useCallback(
+    () => claimPostConnectBackfill(orgSlug),
+    [orgSlug]
+  );
+  usePostConnectBackfill({
+    claimStart: claimBackfillStart,
+    enabled: githubStatus === GitHubConnectReturnStatus.Connected,
+  });
+
+  // ISS-9225: ONE set of toolbar arguments for both rollout branches. The v1
+  // toolbar renders them directly; the v2 list surface renders its own
+  // `BranchesListToolbarV2` from the same object, so the two cannot be handed
+  // different filters, columns or saved views.
+  const toolbarProps: BranchesToolbarProps = {
+    approved: true,
+    dateRange,
+    facets: serverPageActive ? data?.facets : undefined,
+    filters,
+    hiddenSummaryCards,
+    now: evaluationNow,
+    onDateRangeChange: handleDateRangeChange,
+    onFiltersChange: handleFiltersChange,
+    onResetView: composeBranchResetView(resetView, {
+      handleCollapsedGroupsChange,
+      handleGroupingChange,
+    }),
+    onTimezoneModeChange: setTimezoneMode,
+    onToggleColumn: toggleColumn,
+    onToggleSummaryCard: toggleSummaryCard,
+    rows: visibleRows,
+    timezoneMode,
+    visibleColumns,
+  };
+  const summaryBandProps = {
+    cohortNotice,
+    comparisonSuppressedByFilter:
+      filteredAnalytics.comparisonSuppressedByFilter,
+    githubReturnStatus: githubStatus,
+    onSummaryRetry: handleSummaryRetry,
+    summaryAnalyticsErrored,
+    summaryCards: filteredAnalytics.analytics,
+    summaryCardsErrored,
+    summaryCardsPending: summaryAnalyticsPending,
+    summaryCardsReloading: isPlaceholderData,
+    // ISS-10544: this shell's own answer, and it is unconditional — the trend
+    // sparkline graduated on web (operator ruling, 2026-09-17).
+    trendSparkline: WEB_BRANCH_METRIC_SPARKLINE,
+  };
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden">
       <Header breadcrumbs={[{ label: "Branches" }]} />
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {/* Filter bar — pinned above the scroll area. The table header sticks
-              to the top of the scroll container right beneath it. */}
-        <div className="border-b px-4 py-3">
-          <BranchesToolbar
-            approved
-            dateRange={dateRange}
-            filters={filters}
-            onDateRangeChange={handleDateRangeChange}
-            onFiltersChange={handleFiltersChange}
-            onResetView={resetColumns}
-            onToggleColumn={toggleColumn}
-            readSource={data?.readSource}
-            rows={visibleRows}
-            savedViews={savedViews}
-            visibleColumns={visibleColumns}
-          />
-        </div>
-
-        {/* A labelled section, not <main>: the shell's SidebarInset owns the page's single main landmark. */}
-        <section
-          aria-label="Branches"
-          className="min-h-0 flex-1 overflow-auto"
-          data-testid={SCROLL_CONTAINER_TEST_ID}
-          // biome-ignore lint/a11y/noNoninteractiveTabindex: COMMON-016 requires the two-axis scroll region itself to be keyboard-focusable.
-          tabIndex={0}
-        >
-          <div className="sticky left-0 flex flex-col gap-3 px-4 pt-4 pb-3">
-            <BranchesSummaryCards
-              analytics={filteredAnalytics.analytics}
-              approved
-              approvedComparisonSuppressedByFilter={
-                filteredAnalytics.comparisonSuppressedByFilter
-              }
-              isError={isError || summaryAnalyticsErrored}
-              isPending={summaryAnalyticsPending}
-              showDelta={dateRange === "30d"}
-              wrapBelow
-            />
-            {/* FEA-4177: analytics-only failure (list fine). The cards degrade to
-                "Unavailable" above, but a silent dimmed row leaves the user with
-                no reason and no way back — mirror the list's own Retry with a
-                short honest line plus a retry that re-runs the same combined
-                read. */}
-            {summaryAnalyticsErrored ? (
-              <div className="flex items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--muted)]/30 px-3 py-2 text-[var(--muted-foreground)] text-xs">
-                <span>Couldn't load the summary metrics.</span>
-                <Button
-                  onClick={handleRetry}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  Retry
-                </Button>
-              </div>
-            ) : null}
-            <GitHubConnectReturnNotice status={githubStatus} />
-            {isResolved && banner === "connect-github" ? (
-              <div className="rounded-md border border-[var(--border)] bg-[var(--muted)]/30 px-3 py-2">
-                <ConnectGitHubIndicator compact connectHref={connectHref} />
-              </div>
-            ) : null}
-            {isResolved && banner === "net-new" ? (
-              <div className="rounded-md border border-[var(--border)] bg-[var(--muted)]/30 px-3 py-2 text-[var(--muted-foreground)] text-xs">
-                These branches are tracked locally with no linked pull request
-                yet — the metrics shown are net-new.
-              </div>
-            ) : null}
-          </div>
-          {/* data-testid: stable anchor for the list BODY, mirroring Sessions'
-              `sessions-history-list`. The surfaces-smoke blank-body guard scopes
-              to it so shell chrome (breadcrumb, toolbar) cannot satisfy the
-              assertion — it used to scope to this page's own <main>, which
-              ISS-4673 removed. */}
-          <div data-testid={HISTORY_LIST_TEST_ID}>
-            <BranchesListBody
-              allRows={filteredRows}
-              approved
-              columnOrder={columnOrder}
-              columnWidths={columnWidths}
-              getBranchHref={getBranchHref}
-              getSessionsHref={getSessionsHref}
-              hasRows={hasRows}
-              hasWindow={startDate !== undefined}
-              isError={isError}
-              isPending={isPending}
-              items={pagedRows}
-              onColumnOrderChange={setColumnOrder}
-              onColumnWidthChange={setColumnWidth}
-              onRetry={handleRetry}
-              onShowAllTime={() => handleDateRangeChange("all")}
-              onSort={handleSort}
-              sortBy={sortKey}
-              sortDir={sortDir}
-              visibleColumns={visibleColumns}
-              windowedEmptyIsNoMatches={
-                startDate !== undefined && rows.length === 0
-              }
-            />
-          </div>
-        </section>
-
-        {/* ISS-4681: the shared footer shell. The approved List reports its
-            client-filtered cohort; legacy retains the prior multi-page guard. */}
-        {isResolved && total > 0 ? (
-          <TablePaginationFooter
-            onPageChange={setPage}
-            page={page}
-            readout={`${from}–${to} of ${total}`}
-            totalPages={totalPages}
-          />
-        ) : null}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <BranchesListSurfaceV2
+          allRows={filteredRows}
+          bulkActions={bulkActions}
+          className="min-h-0 min-w-0 flex-1 overflow-hidden"
+          collapsedGroups={serverControls.collapsedGroups}
+          columnOrder={columnOrder}
+          columnWidths={columnWidths}
+          customFields={customFields}
+          getBranchHref={getBranchHref}
+          getSessionHref={getSessionHref}
+          getSessionsHref={getSessionsHref}
+          grouping={serverControls.grouping}
+          hasActiveFilters={hasActiveFilters}
+          hasCompletePopulation={hasCompletePopulation}
+          hasWindow={startDate !== undefined}
+          historyListTestId={HISTORY_LIST_TEST_ID}
+          includePriorityColumn
+          includeProjectColumn
+          includeTagsColumn
+          isError={isError}
+          isPending={pageDataPresentationPending}
+          isPlaceholderData={isPlaceholderData}
+          items={pagedRows}
+          onCollapsedGroupsChange={handleCollapsedGroupsChange}
+          onColumnOrderChange={setColumnOrder}
+          onColumnWidthChange={setColumnWidth}
+          onGroupingChange={handleGroupingChange}
+          onPageChange={setPage}
+          onPageSizeChange={handlePageSizeChange}
+          onRetry={handleRetry}
+          onShowAllTime={() => handleDateRangeChange("all")}
+          onSort={handleSort}
+          page={page}
+          pageSize={resolvedPageSize}
+          sortBy={sortKey}
+          sortDir={sortDir}
+          stallCta={stallCta}
+          stallPhase={stallPhase}
+          {...summaryBandProps}
+          tableScrollAttributes={{
+            "aria-label": "Branches",
+            role: "region",
+            tabIndex: 0,
+          }}
+          tableScrollTestId={SCROLL_CONTAINER_TEST_ID}
+          toolbar={toolbarProps}
+          total={total}
+          totalPages={totalPages}
+          visibleColumns={visibleColumns}
+        />
       </div>
     </div>
   );

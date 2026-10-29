@@ -37,11 +37,21 @@ import type {
   SyncLaneBurndown,
   SyncLaneId,
 } from "./sync-burndown-contract.js";
-import { SYNC_LANE_IDS, SyncLaneDrainState } from "./sync-burndown-contract.js";
+import {
+  isSyncLaneId,
+  SYNC_LANE_IDS,
+  SyncLaneDeadLetteredBasis,
+  SyncLaneDrainState,
+} from "./sync-burndown-contract.js";
 
 /** One lane's readiness, projected from its burn-down row. */
 export type CloudReadLaneReadiness = {
-  lane: SyncLaneId;
+  /**
+   * ISS-10375: a `SyncLaneId` when THIS build produced the payload, but typed as
+   * any string because the renderer admits a lane a newer main process added.
+   * Narrow with `isSyncLaneId` before indexing anything keyed by `SyncLaneId`.
+   */
+  lane: string;
   state: SyncLaneDrainState;
   /**
    * Items the lane would ACTUALLY deliver, counted with its own pending
@@ -52,8 +62,42 @@ export type CloudReadLaneReadiness = {
   itemsRemaining: number | null;
   /** True when {@link itemsRemaining} is a floor (`>= N`), not an exact count. */
   itemsRemainingIsLowerBound: boolean;
-  /** Items the lane ABANDONED. Always measurable; `0` is a real zero. */
+  /**
+   * Items the lane ABANDONED at this sample. NOT always measurable, and a `0`
+   * is not always a real zero — read it with {@link deadLetteredBasis}.
+   */
   deadLetteredCount: number;
+  /**
+   * ISS-9744: which population {@link deadLetteredCount} came from, carried
+   * straight through from the lane's own burn-down row.
+   *
+   * Required, and projected rather than re-derived, for the reason
+   * {@link unmeasuredRows} is carried: dropping it here would rebuild the exact
+   * collapse the burn-down just took apart, one level in. A lane that has no
+   * give-up state reports a structural `0`; a lane the store never queried
+   * reports a placeholder `0`; and {@link totalCloudReadDeadLettered} cannot
+   * tell a reader which kind of zero it summed unless every lane says so.
+   */
+  deadLetteredBasis: SyncLaneDeadLetteredBasis;
+  /**
+   * ISS-9823: was this lane's once-per-identity resume read failing at this
+   * sample?
+   *
+   * Carried across the boundary rather than left in the main process because the
+   * renderer RE-DERIVES the drain state: `parse-cloud-read-readiness`'s
+   * `laneCountsMatchState` re-runs `classifyLaneDrainState` over these very
+   * counts and fails the whole snapshot when its answer disagrees with `state`.
+   * Without this field a main process reporting `remaining_unknown` for a blocked
+   * resume would be re-derived as `drained`, the lane rejected, and startup
+   * readiness degraded to a pending `unknown` — so omitting it does not merely
+   * lose a detail, it converts the fix into a different defect.
+   *
+   * Required here and TOLERANT on the wire (`parse-cloud-read-readiness` reads it
+   * nullish-with-default-`false`, the `deadLetteredBasis` and `parkedCount`
+   * precedent), so an older main process that never populates it re-derives
+   * exactly as it does today.
+   */
+  resumeBlocked: boolean;
   /**
    * ISS-5768: rows the lane counted but could NOT classify — a status string
    * this build does not recognize (a version-skewed or corrupt row). Carried
@@ -76,6 +120,14 @@ export type CloudReadLaneReadiness = {
    * permanently unattestable.
    */
   notApplicableReason?: CloudReadLaneNotApplicableReason | null;
+  /**
+   * ISS-7096: rows parked under this lane's `<lanePrefix>:parked:<org>`
+   * partitions — another environment's work, deliberately NOT in
+   * {@link itemsRemaining} and never counted toward the drain. Optional and
+   * additive: absent when the main process predates the field, which reads as
+   * unknown and changes nothing.
+   */
+  parkedCount?: number | null;
 };
 
 /**
@@ -168,11 +220,10 @@ export function isCloudReadBacklogDrained(
  * {@link unknownCloudReadReadiness}, which `parse-cloud-read-readiness`
  * deliberately admits because the burn-down answers it for the first minute of
  * every launch. Summing an empty list to `0` collapses "measured no lanes" into
- * "owes zero items": the cutover chip renders on `sync_not_established` and
- * would print "Uploading history · 0 to go" off a snapshot that never counted
- * anything, which is the same fabricated-zero class this module exists to
- * prevent. `isCloudReadBacklogDrained` already refuses an empty list for the
- * same reason; this is the totals half of that refusal.
+ * "owes zero items": an indicator reading that total would print "0 to go" off a
+ * snapshot that never counted anything, which is the same fabricated-zero class
+ * this module exists to prevent. `isCloudReadBacklogDrained` already refuses an
+ * empty list for the same reason; this is the totals half of that refusal.
  */
 export function totalCloudReadItemsRemaining(
   snapshot: CloudReadReadinessSnapshot
@@ -190,15 +241,73 @@ export function totalCloudReadItemsRemaining(
   return total;
 }
 
-/** How many items every lane has collectively given up on. Always measurable. */
+/**
+ * ISS-9744: what a CROSS-LANE dead-letter total is a count of.
+ *
+ * Each lane says which population its own count came from
+ * ({@link SyncLaneDeadLetteredBasis}), and a sum over lanes has to RECONCILE
+ * those rather than silently inherit one of them. The reconciliation turns on
+ * the one property that decides whether the total can be wrong in the direction
+ * that matters — did every lane establish its contribution at all?
+ *
+ * - `measured` — every lane established one, either by counting a population
+ *   (`queue_status_count`, `abandoned_id_ledger`) or by having no give-up state
+ *   to count (`no_dead_letter_state`, a certain zero). The total is exact.
+ * - `partially_unmeasured` — at least one lane established a contribution and
+ *   at least one was never read. The unread lane contributed a placeholder, so
+ *   the total is a FLOOR: that lane may be holding plenty. **A structural zero
+ *   beside an unread lane does not make the total a structural zero** — this is
+ *   the combination that has no honest confident answer, and naming it is the
+ *   whole reason this type exists.
+ * - `unmeasured` — no lane established anything: every lane was unread, or the
+ *   snapshot measured no lanes at all. The `0` is a placeholder, not a count.
+ *
+ * The provenance split the lanes draw — a live status count versus a durable
+ * abandoned-id ledger — deliberately does NOT appear here. Both are counts of
+ * items a lane is holding as abandoned at this sample, so they add; what does
+ * not add is a number nobody took. The provenance stays on
+ * {@link CloudReadLaneReadiness.deadLetteredBasis}, which the projection now
+ * carries, so a caller that needs the breakdown reads the lanes.
+ */
+export const CloudReadDeadLetteredBasis = {
+  Measured: "measured",
+  PartiallyUnmeasured: "partially_unmeasured",
+  Unmeasured: "unmeasured",
+} as const;
+export type CloudReadDeadLetteredBasis =
+  (typeof CloudReadDeadLetteredBasis)[keyof typeof CloudReadDeadLetteredBasis];
+
+/** A cross-lane dead-letter total and what it is a total of. */
+export type CloudReadDeadLettered = {
+  count: number;
+  basis: CloudReadDeadLetteredBasis;
+};
+
+/**
+ * How many items every lane has collectively given up on, and whether that
+ * number can be stood behind (see {@link CloudReadDeadLetteredBasis}).
+ *
+ * An `unmeasured` lane's `0` adds nothing by construction — the store
+ * short-circuits before it queries the dead-letter population — and a non-zero
+ * one from a skewed payload is still summed rather than dropped: the basis
+ * already marks the total a floor, and discarding a claimed abandonment is the
+ * under-report that actually costs a user their data.
+ */
 export function totalCloudReadDeadLettered(
   snapshot: CloudReadReadinessSnapshot
-): number {
-  let total = 0;
+): CloudReadDeadLettered {
+  let count = 0;
+  let established = 0;
+  let unread = 0;
   for (const lane of snapshot.lanes) {
-    total += lane.deadLetteredCount;
+    count += lane.deadLetteredCount;
+    if (lane.deadLetteredBasis === SyncLaneDeadLetteredBasis.Unmeasured) {
+      unread += 1;
+    } else {
+      established += 1;
+    }
   }
-  return total;
+  return { count, basis: reconcileDeadLetteredBasis(established, unread) };
 }
 
 /** Does any lane report having ABANDONED work it will never deliver? */
@@ -212,37 +321,6 @@ export function hasCloudReadDeadLetters(
   );
 }
 
-/**
- * A comparable fingerprint of everything the cutover decision reads.
- *
- * The renderer's fail-open is keyed on this CHANGING, not on wall-clock time
- * since sign-in: a bound that fired while a real backlog was draining would
- * reintroduce the very defect this ticket fixes. Any movement — a lane state
- * transition, a queue getting shorter (or longer), the import completing —
- * proves the system is alive and resets the stall clock. Only a fingerprint that
- * stands still is evidence of a wedge.
- *
- * `sampledAtIso` is deliberately NOT part of it. The burn-down re-stamps every
- * sample whether or not anything moved, so including it would make the clock
- * reset forever and the bound unreachable — the same "activity is not progress"
- * trap ISS-5347 documented.
- */
-export function cloudReadReadinessFingerprint(
-  snapshot: CloudReadReadinessSnapshot
-): string {
-  const lanes = snapshot.lanes
-    .map(
-      (lane) =>
-        `${lane.lane}:${lane.state}:${lane.itemsRemaining ?? "unknown"}${
-          lane.itemsRemainingIsLowerBound ? "+" : ""
-        }:${lane.deadLetteredCount}:${lane.unmeasuredRows}:${
-          lane.notApplicableReason ?? "applicable"
-        }`
-    )
-    .join("|");
-  return `import=${snapshot.importComplete}|${lanes}`;
-}
-
 function projectLane(
   lane: SyncLaneBurndown,
   notApplicableReason: CloudReadLaneNotApplicableReason | null
@@ -253,8 +331,14 @@ function projectLane(
     itemsRemaining: lane.itemsRemaining,
     itemsRemainingIsLowerBound: lane.itemsRemainingIsLowerBound,
     deadLetteredCount: lane.deadLetteredCount,
+    // ISS-9744: the count and what it counted travel together or not at all.
+    deadLetteredBasis: lane.deadLetteredBasis,
+    // ISS-9823: projected, never re-derived — the renderer re-runs the classifier
+    // over this payload and rejects a lane it cannot reproduce.
+    resumeBlocked: lane.resumeBlocked,
     unmeasuredRows: lane.unmeasuredRows,
     notApplicableReason,
+    parkedCount: lane.parkedCount ?? null,
   };
 }
 
@@ -297,8 +381,10 @@ export function cloudReadLaneOwesWork(lane: {
 /**
  * The whole-app answer to "is this machine's history in the cloud?".
  *
- * - `unknown` — nobody has looked, a lane cannot measure its remainder, or the
- *   initial import is still discovering history no lane has been offered yet.
+ * - `unknown` — nobody has looked, a lane cannot measure its remainder (which
+ *   ISS-9823 includes a lane whose resume read is failing in: its zero was never
+ *   measured against restored state), or the initial import is still discovering
+ *   history no lane has been offered yet.
  *   NEVER renders as complete; an uncomputable state is named, not shown as its
  *   happy value.
  * - `outstanding` — at least one item is still on this machine.
@@ -326,7 +412,8 @@ export type CloudSyncBacklogState =
  * per-lane count carries a unit a reader can act on.
  */
 export type CloudSyncLaneRemainder = {
-  lane: SyncLaneId;
+  /** Possibly a lane this build does not know — see {@link CloudReadLaneReadiness.lane}. */
+  lane: string;
   /** Items this lane still owes. Always > 0 — settled lanes are not listed. */
   itemsRemaining: number;
   /** True when this lane's own count is a floor (`>= N`), not exact. */
@@ -384,6 +471,21 @@ export type CloudSyncBacklog = {
    */
   laneReadinessUnattested: boolean;
   deadLetteredCount: number;
+  /**
+   * ISS-9744: what {@link deadLetteredCount} is a count of, reconciled across
+   * the lanes that contributed to it (see {@link CloudReadDeadLetteredBasis}).
+   *
+   * A surface printing the count must read this before presenting it as exact:
+   * on `partially_unmeasured` the number is a FLOOR, for the same reason
+   * {@link itemsRemainingIsLowerBound} marks the remainder as one, and on
+   * `unmeasured` it is a placeholder rather than a measurement.
+   *
+   * Deliberately NOT an input to {@link state}. An older main process that never
+   * populates the per-lane basis degrades to `unmeasured`, and letting that gate
+   * the drain verdict would leave such a build permanently unable to report
+   * "up to date" — trading a precision loss for a liveness one.
+   */
+  deadLetteredBasis: CloudReadDeadLetteredBasis;
 };
 
 /** Options for {@link resolveCloudSyncBacklog}. */
@@ -419,9 +521,7 @@ export type ResolveCloudSyncBacklogOptions = {
  * initial collector parse/import is still running, history exists on this
  * machine that has not entered ANY sync lane's queue yet — so every lane can
  * report a clean remainder and the machine still owe the cloud thousands of
- * items. `resolveBacklogBlocker` (the read-source gate reading this same
- * snapshot) already refuses to cut over on `!importComplete` for exactly that
- * reason; the aggregate refuses to claim completeness on it for the same one.
+ * items, so the aggregate refuses to claim completeness while `!importComplete`.
  * A measured total is a FLOOR while discovery runs, and a lane-clean machine is
  * `unknown`, never `drained` or `abandoned` — both of those are terminal claims.
  */
@@ -436,6 +536,8 @@ export function resolveCloudSyncBacklog(
     laneRemainders: [],
     laneReadinessUnattested: false,
     deadLetteredCount: 0,
+    // Nobody looked, so the zero above is a placeholder — never a measured zero.
+    deadLetteredBasis: CloudReadDeadLetteredBasis.Unmeasured,
   };
   if (
     snapshot === null ||
@@ -445,7 +547,7 @@ export function resolveCloudSyncBacklog(
     return unknown;
   }
   const itemsRemaining = totalCloudReadItemsRemaining(snapshot);
-  const deadLetteredCount = totalCloudReadDeadLettered(snapshot);
+  const deadLettered = totalCloudReadDeadLettered(snapshot);
   const itemsRemainingIsLowerBound = snapshot.lanes.some(
     (lane) => lane.itemsRemainingIsLowerBound
   );
@@ -456,7 +558,8 @@ export function resolveCloudSyncBacklog(
       ? cloudSyncLaneRemainders(snapshot)
       : [],
     laneReadinessUnattested: false,
-    deadLetteredCount,
+    deadLetteredCount: deadLettered.count,
+    deadLetteredBasis: deadLettered.basis,
   };
   if (itemsRemaining === null || snapshot.lanes.some(laneHasUnclassifiedRows)) {
     // A lane owes something we cannot size, or holds rows it could not classify.
@@ -507,6 +610,39 @@ export function resolveCloudSyncBacklog(
       laneReadinessUnattested: cloudReadLaneReadinessIsFinal(snapshot),
     };
   }
+  // ISS-9823 review: a lane whose once-per-identity resume read is failing
+  // measured a zero it cannot stand behind — the abort is what keeps its queue
+  // empty — so it must never be summed into a "the total is 0, therefore we are
+  // done" verdict. Gated on the TOTAL rather than nested under the `drained`
+  // door, for the reason the paragraph above records: `drained` and `abandoned`
+  // are BOTH reachable only at a zero total and both claim the queue emptied, so
+  // a guard living inside one door is skipped by a wedged snapshot carrying a
+  // dead letter and the defect just moves one branch over. Testing the total
+  // closes both and cannot intercept `outstanding`.
+  //
+  // Deliberately NOT behind `strictLaneReadiness`. That flag stages a
+  // lane-readiness product change; this is a correctness floor, and the flag is
+  // closed by default, so leaving the fix inside it would mean the default UI —
+  // `useCloudSyncBacklog` → the Connection Status "History Sync" cell and the
+  // startup readiness panel — still renders a wedged device as "Up to date".
+  // It only ever converts a false terminal claim into `unknown`; no count and no
+  // capability is lost.
+  // ISS-9807: and the same door for a lane the store never READ. Keyed on the
+  // lane's own classification, not on the basis alone: a payload from a main
+  // process that predates the basis coarsens every lane to `unmeasured` at the
+  // IPC boundary while still carrying the `drained` that build classified, and
+  // it must keep settling — the basis is a statement about the TOTAL there,
+  // not about the lane. A lane THIS build classified `remaining_unknown` on an
+  // unmeasured basis is the one that must never round the aggregate up.
+  if (
+    itemsRemaining === 0 &&
+    snapshot.lanes.some(
+      (lane) =>
+        cloudReadLaneResumeBlocked(lane) || cloudReadLaneUnmeasured(lane)
+    )
+  ) {
+    return { ...totals, state: CloudSyncBacklogState.Unknown };
+  }
   if (!snapshot.lanes.some(cloudReadLaneOwesWork)) {
     return { ...totals, state: CloudSyncBacklogState.Drained };
   }
@@ -514,6 +650,63 @@ export function resolveCloudSyncBacklog(
     return { ...totals, state: CloudSyncBacklogState.Outstanding };
   }
   return { ...totals, state: CloudSyncBacklogState.Abandoned };
+}
+
+/**
+ * Which drain states mean the lane was ACTUALLY RUNNING when it measured its
+ * counts, as an exhaustive map rather than two `!==` comparisons.
+ *
+ * `classifyLaneDrainState` answers the two `false` members from liveness alone
+ * and returns before it reads a single count; every other member is reachable
+ * only past that door. A `Record` over the union cannot be written without
+ * naming every member, so a state added later fails `tsc` here instead of
+ * quietly joining whichever side a comparison happened to leave it on.
+ */
+const CLOUD_READ_LANE_STATE_IS_LIVE: Record<SyncLaneDrainState, boolean> = {
+  [SyncLaneDrainState.NeverStarted]: false,
+  [SyncLaneDrainState.IdleNotRunning]: false,
+  [SyncLaneDrainState.Draining]: true,
+  [SyncLaneDrainState.DrainedWithDeadLetters]: true,
+  [SyncLaneDrainState.RemainingUnknown]: true,
+  [SyncLaneDrainState.Drained]: true,
+};
+
+/**
+ * ISS-9823: is this lane's once-per-identity resume read failing while the lane
+ * is still trying?
+ *
+ * Kept OUT of {@link cloudReadLaneOwesWork} on purpose. That predicate answers
+ * "does this lane still owe the cloud something", and a wedged lane may owe
+ * literally nothing — the whole difficulty is that its measured counts are
+ * honest zeros. This answers the different question the terminal states need:
+ * whether those zeros were established by a lane that was actually running.
+ *
+ * ISS-9823 re-review: that question is settled by
+ * {@link CloudReadLaneReadiness.state} and NOT by the raw flag, because
+ * `classifyLaneDrainState` ranks liveness above the blocked resume while the
+ * burn-down row carries the flag through whether the gate is open or not. A lane
+ * that latched a fault and then had its gate shut reports `idle_not_running`,
+ * honestly and with a measured zero, and still carries `resumeBlocked: true` —
+ * and nothing clears the level for a lane that has stopped teeing outcomes, so
+ * the raw flag held the whole-app verdict at `unknown` for the rest of the
+ * process. A permanent "still checking" is its own lie; the aggregate must not
+ * contradict the ordering the classifier establishes.
+ */
+function cloudReadLaneResumeBlocked(lane: CloudReadLaneReadiness): boolean {
+  return lane.resumeBlocked && CLOUD_READ_LANE_STATE_IS_LIVE[lane.state];
+}
+
+/**
+ * ISS-9807: did this lane answer `remaining_unknown` because nobody read it?
+ * `classifyLaneDrainState` emits that pair only from an open gate — a shut one
+ * answers from liveness first — so the state carries the liveness test
+ * {@link cloudReadLaneResumeBlocked} spells out.
+ */
+function cloudReadLaneUnmeasured(lane: CloudReadLaneReadiness): boolean {
+  return (
+    lane.deadLetteredBasis === SyncLaneDeadLetteredBasis.Unmeasured &&
+    lane.state === SyncLaneDrainState.RemainingUnknown
+  );
 }
 
 /** ISS-5768: rows the lane counted but could not classify. See {@link cloudReadLaneOwesWork}. */
@@ -550,6 +743,7 @@ function resolveImportPendingBacklog(totals: {
   laneRemainders: readonly CloudSyncLaneRemainder[];
   laneReadinessUnattested: boolean;
   deadLetteredCount: number;
+  deadLetteredBasis: CloudReadDeadLetteredBasis;
 }): CloudSyncBacklog {
   return {
     ...totals,
@@ -603,9 +797,14 @@ export function cloudSyncLaneRemainders(
   );
 }
 
-/** Position of a lane in the burn-down's canonical emission order. */
-function canonicalLaneIndex(lane: SyncLaneId): number {
-  return SYNC_LANE_IDS.indexOf(lane);
+/**
+ * Position of a lane in the burn-down's canonical emission order. A lane this
+ * build does not know (ISS-10375) sorts after every lane it does, and the stable
+ * sort keeps several such lanes in payload order.
+ */
+function canonicalLaneIndex(lane: string): number {
+  const index = isSyncLaneId(lane) ? SYNC_LANE_IDS.indexOf(lane) : -1;
+  return index === -1 ? SYNC_LANE_IDS.length : index;
 }
 
 /**
@@ -668,4 +867,25 @@ export function cloudReadLaneReadinessIsFinal(
       lane.state === SyncLaneDrainState.Drained ||
       (lane.notApplicableReason ?? null) !== null
   );
+}
+
+/**
+ * ISS-9744: reconcile the lanes' own bases into the total's basis.
+ *
+ * Written over the two TALLIES rather than over a set of lane bases, so the
+ * empty snapshot falls out of the same rule instead of needing a special case:
+ * nothing established, nothing unread, and the answer is `unmeasured` — the
+ * "we have not sampled yet" list `totalCloudReadItemsRemaining` already refuses
+ * to sum to a confident zero.
+ */
+function reconcileDeadLetteredBasis(
+  established: number,
+  unread: number
+): CloudReadDeadLetteredBasis {
+  if (established === 0) {
+    return CloudReadDeadLetteredBasis.Unmeasured;
+  }
+  return unread === 0
+    ? CloudReadDeadLetteredBasis.Measured
+    : CloudReadDeadLetteredBasis.PartiallyUnmeasured;
 }

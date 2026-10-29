@@ -1,3 +1,4 @@
+import { BranchPushSource } from "@repo/api/src/types/artifact";
 import { normalizeRepoFullName } from "@repo/api/src/types/branch-repository";
 import {
   GitHubFetchCredentialType,
@@ -13,7 +14,9 @@ import {
 } from "@repo/api/src/types/repository-default-identity";
 import type { VcsProviderKind } from "@repo/api/src/types/vcs-provider-kind";
 import { ArtifactType, GitHubInstallationStatus, Prisma } from "@repo/database";
-import { branchLinkedSessionExistsSql } from "./branch-contribution-sql";
+import { GitHubObservedRepositoryVerificationState } from "@/lib/github/observed-repository-store";
+import { branchProductWroteExistsSql } from "./branch-contribution-sql";
+import { normalizedRepositoryFullNameSql } from "./branch-repository-name-sql";
 
 export type CloudBranchRepositoryIdentity = {
   provider: VcsProviderKind;
@@ -100,6 +103,16 @@ export function isCloudBranchEligible(
 /**
  * Correlated SQL twin of `isCloudBranchEligible`. Callers must alias Artifact as
  * `a` and BranchDetail as `b`; all authority sources remain organization scoped.
+ *
+ * "Twin" is a contract, not a description: this CTE's arms must be the same SET
+ * of authority sources the pure function is fed by `readLockedAuthorityRows`.
+ * PLN-1775 M4 added the observed-repository source to the write side only, and
+ * an installation-free org — whose verified observation is its ONLY authority —
+ * got a `branch_detail` row that every Product surface then filtered out, since
+ * this predicate gates the Branches read, the metric denominator, trace
+ * comments and the project tree (#5551). A source added to one side and not the
+ * other does not degrade; it makes the two halves disagree about whether a
+ * branch exists.
  */
 export function cloudBranchEligibilitySql(): Prisma.Sql {
   return Prisma.sql`EXISTS (
@@ -180,6 +193,35 @@ export function cloudBranchEligibilitySql(): Prisma.Sql {
       WHERE public_repository.organization_id = a.organization_id
         AND LOWER(public_repository.full_name) = b.repository_full_name
         AND ${repositoryAuthorityGroupIsPresentSql("public_repository")}
+
+      UNION ALL
+
+      SELECT
+        NULL::uuid,
+        observed_repository.github_repo_id,
+        observed_repository.repository_full_name,
+        observed_repository.default_branch_name,
+        observed_repository.default_branch_availability,
+        observed_repository.default_branch_completeness,
+        observed_repository.default_branch_reason,
+        observed_repository.default_branch_source,
+        observed_repository.default_branch_mechanism,
+        observed_repository.default_branch_trigger,
+        observed_repository.default_branch_credential_type,
+        observed_repository.default_branch_observation_key,
+        observed_repository.default_branch_observed_at,
+        observed_repository.default_branch_event_at
+      FROM github_observed_repository observed_repository
+      WHERE observed_repository.organization_id = a.organization_id
+        -- Equality, not LOWER(): normalizeRepoFullName is the only writer of
+        -- this column, so it already holds the form b.repository_full_name is
+        -- in, and equality is what lets the (organization_id,
+        -- repository_full_name) unique serve the lookup. Same choice the write
+        -- twin makes in authority-source-queries.ts.
+        AND observed_repository.repository_full_name = b.repository_full_name
+        AND observed_repository.verification_state = ${GitHubObservedRepositoryVerificationState.Verified}
+        AND observed_repository.github_repo_id IS NOT NULL
+        AND ${repositoryAuthorityGroupIsPresentSql("observed_repository")}
     ),
     authority_order AS (
       SELECT authority.*, COALESCE(authority.event_at, authority.observed_at) AS authority_at
@@ -211,6 +253,75 @@ export function cloudBranchEligibilitySql(): Prisma.Sql {
         AND pr.organization_id = a.organization_id
         AND LOWER(pr.head_repository_full_name) = b.repository_full_name
         AND ${pullRequestAuthorityGroupIsPresentSql()}
+    ),
+    -- ISS-8422: group PRESENCE alone, with no identity test, so "never
+    -- observed" can be told apart from "observed, and it names another
+    -- repository". The desktop lane writes a row holding nothing but the
+    -- server-derived html_url the moment a PR is opened, and the single CTE
+    -- above could not distinguish that from the mismatch ISS-5827 aimed at.
+    --
+    -- READ-SIDE ONLY, and deliberately outside the twin contract documented on
+    -- cloudBranchEligibilitySql: isCloudBranchEligible is never handed a
+    -- "current PR" concept, and the write-side authority query in
+    -- authority-source-queries.ts has no branch_artifact_id or current-pointer
+    -- notion at all. There is nothing on that side to keep in parity with, so
+    -- do not "restore parity" by inventing one.
+    current_pull_request_observed_authority AS (
+      SELECT pr.id
+      FROM pull_request_detail pr
+      WHERE pr.id = b.current_pull_request_detail_id
+        AND pr.organization_id = a.organization_id
+        AND ${pullRequestAuthorityGroupIsPresentSql()}
+    ),
+    -- ISS-8422: the current pointer resolves to a row that belongs to THIS
+    -- branch. A pointer-resolves test, not an authority test — kept separate so
+    -- it is not folded back into the authority CTEs. Before the split above, a
+    -- pointer at a factless row belonging to ANOTHER branch failed closed only
+    -- as a side effect of the identity and presence tests sharing one CTE;
+    -- without this conjunct the split would newly admit it.
+    current_pull_request_pointer AS (
+      SELECT pr.id
+      FROM pull_request_detail pr
+      WHERE pr.id = b.current_pull_request_detail_id
+        AND pr.branch_artifact_id = a.id
+        AND pr.organization_id = a.organization_id
+    ),
+    -- ISS-8422: the current PR names a head repository that CONTRADICTS the
+    -- branch's own.
+    --
+    -- Head identity is provider evidence in its own right, so the A2 fallback
+    -- below must not call a row carrying it "never observed". A PR opened from
+    -- a fork has a foreign head_repository_full_name and an empty authority
+    -- group; admitting it would let the branch take its default-branch answer
+    -- from the BASE repository, which is the head-identity substitution
+    -- ISS-5827 / PRD-600 COMMON-002 exists to refuse. Such a row fails closed
+    -- exactly as it did before the split (davetho review on #6313).
+    --
+    -- Identity that AGREES with the branch is not evidence of anything to
+    -- refuse, so it does not appear here: gating the fallback on presence
+    -- rather than contradiction would newly hide every branch whose PR names
+    -- its own repository. A populated head github id with no resolvable branch
+    -- repository to compare against counts as contradicting — unmatchable
+    -- identity fails closed, as it did before this arm existed.
+    current_pull_request_foreign_head_identity AS (
+      SELECT pr.id
+      FROM pull_request_detail pr
+      WHERE pr.id = b.current_pull_request_detail_id
+        AND pr.organization_id = a.organization_id
+        AND (
+          (
+            pr.head_repository_full_name IS NOT NULL
+            AND LOWER(pr.head_repository_full_name) <> b.repository_full_name
+          )
+          OR (
+            pr.head_repository_github_id IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1
+              FROM branch_repository repository
+              WHERE repository.github_repo_id = pr.head_repository_github_id
+            )
+          )
+        )
     )
     SELECT 1
     FROM latest_authorities latest
@@ -220,6 +331,22 @@ export function cloudBranchEligibilitySql(): Prisma.Sql {
       ), FALSE) FROM repository_default_authorities authority)
       AND (
         b.current_pull_request_detail_id IS NULL
+        OR (SELECT COUNT(*) FROM current_pull_request_pointer) = 1
+      )
+      AND (
+        b.current_pull_request_detail_id IS NULL
+        -- ISS-8422 A2: a current PR that observed NOTHING is treated as no
+        -- observed PR for membership. The branch appears; the PR still supplies
+        -- no authority and still states nothing. "Nothing" covers BOTH halves —
+        -- no authority group AND no contradicting head identity — or the arm
+        -- would admit the fork PR ISS-5827 refuses.
+        OR (
+          (SELECT COUNT(*) FROM current_pull_request_observed_authority) = 0
+          AND (SELECT COUNT(*) FROM current_pull_request_foreign_head_identity) = 0
+        )
+        -- ISS-5827 / PRD-600 COMMON-002, unchanged: a PR that DOES carry
+        -- head-repository authority must match the branch's repository
+        -- identity, so that missing evidence can never imply the base repo.
         OR (SELECT COUNT(*) FROM current_pull_request_authority) = 1
       )
       AND COALESCE(BOOL_AND(latest.provider_repository_id IS NOT NULL), FALSE)
@@ -281,6 +408,89 @@ export function cloudBranchEligibilitySql(): Prisma.Sql {
   )`;
 }
 
+/**
+ * Shared Product Branch gate. Both candidate and by-id reads call this exact
+ * composition so publication, Wrote, repository authority, and default-Branch
+ * behavior cannot drift across Product surfaces.
+ */
+export function cloudBranchProductEligibilitySql(): Prisma.Sql {
+  return Prisma.sql`(
+    ${branchProductWroteExistsSql()}
+    AND ${verifiedBranchPublicationSql()}
+    AND ${cloudBranchEligibilitySql()}
+  )`;
+}
+
+/**
+ * Metric-denominator authority. ISS-8148 (PRD-683 Ruling 2 + D7, Kerensa ruling
+ * 2026-08-26: D7 supersedes PRD-600 COMMON-023 for the no-push-evidence
+ * population): a Branch without verified publication no longer counts in ANY
+ * metric denominator — the session write gate stops new local-only rows from
+ * materializing, and a legacy no-evidence row is excluded (never deleted) so
+ * it heals into every population when push evidence arrives. Until ISS-8148
+ * this composition deliberately admitted pre-publication rows (COMMON-023's
+ * "session cost remains eligible before a push/PR"). The composition is now
+ * identical to `cloudBranchProductEligibilitySql`; the two names stay
+ * separate so the surfaces can diverge again deliberately, never by drift.
+ */
+export function cloudBranchMetricDenominatorEligibilitySql(): Prisma.Sql {
+  return cloudBranchProductEligibilitySql();
+}
+
+/** Verified publication through a successful push or provider-bound PR head. */
+export function verifiedBranchPublicationSql(): Prisma.Sql {
+  return Prisma.sql`(
+    (
+      b.first_pushed_at IS NOT NULL
+      AND isfinite(b.first_pushed_at)
+      AND b.push_source IN (${Prisma.join([...VERIFIED_BRANCH_PUSH_SOURCES])})
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM pull_request_detail published_pr
+      WHERE published_pr.organization_id = a.organization_id
+        AND published_pr.branch_artifact_id = a.id
+        AND published_pr.head_ref_oid IS NOT NULL
+        AND published_pr.head_ref_oid ~ '^[0-9a-fA-F]{40}$'
+        AND published_pr.head_ref_name IS NOT NULL
+        AND btrim(published_pr.head_ref_name) = b.branch_name
+        AND published_pr.head_repository_github_id IS NOT NULL
+        AND btrim(published_pr.head_repository_github_id) <> ''
+        AND published_pr.head_repository_full_name IS NOT NULL
+        AND ${normalizedRepositoryFullNameSql(Prisma.sql`published_pr.head_repository_full_name`)}
+          = ${normalizedRepositoryFullNameSql(Prisma.sql`b.repository_full_name`)}
+        AND published_pr.head_repository_default_branch_availability = ${RepositoryDefaultAvailability.Available}
+        AND published_pr.head_repository_default_branch_completeness = ${RepositoryDefaultCompleteness.Complete}
+        AND published_pr.head_repository_default_branch_name IS NOT NULL
+        AND btrim(published_pr.head_repository_default_branch_name) <> ''
+        AND published_pr.head_repository_default_branch_name <> b.branch_name
+        AND published_pr.head_repository_default_branch_reason IS NULL
+        AND published_pr.head_repository_default_branch_source IN (${Prisma.join(knownRepositoryDefaultSources())})
+        AND published_pr.head_repository_default_branch_mechanism IN (${Prisma.join(knownFetchMechanisms())})
+        AND published_pr.head_repository_default_branch_trigger IN (${Prisma.join(knownFetchTriggers())})
+        AND published_pr.head_repository_default_branch_credential_type IN (${Prisma.join(knownCredentialTypes())})
+        AND published_pr.head_repository_default_branch_observation_key IS NOT NULL
+        AND btrim(published_pr.head_repository_default_branch_observation_key) <> ''
+        AND published_pr.head_repository_default_branch_observed_at IS NOT NULL
+        AND isfinite(published_pr.head_repository_default_branch_observed_at)
+        AND (
+          b.repository_id IS NULL
+          OR EXISTS (
+            SELECT 1
+            FROM github_installation_repositories publication_repository
+            INNER JOIN github_installations publication_installation
+              ON publication_installation.id = publication_repository.installation_id
+            WHERE publication_repository.id = b.repository_id
+              AND publication_repository.removed_at IS NULL
+              AND publication_installation.organization_id = a.organization_id
+              AND publication_installation.status = ${GitHubInstallationStatus.ACTIVE}::"GitHubInstallationStatus"
+              AND publication_repository.github_repo_id = published_pr.head_repository_github_id
+          )
+        )
+    )
+  )`;
+}
+
 /** One by-id eligibility snapshot shared by detail and every subresource. */
 export async function branchHasCloudEligibility(
   db: CloudBranchEligibilityClient,
@@ -294,9 +504,7 @@ export async function branchHasCloudEligibility(
     WHERE a.id = ${branchId}::uuid
       AND a.organization_id = ${organizationId}::uuid
       AND a.type = ${ArtifactType.BRANCH}::"ArtifactType"
-      AND b.deleted_at IS NULL
-      AND ${branchLinkedSessionExistsSql()}
-      AND ${cloudBranchEligibilitySql()}
+      AND ${cloudBranchProductEligibilitySql()}
     LIMIT 1
   `);
   return rows.length > 0;
@@ -327,7 +535,7 @@ function isLegacyAuthorityAbsence(
   );
 }
 
-function pullRequestAuthorityGroupIsPresentSql(): Prisma.Sql {
+export function pullRequestAuthorityGroupIsPresentSql(): Prisma.Sql {
   return Prisma.sql`(
     pr.head_repository_default_branch_name IS NOT NULL
     OR pr.head_repository_default_branch_availability IS NOT NULL
@@ -344,9 +552,25 @@ function pullRequestAuthorityGroupIsPresentSql(): Prisma.Sql {
   )`;
 }
 
-function repositoryAuthorityGroupIsPresentSql(
-  owner: "repository" | "public_repository"
+export function repositoryAuthorityGroupIsPresentSql(
+  owner: "repository" | "public_repository" | "observed_repository"
 ): Prisma.Sql {
+  if (owner === "observed_repository") {
+    return Prisma.sql`(
+      observed_repository.default_branch_name IS NOT NULL
+      OR observed_repository.default_branch_availability IS NOT NULL
+      OR observed_repository.default_branch_completeness IS NOT NULL
+      OR observed_repository.default_branch_reason IS NOT NULL
+      OR observed_repository.default_branch_source IS NOT NULL
+      OR observed_repository.default_branch_mechanism IS NOT NULL
+      OR observed_repository.default_branch_trigger IS NOT NULL
+      OR observed_repository.default_branch_credential_type IS NOT NULL
+      OR observed_repository.default_branch_credential_owner_id IS NOT NULL
+      OR observed_repository.default_branch_observation_key IS NOT NULL
+      OR observed_repository.default_branch_observed_at IS NOT NULL
+      OR observed_repository.default_branch_event_at IS NOT NULL
+    )`;
+  }
   if (owner === "repository") {
     return Prisma.sql`(
       repository.default_branch_name IS NOT NULL
@@ -421,26 +645,43 @@ function authoritiesAgree(
   );
 }
 
-function knownRepositoryDefaultSources(): string[] {
+export function knownRepositoryDefaultSources(): string[] {
   return Object.values(RepositoryDefaultSource).filter(
     (source) => source !== RepositoryDefaultSource.Unknown
   );
 }
 
-function knownFetchMechanisms(): string[] {
+export function knownFetchMechanisms(): string[] {
   return Object.values(GitHubFetchMechanism).filter(
     (mechanism) => mechanism !== GitHubFetchMechanism.Unknown
   );
 }
 
-function knownFetchTriggers(): string[] {
+export function knownFetchTriggers(): string[] {
   return Object.values(GitHubFetchTrigger).filter(
     (trigger) => trigger !== GitHubFetchTrigger.Unknown
   );
 }
 
-function knownCredentialTypes(): string[] {
+export function knownCredentialTypes(): string[] {
   return Object.values(GitHubFetchCredentialType).filter(
     (credentialType) => credentialType !== GitHubFetchCredentialType.Unknown
   );
 }
+
+/**
+ * Which `BranchPushSource` values count as VERIFIED push evidence. Exhaustive
+ * over the enum so a new source fails `tsc` until it is deliberately mapped;
+ * the derived list feeds both the raw-SQL predicate here
+ * (`verifiedBranchPublicationSql`) and the Prisma-shape
+ * `branchPushEvidenceWhere`, so the two cannot drift (ISS-8148 review).
+ */
+const BRANCH_PUSH_SOURCE_IS_VERIFIED: Record<BranchPushSource, boolean> = {
+  [BranchPushSource.Session]: true,
+  [BranchPushSource.Webhook]: true,
+};
+
+export const VERIFIED_BRANCH_PUSH_SOURCES: readonly BranchPushSource[] =
+  Object.values(BranchPushSource).filter(
+    (source) => BRANCH_PUSH_SOURCE_IS_VERIFIED[source]
+  );

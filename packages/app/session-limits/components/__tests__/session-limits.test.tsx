@@ -3,6 +3,10 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
+  SessionLimitWindowLabel,
+  SessionLimitWindowShortLabel,
+} from "../../lib/window-labels";
+import {
   type SessionLimits,
   type SessionLimitsState,
   SessionLimitsStatus,
@@ -20,6 +24,7 @@ const SONNET_RE = /Sonnet/;
 const CREDIT_SUMMARY_RE = /\$3\.50 of \$20\.00/;
 const USED_PERCENT_RE = /% used/;
 const AS_OF_RE = /As of/;
+const ZERO_USED_TEXT = "0% used";
 const ABSOLUTE_DATE_RE = /Jul 19/;
 const RESET_RELATIVE_RE = /in 3h/;
 
@@ -44,10 +49,37 @@ function makeLimits(overrides: Partial<SessionLimits> = {}): SessionLimits {
   };
 }
 
+// The two plans that expose a per-model week and nothing above it. Both take
+// the same subset-window path, so the cases that assert on that path run over
+// both rather than over whichever one happened to get written first.
+const SUBSET_ONLY_WINDOWS: { label: string; limits: SessionLimits }[] = [
+  {
+    label: SessionLimitWindowLabel.SevenDaySonnet,
+    limits: makeLimits({
+      fiveHour: null,
+      sevenDay: null,
+      sevenDaySonnet: { utilization: 55, resetsAt: null },
+    }),
+  },
+  {
+    // Sonnet is selected first, so an Opus-only plan is the one that reaches
+    // the Opus branch — pinning it to null here is what makes this case real.
+    label: SessionLimitWindowLabel.SevenDayOpus,
+    limits: makeLimits({
+      fiveHour: null,
+      sevenDay: null,
+      sevenDaySonnet: null,
+      sevenDayOpus: { utilization: 33, resetsAt: null },
+    }),
+  },
+];
+
 describe("SessionLimitsBars", () => {
   it("renders the session and week bars with floored usage", () => {
     render(<SessionLimitsBars limits={makeLimits()} now={NOW} />);
-    expect(screen.getByText("Current session")).toBeInTheDocument();
+    expect(
+      screen.getByText(SessionLimitWindowShortLabel.FiveHour)
+    ).toBeInTheDocument();
     expect(screen.getByText("42% used")).toBeInTheDocument();
     expect(screen.getByText("Current week")).toBeInTheDocument();
     expect(screen.getByText("70% used")).toBeInTheDocument();
@@ -59,7 +91,9 @@ describe("SessionLimitsBars", () => {
     render(
       <SessionLimitsBars limits={makeLimits({ fiveHour: null })} now={NOW} />
     );
-    expect(screen.queryByText("Current session")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(SessionLimitWindowShortLabel.FiveHour)
+    ).not.toBeInTheDocument();
     expect(screen.getByText("Current week")).toBeInTheDocument();
   });
 
@@ -96,6 +130,30 @@ describe("SessionLimitsBars", () => {
     expect(screen.getByText("55% used")).toBeInTheDocument();
   });
 
+  it("names an Opus-only week in full instead of shortening it", () => {
+    // The Opus branch is reached only once Sonnet is absent, and it is the
+    // short form that makes it wrong rather than missing: "Current week" on a
+    // plan that only measures Opus reads as a figure for every model.
+    render(
+      <SessionLimitsBars
+        limits={makeLimits({
+          fiveHour: null,
+          sevenDay: null,
+          sevenDaySonnet: null,
+          sevenDayOpus: { utilization: 33, resetsAt: null },
+        })}
+        now={NOW}
+      />
+    );
+    expect(
+      screen.getByText(SessionLimitWindowLabel.SevenDayOpus)
+    ).toBeInTheDocument();
+    expect(screen.getByText("33% used")).toBeInTheDocument();
+    expect(
+      screen.queryByText(SessionLimitWindowShortLabel.SevenDay)
+    ).not.toBeInTheDocument();
+  });
+
   it("falls back to extra-usage credits when it is the only window", () => {
     render(
       <SessionLimitsBars
@@ -127,7 +185,9 @@ describe("SessionLimitsDetail", () => {
     expect(screen.getByText("Extra usage")).toBeInTheDocument();
     expect(screen.getByText(CREDIT_SUMMARY_RE)).toBeInTheDocument();
     // Opus window is null → not rendered.
-    expect(screen.queryByText("Current week, Opus")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(SessionLimitWindowLabel.SevenDayOpus)
+    ).not.toBeInTheDocument();
   });
 
   it("shows a subscription hint when nothing is available", () => {
@@ -268,30 +328,25 @@ describe("SessionLimitsNav", () => {
     expect(screen.getByText("Current week, Sonnet")).toBeInTheDocument();
   });
 
-  it("names a window the same in the sidebar and in the drawer", () => {
-    // Same window, one click apart. The sidebar used to say "Sonnet week" while
-    // the drawer said "Current week, Sonnet", leaving a reader to work out
-    // whether they were looking at one figure or two.
-    const sonnetOnly = makeLimits({
-      fiveHour: null,
-      sevenDay: null,
-      sevenDaySonnet: { utilization: 55, resetsAt: null },
-    });
+  it.each(SUBSET_ONLY_WINDOWS)(
+    "names $label the same in the sidebar and in the drawer",
+    ({ limits }) => {
+      // Same window, one click apart. The sidebar used to say "Sonnet week"
+      // while the drawer said "Current week, Sonnet", leaving a reader to work
+      // out whether they were looking at one figure or two.
+      const sidebar = render(<SessionLimitsBars limits={limits} now={NOW} />);
+      const sidebarTitle = sidebar
+        .getByTestId("limit-bar")
+        .querySelector("span[title]");
+      const sidebarName = sidebarTitle?.textContent ?? "";
+      // Truncated at ~14rem, so the full name has to stay recoverable on hover.
+      expect(sidebarTitle).toHaveAttribute("title", sidebarName);
+      sidebar.unmount();
 
-    const sidebar = render(<SessionLimitsBars limits={sonnetOnly} now={NOW} />);
-    const sidebarTitle = sidebar
-      .getByTestId("limit-bar")
-      .querySelector("span[title]");
-    const sidebarName = sidebarTitle?.textContent ?? "";
-    // Truncated at ~14rem, so the full name has to stay recoverable on hover.
-    expect(sidebarTitle).toHaveAttribute("title", sidebarName);
-    sidebar.unmount();
-
-    const drawer = render(
-      <SessionLimitsDetail limits={sonnetOnly} now={NOW} />
-    );
-    expect(drawer.getByText(sidebarName)).toBeInTheDocument();
-  });
+      const drawer = render(<SessionLimitsDetail limits={limits} now={NOW} />);
+      expect(drawer.getByText(sidebarName)).toBeInTheDocument();
+    }
+  );
 
   it("hides when extra usage is enabled but has no utilization to draw", () => {
     const { container } = render(
@@ -436,7 +491,7 @@ describe("SessionLimitsNav four states", () => {
       />
     );
     expect(screen.getByTestId("session-limits-bars")).toBeInTheDocument();
-    expect(screen.getAllByText("0% used")).toHaveLength(2);
+    expect(screen.getAllByText(ZERO_USED_TEXT)).toHaveLength(2);
     // A genuine zero is data: it must NOT borrow the loading affordance.
     expect(
       screen.queryByTestId("session-limits-loading")
@@ -570,7 +625,7 @@ describe("a utilization that is not a measurement", () => {
         now={NOW}
       />
     );
-    expect(screen.queryByText("0% used")).not.toBeInTheDocument();
+    expect(screen.queryByText(ZERO_USED_TEXT)).not.toBeInTheDocument();
     expect(screen.getByText("Usage unknown")).toBeInTheDocument();
     // Progress's own contract: an unrepresentable value is indeterminate, which
     // renders as a hatch rather than as an empty (0%-looking) track.
@@ -618,7 +673,7 @@ describe("a utilization that is not a measurement", () => {
         now={NOW}
       />
     );
-    expect(screen.getByText("0% used")).toBeInTheDocument();
+    expect(screen.getByText(ZERO_USED_TEXT)).toBeInTheDocument();
     expect(
       screen.getByRole("progressbar", { name: "Current session: 0% used" })
     ).toHaveAttribute("data-state", "loading");
@@ -654,7 +709,7 @@ describe("the urgency scale", () => {
     // These bars sit in the sidebar footer permanently. Spending the loudest
     // colour in the scale on its least urgent state leaves the step up to amber
     // with nothing to say.
-    expect(trackFor(0, "0% used")).toContain("bg-muted-foreground/20");
+    expect(trackFor(0, ZERO_USED_TEXT)).toContain("bg-muted-foreground/20");
     expect(trackFor(74, "74% used")).toContain("bg-muted-foreground/20");
     expect(trackFor(74, "74% used")).not.toContain("bg-primary/20");
   });

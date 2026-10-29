@@ -13,6 +13,10 @@ import type {
   TraceCommentDraft,
   TraceTextAnchor,
 } from "@repo/app/agents/components/detail/trace-comments";
+import {
+  TraceMarkPalette,
+  TraceMarkPaletteProvider,
+} from "@repo/app/agents/components/detail/trace-mark-bullet";
 import { computeActiveTraceRow } from "@repo/app/shared/lib/active-trace-row";
 import { formatCostPrecise } from "@repo/app/shared/lib/format-utils";
 import {
@@ -20,6 +24,7 @@ import {
   AlertDescription,
   AlertTitle,
 } from "@repo/design-system/components/ui/alert";
+import { Button } from "@repo/design-system/components/ui/button";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { MessageSquareIcon } from "lucide-react";
 import {
@@ -38,6 +43,7 @@ import {
   deriveActorsFromMergedTrace,
   mergedTraceToSessionTraceItems,
 } from "../lib/branch-merged-trace-adapter";
+import { unreadableTraceItemCount } from "../lib/branch-trace-partial-sessions";
 import { withPerTurnTraceCosts } from "./branch-merged-trace-items";
 import { BranchTraceActorAvatar } from "./branch-trace-actor-avatar";
 
@@ -53,7 +59,10 @@ import { BranchTraceActorAvatar } from "./branch-trace-actor-avatar";
  * across the whole page.
  */
 export type BranchMergedTraceProps = {
+  showBranchContext?: boolean;
   traceItems: readonly MergedTraceItem[];
+  /** Stable full snapshot; changes invalidate positional jumps into older pages. */
+  traceOverview?: readonly MergedTraceItem[];
   /** Hydration evidence retained alongside successfully loaded trace turns. */
   traceState?: BranchTraceState | null;
   /** Per-Session totals. Rendered only when aggregate trace evidence is complete. */
@@ -94,6 +103,9 @@ export type BranchMergedTraceProps = {
    * work; the detail page always provides it.
    */
   scrollElementRef?: RefObject<HTMLDivElement | null>;
+  onRequestMore?: () => void;
+  onRetryPage?: () => void;
+  isRetryingPage?: boolean;
   className?: string;
 };
 
@@ -113,6 +125,8 @@ const SCROLL_END_EPSILON_PX = 2;
 
 export const BranchMergedTrace = memo(function BranchMergedTrace({
   traceItems,
+  showBranchContext = true,
+  traceOverview,
   traceState,
   sessionTotals,
   actorDomain,
@@ -124,6 +138,9 @@ export const BranchMergedTrace = memo(function BranchMergedTrace({
   registerScroll,
   onScrolledToRow,
   onScrolledToTraceEnd,
+  onRequestMore,
+  onRetryPage,
+  isRetryingPage,
   scrollElementRef,
   className,
 }: BranchMergedTraceProps) {
@@ -144,16 +161,57 @@ export const BranchMergedTrace = memo(function BranchMergedTrace({
     [traceItems, traceState, sessionTotals, resolvedActorDomain]
   );
   const renderGutterActor = useCallback(
-    (actor: TurnActor) => (
-      <BranchTraceActorAvatar actor={actor} actorDomain={resolvedActorDomain} />
-    ),
-    [resolvedActorDomain]
+    (actor: TurnActor) => <BranchTraceActorAvatar actor={actor} />,
+    []
   );
   const traceRef = useRef<SessionTraceHandle>(null);
   // Timestamp until which the manual-scroll spy is suppressed because a
   // timeline-driven (programmatic) smooth scroll is animating — otherwise its
   // own scroll events would overwrite the just-clicked row with the fold row.
   const programmaticUntilRef = useRef(0);
+  const pendingRow = useRef<number | null>(null);
+
+  const previousOverview = useRef(traceOverview);
+
+  useEffect(() => {
+    if (previousOverview.current !== traceOverview) {
+      previousOverview.current = traceOverview;
+      pendingRow.current = null;
+      programmaticUntilRef.current = 0;
+    }
+    const row = pendingRow.current;
+    if (row === null) {
+      return;
+    }
+    if (row >= traceItems.length && onRequestMore) {
+      onRequestMore();
+      return;
+    }
+    pendingRow.current = null;
+    programmaticUntilRef.current =
+      globalThis.performance.now() + PROGRAMMATIC_SCROLL_MS;
+    traceRef.current?.scrollToRow(row);
+  }, [traceOverview, traceItems.length, onRequestMore]);
+
+  useEffect(() => {
+    const scroller = scrollElementRef?.current;
+    if (!(scroller && onRequestMore)) {
+      return;
+    }
+    const requestAtEnd = () => {
+      if (
+        traceItems.length === 0 ||
+        (scroller.clientHeight > 0 &&
+          scroller.scrollHeight - scroller.scrollTop <=
+            scroller.clientHeight * 2)
+      ) {
+        onRequestMore();
+      }
+    };
+    requestAtEnd();
+    scroller.addEventListener("scroll", requestAtEnd, { passive: true });
+    return () => scroller.removeEventListener("scroll", requestAtEnd);
+  }, [scrollElementRef, onRequestMore, traceItems.length]);
 
   useEffect(() => {
     if (!registerScroll) {
@@ -166,11 +224,17 @@ export const BranchMergedTrace = memo(function BranchMergedTrace({
     // scroll spy while that smooth scroll animates so it doesn't clobber the
     // active row the click just set.
     return registerScroll((row) => {
+      pendingRow.current = null;
       programmaticUntilRef.current =
         globalThis.performance.now() + PROGRAMMATIC_SCROLL_MS;
-      traceRef.current?.scrollToRow(row);
+      if (row >= traceItems.length && onRequestMore) {
+        pendingRow.current = row;
+        onRequestMore();
+      } else {
+        traceRef.current?.scrollToRow(row);
+      }
     });
-  }, [registerScroll]);
+  }, [registerScroll, onRequestMore, traceItems.length]);
 
   // Track manual scrolling of the page container so the timeline "you are here"
   // line follows the reader (mirrors the Session detail page's scroll spy).
@@ -218,36 +282,47 @@ export const BranchMergedTrace = memo(function BranchMergedTrace({
     return (
       <EmptyState
         className={className}
-        description="No trace captured for this branch yet."
+        description={
+          showBranchContext
+            ? "No trace captured for this branch yet."
+            : undefined
+        }
         icon={MessageSquareIcon}
         title="No merged trace"
       />
     );
   }
 
+  // No bounded inner viewport: the trace is plain in-flow content and
+  // virtualizes against the single page scroll container, so the page keeps one
+  // scrollbar while long traces stay windowed. A timeline scrub scrolls that
+  // page container to the matching row (via the SessionTrace handle).
   return (
-    // No bounded inner viewport: the trace is plain in-flow content and
-    // virtualizes against the single page scroll container, so the page keeps one
-    // scrollbar while long traces stay windowed. A timeline scrub scrolls that
-    // page container to the matching row (via the SessionTrace handle).
     <div className={className}>
       <TraceHydrationNotice
         hasTraceItems={traceItems.length > 0}
+        isRetryingPage={isRetryingPage}
+        onRetryPage={onRetryPage}
+        showBranchContext={showBranchContext}
         traceState={traceState}
       />
       {traceItems.length > 0 ? (
-        <SessionTrace
-          activeRow={activeRow}
-          highlightAnchor={highlightAnchor}
-          items={items}
-          onJump={onJump}
-          onSubmitTraceComment={onSubmitTraceComment}
-          onTraceSelectionChange={onTraceSelectionChange}
-          ref={traceRef}
-          renderGutterActor={renderGutterActor}
-          scrollElementRef={scrollElementRef}
-          virtualize
-        />
+        // The Branch rail still draws round dots (ISS-12180), so the
+        // transcript's bullets stay round to match the dot clicked.
+        <TraceMarkPaletteProvider palette={TraceMarkPalette.BranchTimeline}>
+          <SessionTrace
+            activeRow={activeRow}
+            highlightAnchor={highlightAnchor}
+            items={items}
+            onJump={onJump}
+            onSubmitTraceComment={onSubmitTraceComment}
+            onTraceSelectionChange={onTraceSelectionChange}
+            ref={traceRef}
+            renderGutterActor={renderGutterActor}
+            scrollElementRef={scrollElementRef}
+            virtualize
+          />
+        </TraceMarkPaletteProvider>
       ) : null}
     </div>
   );
@@ -255,9 +330,15 @@ export const BranchMergedTrace = memo(function BranchMergedTrace({
 
 function TraceHydrationNotice({
   hasTraceItems,
+  showBranchContext,
+  onRetryPage,
+  isRetryingPage,
   traceState,
 }: {
   hasTraceItems: boolean;
+  showBranchContext: boolean;
+  onRetryPage?: () => void;
+  isRetryingPage?: boolean;
   traceState?: BranchTraceState | null;
 }) {
   const unavailableSessionLabels = traceState?.sessions
@@ -284,21 +365,41 @@ function TraceHydrationNotice({
   }
   const copy = traceHydrationNoticeCopy(
     hasTraceItems,
-    unavailableSessionLabels ?? []
+    unavailableSessionLabels ?? [],
+    showBranchContext
   );
   return (
     <Alert className="mb-4" variant="warning">
       <AlertTitle>{copy.title}</AlertTitle>
-      <AlertDescription>{copy.description}</AlertDescription>
+      <AlertDescription>
+        <span>{copy.description}</span>
+        {onRetryPage ? (
+          <Button
+            disabled={isRetryingPage}
+            onClick={onRetryPage}
+            size="sm"
+            variant="outline"
+          >
+            Retry
+          </Button>
+        ) : null}
+      </AlertDescription>
     </Alert>
   );
 }
 
 function traceHydrationNoticeCopy(
   hasTraceItems: boolean,
-  unavailableSessionLabels: readonly string[]
+  unavailableSessionLabels: readonly string[],
+  showBranchContext: boolean
 ): { description: string; title: string } {
   const unavailableSessionList = unavailableSessionLabels.join(", ");
+  if (!(hasTraceItems || showBranchContext)) {
+    return {
+      title: "Session trace unavailable",
+      description: unavailableSessionList,
+    };
+  }
   if (!hasTraceItems) {
     return {
       description:
@@ -336,10 +437,19 @@ function hasUnavailableAggregateEvidence(
   ) {
     return true;
   }
-  return (
-    aggregateCompleteness.state === BranchTraceCompletenessState.Incomplete &&
-    (aggregateCompleteness.reason !== undefined ||
-      aggregateCompleteness.eventsTruncated !== true)
+  if (aggregateCompleteness.state !== BranchTraceCompletenessState.Incomplete) {
+    return false;
+  }
+  if (aggregateCompleteness.reason !== undefined) {
+    return true;
+  }
+  // An incompleteness the heading above already accounts for is not an
+  // unavailability. ISS-9723 adds the second such account: a Session that
+  // loaded and had unreadable items dropped from it is partial, not absent, and
+  // this warning would tell the reader its activity could not be loaded.
+  return !(
+    aggregateCompleteness.eventsTruncated === true ||
+    unreadableTraceItemCount(traceState) > 0
   );
 }
 

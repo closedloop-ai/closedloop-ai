@@ -1,6 +1,15 @@
-import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
+import {
+  type ArtifactStatus,
+  DocumentStatus,
+  DocumentType,
+} from "@repo/api/src/types/document";
+import { UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY } from "@repo/api/src/types/universal-artifact-status-flag";
+import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
+import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
+import { DOCUMENT_STATUS_LABELS } from "@repo/app/shared/lib/artifact-status-labels";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 import { StatusMetadataSection } from "../status-metadata-section";
 
@@ -14,6 +23,7 @@ function renderHorizontal(overrides?: { assignee: User | null }) {
   const assignee = overrides ? overrides.assignee : ASSIGNEE;
   return render(
     <StatusMetadataSection
+      artifactId="doc-1"
       assignee={assignee}
       documentType={DocumentType.Prd}
       layout="horizontal"
@@ -29,6 +39,7 @@ function renderVertical(overrides?: { assignee: User | null }) {
   const assignee = overrides ? overrides.assignee : ASSIGNEE;
   return render(
     <StatusMetadataSection
+      artifactId="doc-1"
       assignee={assignee}
       documentType={DocumentType.Prd}
       layout="vertical"
@@ -38,6 +49,34 @@ function renderVertical(overrides?: { assignee: User | null }) {
       teamMembers={[ASSIGNEE]}
     />
   );
+}
+
+function renderUniversalStatus(
+  status: ArtifactStatus,
+  onStatusChange = vi.fn(),
+  layout: "horizontal" | "vertical" = "vertical"
+) {
+  return {
+    onStatusChange,
+    ...render(
+      <FeatureFlagAdapterProvider
+        adapter={createStaticFeatureFlagAdapter({
+          enabledFlags: [UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY],
+        })}
+      >
+        <StatusMetadataSection
+          artifactId="doc-1"
+          assignee={ASSIGNEE}
+          documentType={DocumentType.Prd}
+          layout={layout}
+          onAssigneeChange={vi.fn()}
+          onStatusChange={onStatusChange}
+          status={status}
+          teamMembers={[ASSIGNEE]}
+        />
+      </FeatureFlagAdapterProvider>
+    ),
+  };
 }
 
 describe("StatusMetadataSection accessible names (FEA-3963)", () => {
@@ -77,4 +116,48 @@ describe("StatusMetadataSection accessible names (FEA-3963)", () => {
       screen.getByRole("combobox", { name: "Assignee: Marisol Ashgrove" })
     ).toBeInTheDocument();
   });
+});
+
+describe("StatusMetadataSection universal artifact status adoption", () => {
+  test.each(["horizontal", "vertical"] as const)(
+    "uses a field-qualified canonical name in the %s layout",
+    (layout) => {
+      renderUniversalStatus(DocumentStatus.Draft, vi.fn(), layout);
+
+      expect(
+        screen.getByRole("button", { name: "Status: Drafting" })
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(DOCUMENT_STATUS_LABELS[DocumentStatus.Draft])
+      ).not.toBeInTheDocument();
+    }
+  );
+
+  test("commits through the existing status writer", async () => {
+    const user = userEvent.setup();
+    const { onStatusChange } = renderUniversalStatus(DocumentStatus.Obsolete);
+
+    await user.click(
+      screen.getByRole("button", { name: "Status: Superseded" })
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Done, Approved" })
+    );
+
+    expect(onStatusChange).toHaveBeenCalledWith(DocumentStatus.Approved);
+  });
+
+  test.each(["horizontal", "vertical"] as const)(
+    "keeps future evidence in the canonical Unknown slot in the %s layout",
+    (layout) => {
+      renderUniversalStatus(
+        "AWAITING_PRODUCT_COUNCIL" as ArtifactStatus,
+        vi.fn(),
+        layout
+      );
+
+      expect(screen.getByText("Unknown", { exact: true })).toBeVisible();
+      expect(screen.queryByText("AWAITING_PRODUCT_COUNCIL")).toBeNull();
+    }
+  );
 });

@@ -22,7 +22,7 @@
  * `sendComponents` that fails for a chosen poison id.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { afterEach, test, vi } from "vitest";
 import { COMPONENT_DEAD_LETTER_FAILURE_THRESHOLD } from "../src/main/agent-sync/agent-component-sync-dead-letter.js";
 import { AgentSessionSyncService } from "../src/main/agent-sync/agent-session-sync-service.js";
 import type { AgentSessionSyncServiceOptions } from "../src/main/agent-sync/agent-session-sync-service-options.js";
@@ -42,6 +42,20 @@ import {
 import { deferred } from "./deferred.js";
 
 const COMPUTE_TARGET = "target-dead-letter";
+
+/** Reading instant for the one case that has to outlive an environmental backoff. */
+const LANE_FAILURE_START_MS = 1_800_000_000_000;
+
+/**
+ * Unconditional, and an `afterEach` rather than the last line of the case that
+ * installs the clock: a throw between install and restore would otherwise leak a
+ * frozen `Date` into every later case in this worker and report one real failure
+ * as a file of unrelated red. A restore with nothing faked is a no-op, so every
+ * other case in this file is unaffected.
+ */
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /** An in-memory keyset table reproducing the production read: rows sorted by
  * (last_seen_at, id) ASC, returned STRICTLY AFTER `(sinceTs, sinceId)`. */
@@ -378,10 +392,18 @@ test("dead-letter durability: a poison item survives a cold restart — persiste
     },
   });
 
-  // First instance: dead-letter the poison item and persist.
+  // First instance: dead-letter the poison item and persist. Driven to EXACTLY
+  // the threshold, which is the tick the dead-letter and its cursor advance land
+  // on — deliberately NOT past it (ISS-8593, whitlockk review). A further tick drains
+  // the cursor and runs a re-attempt, whose failure now advances `attempts` AND
+  // reaches the durable row; the restart below would then correctly resume that
+  // earned window instead of being due immediately, and this test's subject is
+  // the re-drive, not the backoff. The post-recovery snapshot has its own
+  // coverage in `agent-component-dead-letter-durability.test.ts`, which asserts
+  // the opposite outcome for the opposite reason.
   const sends1: string[][] = [];
   const service1 = new AgentSessionSyncService(makeOptions(sends1));
-  await driveTicks(service1, COMPONENT_DEAD_LETTER_FAILURE_THRESHOLD + 2);
+  await driveTicks(service1, COMPONENT_DEAD_LETTER_FAILURE_THRESHOLD);
   assert.equal(
     service1.getSyncProgress().deadLetteredComponents,
     1,
@@ -449,7 +471,31 @@ test("lane-failure: a lane-wide send failure (401/403/network/5xx) does NOT dead
   const service = new AgentSessionSyncService(options);
   // Drive WELL PAST the dead-letter threshold: a boolean-era regression would
   // have dead-lettered by now. The typed LaneFailure must never charge the budget.
-  await driveTicks(service, COMPONENT_DEAD_LETTER_FAILURE_THRESHOLD + 4);
+  //
+  // ISS-8615 (PRD-699 F8) changed HOW these ticks reach the transport, and this
+  // is the one assertion in the file that measured it. A lane-wide failure used
+  // to re-send on the very next 5s tick, so "kept retrying in place" could be
+  // read straight off `sends.length`. The lane now stages 5→60 minutes off its
+  // environmental run clock, so the retries are still there and the ticks have
+  // to outlive the backoff to see them. The CONTRACT this test names — never
+  // dead-lettered, cursor never advanced — is unchanged and still asserted
+  // below; what moved is the pacing, and driving the clock keeps the assertion
+  // exactly as strong (a cursor advance or a dead-letter still fails it).
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(LANE_FAILURE_START_MS);
+  service.start();
+  await settle(service);
+  for (
+    let tick = 1;
+    tick < COMPONENT_DEAD_LETTER_FAILURE_THRESHOLD + 4;
+    tick++
+  ) {
+    // Past the ladder's per-delay cap, so every tick clears whatever rung the
+    // run has climbed to.
+    vi.setSystemTime(LANE_FAILURE_START_MS + tick * 61 * 60_000);
+    service.refresh();
+    await settle(service);
+  }
   const progress = service.getSyncProgress();
   service.stop();
 
@@ -658,4 +704,206 @@ test("settle identity: a second tick while a slow send is held open does NOT let
     "the bounced tick did not launch a second concurrent send"
   );
   service.stop();
+});
+
+test("ISS-8593: a dead-lettered TOMBSTONE is persisted as such, so a restart knows the tracker is its only re-drive", async () => {
+  gatewayLog.clear();
+
+  // A tombstoned poison row (`uninstalled_at` set) that fails forever. Its
+  // ordering key can never advance again — `packs/component-tombstone.ts` gives a
+  // tombstone exactly one advance, at the moment it is written — so once the
+  // cursor pages past it the dead-letter tracker is the ONLY thing that can
+  // re-drive it. That fact has to survive the process, or a restarted tracker
+  // would happily evict it at its size cap.
+  const rows: AgentComponentCursorRow[] = [
+    {
+      id: "poison",
+      last_seen_at: "2026-07-20T10:00:00.000Z",
+      uninstalled_at: "2026-07-20T09:00:00.000Z",
+    },
+  ];
+  const rowsById = new Map(rows.map((r) => [r.id, r]));
+  const table = makeKeysetTable(() => rows);
+
+  const store = new Map<string, PersistedSyncState>();
+  const source: Pick<
+    AgentSessionSyncSource,
+    "loadSyncState" | "advanceSyncState"
+  > = {
+    loadSyncState: (key: string) => store.get(key) ?? null,
+    advanceSyncState: (key: string, state: PersistedSyncState) => {
+      store.set(key, state);
+    },
+  };
+
+  const service = new AgentSessionSyncService({
+    isHttpReady: () => true,
+    getSource: () => source as AgentSessionSyncSource,
+    getSyncComputeTargetId: () => COMPUTE_TARGET,
+    sendBatch: async () => ({ accepted: true }),
+    listComponentCursorRows: (sinceTs, sinceId) =>
+      Promise.resolve(table.read(sinceTs, sinceId).slice(0, 1)),
+    loadComponentRows: (ids) =>
+      Promise.resolve(
+        ids.map((id) => syncedFor(id, rowsById.get(id)?.last_seen_at ?? null))
+      ),
+    sendComponents: () => Promise.resolve(sendResultFor(false)),
+  });
+  await driveTicks(service, COMPONENT_DEAD_LETTER_FAILURE_THRESHOLD + 2);
+  service.stop();
+
+  const persisted = store.get(buildAgentComponentSyncSourceKey(COMPUTE_TARGET));
+  assert.deepEqual(
+    persisted?.deadLetteredIds,
+    ["poison"],
+    "the id list a pre-ISS-8593 reader sees is unchanged"
+  );
+  assert.deepEqual(
+    persisted?.deadLetterAttempts?.map(({ id, attempts, tombstoned }) => ({
+      id,
+      attempts,
+      tombstoned,
+    })),
+    [{ id: "poison", attempts: 1, tombstoned: true }],
+    "and the tombstone flag read off the cursor row reached the durable cursor through the real lane — `attempts` is 1, not 0, because the drained re-attempt these ticks run now REACHES the row (ISS-8593, whitlockk review) instead of leaving it frozen at the pre-recovery snapshot"
+  );
+  assert.equal(
+    typeof persisted?.deadLetterAttempts?.[0]?.retryAfterEpochMs,
+    "number",
+    "the row also carries an absolute deadline, so a restart resumes it instead of restarting the clock"
+  );
+});
+
+test("ISS-8593: a LIVE dead-lettered row is persisted as re-drivable (the tombstone flag is read, not assumed)", async () => {
+  gatewayLog.clear();
+
+  // The counterfactual sibling of the test above: the same lane, the same
+  // failure, but `uninstalled_at` is null. This one must NOT be marked a
+  // tombstone — it re-enters the keyset lane on its next `last_seen_at` advance,
+  // so it is a legitimate eviction victim at the cap.
+  const rows: AgentComponentCursorRow[] = [
+    { id: "poison", last_seen_at: "2026-07-20T10:00:00.000Z" },
+  ];
+  const rowsById = new Map(rows.map((r) => [r.id, r]));
+  const table = makeKeysetTable(() => rows);
+
+  const store = new Map<string, PersistedSyncState>();
+  const source: Pick<
+    AgentSessionSyncSource,
+    "loadSyncState" | "advanceSyncState"
+  > = {
+    loadSyncState: (key: string) => store.get(key) ?? null,
+    advanceSyncState: (key: string, state: PersistedSyncState) => {
+      store.set(key, state);
+    },
+  };
+
+  const service = new AgentSessionSyncService({
+    isHttpReady: () => true,
+    getSource: () => source as AgentSessionSyncSource,
+    getSyncComputeTargetId: () => COMPUTE_TARGET,
+    sendBatch: async () => ({ accepted: true }),
+    listComponentCursorRows: (sinceTs, sinceId) =>
+      Promise.resolve(table.read(sinceTs, sinceId).slice(0, 1)),
+    loadComponentRows: (ids) =>
+      Promise.resolve(
+        ids.map((id) => syncedFor(id, rowsById.get(id)?.last_seen_at ?? null))
+      ),
+    sendComponents: () => Promise.resolve(sendResultFor(false)),
+  });
+  await driveTicks(service, COMPONENT_DEAD_LETTER_FAILURE_THRESHOLD + 2);
+  service.stop();
+
+  assert.deepEqual(
+    store
+      .get(buildAgentComponentSyncSourceKey(COMPUTE_TARGET))
+      ?.deadLetterAttempts?.map(({ id, attempts, tombstoned }) => ({
+        id,
+        attempts,
+        tombstoned,
+      })),
+    [{ id: "poison", attempts: 1, tombstoned: false }],
+    "an installed row is recorded as re-drivable — `attempts` is 1 for the same reason as the tombstone case above: the drained re-attempt's failure now reaches the durable row"
+  );
+});
+
+test("ISS-8593: a malformed deadLetterAttempts reply from the db host cannot throw into the lane's tick or poison the backoff", async () => {
+  gatewayLog.clear();
+
+  // This lane reads `loadSyncState` RAW — it never passes through
+  // `readPersistedSyncState` — so the reply's type is asserted, not checked. A
+  // skewed or defective db host answering the raw JSON TEXT (a string, not an
+  // array) or a record with a fractional attempt count must degrade, not throw
+  // out of `hydrateCursorFor` into `run()`, which has no catch for it.
+  const rows: AgentComponentCursorRow[] = [
+    { id: "healthy", last_seen_at: "2026-07-20T11:00:00.000Z" },
+  ];
+  const rowsById = new Map(rows.map((r) => [r.id, r]));
+  const table = makeKeysetTable(() => rows);
+  const sourceKey = buildAgentComponentSyncSourceKey(COMPUTE_TARGET);
+
+  const store = new Map<string, PersistedSyncState>();
+  store.set(sourceKey, {
+    observedTopUpdatedAt: "",
+    observedIdsAtTopUpdatedAt: [""],
+    deadLetteredIds: ["stranded"],
+    // Neither of these is a legal record; one is not even an array member.
+    deadLetterAttempts: [
+      { id: "stranded", attempts: 1.5, tombstoned: true },
+      "not-a-record",
+    ] as never,
+  });
+  const source: Pick<
+    AgentSessionSyncSource,
+    "loadSyncState" | "advanceSyncState"
+  > = {
+    loadSyncState: (key: string) => store.get(key) ?? null,
+    advanceSyncState: (key: string, state: PersistedSyncState) => {
+      store.set(key, state);
+    },
+  };
+
+  const sends: string[][] = [];
+  const service = new AgentSessionSyncService({
+    isHttpReady: () => true,
+    getSource: () => source as AgentSessionSyncSource,
+    getSyncComputeTargetId: () => COMPUTE_TARGET,
+    sendBatch: async () => ({ accepted: true }),
+    listComponentCursorRows: (sinceTs, sinceId) =>
+      Promise.resolve(table.read(sinceTs, sinceId).slice(0, 1)),
+    loadComponentRows: (ids) =>
+      Promise.resolve(
+        ids.map((id) => syncedFor(id, rowsById.get(id)?.last_seen_at ?? null))
+      ),
+    sendComponents: (payload) => {
+      const ids = payload.components.map((c) => c.externalId);
+      sends.push(ids);
+      // The seeded id stays poison so it stays tracked; the live row syncs.
+      return Promise.resolve(sendResultFor(!ids.includes("stranded")));
+    },
+  });
+  await driveTicks(service, 3);
+  const progress = service.getSyncProgress();
+  service.stop();
+
+  assert.ok(
+    sends.some((batch) => batch.includes("healthy")),
+    "the lane kept running — the malformed bookkeeping did not abort the tick"
+  );
+  assert.equal(
+    progress.deadLetteredComponents,
+    1,
+    "the id itself still seeded from deadLetteredIds; only its unusable bookkeeping was dropped"
+  );
+  assert.deepEqual(
+    store
+      .get(sourceKey)
+      ?.deadLetterAttempts?.map(({ id, attempts, tombstoned }) => ({
+        id,
+        attempts,
+        tombstoned,
+      })),
+    [{ id: "stranded", attempts: 1, tombstoned: true }],
+    "the fractional attempt count is still refused — the entry seeded at 0 and re-persists at 1, one whole step up the ladder from the drained re-attempt, never at the 1.5 the db host offered. ISS-8593 (marisolashgrove review) changed the FLAG beside it: this record was destroyed by the codec, so nothing in the reply can still say whether the row was tombstoned, and seeding it re-drivable (the pre-review outcome this line used to pin) made the cap free to evict the one row nothing else can ever re-drive. It now fails CLOSED. The two halves are independent on purpose: an unusable NUMBER is discarded because a fabricated attempt count is worse than a reset one, while an unusable FLAG is resolved toward protection because the costs are asymmetric — over-protection is corrected by the next healthy snapshot, eviction is permanent."
+  );
 });

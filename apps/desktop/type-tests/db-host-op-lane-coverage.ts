@@ -46,6 +46,7 @@ import type { BranchReadFacadeMethods } from "../src/main/database/branch-read-f
 import type {
   DeclaredBranchReadOpName,
   DeclaredDashboardOpName,
+  DeclaredDiagnosticsOpName,
   DeclaredSyncSourceOpName,
 } from "../src/main/database/db-host/db-host-op-lane-registry.js";
 import type { SqliteAgentDatabase } from "../src/main/database/sqlite-contract.js";
@@ -64,6 +65,12 @@ type LanesAreExhaustive<Declared extends string, Actual extends string> = [
 
 type SyncSourceOpName = Extract<keyof AgentSessionSyncSource, string>;
 type DashboardOpName = Extract<keyof SqliteAgentDatabase["dashboard"], string>;
+/** ISS-6758 — the fourth named namespace, added when `getData` grew the FR-12
+ * cohort read and became a pool-bound corpus scan on a 5-second poll. */
+type DiagnosticsOpName = Extract<
+  keyof SqliteAgentDatabase["diagnostics"],
+  string
+>;
 
 /**
  * The named Branch read facades, read from the ONE canonical composite the
@@ -100,9 +107,20 @@ export const dashboardLanesAreExhaustive: LanesAreExhaustive<
   DashboardOpName
 > = true;
 
+export const diagnosticsLanesAreExhaustive: LanesAreExhaustive<
+  DeclaredDiagnosticsOpName,
+  DiagnosticsOpName
+> = true;
+
 export const branchReadLanesAreExhaustive: LanesAreExhaustive<
   DeclaredBranchReadOpName,
   BranchReadOpName
+> = true;
+
+// @ts-expect-error ISS-6758 — the same, for the `diagnostics.*` namespace.
+export const undeclaredDiagnosticsOpIsRejected: LanesAreExhaustive<
+  DeclaredDiagnosticsOpName,
+  DiagnosticsOpName | UndeclaredHeavyOp
 > = true;
 
 // @ts-expect-error ISS-5957 — a new `syncSource.*` op with no declared lane MUST

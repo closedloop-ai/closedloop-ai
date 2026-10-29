@@ -20,14 +20,13 @@
  */
 import assert from "node:assert/strict";
 import {
-  after,
+  afterAll,
   afterEach,
-  before,
+  beforeAll,
   beforeEach,
   describe,
-  mock,
   test,
-} from "node:test";
+} from "vitest";
 import type { createAgentDashboardDbHostLifecycle as CreateLifecycle } from "../src/main/dashboard/agent-dashboard-db-host-lifecycle.js";
 import type { AgentDashboardDesignSystemRuntimeOptions } from "../src/main/dashboard/agent-dashboard-runtime-options.js";
 import type { DbHostUserIdentity } from "../src/main/database/db-host/db-host-protocol.js";
@@ -44,6 +43,7 @@ import {
   type ElectronModuleMock,
   registerElectronModuleMock,
 } from "./helpers/electron-module-mock.js";
+import { nodeTestTimers } from "./support/node-test-fake-timers.js";
 
 /** The pre-open zombie reap shells out to `lsof`; give each boot real room. */
 const LIFECYCLE_BOOT_TIMEOUT_MS = 30_000;
@@ -249,7 +249,7 @@ describe("db-host user identity propagation (ISS-6243)", () => {
   let electronMock: ElectronModuleMock;
   let createLifecycle: typeof CreateLifecycle;
 
-  before(async () => {
+  beforeAll(async () => {
     // `agent-dashboard-runtime-paths.ts` does `import { app } from "electron"`
     // at module scope, which throws under `tsx --test` against the real
     // entrypoint (a path string). Redirect the specifier, then import the
@@ -260,7 +260,7 @@ describe("db-host user identity propagation (ISS-6243)", () => {
     ));
   });
 
-  after(() => {
+  afterAll(() => {
     electronMock.deregister();
   });
 
@@ -387,11 +387,11 @@ describe("db-host user identity propagation (ISS-6243)", () => {
     beforeEach(() => {
       // The restart ladder arms a backoff timer; drive it deterministically
       // instead of waiting out a real backoff.
-      mock.timers.enable({ apis: ["setTimeout"] });
+      nodeTestTimers.enable(["setTimeout"]);
     });
 
     afterEach(() => {
-      mock.timers.reset();
+      nodeTestTimers.reset();
     });
 
     test("a replacement child does not resurrect a signed-out identity", {
@@ -410,7 +410,7 @@ describe("db-host user identity propagation (ISS-6243)", () => {
       identity.change(null);
 
       children[0].exit(1);
-      mock.timers.tick(60_000);
+      nodeTestTimers.tick(60_000);
       await waitFor(
         "the replacement child to post Init",
         () => children[1].posted.length > 0
@@ -450,7 +450,7 @@ describe("db-host user identity propagation (ISS-6243)", () => {
       // this point, so the retained options are the only carrier.
       identity.change(null);
 
-      mock.timers.tick(60_000);
+      nodeTestTimers.tick(60_000);
       await waitFor(
         "the replacement child to post Init",
         () => children[1].posted.length > 0

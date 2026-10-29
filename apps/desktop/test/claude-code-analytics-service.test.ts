@@ -17,7 +17,7 @@
  *       never allowed to leak the key.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import type { AdminKeyStatus } from "../src/main/cost/admin-key-store.js";
 import type { ClaudeCodeUsageRecord } from "../src/main/cost/claude-code-analytics-client.js";
 import {

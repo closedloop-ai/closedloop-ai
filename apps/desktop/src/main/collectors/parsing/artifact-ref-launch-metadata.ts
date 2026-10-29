@@ -32,9 +32,9 @@
 
 import {
   CLOSEDLOOP_SLUG_FULL_MATCH_RE,
-  EXTRACTOR_VERSION,
   LAUNCH_METADATA_REF_METHOD,
 } from "./artifact-ref-extractor.js";
+import { EXTRACTOR_VERSION } from "./artifact-ref-extractor-version.js";
 import type { ArtifactRefRecord } from "./artifact-ref-record.js";
 
 export function extractLaunchMetadataRefs(

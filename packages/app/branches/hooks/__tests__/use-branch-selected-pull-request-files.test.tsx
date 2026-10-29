@@ -5,11 +5,11 @@ import {
   BranchSelectedPullRequestUnavailableSource,
 } from "@repo/api/src/types/branch-selected-pull-request-files";
 import { GitHubAccessDenialReason } from "@repo/api/src/types/github";
+import { LONG_RUNNING_API_TIMEOUT_MS } from "@repo/api/src/types/long-running-api-timeout";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { PropsWithChildren } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { LONG_RUNNING_API_TIMEOUT_MS } from "../../../shared/api/api-timeout";
 
 const mocks = vi.hoisted(() => ({ apiGet: vi.fn() }));
 
@@ -25,7 +25,7 @@ import {
 } from "../use-branch-selected-pull-request-files";
 
 const BRANCH_ID = "11111111-1111-4111-8111-111111111111";
-const REPOSITORY_FULL_NAME = "closedloop-ai/example-repo";
+const REPOSITORY_FULL_NAME = "closedloop-ai/closedloop-ai";
 const BASE_SHA = "a".repeat(40);
 const HEAD_SHA = "b".repeat(40);
 
@@ -90,7 +90,7 @@ describe("selected pull request files and diff hooks", () => {
         useBranchSelectedPullRequestFiles(
           {
             branchId: BRANCH_ID,
-            repositoryFullName: "ClosedLoop-AI/Example-Repo.git",
+            repositoryFullName: "ClosedLoop-AI/ClosedLoop-AI.git",
             pullRequestNumber: 4471,
           },
           undefined,
@@ -103,7 +103,7 @@ describe("selected pull request files and diff hooks", () => {
     expect(mocks.apiGet).toHaveBeenCalledTimes(1);
     const [path, options] = mocks.apiGet.mock.calls[0] ?? [];
     expect(path).toBe(
-      `/branches/${BRANCH_ID}/selected-pull-request/files?repositoryFullName=closedloop-ai%2Fsymphony-alpha&pullRequestNumber=4471`
+      `/branches/${BRANCH_ID}/selected-pull-request/files?repositoryFullName=closedloop-ai%2Fclosedloop-ai&pullRequestNumber=4471`
     );
     expect(options.signal).toBeInstanceOf(AbortSignal);
     expect(options.timeoutMs).toBe(LONG_RUNNING_API_TIMEOUT_MS);
@@ -136,7 +136,7 @@ describe("selected pull request files and diff hooks", () => {
       () =>
         useBranchSelectedPullRequestDiff({
           ...diffInput(),
-          repositoryFullName: "ClosedLoop-AI/Example-Repo.git",
+          repositoryFullName: "ClosedLoop-AI/ClosedLoop-AI.git",
           path: "apps/api/a file&copy.ts",
           baseSha: BASE_SHA.toUpperCase(),
           headSha: HEAD_SHA.toUpperCase(),
@@ -148,7 +148,7 @@ describe("selected pull request files and diff hooks", () => {
     expect(mocks.apiGet).toHaveBeenCalledTimes(1);
     const [path, options] = mocks.apiGet.mock.calls[0] ?? [];
     expect(path).toBe(
-      `/branches/${BRANCH_ID}/selected-pull-request/diff?repositoryFullName=closedloop-ai%2Fsymphony-alpha&pullRequestNumber=4471&path=apps%2Fapi%2Fa+file%26copy.ts&baseSha=${BASE_SHA}&headSha=${HEAD_SHA}`
+      `/branches/${BRANCH_ID}/selected-pull-request/diff?repositoryFullName=closedloop-ai%2Fclosedloop-ai&pullRequestNumber=4471&path=apps%2Fapi%2Fa+file%26copy.ts&baseSha=${BASE_SHA}&headSha=${HEAD_SHA}`
     );
     expect(options.signal).toBeInstanceOf(AbortSignal);
     expect(options.timeoutMs).toBe(LONG_RUNNING_API_TIMEOUT_MS);

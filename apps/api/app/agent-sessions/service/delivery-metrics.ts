@@ -23,73 +23,90 @@
 //
 // IN-WINDOW DENOMINATOR (ISS-6398, closing what the code called ISS-5610): the
 // LOC-per-dollar numerator is bounded by the selected range at `mergedAt`, so its
-// denominator must be the spend of that SAME range — the in-window API-billed cost
-// (`apiEstimatedCost`, the not-subscription-covered bucket = metered + unknown). It
-// is passed IN by the usage composition root, which has already classified it over
-// the windowed summary `where`, rather than re-derived here.
+// denominator must be the spend of that SAME range. It is passed IN by the usage
+// composition root, which has already classified that windowed spend, rather than
+// re-derived here.
 //
-// That divisor is the figure the Cost card shows on its DEFAULT basis only. Under
-// the ISS-4773 cost-honesty flag the Cost headline drops to `meteredEstimatedCost`
-// and discloses the unknown share separately, so whenever unknown spend is non-zero
-// the two tiles no longer multiply out — see the same caveat, and the flag-ON copy
-// that avoids the claim, in `sessions-summary-cards.tsx`. Do not restate "the same
-// figure the Cost card shows" unqualified; it is only true with the flag off.
-//
-// It used to be derived from the date-window-STRIPPED delivery scope instead, on the
-// argument (thread davetho) that both sides should span one session set. That made
-// the two sides span different TIME: a windowed numerator over an all-time divisor,
-// so a 7-day view divided a week of merged lines by every dollar the org had ever
-// spent and understated the ratio by orders of magnitude (ISS-6398 measured ~517x).
-// Cohort identity at the session level cannot buy back a denominator the reader's
-// selected window does not describe, and the card cannot reconcile against the Cost
-// tile it sits next to. The merged-PR NUMERATOR keeps the stripped scope, which is
-// what still lets an older-than-window session's in-window merge be counted.
+// The merged-PR numerator keeps the stripped scope, which lets an older-than-window
+// session's in-window merge be counted. The denominator is still the selected
+// range's total estimated cost.
 
+import type {
+  DeliveryWindow,
+  NormalizedPr,
+} from "@repo/api/src/insights/delivery-kpis/normalized-rows";
 import type { AgentSessionUsageSummary } from "@repo/api/src/types/agent-session";
 import { legacyKlocPerDollarFromLoc } from "@repo/api/src/utils/loc-per-dollar";
+import type { Prisma } from "@repo/database";
+import type { LimitFunction } from "p-limit";
 import {
   type AgentSessionDeliveryMetrics,
   collectMergedPrsForScope,
   computeDeliveryMetricsFromPrs,
   resolveDeliveryMergeWindow,
 } from "@/lib/agent-session-delivery-metrics";
+import {
+  type LocPerDollarCostBasis,
+  toMergedLocPerDollarBasis,
+} from "./loc-per-dollar-basis";
+import {
+  type LocPerDollarCoverageCounts,
+  readLocPerDollarCoverageCounts,
+  resolveNumeratorBranchCohort,
+} from "./loc-per-dollar-coverage";
 import type { SessionUsageInput } from "./records";
 import type { UsageComparisonWindow } from "./usage-comparison";
 import { buildUsageSummaryWhere } from "./usage-summary-where";
 
+/** The merged-PR set behind the delivery cards, plus the window to evaluate it against. */
+export type DeliveryPrScope = {
+  prs: NormalizedPr[];
+  mergeWindow: DeliveryWindow | null;
+  /**
+   * ISS-7705: whether the LOC/$ coverage probe was RUN for this scope.
+   *
+   * False when the scope found no merged PRs at all. That is not "coverage is
+   * fine" — it is "there is no ratio to gate": `mergedLocPerDollar` is already
+   * null on its own account, so the caller publishes no verdict rather than a
+   * `complete` one that would assert coverage nobody measured.
+   *
+   * Kept separate from {@link coverageCounts} because `null` counts mean
+   * something ELSE — probed and FAILED — which must publish a verdict.
+   */
+  coverageProbed: boolean;
+  /**
+   * The populations the probe read, or `null` when it was run and did not
+   * complete. Meaningless unless {@link coverageProbed} is true.
+   */
+  coverageCounts: LocPerDollarCoverageCounts | null;
+};
+
 /**
- * The Sessions delivery-summary metrics for `input`, plus — when `priorWindow` is
- * given — the same scope's merged-PR count for that adjacent window (ISS-5809).
+ * Collects the merged-PR set the Sessions delivery cards summarize — the whole
+ * DB half of the read (one probe, one keyset pass).
  *
  * Builds the delivery scope (facet filters preserved, session-activity date window
- * stripped) so an older session's in-window merge is counted, resolves the selected
- * range as the delivery `DeliveryWindow`, and divides by `windowedApiCost` — the
- * API-billed spend of the SELECTED window (ISS-6398).
+ * stripped) so an older session's in-window merge is counted, and resolves the
+ * selected range as the delivery `DeliveryWindow`.
  *
- * The prior count is FREE. The delivery scope deliberately strips the
- * session-activity date window (see the module header), so the scope is identical
- * for both periods and the selected range is applied downstream at each PR's own
- * `mergedAt`. One probe, one keyset pass — then the collected merged-PR set is
- * evaluated against two `DeliveryWindow`s in memory.
+ * The prior-period count is FREE because the scope deliberately strips the
+ * session-activity date window (see the module header): the scope is identical for
+ * both periods, so the one collected set is evaluated against two `DeliveryWindow`s
+ * in memory by {@link foldDeliverySummaryMetricsWithPrior}.
  *
- * Only `mergedPrCount` is returned for the prior period. `medianPrSize` is not
- * compared, and `mergedLocPerDollar` deliberately is not either: since ISS-6398 its
- * denominator is the spend of the CURRENT window. The prior window's spend is
- * computed elsewhere in the same request (`usage-comparison.ts` runs the shared
- * classifier over the prior `where`) but only AFTER this pass, so it is not
- * available here and a prior ratio would divide prior lines by current dollars.
- * That is why `windowedApiCost` is applied to the current window only and the prior
- * evaluation carries `null` — a prior LOC/$ built on the wrong dollars must not
- * exist even unread.
+ * @param limiter The caller's request-wide fan-out budget. Both reads below chunk
+ *   their id lists, and ISS-6136 made those chunks run concurrently — so without
+ *   a limiter handed down, this stage would open one budget here, a second in
+ *   `collectMergedPrsForScope` and a third in the coverage probe. Call bounds
+ *   compose by ADDITION, and that these two happen not to overlap today is an
+ *   ordering detail of this function, not a bound.
  */
-export async function computeDeliverySummaryMetricsWithPrior(
+export async function collectDeliveryPrScope(
   input: SessionUsageInput,
+  denominatorWhere: Prisma.SessionDetailWhereInput,
   priorWindow: UsageComparisonWindow | null,
-  windowedApiCost: number | null
-): Promise<{
-  metrics: AgentSessionDeliveryMetrics;
-  priorMergedPrCount: number | null;
-}> {
+  limiter?: LimitFunction
+): Promise<DeliveryPrScope> {
   const mergeWindow = resolveDeliveryMergeWindow(
     input.filters.startDate,
     input.filters.endDate
@@ -103,24 +120,73 @@ export async function computeDeliverySummaryMetricsWithPrior(
     mergeWindow === null
       ? await buildUsageSummaryWhere(input)
       : await buildUsageSummaryWhere(stripDateWindow(input));
-  const prs = await collectMergedPrsForScope(
+  const { prs, mergedBranches } = await collectMergedPrsForScope(
     input.organizationId,
-    deliveryWhere
+    deliveryWhere,
+    // ISS-9924: read only the PRs the folds can count — merged in this window or
+    // in `priorWindow`. `foldDeliverySummaryMetricsWithPrior` must be handed the
+    // SAME prior window, or its prior count is taken over a set this read cut.
+    spanMergeWindows(mergeWindow, priorWindow),
+    limiter
   );
-  const metrics = computeDeliveryMetricsFromPrs(
-    prs,
-    windowedApiCost,
+  // ISS-7705: gate the ratio only when there IS a ratio. The cohort is the
+  // branches whose PRs merged INSIDE the window — the population the LOC
+  // actually came from — so an org whose only merged PRs landed outside the
+  // range contributes no lines, needs no divisor, and is not probed at all. That
+  // also keeps the commonest read there is (a broad dashboard with no PR links,
+  // which `collectMergedPrsForScope` short-circuits before touching a PR row)
+  // free of any coverage query.
+  const numeratorCohort = resolveNumeratorBranchCohort(
+    mergedBranches,
     mergeWindow
+  );
+  const coverageProbed = numeratorCohort.size > 0;
+  const coverageCounts = coverageProbed
+    ? await readLocPerDollarCoverageCounts(
+        input.organizationId,
+        numeratorCohort,
+        deliveryWhere,
+        denominatorWhere,
+        limiter
+      )
+    : null;
+  return { prs, mergeWindow, coverageProbed, coverageCounts };
+}
+
+/**
+ * The delivery metrics for an already-collected {@link DeliveryPrScope}, plus —
+ * when `priorWindow` is given — that scope's merged-PR count for the adjacent
+ * window (ISS-5809).
+ *
+ * ISS-7343: this half is deliberately PURE. `windowedCostUsd` is only ever a
+ * divisor, so keeping it out of {@link collectDeliveryPrScope} is what lets the
+ * usage composition root run the delivery scan concurrently with the cost split
+ * that produces it, instead of behind it.
+ *
+ * Only `mergedPrCount` is read from the prior evaluation. `mergedLocPerDollar`
+ * is deliberately not compared: since ISS-6398 its denominator is the spend of
+ * the CURRENT window, and the prior window's spend is computed elsewhere in the
+ * same request (`usage-comparison.ts`). So the prior evaluation carries a `null`
+ * denominator — a prior LOC/$ built on current dollars must not exist even unread.
+ */
+export function foldDeliverySummaryMetricsWithPrior(
+  scope: DeliveryPrScope,
+  priorWindow: UsageComparisonWindow | null,
+  windowedCostUsd: number | null
+): {
+  metrics: AgentSessionDeliveryMetrics;
+  priorMergedPrCount: number | null;
+} {
+  const metrics = computeDeliveryMetricsFromPrs(
+    scope.prs,
+    windowedCostUsd,
+    scope.mergeWindow
   );
   if (priorWindow === null) {
     return { metrics, priorMergedPrCount: null };
   }
-  // Cost `null` for the prior evaluation: only `mergedPrCount` is read from it,
-  // and the current window's dollars are not the prior window's (see the doc
-  // above). A null denominator makes the prior LOC/$ unavailable rather than
-  // silently wrong, so it cannot be picked up later by mistake.
   const priorMetrics = computeDeliveryMetricsFromPrs(
-    prs,
+    scope.prs,
     null,
     resolveDeliveryMergeWindow(priorWindow.startDate, priorWindow.endDate)
   );
@@ -149,20 +215,58 @@ function stripDateWindow(input: SessionUsageInput): SessionUsageInput {
  * shim. `null` stays `null` — never a fabricated legacy number. Living here (not
  * at the `getUsageSummary` composition root) keeps the alias's lifetime owned by
  * the module that owns the metric.
+ *
+ * ISS-9848: `mergedLocPerDollarBasis` is emitted HERE, from the divisor the
+ * caller actually used, rather than at either composition root. Both producers
+ * of this endpoint's summary — the live one and the TypedSQL candidate — go
+ * through this helper, so the basis cannot describe one path's divisor while the
+ * other publishes a different one. It rides the field even when the ratio is
+ * `null`: the card renders its "how" caption either way, and a caption that
+ * silently reverts to the client's compiled-in guess whenever the number is
+ * absent is the same skew defect in a narrower window.
  */
 export function toDeliverySummaryFields(
-  metrics: AgentSessionDeliveryMetrics
+  metrics: AgentSessionDeliveryMetrics,
+  costBasis: LocPerDollarCostBasis
 ): Pick<
   AgentSessionUsageSummary,
   | "medianPrSize"
   | "mergedKlocPerDollar"
   | "mergedLocPerDollar"
+  | "mergedLocPerDollarBasis"
   | "mergedPrCount"
 > {
   return {
     mergedPrCount: metrics.mergedPrCount,
     medianPrSize: metrics.medianPrSize,
     mergedLocPerDollar: metrics.mergedLocPerDollar,
+    mergedLocPerDollarBasis: toMergedLocPerDollarBasis(costBasis.basis),
     mergedKlocPerDollar: legacyKlocPerDollarFromLoc(metrics.mergedLocPerDollar),
+  };
+}
+
+/**
+ * The merge window the delivery read must cover: the current window widened to
+ * the prior one `foldDeliverySummaryMetricsWithPrior` evaluates, resolved the
+ * same way that fold resolves it. `null` (all-time) whenever either evaluation
+ * is unbounded.
+ */
+function spanMergeWindows(
+  mergeWindow: DeliveryWindow | null,
+  priorWindow: UsageComparisonWindow | null
+): DeliveryWindow | null {
+  if (mergeWindow === null || priorWindow === null) {
+    return mergeWindow;
+  }
+  const prior = resolveDeliveryMergeWindow(
+    priorWindow.startDate,
+    priorWindow.endDate
+  );
+  if (prior === null) {
+    return null;
+  }
+  return {
+    start: Math.min(mergeWindow.start, prior.start),
+    end: Math.max(mergeWindow.end, prior.end),
   };
 }

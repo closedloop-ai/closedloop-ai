@@ -16,6 +16,8 @@ export const RESERVED_ORG_SLUGS = [
   "api",
   "d",
   "rum-validation",
+  // ISS-11832: apps/app's ECS health check route.
+  "health",
 
   // Auth flow paths
   "auth",

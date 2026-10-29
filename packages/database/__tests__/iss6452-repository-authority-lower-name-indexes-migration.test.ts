@@ -7,12 +7,14 @@ import { describe, expect, it } from "vitest";
  * migration 20260815120000 builds for the session-ingest authority read
  * (apps/api/app/agent-sessions/service/artifact-links/shared.ts).
  *
- * All three are UNMANAGED by Prisma: its DSL can declare neither an expression
- * index nor a partial one, so they exist only in the migration SQL and nothing
- * else in the repo would notice if a statement were dropped, renamed, or had
- * its key list or partial predicate quietly changed. Each assertion below is
- * scoped to ONE parsed statement, so a clause satisfied elsewhere in the file
- * cannot stand in for the object under test.
+ * All three are UNMANAGED by Prisma: its DSL cannot declare an EXPRESSION key,
+ * so the differ ignores them even with `partialIndexes` on (ISS-7476), and they
+ * exist only in the migration SQL. Nothing else in the repo would notice if a
+ * statement were dropped, renamed, or had its key list or partial predicate
+ * quietly changed — their live counterpart is
+ * __tests__/integration/psl-inexpressible-partial-indexes.integration.test.ts.
+ * Each assertion below is scoped to ONE parsed statement, so a clause satisfied
+ * elsewhere in the file cannot stand in for the object under test.
  *
  * Reads declarative migration.sql DDL only — not implementation source.
  */
@@ -121,51 +123,55 @@ describe(`${MIGRATION_NAME} index DDL`, () => {
     );
   });
 
-  it.each(
-    EXPECTED_INDEXES
-  )("$name is built on $table over the exact key list the ingest predicate needs", (expected) => {
-    const parsed = requireParsedIndex(expected.name);
+  it.each(EXPECTED_INDEXES)(
+    "$name is built on $table over the exact key list the ingest predicate needs",
+    (expected) => {
+      const parsed = requireParsedIndex(expected.name);
 
-    expect(parsed.table).toBe(expected.table);
-    expect(parsed.keys).toBe(expected.keys);
-  });
+      expect(parsed.table).toBe(expected.table);
+      expect(parsed.keys).toBe(expected.keys);
+    }
+  );
 
-  it.each(
-    EXPECTED_INDEXES
-  )("$name carries its intended predicate", (expected) => {
-    const parsed = requireParsedIndex(expected.name);
+  it.each(EXPECTED_INDEXES)(
+    "$name carries its intended predicate",
+    (expected) => {
+      const parsed = requireParsedIndex(expected.name);
 
-    expect(parsed.where).toBe(expected.where);
-  });
+      expect(parsed.where).toBe(expected.where);
+    }
+  );
 
-  it.each(
-    EXPECTED_INDEXES
-  )("$name is a non-unique CONCURRENTLY build with no IF NOT EXISTS", (expected) => {
-    const parsed = requireParsedIndex(expected.name);
+  it.each(EXPECTED_INDEXES)(
+    "$name is a non-unique CONCURRENTLY build with no IF NOT EXISTS",
+    (expected) => {
+      const parsed = requireParsedIndex(expected.name);
 
-    // CONCURRENTLY: all three tables are written continuously, so a plain
-    // build would hold ACCESS EXCLUSIVE for its whole duration.
-    expect(parsed.concurrent).toBe(true);
-    // Non-unique: these are plan-only perf indexes. A UNIQUE index would be a
-    // correctness constraint and would also make the migration ineligible for
-    // the preview skip list it is registered in.
-    expect(parsed.unique).toBe(false);
-    // No IF NOT EXISTS: a retry must fail closed (SQLSTATE 42P07) against a
-    // same-named INVALID remnant rather than record the migration applied
-    // over a permanently unusable index.
-    expect(parsed.ifNotExists).toBe(false);
-  });
+      // CONCURRENTLY: all three tables are written continuously, so a plain
+      // build would hold ACCESS EXCLUSIVE for its whole duration.
+      expect(parsed.concurrent).toBe(true);
+      // Non-unique: these are plan-only perf indexes. A UNIQUE index would be a
+      // correctness constraint and would also make the migration ineligible for
+      // the preview skip list it is registered in.
+      expect(parsed.unique).toBe(false);
+      // No IF NOT EXISTS: a retry must fail closed (SQLSTATE 42P07) against a
+      // same-named INVALID remnant rather than record the migration applied
+      // over a permanently unusable index.
+      expect(parsed.ifNotExists).toBe(false);
+    }
+  );
 
-  it.each(
-    EXPECTED_INDEXES
-  )("$name fits PostgreSQL's identifier limit without silent truncation", (expected) => {
-    // Read the length off the PARSED name, not the expectation — asserting a
-    // constant against a constant would only ever fail if someone edited the
-    // expectation, which is not the object at risk of truncation.
-    expect(requireParsedIndex(expected.name).name.length).toBeLessThanOrEqual(
-      MAX_IDENTIFIER_LENGTH
-    );
-  });
+  it.each(EXPECTED_INDEXES)(
+    "$name fits PostgreSQL's identifier limit without silent truncation",
+    (expected) => {
+      // Read the length off the PARSED name, not the expectation — asserting a
+      // constant against a constant would only ever fail if someone edited the
+      // expectation, which is not the object at risk of truncation.
+      expect(requireParsedIndex(expected.name).name.length).toBeLessThanOrEqual(
+        MAX_IDENTIFIER_LENGTH
+      );
+    }
+  );
 
   it("stays bare top-level SQL so Prisma does not wrap it in a transaction", () => {
     // Any of these pushes `migrate deploy` onto its single-transaction fallback,

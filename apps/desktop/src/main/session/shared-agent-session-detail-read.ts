@@ -15,19 +15,21 @@
 import { SESSION_DETAIL_EVENT_MAX_ROWS } from "@repo/api/src/types/agent-session-detail-limits";
 import type { TranscriptAvailabilitySummary } from "@repo/api/src/types/desktop-transcripts";
 import type { SharedAgentSessionDetail } from "../../shared/shared-agent-sessions-contract.js";
+import { createSessionAttributionResolverCache } from "../agent-sync/agent-session-attribution.js";
 import type { AgentSessionSyncSource } from "../agent-sync/agent-session-sync-source.js";
-import type { BranchDefaultEligibilitySource } from "../branch/shared-branches-default-eligibility.js";
+import { loadLocalTranscriptVerdicts } from "./local-transcript-cloud-sync.js";
+import { outboxLookupWithoutPendingRead } from "./pending-outbox-lookup.js";
 import { resolveSessionBranchRouteId } from "./session-branch-route.js";
 import {
   boundDetailEvents,
   mapDetail,
 } from "./shared-agent-session-detail-projection.js";
 import {
-  createSessionAttributionResolverCache,
-  indexSessionsById,
+  type GetSharedAgentSessionsOptions,
   mapListItem,
 } from "./shared-agent-sessions-api.js";
 import { coerceNonEmptyString } from "./shared-agent-sessions-query.js";
+import { indexSessionsById } from "./synced-agent-session-index.js";
 
 /**
  * Project one local session into the canonical detail response. A missing or
@@ -95,26 +97,50 @@ export async function getSharedAgentSessionDetail(
   // 50), and folding that produced a row claiming "+44" for a 60-document session.
   // Optional on the source — absent, `mapDetail` keeps the old capped fold and
   // omits the total rather than inventing one.
-  const documentArtifactRefs =
+  // ISS-9863: the read also reports whether the store held MORE than its scan
+  // ceiling. Past it the served refs are still forwarded, and `truncated` makes
+  // `mapDetail` withhold the total the same way an absent read does.
+  const documentArtifactRefsRead =
     await source.loadSessionDocumentArtifactRefs?.(sessionId);
   const branchArtifactId = await resolveSessionBranchRouteId({
     source,
-    eligibilitySource: options?.branchEligibilitySource,
     sessionId,
     branch: bounded.branch,
     // The repo the pane's own Repository row will show, so the link cannot open a
     // branch under a repository the row just named differently.
     displayedRepositoryFullName: bounded.attribution?.repositoryFullName,
   });
+  // ISS-9884: the Sync row reads the same verdict PAIR the list row does, so it
+  // comes from the list's own blob-state lookup, not from `transcripts` above.
+  // Those summaries only open the local read gate — every on-disk file reports
+  // `available` with no skip reason — so folding them would stamp `synced` on a
+  // transcript the lane gave up on, and with no lookup at all the row could
+  // never say "Upload paused".
+  const transcriptVerdicts = await loadLocalTranscriptVerdicts(
+    options?.computeTargetId ?? null,
+    options?.loadTranscriptBlobStates,
+    [session.externalSessionId]
+  );
   return mapDetail({
     session: bounded,
-    listItem: mapListItem(bounded),
+    // ISS-11427: the outbox lane stays at its never-consulted default here, but
+    // the session lane's dead-letter verdict is in memory and costs no read.
+    listItem: mapListItem(
+      bounded,
+      outboxLookupWithoutPendingRead(options?.readSessionDeadLetterState),
+      transcriptVerdicts
+    ),
     events,
     truncation,
     wholeRunEventCounts: eventCounts?.get(sessionId),
     tokenEvents,
     transcripts,
-    ...(documentArtifactRefs ? { documentArtifactRefs } : {}),
+    ...(documentArtifactRefsRead
+      ? {
+          documentArtifactRefs: documentArtifactRefsRead.refs,
+          documentArtifactRefsTruncated: documentArtifactRefsRead.truncated,
+        }
+      : {}),
     ...(branchArtifactId ? { branchArtifactId } : {}),
   });
 }
@@ -126,10 +152,11 @@ export async function getSharedAgentSessionDetail(
  * shared panel a local transcript exists and it should read it. Injected by the
  * IPC runtime (which owns the transcript-sync store + discovery); omitted in
  * tests/callers that don't need the local read path, in which case no summary is
- * surfaced.
+ * surfaced. `computeTargetId` and `loadTranscriptBlobStates` are the list read's
+ * own transcript-verdict inputs (ISS-9884); omitted, the detail publishes no
+ * transcript verdict.
  */
-export type DetailProjectionOptions = {
-  branchEligibilitySource?: BranchDefaultEligibilitySource;
+export type DetailProjectionOptions = GetSharedAgentSessionsOptions & {
   resolveLocalTranscripts?: (
     externalSessionId: string
   ) => Promise<TranscriptAvailabilitySummary[] | null>;

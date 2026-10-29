@@ -14,7 +14,7 @@
  * hydration path.
  *
  * The value strip therefore happens in SQL, before the driver materializes the column,
- * for the same reason FEA-2038 nulls `events.data` and ISS-6050 nulls
+ * for the same reason FEA-2038 nulls `events.data` and ISS-6050 drops
  * `token_events.cost_summary` in SQL rather than after the fact: the libSQL
  * driver materializes the full result set in memory before any JS-side omit can
  * run, so a JS-side drop saves the parse but not the text.

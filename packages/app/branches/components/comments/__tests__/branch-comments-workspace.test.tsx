@@ -3,10 +3,8 @@ import {
   BranchPrCommentKind,
   type BranchPrCommentKind as BranchPrCommentKindType,
 } from "@repo/api/src/types/branch";
-import {
-  TraceCommentSurface,
-  TraceCommentTargetType,
-} from "@repo/api/src/types/comment";
+import { CommentSurface, CommentTargetType } from "@repo/api/src/types/comment";
+import { TRACE_COMMENT_SELECTION_GUIDANCE } from "@repo/app/shared/components/comments/comments-pane-model";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRef, useState } from "react";
@@ -14,21 +12,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BranchCommentSource,
   BranchCommentsTab,
-  type BranchCommentsWorkspaceProps,
   type BranchCommentThread,
 } from "../branch-comments-model";
 import { BranchCommentsWorkspace } from "../branch-comments-workspace";
+import {
+  makeAnchor,
+  makeAuthor,
+  makeProps,
+  makeProviderProvenance,
+  makeThread,
+  renderWorkspace,
+  stubMatchMedia,
+} from "./branch-comments-workspace.test-fixtures";
 
 const FORBIDDEN_ACTIONS =
   /react|resolve|unresolve|edit reply|reply to reply|file anchor/i;
 const UNAVAILABLE_SESSION_NOTE = /session-b are unavailable/i;
+const RESOLVED_LABEL = "Resolved";
 const REVIEW_COMMENT_METADATA = /Review comment · Unresolved/;
-const REVIEW_REPLY_METADATA = /Review reply · Resolved/;
+const REVIEW_REPLY_METADATA = new RegExp(`Review reply · ${RESOLVED_LABEL}`);
 const GITHUB_LINK_NAME = /on GitHub/;
 const BODY_TRUNCATED_METADATA = /Body truncated/;
 const STALE_METADATA = /Stale/;
-const RESOLVED_METADATA = /resolved/i;
 const UNKNOWN_METADATA = /unknown/i;
+const UNAVAILABLE_COUNT_LABEL = "Unavailable";
 
 beforeEach(() => {
   stubMatchMedia(() => false);
@@ -62,7 +69,7 @@ describe("BranchCommentsWorkspace", () => {
           tab: BranchCommentsTab.Sessions,
           target: {
             id: "session-a",
-            type: TraceCommentTargetType.Session,
+            type: CommentTargetType.Session,
           },
         }),
       ],
@@ -84,7 +91,7 @@ describe("BranchCommentsWorkspace", () => {
       comments: [
         makeThread({
           body: "Timeline note",
-          collectionQuery: { surface: TraceCommentSurface.BranchTimeline },
+          collectionQuery: { surface: CommentSurface.BranchTimeline },
           id: "timeline-note",
           tab: BranchCommentsTab.Sessions,
         }),
@@ -94,7 +101,7 @@ describe("BranchCommentsWorkspace", () => {
           tab: BranchCommentsTab.Sessions,
           target: {
             id: "session-a",
-            type: TraceCommentTargetType.Session,
+            type: CommentTargetType.Session,
           },
         }),
         makeThread({
@@ -103,7 +110,7 @@ describe("BranchCommentsWorkspace", () => {
           tab: BranchCommentsTab.Sessions,
           target: {
             id: "session-b",
-            type: TraceCommentTargetType.Session,
+            type: CommentTargetType.Session,
           },
         }),
         makeThread({
@@ -158,6 +165,98 @@ describe("BranchCommentsWorkspace", () => {
     expect(
       screen.getByText("Provider comment coverage is truncated.")
     ).toBeInTheDocument();
+  });
+
+  // ISS-7370: the heading's count slot and the panel body speak for the same
+  // read, so the three states have to be distinguishable from each other AND
+  // agree with each other. The pessimistic word belongs to the failed read only.
+  describe("count slot vs panel body (loading / error / real zero)", () => {
+    it("leaves the count slot empty and skeletons it while the read is in flight", () => {
+      const { container } = renderWorkspace({
+        comments: [],
+        composerTarget: null,
+        isLoading: true,
+      });
+
+      expect(
+        screen.getByRole("heading", { name: "PR Comments" })
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(UNAVAILABLE_COUNT_LABEL)
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent("Loading comments…");
+      expect(
+        container.querySelector('[data-slot="skeleton"]')
+      ).toBeInTheDocument();
+      // The skeleton is aria-hidden, so the region carries the only machine-
+      // readable claim that this content is still settling.
+      expect(
+        screen.getByRole("region", { name: "Branch comments" })
+      ).toHaveAttribute("aria-busy", "true");
+    });
+
+    it("says Unavailable in the count slot only when the read failed", () => {
+      const { container } = renderWorkspace({
+        comments: [],
+        composerTarget: null,
+        hasError: true,
+      });
+
+      expect(
+        screen.getByRole("heading", {
+          name: `PR Comments ${UNAVAILABLE_COUNT_LABEL}`,
+        })
+      ).toBeInTheDocument();
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Comments are unavailable in this view."
+      );
+      expect(screen.queryByText("Loading comments…")).not.toBeInTheDocument();
+      expect(container.querySelector('[data-slot="skeleton"]')).toBeNull();
+      expect(
+        screen.getByRole("region", { name: "Branch comments" })
+      ).toHaveAttribute("aria-busy", "false");
+    });
+
+    it("renders a real zero as 0 with the empty state, not as Unavailable", () => {
+      const { container } = renderWorkspace({
+        comments: [],
+        composerTarget: null,
+      });
+
+      expect(
+        screen.getByRole("heading", { name: "PR Comments 0" })
+      ).toBeInTheDocument();
+      expect(screen.getByText("No comments in this view")).toBeInTheDocument();
+      expect(
+        screen.queryByText(UNAVAILABLE_COUNT_LABEL)
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText("Loading comments…")).not.toBeInTheDocument();
+      expect(container.querySelector('[data-slot="skeleton"]')).toBeNull();
+    });
+
+    it("keeps the real count and the rendered threads when a refresh reloads over visible comments", () => {
+      const { container } = renderWorkspace({
+        comments: [
+          makeThread({
+            body: "Selected PR note",
+            id: "provider-selected",
+            pullRequestKey: "owner/repo#12",
+            source: BranchCommentSource.Provider,
+          }),
+        ],
+        hasError: true,
+        isLoading: true,
+      });
+
+      expect(
+        screen.getByRole("heading", { name: "PR Comments 1" })
+      ).toBeInTheDocument();
+      expect(screen.getByText("Selected PR note")).toBeInTheDocument();
+      expect(
+        screen.queryByText(UNAVAILABLE_COUNT_LABEL)
+      ).not.toBeInTheDocument();
+      expect(container.querySelector('[data-slot="skeleton"]')).toBeNull();
+    });
   });
 
   it("renders provider roots and replies without changing platform replies", () => {
@@ -273,7 +372,9 @@ describe("BranchCommentsWorkspace", () => {
     expect(screen.getByText("@reviewer")).toBeInTheDocument();
     expect(screen.getByText("GitHub · Issue comment")).toBeInTheDocument();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
-    expect(screen.queryByText(RESOLVED_METADATA)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(RESOLVED_LABEL, { exact: false })
+    ).not.toBeInTheDocument();
     expect(screen.queryByText(UNKNOWN_METADATA)).not.toBeInTheDocument();
   });
 
@@ -346,11 +447,11 @@ describe("BranchCommentsWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Delete reply" }));
     expect(onJump).toHaveBeenCalledWith(makeAnchor(), {
       id: "branch-1",
-      type: TraceCommentTargetType.Branch,
+      type: CommentTargetType.Branch,
     });
     const branchDetailsTarget = {
       id: "branch-1",
-      type: TraceCommentTargetType.Branch,
+      type: CommentTargetType.Branch,
     };
     expect(onDeleteThread).toHaveBeenCalledWith(
       "thread-1",
@@ -425,7 +526,7 @@ describe("BranchCommentsWorkspace", () => {
       anchor: makeAnchor("session-a line 8", "session-anchor"),
       target: {
         id: "session-a",
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
       },
     } as const;
     rerender(
@@ -461,7 +562,7 @@ describe("BranchCommentsWorkspace", () => {
     const user = userEvent.setup();
     const sessionTarget = {
       anchor: makeAnchor("session-a line 8", "session-anchor"),
-      target: { id: "session-a", type: TraceCommentTargetType.Session },
+      target: { id: "session-a", type: CommentTargetType.Session },
     } as const;
     const props = makeProps({
       activeTab: BranchCommentsTab.Sessions,
@@ -481,9 +582,7 @@ describe("BranchCommentsWorkspace", () => {
       screen.queryByRole("textbox", { name: "Comment on session-a line 8" })
     ).not.toBeInTheDocument();
     expect(
-      screen.getByText(
-        "Select an eligible trace row or range to add a comment."
-      )
+      screen.getByText(TRACE_COMMENT_SELECTION_GUIDANCE)
     ).toBeInTheDocument();
 
     rerender(<BranchCommentsWorkspace {...props} />);
@@ -495,7 +594,7 @@ describe("BranchCommentsWorkspace", () => {
   it("requires the Branch target surface to match the active tab", () => {
     const detailsTarget = {
       anchor: makeAnchor(),
-      target: { id: "branch-1", type: TraceCommentTargetType.Branch },
+      target: { id: "branch-1", type: CommentTargetType.Branch },
     } as const;
     const { rerender } = render(
       <BranchCommentsWorkspace
@@ -523,7 +622,7 @@ describe("BranchCommentsWorkspace", () => {
           composerTarget: {
             ...detailsTarget,
             collectionQuery: {
-              surface: TraceCommentSurface.BranchTimeline,
+              surface: CommentSurface.BranchTimeline,
             },
           },
         })}
@@ -572,7 +671,7 @@ describe("BranchCommentsWorkspace", () => {
 
     const branchTwoTarget = {
       anchor: makeAnchor("line 9", "anchor-2"),
-      target: { id: "branch-2", type: TraceCommentTargetType.Branch },
+      target: { id: "branch-2", type: CommentTargetType.Branch },
     } as const;
     rerender(
       <BranchCommentsWorkspace
@@ -619,7 +718,7 @@ describe("BranchCommentsWorkspace", () => {
 
     const branchBTarget = {
       anchor: makeAnchor("line 7", "anchor-b"),
-      target: { id: "branch-b", type: TraceCommentTargetType.Branch },
+      target: { id: "branch-b", type: CommentTargetType.Branch },
     } as const;
     rerender(
       <BranchCommentsWorkspace
@@ -663,7 +762,7 @@ describe("BranchCommentsWorkspace", () => {
       body: "Retry me",
       collectionQuery: undefined,
       tab: BranchCommentsTab.Details,
-      target: { id: "branch-1", type: TraceCommentTargetType.Branch },
+      target: { id: "branch-1", type: CommentTargetType.Branch },
     });
     expect(await screen.findByRole("textbox")).toHaveValue("");
   });
@@ -739,126 +838,4 @@ function MobileWorkspaceHarness() {
       />
     </>
   );
-}
-
-function renderWorkspace(
-  overrides: Partial<BranchCommentsWorkspaceProps> = {}
-) {
-  return render(<BranchCommentsWorkspace {...makeProps(overrides)} />);
-}
-
-function makeProps(
-  overrides: Partial<BranchCommentsWorkspaceProps> = {}
-): BranchCommentsWorkspaceProps {
-  return {
-    activeTab: BranchCommentsTab.Details,
-    branchId: "branch-1",
-    comments: [makeThread()],
-    composerTarget: {
-      anchor: makeAnchor(),
-      target: {
-        id: "branch-1",
-        type: TraceCommentTargetType.Branch,
-      },
-    },
-    onClose: vi.fn(),
-    onCreate: vi.fn(),
-    onDeleteReply: vi.fn(),
-    onDeleteThread: vi.fn(),
-    onEditRoot: vi.fn(),
-    onJump: vi.fn(),
-    onReply: vi.fn(),
-    onWidthChange: vi.fn(),
-    open: true,
-    renderedSessionIds: ["session-a"],
-    returnFocusRef: { current: null },
-    selectedPullRequestKey: "owner/repo#12",
-    width: 380,
-    ...overrides,
-  };
-}
-
-function makeThread(
-  overrides: Partial<BranchCommentThread> = {}
-): BranchCommentThread {
-  return {
-    anchor: makeAnchor(),
-    author: makeAuthor("Maya Chen"),
-    body: "Native root",
-    canDeleteThread: true,
-    canEditRoot: true,
-    canReply: true,
-    createdAtLabel: "10:00 AM",
-    id: "thread-1",
-    pullRequestKey: null,
-    replies: [],
-    source: BranchCommentSource.Platform,
-    tab: BranchCommentsTab.Details,
-    target: {
-      id: "branch-1",
-      type: TraceCommentTargetType.Branch,
-    },
-    collectionQuery:
-      overrides.tab === BranchCommentsTab.Sessions
-        ? { surface: TraceCommentSurface.BranchTimeline }
-        : undefined,
-    ...overrides,
-  };
-}
-
-function makeAuthor(name: string) {
-  return { avatarUrl: null, id: name.toLowerCase(), name };
-}
-
-function makeAnchor(label = "line 42", id = "anchor-1") {
-  return {
-    id,
-    label,
-    trace: {
-      actor: null,
-      endOffset: 20,
-      row: 42,
-      sessionId: "session-a",
-      selectedText: "selected trace text",
-      sourceText: "source selected trace text",
-      startOffset: 0,
-      traceId: "trace-1",
-      turnId: "turn-1",
-    },
-  };
-}
-
-function stubMatchMedia(matcher: (query: string) => boolean) {
-  vi.stubGlobal(
-    "matchMedia",
-    (query: string) =>
-      ({
-        addEventListener: () => undefined,
-        addListener: () => undefined,
-        dispatchEvent: () => false,
-        matches: matcher(query),
-        media: query,
-        onchange: null,
-        removeEventListener: () => undefined,
-        removeListener: () => undefined,
-      }) as unknown as MediaQueryList
-  );
-}
-
-function makeProviderProvenance(
-  overrides: Partial<NonNullable<BranchCommentThread["provider"]>> = {}
-): NonNullable<BranchCommentThread["provider"]> {
-  return {
-    bodyTruncated: false,
-    inReplyToId: null,
-    kind: BranchPrCommentKind.Review,
-    line: 42,
-    login: "reviewer",
-    path: "packages/app/comment.tsx",
-    providerUrl: null,
-    resolved: null,
-    stale: false,
-    threadId: "provider-thread",
-    ...overrides,
-  };
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { DesktopDeviceSessionStatus } from "@repo/api/src/types/onboarding";
+import { DESKTOP_DEEP_LINK_URL } from "@repo/api/src/types/desktop-deep-link";
 import { DesktopConnectPageShell } from "@repo/app/onboarding/components/desktop-connect-page-shell";
 import {
   type DesktopDeviceSessionDetails,
@@ -14,7 +14,6 @@ import {
   deriveDesktopConnectState,
   getDesktopConnectStateCopy,
 } from "@repo/app/onboarding/lib/desktop-connect-state";
-import { buildDesktopReturnUrl } from "@repo/app/onboarding/lib/desktop-return";
 import { ApiError } from "@repo/app/shared/api/api-error";
 import { formatDateTimeOrFallback } from "@repo/app/shared/lib/date-utils";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -130,7 +129,6 @@ export function DesktopConnectApproval({
 
       <DesktopConnectStateBody
         detail={detail}
-        normalizedCode={normalizedCode}
         onApprove={() => submit("approve")}
         onDeny={() => submit("deny")}
         requestedOrgSlug={requestedOrgSlug}
@@ -143,7 +141,6 @@ export function DesktopConnectApproval({
 
 function DesktopConnectStateBody({
   detail,
-  normalizedCode,
   requestedOrgSlug,
   stateKind,
   submitting,
@@ -151,7 +148,6 @@ function DesktopConnectStateBody({
   onDeny,
 }: {
   detail: DesktopDeviceSessionDetails | undefined;
-  normalizedCode: string;
   requestedOrgSlug: string;
   stateKind: DesktopConnectStateKind;
   submitting: "approve" | "deny" | null;
@@ -159,7 +155,7 @@ function DesktopConnectStateBody({
   onDeny: () => void;
 }): ReactNode {
   if (stateKind === DesktopConnectStateKind.ApprovedComplete) {
-    return <DesktopConnectCompletion userCode={normalizedCode} />;
+    return <DesktopConnectCompletion />;
   }
 
   if (stateKind === DesktopConnectStateKind.Pending && detail) {
@@ -224,20 +220,15 @@ function DesktopConnectPending({
   );
 }
 
-function DesktopConnectCompletion({
-  userCode,
-}: {
-  userCode: string;
-}): ReactNode {
-  // Best-effort deep link back to the desktop app. It carries only the
-  // non-secret completion signal; the desktop completes credential exchange
-  // out-of-band and continues polling regardless, so this is purely a
-  // convenience and the visible instruction below is the reliable path.
-  const returnUrl = buildDesktopReturnUrl({
-    userCode,
-    status: DesktopDeviceSessionStatus.Approved,
-  });
-
+function DesktopConnectCompletion(): ReactNode {
+  // ISS-10412: this used to point at `closedloop-desktop://onboarding/complete`
+  // with the code and status on the query string — a scheme no desktop build
+  // has ever registered, so the button did nothing. The scheme the app actually
+  // claims is `closedloop://` (ISS-6109), and it refuses any URL carrying a
+  // host, path, or query, so the link is bare: it asks the OS to activate the
+  // app and nothing more. Nothing is lost by dropping the payload — the desktop
+  // completes the exchange out-of-band from its own device secret and keeps
+  // polling regardless.
   return (
     <div className="flex flex-col items-start gap-3 rounded-lg border p-4 text-sm">
       <p className="text-muted-foreground">
@@ -245,7 +236,7 @@ function DesktopConnectCompletion({
         automatically, use the button below.
       </p>
       <Button asChild variant="outline">
-        <a href={returnUrl}>Return to desktop</a>
+        <a href={DESKTOP_DEEP_LINK_URL}>Return to desktop</a>
       </Button>
     </div>
   );

@@ -1,4 +1,3 @@
-import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import {
@@ -11,6 +10,13 @@ import {
   ROW_ACTIONS_COLUMN_ID,
 } from "@repo/design-system/components/ui/grid-table";
 import type { SortDirection } from "@repo/design-system/components/ui/sortable-column-header";
+import {
+  TableChoiceCell,
+  TableNumberCell,
+  TablePersonCell,
+  TableTextCell,
+} from "@repo/design-system/components/ui/table-cell-primitives";
+import { TableModelCell } from "@repo/design-system/components/ui/table-cell-semantic-primitives";
 import { TableGridHeaderAlign } from "@repo/design-system/components/ui/table-grid-header";
 import { TableViewMenu } from "@repo/design-system/components/ui/table-view-menu";
 import { orderColumns } from "@repo/design-system/lib/column-order";
@@ -31,7 +37,8 @@ import {
  * sticky header and horizontal scroll resolve against that host.
  */
 const meta = {
-  title: "Design System/Data Display/Grid Table",
+  title: "Composites v1.0/Data Display/Tables/Grid Table",
+  tags: ["deprecated"],
   component: GridTable,
   parameters: {
     layout: "fullscreen",
@@ -134,32 +141,36 @@ const ROWS: DemoRow[] = [
   },
 ];
 
-const STATUS_VARIANT: Record<
-  DemoRow["status"],
-  "default" | "secondary" | "destructive"
-> = {
-  active: "default",
-  done: "secondary",
-  failed: "destructive",
+const STATUS_CLASS_NAME: Record<DemoRow["status"], string> = {
+  active: "border-info/25 bg-info/10 text-info",
+  done: "border-success/25 bg-success/10 text-success",
+  failed: "border-destructive/25 bg-destructive/10 text-destructive",
 };
 
 function renderCell(columnId: string, row: DemoRow): ReactNode {
   switch (columnId) {
     case "owner":
-      return <span className="truncate text-sm">{row.owner}</span>;
+      return <TablePersonCell person={{ name: row.owner }} />;
     case "status":
-      return <Badge variant={STATUS_VARIANT[row.status]}>{row.status}</Badge>;
+      return (
+        <TableChoiceCell
+          className={STATUS_CLASS_NAME[row.status]}
+          label={row.status}
+        />
+      );
     case "model":
-      return row.model ? (
-        <span className="truncate text-sm">{row.model}</span>
-      ) : (
-        <GridEmptyValue />
+      return (
+        <TableModelCell
+          indicatorClassName="text-primary"
+          model={row.model}
+          providerLabel="Anthropic"
+        />
       );
     case "autonomy":
       // Placeholder column — intentionally empty.
       return null;
     case "cost":
-      return <span className="text-sm tabular-nums">{row.cost}</span>;
+      return <TableNumberCell alignEnd={false} value={row.cost} />;
     default:
       return null;
   }
@@ -172,11 +183,27 @@ const ROWS_WITH_UNAVAILABLE_COST: DemoRow[] = ROWS.map((row) =>
 
 // ISS-5333: the right-aligned Cost cell — a value or a right-aligned em-dash.
 function renderEndAlignedCost(row: DemoRow): ReactNode {
-  if (row.cost === null) {
-    return <GridEmptyValue alignEnd />;
-  }
-  return <span className="ml-auto text-sm tabular-nums">{row.cost}</span>;
+  return <TableNumberCell value={row.cost} />;
 }
+
+/**
+ * Satisfies each story's `args` type. Every story renders through its own
+ * `GridTable` inline in `render`, so nothing reads this at runtime.
+ *
+ * `GridTable` is generic, so `Meta<typeof GridTable>` erases its row type to
+ * `unknown` — the callback args below must accept `unknown`, not `DemoRow`,
+ * to satisfy that erased signature, hence the casts.
+ */
+const DUMMY_GRID_TABLE_ARGS = {
+  items: ROWS as unknown[],
+  getRowId: (item: unknown) => (item as DemoRow).id,
+  columns: COLUMNS,
+  gridTemplateColumns: GRID_TEMPLATE_COLUMNS,
+  leadingLabel: "Name",
+  renderLead: (item: unknown) => (item as DemoRow).name,
+  renderCell: (columnId: string, item: unknown) =>
+    renderCell(columnId, item as DemoRow),
+};
 
 /**
  * ISS-5333 — a numeric column right-aligned end to end.
@@ -193,6 +220,7 @@ function renderEndAlignedCost(row: DemoRow): ReactNode {
  * the same canvas, so both dash treatments are visible side by side.
  */
 export const EndAlignedNumericColumn: Story = {
+  args: DUMMY_GRID_TABLE_ARGS,
   render: () => (
     <main className="h-[400px] overflow-auto">
       <GridTable
@@ -223,6 +251,7 @@ export const EndAlignedNumericColumn: Story = {
  * horizontal scroll with the header staying aligned to the body.
  */
 export const Default: Story = {
+  args: DUMMY_GRID_TABLE_ARGS,
   render: () => (
     <main className="h-[400px] overflow-auto">
       <GridTable
@@ -268,6 +297,7 @@ const ROW_ACTIONS_GRID_TEMPLATE_COLUMNS = [
  * screen reader reads those cells under a nameless column.
  */
 export const RowActions: Story = {
+  args: DUMMY_GRID_TABLE_ARGS,
   render: () => (
     <main className="h-[400px] overflow-auto">
       <GridTable
@@ -317,6 +347,7 @@ const SORTABLE_COLUMNS: readonly GridTableColumn[] = [
  * descending → ascending. The leading column sorts via `leadingSortKey`.
  */
 export const Sortable: Story = {
+  args: DUMMY_GRID_TABLE_ARGS,
   render: () => {
     function SortableDemo() {
       const [sortBy, setSortBy] = useState<string | null>("owner");
@@ -371,6 +402,7 @@ export const Sortable: Story = {
  * header. Click a section header to collapse/expand it.
  */
 export const Grouped: Story = {
+  args: DUMMY_GRID_TABLE_ARGS,
   render: () => (
     <main className="h-[400px] overflow-auto">
       <GridTable
@@ -422,7 +454,10 @@ function renderDemoCard(row: DemoRow, columns: readonly GridTableColumn[]) {
       header={
         <div className="flex min-w-0 flex-col gap-1.5">
           <span className="truncate font-medium text-sm">{row.name}</span>
-          <Badge variant={STATUS_VARIANT[row.status]}>{row.status}</Badge>
+          <TableChoiceCell
+            className={STATUS_CLASS_NAME[row.status]}
+            label={row.status}
+          />
         </div>
       }
     />
@@ -437,6 +472,7 @@ function renderDemoCard(row: DemoRow, columns: readonly GridTableColumn[]) {
  * off to the grid. Desktop widths are unchanged, the grid still renders.
  */
 export const Cards: Story = {
+  args: DUMMY_GRID_TABLE_ARGS,
   render: () => (
     <main className="h-[520px] max-w-md overflow-auto">
       <GridTable
@@ -465,6 +501,7 @@ export const Cards: Story = {
  * empty/loading state in place of the table when there are no items.
  */
 export const Empty: Story = {
+  args: DUMMY_GRID_TABLE_ARGS,
   render: () => (
     <main className="h-[200px] overflow-auto">
       <GridTable
@@ -503,6 +540,7 @@ export const Empty: Story = {
  * each column crosses the fold.
  */
 export const WholeColumnFold: Story = {
+  args: DUMMY_GRID_TABLE_ARGS,
   render: () => (
     <main className="flex flex-col gap-6 p-4">
       <section aria-labelledby="fold-off-heading" className="flex flex-col">
@@ -555,6 +593,95 @@ export const WholeColumnFold: Story = {
   ),
 };
 
+/** The first demo row, so the pinned story can show a SELECTED row's tint. */
+const SELECTED_DEMO_ROW_ID = ROWS[0].id;
+
+/**
+ * ISS-6959 — `pinLeadColumn`, the leading identity column held out of the
+ * horizontal scroll.
+ *
+ * Both frames declare the same 280 / 160 / 120 / 160 / 140 / 100 tracks against
+ * a host far narrower than their total, so both scroll. **Scroll either frame
+ * right**: that is the whole story, and at rest the two are identical — the pin
+ * changes nothing at `scrollLeft: 0`.
+ *
+ * In the DEFAULT frame the Name column leaves with everything else, and a row
+ * that read `agent/refactor-auth-guard — Pascoe Birchall — active` degrades to a run
+ * of values with nothing saying which record they belong to. In the PINNED frame
+ * it stays.
+ *
+ * What is only visible on a real layout engine, which is why this story exists
+ * alongside the unit suites (jsdom neither lays out nor applies a stylesheet, so
+ * every unit assertion on this feature is a class-name assertion):
+ *
+ * - The pinned cell is OPAQUE and full-row-height. Scroll and watch the cells
+ *   passing beneath it — with an intrinsic-height or translucent cell they show
+ *   through, top and bottom or straight through the middle.
+ * - Its right-hand rule survives the scroll and does not double at rest. Pinning
+ *   REMOVES the edge that exists at `scrollLeft: 0` (the neighbour's `border-l`
+ *   slides away underneath), so the pinned column draws its own.
+ * - The tints stay part of the row. Hover any row anywhere along it and the
+ *   pinned cell tints with it; the second row is `isRowSelected`, and its
+ *   selected tint holds when the pointer crosses it instead of flicking to the
+ *   neutral hover grey.
+ * - It stays UNDER the sticky header. The header's own lead cell pins too, so
+ *   scrolling never paints a body row over the column labels.
+ */
+export const PinnedLeadColumn: Story = {
+  args: DUMMY_GRID_TABLE_ARGS,
+  render: () => (
+    <main className="flex flex-col gap-6 p-4">
+      <section aria-labelledby="pin-off-heading" className="flex flex-col">
+        <h3 className="pb-2 font-medium text-sm" id="pin-off-heading">
+          Default — <code>Name</code> scrolls away with the row
+        </h3>
+        <p className="pb-2 text-muted-foreground text-xs">
+          Scroll right: past the Owner and Status tracks the rows carry no
+          identifier at all.
+        </p>
+        <div className="max-w-lg overflow-auto rounded-md border">
+          <GridTable
+            columns={COLUMNS}
+            getRowId={(row) => row.id}
+            gridTemplateColumns={GRID_TEMPLATE_COLUMNS}
+            isRowSelected={(row) => row.id === SELECTED_DEMO_ROW_ID}
+            items={ROWS}
+            leadingLabel="Name"
+            renderCell={renderCell}
+            renderLead={(row) => (
+              <span className="truncate font-medium text-sm">{row.name}</span>
+            )}
+          />
+        </div>
+      </section>
+      <section aria-labelledby="pin-on-heading" className="flex flex-col">
+        <h3 className="pb-2 font-medium text-sm" id="pin-on-heading">
+          <code>pinLeadColumn</code> — <code>Name</code> stays on screen
+        </h3>
+        <p className="pb-2 text-muted-foreground text-xs">
+          Every track keeps its declared width and its place in the scroll
+          order; only the lead cell stops moving.
+        </p>
+        <div className="max-w-lg overflow-auto rounded-md border">
+          <GridTable
+            columns={COLUMNS}
+            getRowId={(row) => row.id}
+            gridTemplateColumns={GRID_TEMPLATE_COLUMNS}
+            isRowSelected={(row) => row.id === SELECTED_DEMO_ROW_ID}
+            items={ROWS}
+            leadingLabel="Name"
+            pinLeadColumn
+            renderCell={renderCell}
+            renderLead={(row) => (
+              <span className="truncate font-medium text-sm">{row.name}</span>
+            )}
+          />
+        </div>
+      </section>
+    </main>
+  ),
+};
+
 // FEA-4021: width-carrying specs so a reorder / show-hide moves a column AND its
 // grid track together. The lead column ("Name") is fixed and never reorders — it
 // uses the shared `LEAD_TRACK` declared above rather than a second copy of the
@@ -585,6 +712,7 @@ const SPEC_BY_ID = new Map(COLUMN_SPECS.map((spec) => [spec.id, spec]));
  * it wires reorder and the v2 resize strip on the same table.
  */
 export const ReorderableAndHideable: Story = {
+  args: DUMMY_GRID_TABLE_ARGS,
   render: () => {
     function ControlsDemo() {
       const [order, setOrder] = useState<string[]>(
@@ -692,6 +820,7 @@ export const ReorderableAndHideable: Story = {
  *    the only one wiring reorder and the v2 resize strip on the same table.
  */
 export const InteractiveV2: Story = {
+  args: DUMMY_GRID_TABLE_ARGS,
   render: () => {
     function InteractiveDemo() {
       const [selectedId, setSelectedId] = useState<string | null>("ses_2");
@@ -790,6 +919,7 @@ export const InteractiveV2: Story = {
  * on both the header and the body so the two stay paired.
  */
 export const LeadingUtilityColumn: Story = {
+  args: DUMMY_GRID_TABLE_ARGS,
   render: () => {
     function UtilityDemo() {
       const [checked, setChecked] = useState<Set<string>>(
@@ -865,6 +995,7 @@ export const LeadingUtilityColumn: Story = {
  * step its width; the announced name says so (WCAG 2.1.1).
  */
 export const ResizableColumns: Story = {
+  args: DUMMY_GRID_TABLE_ARGS,
   render: () => {
     function ResizeDemo() {
       const [columnWidths, setColumnWidths] =

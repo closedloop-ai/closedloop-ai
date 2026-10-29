@@ -1,9 +1,15 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { PoolTelemetrySample } from "@repo/database";
 import type { TracingConfig } from "@repo/observability/tracing/config";
 import { TracingDisabledReason } from "@repo/observability/tracing/config";
 import ts from "typescript6";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  PERF_POOL_WAIT_FILE_NAME,
+  PERF_PROFILE_DIR_ENV,
+} from "../lib/perf-pool-wait-sink";
 
 /**
  * FEA-3300: pool telemetry reaches Datadog only because `register()` injects the
@@ -16,7 +22,6 @@ const mocks = vi.hoisted(() => ({
   setPoolTelemetrySink: vi.fn(),
   setSchemaBootstrapHook: vi.fn(),
   emitDbPoolMetric: vi.fn(),
-  assertRunnerSecretConfigured: vi.fn(),
   // No default impl here: `vi.hoisted` runs before module imports initialize,
   // so `TracingDisabledReason` is still in its temporal dead zone. The default
   // is set from the const in `beforeEach` instead of hardcoding the literal.
@@ -27,11 +32,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@repo/observability/telemetry/origin", () => ({
   ORIGIN: "api",
-}));
-
-vi.mock("@repo/auth/runner-jwt-base", () => ({
-  assertRunnerSecretConfigured: mocks.assertRunnerSecretConfigured,
-  RUNNER_JWT_SECRET_ENV: "RUNNER_JWT_SECRET",
 }));
 
 vi.mock("@repo/database", () => ({
@@ -53,6 +53,9 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: mocks.logInfo, warn: mocks.logWarn },
 }));
 
+// Typed against the sample so a label the pool makes required cannot be left
+// out of this fixture, and the adapter assertions below then pin that it is
+// forwarded rather than dropped (ISS-10293).
 const SAMPLE = {
   metric: "db_pool_acquire_wait",
   value: 1234,
@@ -61,12 +64,17 @@ const SAMPLE = {
   inUse: 20,
   idle: 0,
   total: 20,
-} as const;
+  saturated: true,
+  permitQueued: false,
+} as const satisfies PoolTelemetrySample;
 
 describe("apps/api register()", () => {
+  let profileDir: string;
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("NEXT_RUNTIME", "nodejs");
+    profileDir = mkdtempSync(join(tmpdir(), "api-perf-pool-"));
     mocks.initTracing.mockReturnValue({
       enabled: false,
       reason: TracingDisabledReason.NotDeployed,
@@ -75,6 +83,7 @@ describe("apps/api register()", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    rmSync(profileDir, { recursive: true, force: true });
   });
 
   it("installs the pool telemetry sink", async () => {
@@ -103,14 +112,48 @@ describe("apps/api register()", () => {
     });
   });
 
-  it("still asserts the runner secret is configured", async () => {
+  it("does not tee samples to a file when profiling is off", async () => {
+    // The default state everywhere but `just profile-api`. Asserted so the tee
+    // cannot start writing on an ordinary production cold start.
+    Reflect.deleteProperty(process.env, PERF_PROFILE_DIR_ENV);
     const { register } = await import("../instrumentation");
-
     await register();
+    const sink = mocks.setPoolTelemetrySink.mock.calls[0]?.[0] as (
+      sample: typeof SAMPLE
+    ) => void;
 
-    expect(mocks.assertRunnerSecretConfigured).toHaveBeenCalledWith(
-      "RUNNER_JWT_SECRET"
+    sink(SAMPLE);
+
+    expect(mocks.emitDbPoolMetric).toHaveBeenCalledTimes(1);
+    expect(readdirSync(profileDir)).toEqual([]);
+  });
+
+  it("tees every sample to the run directory when CLOSEDLOOP_PROFILE_DIR is set", async () => {
+    // ISS-6820: the API lane's only source of pool WAIT. Without this wiring the
+    // artifact is never written and the report reads the lane as a capture
+    // failure — honest, but it leaves ISS-6821 unjudgeable.
+    vi.stubEnv(PERF_PROFILE_DIR_ENV, profileDir);
+    const { register } = await import("../instrumentation");
+    await register();
+    const sink = mocks.setPoolTelemetrySink.mock.calls[0]?.[0] as (
+      sample: typeof SAMPLE
+    ) => void;
+
+    sink(SAMPLE);
+
+    const written = readFileSync(
+      join(profileDir, PERF_POOL_WAIT_FILE_NAME),
+      "utf8"
     );
+    const row = JSON.parse(written.trim());
+    expect(row.metric).toBe(SAMPLE.metric);
+    expect(row.value).toBe(SAMPLE.value);
+    expect(typeof row.ts).toBe("number");
+    // The Datadog path is unaffected: the tee is additive, never a replacement.
+    expect(mocks.emitDbPoolMetric).toHaveBeenCalledWith({
+      ...SAMPLE,
+      origin: "api",
+    });
   });
 });
 
@@ -326,14 +369,6 @@ describe("apps/api instrumentation — import evaluation order", () => {
     ).toEqual([]);
   });
 
-  it("still statically imports the modules that are safe on every runtime", () => {
-    // Guards the inverse: a change that defers everything would make the
-    // assertion above pass while breaking the eager runner-secret assertion.
-    expect(
-      loadingImportSpecifiers(parseModule("instrumentation.ts"))
-    ).toContain("@repo/auth/runner-jwt-base");
-  });
-
   it("keeps instrumentation.node.ts from materialising pg before the tracer", () => {
     expect(
       forbiddenStaticImports(
@@ -344,7 +379,7 @@ describe("apps/api instrumentation — import evaluation order", () => {
   });
 
   it("still statically imports the node-safe modules that cannot pull pg", () => {
-    // Same inverse guard: deferring everything would satisfy the assertion
+    // Guards the inverse: deferring everything would satisfy the assertion
     // above without the module doing its job.
     expect(
       loadingImportSpecifiers(parseModule("instrumentation.node.ts"))

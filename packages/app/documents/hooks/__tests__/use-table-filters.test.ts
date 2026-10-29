@@ -1,13 +1,16 @@
 import type { Artifact } from "@repo/api/src/types/artifact";
 import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DISPLAYED_ARTIFACT_STATUS } from "@repo/api/src/types/artifact-status";
 import { Priority } from "@repo/api/src/types/common";
 import type { DocumentWithProject } from "@repo/api/src/types/document";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import { PRIORITY_UNSET_VALUE } from "@repo/api/src/types/search-query";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
+import { makeProject } from "@repo/app/shared/test-fixtures/project";
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   type DateFilter,
   DateFilterField,
@@ -15,8 +18,7 @@ import {
   type TableFilters,
   useTableFilters,
 } from "../use-table-filters";
-
-// ---- Test fixtures ----
+import { makeFilterItem } from "./table-filter-fixtures";
 
 function makeItem(id: string, status: DocumentStatus): DocumentRowItem {
   return {
@@ -101,8 +103,6 @@ const SESSION_COMPLETED = makeSessionItem("s2", SESSION_STATUS.INACTIVE);
 const SESSION_FAILED = makeSessionItem("s3", SESSION_STATUS.ERROR);
 
 const ALL_SESSION_ITEMS = [SESSION_ACTIVE, SESSION_COMPLETED, SESSION_FAILED];
-
-// ---- Tests ----
 
 describe("useTableFilters — hideCompletedItems", () => {
   describe("initial state", () => {
@@ -294,7 +294,11 @@ describe("useTableFilters — hideCompletedItems", () => {
   });
 });
 
-function seedFilters(key: string, data: Record<string, unknown>) {
+function seedFilters(
+  key: string,
+  data: Record<string, unknown>,
+  mergeDefaults = true
+) {
   const defaults: TableFilters = {
     assigneeIds: [],
     assignToMe: false,
@@ -307,13 +311,22 @@ function seedFilters(key: string, data: Record<string, unknown>) {
   };
   localStorage.setItem(
     key,
-    JSON.stringify({ savedAt: Date.now(), data: { ...defaults, ...data } })
+    JSON.stringify({
+      savedAt: Date.now(),
+      data: mergeDefaults ? { ...defaults, ...data } : data,
+    })
   );
 }
 
 describe("useTableFilters — persistence", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-25T12:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   test("writes filters to localStorage when persistenceKey is provided", () => {
@@ -358,18 +371,72 @@ describe("useTableFilters — persistence", () => {
     expect(envelope.data.assigneeIds).toEqual([]);
   });
 
-  test("strips invalid statuses on restore", () => {
+  test("defaults a version-skewed non-array status value on restore", () => {
     seedFilters("test:filters", {
-      statuses: [DocumentStatus.Draft, "INVALID_STATUS"],
+      statuses: DocumentStatus.InReview,
     });
 
     const { result } = renderHook(() =>
       useTableFilters({ items: [], persistenceKey: "test:filters" })
     );
 
-    expect(result.current.filters.statuses).toContain(DocumentStatus.Draft);
-    expect(result.current.filters.statuses).not.toContain("INVALID_STATUS");
-    expect(result.current.filters.statuses).toHaveLength(1);
+    expect(result.current.filters.statuses).toEqual([]);
+  });
+
+  test("defaults version-skewed persisted filters with both arrays absent", () => {
+    seedFilters("test:filters", {}, false);
+
+    const { result } = renderHook(() =>
+      useTableFilters({ items: [], persistenceKey: "test:filters" })
+    );
+
+    expect(result.current.filters).toEqual({
+      assigneeIds: [],
+      assignToMe: false,
+      hideCompletedItems: true,
+      favoritesOnly: false,
+      statuses: [],
+      priorities: [],
+      date: null,
+      tagIds: [],
+    });
+  });
+
+  test("preserves well-formed filters while stripping invalid enum members", () => {
+    seedFilters(
+      "test:filters",
+      {
+        assigneeIds: ["user-1"],
+        assignToMe: true,
+        hideCompletedItems: false,
+        favoritesOnly: true,
+        statuses: [
+          DocumentStatus.Draft,
+          DISPLAYED_ARTIFACT_STATUS.Unknown,
+          7,
+          "INVALID_STATUS",
+        ],
+        priorities: [Priority.High, null, "INVALID_PRIORITY"],
+        date: null,
+        tagIds: ["tag-1"],
+      },
+      false
+    );
+
+    const { result } = renderHook(() =>
+      useTableFilters({ items: [], persistenceKey: "test:filters" })
+    );
+
+    expect(result.current.filters).toEqual({
+      assigneeIds: ["user-1"],
+      assignToMe: true,
+      hideCompletedItems: false,
+      favoritesOnly: true,
+      statuses: [DocumentStatus.Draft],
+      priorities: [Priority.High],
+      date: null,
+      tagIds: ["tag-1"],
+    });
   });
 
   test("revives date filter ISO strings as Date objects", () => {
@@ -472,7 +539,7 @@ describe("useTableFilters — favoritesOnly", () => {
     test("passes through project-kind items regardless of favorites", () => {
       const projectItem: DocumentRowItem = {
         kind: "project",
-        data: { id: "proj-99", name: "Test Project" } as any,
+        data: makeProject({ id: "proj-99", name: "Test Project" }),
       };
       const items = [...ALL_STATUS_ITEMS, projectItem];
 
@@ -661,5 +728,226 @@ describe("useTableFilters — hide-completed terminal-session variants", () => {
     // The canonical terminal is still hidden — this is a narrowing of what
     // counts as terminal, not a removal of the filter.
     expect(filtered).not.toContain(canonicalError);
+  });
+});
+
+describe("useTableFilters — assignees, counts, and clearing", () => {
+  test("keeps assign-to-me synchronized through assignee mutations", () => {
+    const { result } = renderHook(() =>
+      useTableFilters({ items: [], currentUserId: "me" })
+    );
+
+    act(() => result.current.toggleAssignToMe());
+    expect(result.current.filters).toMatchObject({
+      assignToMe: true,
+      assigneeIds: ["me"],
+    });
+
+    act(() => result.current.toggleAssignee("other"));
+    expect(result.current.filters.assigneeIds).toEqual(["me", "other"]);
+
+    act(() => result.current.toggleAssignee("me"));
+    expect(result.current.filters).toMatchObject({
+      assignToMe: false,
+      assigneeIds: ["other"],
+    });
+
+    act(() => result.current.setAssignees(["me", "other"]));
+    expect(result.current.filters.assignToMe).toBe(false);
+
+    act(() => result.current.toggleAssignToMe());
+    act(() => result.current.setAssignees(["other"]));
+    expect(result.current.filters).toMatchObject({
+      assignToMe: false,
+      assigneeIds: ["other"],
+    });
+  });
+
+  test("ignores assign-to-me without a current user", () => {
+    const { result } = renderHook(() => useTableFilters({ items: [] }));
+
+    act(() => result.current.toggleAssignToMe());
+
+    expect(result.current.filters.assignToMe).toBe(false);
+    expect(result.current.filters.assigneeIds).toEqual([]);
+  });
+
+  test("reports counts and filters unassigned, tagged, prioritized documents", () => {
+    const assigned = makeFilterItem("assigned", {
+      assigneeId: "person-1",
+      priority: Priority.High,
+      tagIds: ["tag-1"],
+    });
+    const unassigned = makeFilterItem("unassigned", {
+      assigneeId: null,
+      priority: null,
+      tagIds: [],
+    });
+    const { result } = renderHook(() =>
+      useTableFilters({ items: [assigned, unassigned] })
+    );
+
+    expect(result.current.assigneeCounts).toEqual(
+      new Map([
+        ["person-1", 1],
+        ["__unassigned__", 1],
+      ])
+    );
+    expect(result.current.statusCounts.get(DocumentStatus.Draft)).toBe(2);
+    // BEHAVIOUR CHANGE (ISS-9665): the unset row is COUNTED now instead of
+    // being skipped. The "No priority" facet option has to be able to say how
+    // many rows it would keep, like every other option in that menu; before,
+    // `priorityCounts` dropped a null priority on the floor. Whole-map equality
+    // so a counter that also double-counted the row under MEDIUM fails here.
+    expect(result.current.priorityCounts).toEqual(
+      new Map<string, number>([
+        [Priority.High, 1],
+        [PRIORITY_UNSET_VALUE, 1],
+      ])
+    );
+
+    act(() => {
+      result.current.toggleHideCompletedItems();
+      result.current.toggleAssignee("person-1");
+      result.current.togglePriority(Priority.High);
+      result.current.toggleTag("tag-1");
+    });
+
+    expect(result.current.applyFilters([assigned, unassigned])).toEqual([
+      assigned,
+    ]);
+    expect(result.current.activeFilterCount).toBe(3);
+    expect(result.current.isAnyFilterActive).toBe(true);
+    expect(result.current.activeChips).toEqual([
+      { category: "assignee", label: "Assignee: 1" },
+      { category: "priority", label: "Priority: 1" },
+      { category: "tags", label: "Tags: 1" },
+    ]);
+
+    act(() => result.current.toggleAssignee("person-1"));
+    act(() => result.current.togglePriority(Priority.High));
+    act(() => result.current.toggleTag("tag-1"));
+    expect(result.current.isAnyFilterActive).toBe(false);
+  });
+
+  // ISS-9444. `applyFilters` passes every NON-document row through untouched,
+  // so a facet count that included them described a population the filter never
+  // narrows. Seeded with rows that must be EXCLUDED from the count and yet
+  // survive the filter, because a count over only matching rows is trivially
+  // right. The mixed list is reachable through this hook's signature but not
+  // through either production caller today (`useProjectFilters` maps
+  // `DocumentRowData[]`), so this pins the contract rather than reproducing a
+  // shipped wrong number.
+  test("counts priority only over the rows the priority filter decides", () => {
+    const prioritized = makeFilterItem("doc-high", {
+      priority: Priority.High,
+    });
+    const unset = makeFilterItem("doc-unset", { priority: null });
+    const mixed = [prioritized, unset, BRANCH_OPEN, SESSION_ACTIVE];
+
+    const { result } = renderHook(() => useTableFilters({ items: mixed }));
+
+    // Two documents, not four rows: the branch and the session carry no
+    // priority column at all, so neither is an artifact with "no priority".
+    expect(result.current.priorityCounts).toEqual(
+      new Map<string, number>([
+        [Priority.High, 1],
+        [PRIORITY_UNSET_VALUE, 1],
+      ])
+    );
+
+    // ...and they are still returned, which is what makes the count's
+    // population different from the filter's OUTPUT and the reason it must be
+    // the filter's SUBJECT that is counted.
+    act(() => result.current.togglePriority(Priority.High));
+    expect(result.current.applyFilters(mixed)).toEqual([
+      prioritized,
+      BRANCH_OPEN,
+      SESSION_ACTIVE,
+    ]);
+  });
+
+  // Version skew, newer peer -> this client: a member this build does not know
+  // is its OWN facet value, never folded into "No priority". Folding it would
+  // state as fact that an artifact somebody deliberately prioritized carries
+  // none (`priorityLabel` keeps `PRIORITY_LABEL_UNKNOWN` reachable for exactly
+  // this reason).
+  test("keeps an unrecognized priority distinct from no priority", () => {
+    const unknown = makeFilterItem("doc-unknown", {
+      priority: "CRITICAL" as Priority,
+    });
+    const unset = makeFilterItem("doc-unset", { priority: null });
+
+    const { result } = renderHook(() =>
+      useTableFilters({ items: [unknown, unset] })
+    );
+
+    // Whole-map equality, so a fold of the unknown member onto the unset value
+    // fails here rather than merely inflating one bucket.
+    expect(result.current.priorityCounts).toEqual(
+      new Map<string, number>([
+        ["CRITICAL", 1],
+        [PRIORITY_UNSET_VALUE, 1],
+      ])
+    );
+
+    // The filter agrees with the count: selecting a member the client DOES know
+    // excludes the unrecognized row rather than bucketing it somewhere.
+    act(() => result.current.togglePriority(Priority.High));
+    expect(result.current.applyFilters([unknown, unset])).toEqual([]);
+  });
+
+  test("clears every filter category independently", () => {
+    const { result } = renderHook(() =>
+      useTableFilters({ items: [], currentUserId: "me" })
+    );
+
+    act(() => {
+      result.current.toggleAssignToMe();
+      result.current.toggleStatus(DocumentStatus.Draft);
+      result.current.togglePriority(Priority.High);
+      result.current.setDateFilter({
+        field: DateFilterField.CreatedAt,
+        preset: DatePreset.Last7d,
+      });
+      result.current.toggleTag("tag-1");
+      result.current.toggleFavoritesOnly();
+    });
+    for (const category of [
+      "assignee",
+      "status",
+      "priority",
+      "date",
+      "hideCompleted",
+      "favorites",
+      "tags",
+    ] as const) {
+      act(() => result.current.clearCategoryFilter(category));
+    }
+
+    expect(result.current.filters).toEqual({
+      assigneeIds: [],
+      assignToMe: false,
+      hideCompletedItems: false,
+      favoritesOnly: false,
+      statuses: [],
+      priorities: [],
+      date: null,
+      tagIds: [],
+    });
+  });
+
+  test("drops invalid persisted priorities and date enums", () => {
+    seedFilters("test:invalid-filters", {
+      priorities: [Priority.High, "INVALID_PRIORITY"],
+      date: { field: "WRONG_FIELD", preset: "WRONG_PRESET" },
+    });
+
+    const { result } = renderHook(() =>
+      useTableFilters({ items: [], persistenceKey: "test:invalid-filters" })
+    );
+
+    expect(result.current.filters.priorities).toEqual([Priority.High]);
+    expect(result.current.filters.date).toBeNull();
   });
 });

@@ -6,56 +6,21 @@
  * HARNESS_CAPABILITIES constant, and unclosed fence behaviour.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
 import { ArtifactRefMethod } from "@repo/api/src/types/session-artifact-link";
+import { describe, test } from "vitest";
 
 const HEX_16_RE = /^[0-9a-f]{16}$/;
 
 import {
   artifactLinkId,
-  EXTRACTOR_VERSION,
   extractArtifactRefs,
   HARNESS_CAPABILITIES,
   stripCodeFences,
 } from "../src/main/collectors/parsing/artifact-ref-extractor.js";
+import { EXTRACTOR_VERSION } from "../src/main/collectors/parsing/artifact-ref-extractor-version.js";
 import { extractLaunchMetadataRefs } from "../src/main/collectors/parsing/artifact-ref-launch-metadata.js";
 import type { NormalizedSession } from "../src/main/collectors/types.js";
-import { makeSession as baseSession } from "./normalized-session-test-utils.js";
-
-// ---------------------------------------------------------------------------
-// Minimal fixture helper
-// ---------------------------------------------------------------------------
-
-/**
- * The fixture session's own start instant — source-derived, captured by the
- * parser from the transcript. ISS-5236: this, NOT `NOW`, is what a scan-time ref
- * (one with no event of its own to date it) must be stamped with. Kept strictly
- * earlier than `NOW` so the two can never be confused by an assertion.
- */
-const SESSION_STARTED_AT = "2024-01-01T00:00:00.000Z";
-
-/**
- * The caller's import wall clock. Before ISS-5236 every scan-time ref was
- * stamped with this; it must now never reach a ref's `observedAt`.
- */
-const NOW = "2024-01-01T12:00:00.000Z";
-
-function makeSession(
-  overrides: Partial<NormalizedSession> & {
-    messages?: NormalizedSession["messages"];
-    toolUses?: NormalizedSession["toolUses"];
-  } = {}
-): NormalizedSession {
-  return baseSession({
-    sessionId: "test-session-1",
-    name: "test",
-    cwd: null,
-    model: null,
-    startedAt: SESSION_STARTED_AT,
-    endedAt: null,
-    ...overrides,
-  });
-}
+import { makeSession, NOW } from "./artifact-ref-session-fixture.js";
 
 // ---------------------------------------------------------------------------
 // AC 1-3: Strict slug regex positives
@@ -424,7 +389,7 @@ describe("AC 8: PR created-vs-referenced", () => {
           name: "Bash",
           timestamp: null,
           input: { command: "gh pr create --title 'My PR' --body 'body'" },
-          output: "https://github.com/closedloop-ai/example-repo/pull/99\n",
+          output: "https://github.com/closedloop-ai/closedloop-ai/pull/99\n",
         },
       ],
     });
@@ -433,7 +398,7 @@ describe("AC 8: PR created-vs-referenced", () => {
     assert.ok(prRefs.length > 0, "expected a PR ref");
     assert.equal(prRefs[0].relation, "created");
     assert.equal(prRefs[0].prNumber, 99);
-    assert.equal(prRefs[0].repoFullName, "closedloop-ai/example-repo");
+    assert.equal(prRefs[0].repoFullName, "closedloop-ai/closedloop-ai");
   });
 
   test("URL that appears in tool input (not creation output) → relation=referenced", () => {
@@ -447,7 +412,7 @@ describe("AC 8: PR created-vs-referenced", () => {
             // the plain "referenced" path (a `gh pr view/diff <n>` here would be
             // a REVIEW; see the FEA-3585 block).
             command:
-              "grep -r 'https://github.com/closedloop-ai/example-repo/pull/77' .",
+              "grep -r 'https://github.com/closedloop-ai/closedloop-ai/pull/77' .",
           },
         },
       ],
@@ -460,7 +425,7 @@ describe("AC 8: PR created-vs-referenced", () => {
 
   test("URL present in both input and output of gh pr create → relation=referenced", () => {
     // When the URL is already in the input (e.g. passed as arg), it's not a creation
-    const prUrl = "https://github.com/closedloop-ai/example-repo/pull/55";
+    const prUrl = "https://github.com/closedloop-ai/closedloop-ai/pull/55";
     const session = makeSession({
       toolUses: [
         {
@@ -485,7 +450,7 @@ describe("AC 8: PR created-vs-referenced", () => {
           timestamp: null,
           input: { file: "README.md" },
           output:
-            "See https://github.com/closedloop-ai/example-repo/pull/10 for context.",
+            "See https://github.com/closedloop-ai/closedloop-ai/pull/10 for context.",
         },
       ],
     });
@@ -503,7 +468,7 @@ describe("AC 8: PR created-vs-referenced", () => {
           name: "Bash",
           timestamp: null,
           input: { command: "gh pr create --head fea-real-head --fill" },
-          output: "https://github.com/closedloop-ai/example-repo/pull/42\n",
+          output: "https://github.com/closedloop-ai/closedloop-ai/pull/42\n",
           gitBranch: "fea-real-head", // the branch at creation time
         },
       ],
@@ -522,7 +487,7 @@ describe("AC 8: PR created-vs-referenced", () => {
           name: "Bash",
           timestamp: null,
           input: { command: "gh pr create --fill" },
-          output: "https://github.com/closedloop-ai/example-repo/pull/43\n",
+          output: "https://github.com/closedloop-ai/closedloop-ai/pull/43\n",
         },
       ],
     });
@@ -540,7 +505,7 @@ describe("AC 8: PR created-vs-referenced", () => {
           name: "Bash",
           timestamp: null,
           input: { command: "gh pr view 88" },
-          output: "https://github.com/closedloop-ai/example-repo/pull/88\n",
+          output: "https://github.com/closedloop-ai/closedloop-ai/pull/88\n",
           gitBranch: "fea-mine",
         },
       ],
@@ -562,7 +527,7 @@ describe("AC 8: PR created-vs-referenced", () => {
               name: "Bash",
               timestamp: null,
               input: { command: `gh pr create --head ${branchName} --fill` },
-              output: `https://github.com/closedloop-ai/example-repo/pull/${44 + index}\n`,
+              output: `https://github.com/closedloop-ai/closedloop-ai/pull/${44 + index}\n`,
               gitBranch: branchName,
             },
           ],
@@ -583,7 +548,7 @@ describe("AC 8: PR created-vs-referenced", () => {
           name: "Bash",
           timestamp: null,
           input: { command: "gh pr create --head feat/fea-1899 --fill" },
-          output: "https://github.com/closedloop-ai/example-repo/pull/47\n",
+          output: "https://github.com/closedloop-ai/closedloop-ai/pull/47\n",
           gitBranch: "feat/fea-1899",
         },
       ],
@@ -601,7 +566,7 @@ describe("AC 8: PR created-vs-referenced", () => {
 // ---------------------------------------------------------------------------
 
 describe("FEA-3585: reviewed-PR relation", () => {
-  const REPO = "closedloop-ai/example-repo";
+  const REPO = "closedloop-ai/closedloop-ai";
   const MENTIONS_2975 = `Please review, related to https://github.com/${REPO}/pull/2975`;
 
   test("review session links the REVIEWED PR (bare number), not the mentioned PR", () => {
@@ -610,7 +575,7 @@ describe("FEA-3585: reviewed-PR relation", () => {
     // number). Before the fix only #2975 was linked (referenced); now #2990 is
     // linked as `reviewed`.
     const session = makeSession({
-      cwd: "/work/example-repo",
+      cwd: "/work/closedloop-ai",
       artifacts: { prs: [], issues: [], repo: REPO },
       messages: [{ role: "human", timestamp: null, text: MENTIONS_2975 }],
       toolUses: [
@@ -843,12 +808,12 @@ describe("FEA-3585: reviewed-PR relation", () => {
 
   test("bare-number review with a bare cwd-basename repo yields NO repo-less ref", () => {
     // FEA-3585 review fix (thread 2): extractRepoFromCwd yields a bare
-    // basename ("example-repo", no owner) for session.artifacts.repo. A
+    // basename ("closedloop-ai", no owner) for session.artifacts.repo. A
     // bare-number review must NOT borrow that as a PR identity — a repo-less
-    // "example-repo#N" artifact can never reconcile to a real GitHub PR. The
+    // "closedloop-ai#N" artifact can never reconcile to a real GitHub PR. The
     // ref is skipped (same as the no-repo case), not minted with a bad slug.
     const session = makeSession({
-      artifacts: { prs: [], issues: [], repo: "example-repo" },
+      artifacts: { prs: [], issues: [], repo: "closedloop-ai" },
       toolUses: [
         {
           name: "Bash",
@@ -914,7 +879,7 @@ describe("FEA-3585: reviewed-PR relation", () => {
 // ---------------------------------------------------------------------------
 
 describe("FEA-3851: per-PR review-method attribution in bundled commands", () => {
-  const REPO = "closedloop-ai/example-repo";
+  const REPO = "closedloop-ai/closedloop-ai";
 
   test("`gh pr view <A> && gh pr review <B>` classifies A read-only and B feedback-write", () => {
     // The over-attribution bug: A is merely VIEWED, B is a feedback write. The
@@ -1305,7 +1270,7 @@ describe("deduplication", () => {
   });
 
   test("same PR URL appearing in multiple tool outputs is deduplicated", () => {
-    const prUrl = "https://github.com/closedloop-ai/example-repo/pull/42";
+    const prUrl = "https://github.com/closedloop-ai/closedloop-ai/pull/42";
     const session = makeSession({
       toolUses: [
         {
@@ -1455,12 +1420,12 @@ describe("workspace context refs", () => {
   test("branch ref includes repoFullName from artifacts.repo", () => {
     const session = makeSession({
       gitBranch: "main",
-      artifacts: { prs: [], issues: [], repo: "closedloop-ai/example-repo" },
+      artifacts: { prs: [], issues: [], repo: "closedloop-ai/closedloop-ai" },
     });
     const refs = extractArtifactRefs(session, NOW);
     const branchRef = refs.find((r) => r.targetKind === "branch");
     assert.ok(branchRef);
-    assert.equal(branchRef?.repoFullName, "closedloop-ai/example-repo");
+    assert.equal(branchRef?.repoFullName, "closedloop-ai/closedloop-ai");
   });
 
   test("FETCH_HEAD gitBranch produces no branch ref (FEA-2177)", () => {
@@ -1623,7 +1588,7 @@ describe("git-command branch detection", () => {
           timestamp: NOW,
           input: {
             command:
-              'git worktree add "../example-repo-fea-1684" -b "feat/fea-1684" origin/main',
+              'git worktree add "../closedloop-ai-fea-1684" -b "feat/fea-1684" origin/main',
           },
         },
       ],
@@ -2145,7 +2110,7 @@ describe("FEA-2531: branch ref relation by evidence method", () => {
     const ref = branchRefFor(
       "gh pr create --fill",
       "gh_pr_create",
-      "Warning: 3 commits on branch 'feat/fea-2531'\nhttps://github.com/closedloop-ai/example-repo/pull/1\n"
+      "Warning: 3 commits on branch 'feat/fea-2531'\nhttps://github.com/closedloop-ai/closedloop-ai/pull/1\n"
     );
     assert.ok(ref, "expected a gh_pr_create branch ref");
     assert.equal(ref?.branchName, "feat/fea-2531");
@@ -2312,9 +2277,9 @@ describe("FEA-2531: EXTRACTOR_VERSION bump", () => {
   // Bumped to 23 by ISS-5236 (a scan-time ref's `observed_at` is the session's
   // own `startedAt`, not the import wall clock, so already-imported links —
   // and the branch-lifecycle instants and `artifacts.first_pushed_at` seeds
-  // derived from them — re-derive off the source on the backfill), then to 24 by ISS-5764 + ISS-5763 (see artifact-ref-prose-refs.test.ts).
-  test("EXTRACTOR_VERSION is 25", () => {
-    assert.equal(EXTRACTOR_VERSION, 25);
+  // derived from them — re-derive off the source on the backfill), then to 24 by ISS-5764 + ISS-5763 (see artifact-ref-prose-refs.test.ts), then to 26 by ISS-8268 (shell-through-MCP command recognition; see artifact-ref-mcp-shell.test.ts), then to 27 by ISS-8336 (both branch-minting `gh pr create` gates moved off a private unanchored copy onto the canonical anchored pattern, so the phantom branches an unquoted MENTION minted are deleted on the backfill's re-derive; see artifact-ref-gh-pr-create-mention.test.ts), then to 28 by ISS-8338 + ISS-8432 (PR Int bounds and terminal-hyphen branch fragments), then to 29 by ISS-8175 (a created-PR ref carries the base ref gh named in its create output, so already-imported PRs re-derive one), then to 30 by ISS-8751 (`GIT_COMMIT_BRANCH_RE` keys on the real `[<branch> <7-40 hex>]` commit-summary shape instead of a single leading hex digit, so the phantom branches a commit summary minted out of the preceding word are deleted on the backfill's re-derive; see artifact-ref-commit-summary-shape.test.ts), then to 31 by ISS-8751's lower-severity siblings (`git worktree add --detach <path>` and `git checkout <file>` name a PATH, not a branch, and both minted one; see artifact-ref-branch-path-arguments.test.ts), then to 32 by ISS-9860 (the monitored-activity carrier in link evidence is no longer capped at 50 events per target / 100 per session, so already-imported sessions re-derive to recover the dropped events), then to 33 by ISS-8473 (a heredoc BODY is neutralized before any command-shape gate runs, so a body line that BEGINS with `gh pr create`, `git push` or `git checkout -b` is read as the stdin data it is and no longer mints a phantom branch; see artifact-ref-shell-quotes.test.ts), then to 34 by ISS-12855 (the ClosedLoop URL regex accepts the canonical `/documents/` route, so a `/documents/` URL ingested since the route change gains its `url_match` ref on the backfill's re-derive).
+  test("EXTRACTOR_VERSION is 34", () => {
+    assert.equal(EXTRACTOR_VERSION, 34);
   });
 
   test("emitted refs are stamped with the current extractorVersion", () => {
@@ -2392,7 +2357,7 @@ describe("FEA-3420: nested workflow sub-agent PR/branch attribution", () => {
               timestamp: NOW,
               input: { command: "gh pr create --fill" },
               output:
-                "https://github.com/closedloop-ai/example-repo/pull/5150\n",
+                "https://github.com/closedloop-ai/closedloop-ai/pull/5150\n",
               subagentId: "workflows__wf-1__agent-nested",
             },
           ],
@@ -2431,7 +2396,7 @@ describe("FEA-3420: nested workflow sub-agent PR/branch attribution", () => {
       name: "Bash",
       timestamp: NOW,
       input: { command: "gh pr create --fill" },
-      output: "https://github.com/closedloop-ai/example-repo/pull/6161\n",
+      output: "https://github.com/closedloop-ai/closedloop-ai/pull/6161\n",
       gitBranch: "feat/inline-work",
       subagentId: "agent-inline",
     };
@@ -2501,7 +2466,7 @@ describe("FEA-3627: sidecar sub-agent PR/branch/commit attribution", () => {
                 command: "gh pr create --head feat/subagent-work --fill",
               },
               output:
-                "https://github.com/closedloop-ai/example-repo/pull/3131\n",
+                "https://github.com/closedloop-ai/closedloop-ai/pull/3131\n",
               gitBranch: "feat/subagent-work",
               subagentId: "agent-abc123",
             },
@@ -2514,7 +2479,7 @@ describe("FEA-3627: sidecar sub-agent PR/branch/commit attribution", () => {
     assert.equal(prRefs.length, 1, "expected exactly one PR ref");
     assert.equal(prRefs[0].relation, "created");
     assert.equal(prRefs[0].prNumber, 3131);
-    assert.equal(prRefs[0].repoFullName, "closedloop-ai/example-repo");
+    assert.equal(prRefs[0].repoFullName, "closedloop-ai/closedloop-ai");
     assert.equal(prRefs[0].branchName, "feat/subagent-work");
   });
 
@@ -2568,7 +2533,7 @@ describe("FEA-3627: sidecar sub-agent PR/branch/commit attribution", () => {
       name: "Bash",
       timestamp: NOW,
       input: { command: "gh pr create --fill" },
-      output: "https://github.com/closedloop-ai/example-repo/pull/4242\n",
+      output: "https://github.com/closedloop-ai/closedloop-ai/pull/4242\n",
       gitBranch: "feat/inline-work",
       subagentId: "agent-inline",
     };
@@ -2637,7 +2602,7 @@ describe("FEA-3627: created-PR head resolution is fenced to the same sub-agent b
               // evidence. B pushed no branch of its own.
               input: { command: "gh pr create --fill" },
               output:
-                "https://github.com/closedloop-ai/example-repo/pull/5151\n",
+                "https://github.com/closedloop-ai/closedloop-ai/pull/5151\n",
               subagentId: "agent-B",
             },
           ],
@@ -2688,7 +2653,7 @@ describe("FEA-3627: created-PR head resolution is fenced to the same sub-agent b
               // agent's preceding push.
               input: { command: "gh pr create --fill" },
               output:
-                "https://github.com/closedloop-ai/example-repo/pull/5252\n",
+                "https://github.com/closedloop-ai/closedloop-ai/pull/5252\n",
               subagentId: "agent-solo",
             },
           ],
@@ -2721,7 +2686,7 @@ describe("FEA-3627: created-PR head resolution is fenced to the same sub-agent b
           name: "Bash",
           timestamp: NOW,
           input: { command: "gh pr create --fill" },
-          output: "https://github.com/closedloop-ai/example-repo/pull/5353\n",
+          output: "https://github.com/closedloop-ai/closedloop-ai/pull/5353\n",
         },
       ],
     });
@@ -2863,7 +2828,7 @@ describe("FEA-2531: push-form coverage", () => {
   test("git push origin HEAD resolves the branch from the ref-line output", () => {
     const refs = pushRefsFor(
       "git push origin HEAD",
-      "To github.com:closedloop-ai/example-repo.git\n   abc1234..def5678  HEAD -> feat/fea-x\n"
+      "To github.com:closedloop-ai/closedloop-ai.git\n   abc1234..def5678  HEAD -> feat/fea-x\n"
     );
     assert.equal(refs.length, 1);
     assert.equal(refs[0]?.branchName, "feat/fea-x");
@@ -2886,7 +2851,7 @@ describe("FEA-2531: push-form coverage", () => {
   test("new-branch ref-line output is push evidence", () => {
     const refs = pushRefsFor(
       "git push --set-upstream origin feat/fea-x",
-      "To github.com:closedloop-ai/example-repo.git\n * [new branch]      feat/fea-x -> feat/fea-x\n"
+      "To github.com:closedloop-ai/closedloop-ai.git\n * [new branch]      feat/fea-x -> feat/fea-x\n"
     );
     assert.equal(refs.length, 1);
     assert.equal(refs[0]?.branchName, "feat/fea-x");
@@ -2901,115 +2866,10 @@ describe("FEA-2531: push-form coverage", () => {
   test("failed HEAD push with rejected ref-line output is gated by isError", () => {
     const refs = pushRefsFor(
       "git push origin HEAD",
-      "To github.com:closedloop-ai/example-repo.git\n ! [rejected]        HEAD -> feat/fea-x (non-fast-forward)\n",
+      "To github.com:closedloop-ai/closedloop-ai.git\n ! [rejected]        HEAD -> feat/fea-x (non-fast-forward)\n",
       true
     );
     assert.equal(refs.length, 0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// FEA-2531 hardening: shell-quote-aware git detection. Regression fixtures are
-// the LITERAL commands that minted phantom branches (feat, feat/x',
-// feat/x','git) in real desktop data — git-command text embedded inside a
-// quoted argument of another command must never produce branch/commit refs.
-// ---------------------------------------------------------------------------
-
-describe("FEA-2531 hardening: quoted git text is not evidence", () => {
-  function branchRefsFor(command: string, output?: string) {
-    const session = makeSession({
-      toolUses: [{ name: "Bash", timestamp: NOW, input: { command }, output }],
-    });
-    return extractArtifactRefs(session, NOW).filter(
-      (r) => r.targetKind === "branch"
-    );
-  }
-
-  test("rg pattern containing git push text mints no branch (the `feat` poison)", () => {
-    const refs = branchRefsFor(
-      'rtk rg -n "git push.*HEAD|set-upstream|--set-upstream|push -u origin HEAD|push origin HEAD|git push origin feat|git push -u origin" apps/desktop/test/artifact-ref-extractor.test.ts apps/desktop/test -l'
-    );
-    assert.equal(refs.length, 0);
-  });
-
-  test("inline -e script with quoted git commands mints no branch (the `feat/x','git` poison)", () => {
-    const refs = branchRefsFor(
-      "rtk pnpm exec tsx -e \"import { extractArtifactRefs } from './apps/desktop/src/main/collectors/parsing/artifact-ref-extractor.ts'; const cmds = ['git push origin feat/x','git checkout -b feat/x']; console.log(cmds)\""
-    );
-    assert.equal(refs.length, 0);
-  });
-
-  test("rg output echoing push ref-lines is not scanned (command is not a push)", () => {
-    const refs = branchRefsFor(
-      'rg "git push" apps/desktop/test',
-      'test.ts: "To github.com:x/y.git\\n * [new branch]      feat/x -> feat/x"'
-    );
-    assert.equal(refs.length, 0);
-  });
-
-  test("rg output echoing commit summary lines mints no commit refs", () => {
-    const session = makeSession({
-      toolUses: [
-        {
-          name: "Bash",
-          timestamp: NOW,
-          input: { command: 'rg "git commit" apps/desktop/test' },
-          output: 'test.ts: output: "[feat/x abc1234] work"\n',
-        },
-      ],
-    });
-    const commits = extractArtifactRefs(session, NOW).filter(
-      (r) => r.targetKind === "commit"
-    );
-    assert.equal(commits.length, 0);
-  });
-
-  test("git text inside commit -m body is ignored, chained real push still detected", () => {
-    const refs = branchRefsFor(
-      'git commit -m "docs: mention git push origin bogus and --delete" && git push origin feat/real'
-    );
-    assert.equal(refs.length, 1);
-    assert.equal(refs[0]?.branchName, "feat/real");
-    assert.equal(refs[0]?.method, "git_push");
-  });
-
-  test("wrapper-prefixed real git commands still count (rtk rewrite)", () => {
-    const refs = branchRefsFor("rtk git push origin feat/wrapped");
-    assert.equal(refs.length, 1);
-    assert.equal(refs[0]?.branchName, "feat/wrapped");
-  });
-
-  test("cd-chained real push still counts", () => {
-    const refs = branchRefsFor(
-      "cd /home/user/wt && git push -u origin feat/chained"
-    );
-    assert.equal(refs.length, 1);
-    assert.equal(refs[0]?.branchName, "feat/chained");
-  });
-
-  test("quoted branch NAME on a real checkout still captures", () => {
-    const refs = branchRefsFor('git checkout -b "feat/quoted-ok"');
-    assert.equal(refs.length, 1);
-    assert.equal(refs[0]?.branchName, "feat/quoted-ok");
-  });
-
-  test("echoed gh pr create text does not classify the tool as PR-creating", () => {
-    const session = makeSession({
-      toolUses: [
-        {
-          name: "Bash",
-          timestamp: NOW,
-          input: { command: 'echo "run gh pr create when ready"' },
-          output:
-            "run gh pr create when ready\nhttps://github.com/closedloop-ai/example-repo/pull/999\n",
-        },
-      ],
-    });
-    const prRefs = extractArtifactRefs(session, NOW).filter(
-      (r) => r.targetKind === "pull_request"
-    );
-    assert.equal(prRefs.length, 1);
-    assert.equal(prRefs[0]?.relation, "referenced");
   });
 });
 
@@ -3114,7 +2974,7 @@ const CREATE_TOOL_EVIDENCE_RE = /create_tool_evidence/;
 const PRECEDING_WRITE_RE = /preceding_write/;
 
 describe("FEA-2531: created-PR head branch from write evidence", () => {
-  const PR_URL = "https://github.com/closedloop-ai/example-repo/pull/2320";
+  const PR_URL = "https://github.com/closedloop-ai/closedloop-ai/pull/2320";
 
   function createdRefFor(
     toolUses: NormalizedSession["toolUses"]
@@ -3132,7 +2992,7 @@ describe("FEA-2531: created-PR head branch from write evidence", () => {
         timestamp: NOW,
         gitBranch: "main",
         input: { command: "gh pr create --title x --body-file /tmp/b.md" },
-        output: `Creating pull request for feat/fea-2531 into main in closedloop-ai/example-repo\n${PR_URL}\n`,
+        output: `Creating pull request for feat/fea-2531 into main in closedloop-ai/closedloop-ai\n${PR_URL}\n`,
       },
     ]);
     assert.ok(ref);
@@ -3163,7 +3023,7 @@ describe("FEA-2531: created-PR head branch from write evidence", () => {
         gitBranch: "main",
         input: {
           command:
-            "cd /home/user/example-repo-fea-2531 && git push -u origin feat/fea-2531",
+            "cd /home/user/closedloop-ai-fea-2531 && git push -u origin feat/fea-2531",
         },
       },
       {
@@ -3172,7 +3032,7 @@ describe("FEA-2531: created-PR head branch from write evidence", () => {
         gitBranch: "main",
         input: {
           command:
-            "cd /home/user/example-repo-fea-2531 && gh pr create --title x --body y",
+            "cd /home/user/closedloop-ai-fea-2531 && gh pr create --title x --body y",
         },
         output: `${PR_URL}\n`,
       },
@@ -3236,7 +3096,7 @@ describe("FEA-2531: created-PR head branch from write evidence", () => {
           timestamp: NOW,
           gitBranch: "feat/mine",
           input: { command: "gh pr view 111" },
-          output: "https://github.com/closedloop-ai/example-repo/pull/111\n",
+          output: "https://github.com/closedloop-ai/closedloop-ai/pull/111\n",
         },
       ],
     });
@@ -3255,7 +3115,7 @@ describe("FEA-2531: created-PR head branch from write evidence", () => {
           timestamp: NOW,
           gitBranch: "main",
           input: { command: "gh pr create --title x --body y" },
-          output: `Creating pull request for feat/fea-2531 into main in closedloop-ai/example-repo\n${PR_URL}\n`,
+          output: `Creating pull request for feat/fea-2531 into main in closedloop-ai/closedloop-ai\n${PR_URL}\n`,
         },
       ],
     });
@@ -3272,7 +3132,7 @@ describe("FEA-2531: created-PR head branch from write evidence", () => {
 // just git_push. gh_pr_create is also a push method, so a failed
 // `gh pr create --head feat/x` mints no branch ref and is no head evidence.
 describe("FEA-2789: failed gh pr create is not push evidence", () => {
-  const PR_URL = "https://github.com/closedloop-ai/example-repo/pull/2789";
+  const PR_URL = "https://github.com/closedloop-ai/closedloop-ai/pull/2789";
 
   test("failed gh pr create --head emits NO branch ref (pushBranchRefs)", () => {
     const session = makeSession({

@@ -13,8 +13,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
+import { test } from "vitest";
 import { runDataRevisionRebuild } from "../src/main/collectors/engine/data-revision-rebuild.js";
 import { openTestDb } from "./agent-db-test-utils.js";
 import {
@@ -22,7 +22,7 @@ import {
   makePopulatedSession as makeSession,
 } from "./normalized-session-test-utils.js";
 
-const REPO = "closedloop-ai/example-repo";
+const REPO = "closedloop-ai/closedloop-ai";
 const PR_NUMBER = 1535;
 const SID = "pln1535-branch-propagation";
 

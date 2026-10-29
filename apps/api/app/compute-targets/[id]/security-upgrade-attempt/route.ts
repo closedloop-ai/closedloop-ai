@@ -16,6 +16,7 @@ import { desktopOnboardingAttemptsService } from "@/app/desktop/onboarding-attem
 import { canonicalizeTrustedOrigin } from "@/lib/auth/canonical-trusted-origin";
 import { resolveSessionUser } from "@/lib/auth/session-user";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
 import {
   dispatchRelayCommandToRelay,
   toRelayOperation,
@@ -40,7 +41,7 @@ function errorBody(
  * Creates a target-bound onboarding attempt and dispatches the local Desktop
  * security-upgrade command. The command body carries no API key material.
  */
-export async function POST(
+async function handlePost(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -161,3 +162,5 @@ export async function POST(
     { headers: { "Cache-Control": "no-store" } }
   );
 }
+
+export const POST = withRequestCompleted(handlePost);

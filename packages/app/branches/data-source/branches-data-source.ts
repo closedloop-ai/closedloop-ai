@@ -1,3 +1,12 @@
+import type { ArtifactActivityFeedResult } from "@repo/api/src/types/artifact-activity-feed";
+import {
+  type ArtifactCollaboratorBatchResponse,
+  CollaboratorArtifactType,
+} from "@repo/api/src/types/artifact-collaborators";
+import type {
+  UpdateArtifactPriorityRequest,
+  UpdateBranchPriorityResponse,
+} from "@repo/api/src/types/artifact-priority-mutation";
 import type {
   BranchAnalytics,
   BranchesPageData,
@@ -12,7 +21,22 @@ import {
   type BranchAnalyticsCohortResponse,
   branchAnalyticsCohortConsumerResponseSchema,
 } from "@repo/api/src/types/branch-analytics-cohort";
-import type { BranchSelectedPullRequestQuery } from "@repo/api/src/types/branch-associated-pull-request";
+import type {
+  BranchSelectedPullRequestIdentity,
+  BranchSelectedPullRequestQuery,
+} from "@repo/api/src/types/branch-associated-pull-request";
+import {
+  branchLastActiveCohortSchema,
+  branchListCohortKey,
+} from "@repo/api/src/types/branch-list-cohort";
+import {
+  BRANCH_LIST_INVALID_PAGE_RESPONSE_CODE,
+  BRANCH_LIST_SERVER_PAGE_SIZE,
+  BranchListPageMode,
+  type BranchListStatusOrderingResponse,
+} from "@repo/api/src/types/branch-list-contract";
+import { BRANCH_LIST_COMPLETE_COHORT_PAGE_SIZE } from "@repo/api/src/types/branch-list-work-budget";
+import type { BranchSelectedPullRequestDetailResponse } from "@repo/api/src/types/branch-selected-pull-request-detail";
 import {
   BranchTraceCompletenessState,
   type BranchTraceResult,
@@ -24,16 +48,42 @@ import {
   normalizeBranchTracePage,
   unavailableBranchTraceResult,
 } from "@repo/api/src/types/branch-trace";
+import type { BranchTracePageResult } from "@repo/api/src/types/branch-trace-paging";
 import type { BranchUsageSummary } from "@repo/api/src/types/branch-usage";
 import { ReadSource } from "@repo/api/src/types/read-source";
 import { ApiError } from "../../shared/api/api-error";
-import { buildSearchParams } from "../../shared/lib/format-utils";
+import { readArtifactCollaborators } from "../../shared/lib/artifact-collaborators";
 import { withReadSource } from "../../shared/lib/read-source";
 import { reflectToSettled } from "../../shared/lib/reflect-settled";
+import {
+  type BranchActivityPageRequest,
+  branchActivityPagePath,
+} from "./branch-activity-page-path";
+import {
+  type BranchCustomFieldValuesRead,
+  httpBranchCustomFieldValuesRead,
+} from "./branch-custom-field-values";
+import {
+  readBranchDetailWithLazyChecks,
+  readBranchSelectedPullRequestDetail,
+} from "./branch-detail-read";
+import { branchListPath, withQuery } from "./branch-request-path";
+import {
+  hasBranchServerPageCapability,
+  parseBranchServerPageResponse,
+} from "./branch-server-page-response";
+import { readBranchTracePage } from "./branch-trace-page";
+import {
+  type CompleteBranchListWork,
+  readCompleteBranchListPages,
+} from "./complete-branch-list-read";
+import {
+  isLegacyServerPageQueryRejection,
+  readBranchListStatusOrdering,
+  readServerPageData,
+} from "./server-page-data";
 
 const BRANCH_TRACE_PAGE_LIMIT = 100;
-const BRANCH_LIST_PAGE_LIMIT = 100;
-const BRANCH_LIST_PAGE_CONCURRENCY = 4;
 
 // `BranchQueryFilters` is now defined canonically in `@repo/api/src/types/branch`
 // (one home shared by both surfaces — AGENTS.md). Re-exported here so the
@@ -53,6 +103,8 @@ export type BranchDetailOptions = BranchSelectedPullRequestQuery & {
 
 export type BranchCommentsOptions = BranchSelectedPullRequestQuery;
 
+export type BranchTracePageOptions = BranchTraceOptions & { cursor?: string };
+
 export type BranchTraceOptions = {
   signal?: AbortSignal;
 };
@@ -69,7 +121,7 @@ export type BranchTraceOptions = {
  * `subscribe` is optional: a live source (desktop local DB) implements it to
  * notify on data changes; the HTTP source omits it.
  */
-export type BranchesDataSource = {
+export type BranchesDataSource = BranchCustomFieldValuesRead & {
   /**
    * Stable identity for the active source. Folded into the filter-based React
    * Query keys (see `branchesKeys`) so a surface that swaps sources — desktop
@@ -78,9 +130,32 @@ export type BranchesDataSource = {
    * stable (the HTTP source uses `"http"`; the local source uses `"local"`).
    */
   scope: string;
+  /** HTTP/cloud sources can render list rows independently of analytics. */
+  supportsSplitPageData?: boolean;
+  /**
+   * ISS-12456: whether this source can ever serve `tags` — a cloud Artifact
+   * concept the desktop local store's rows carry no identity for. The
+   * Branches host keys the Tags column's visibility on this rather than on
+   * any one row's `tagAvailability`, mirroring `updatePriority`'s opt-in.
+   */
+  supportsTags?: boolean;
+  /**
+   * ISS-12456: whether this source can ever serve `project` — same cloud
+   * Artifact-identity gap as `supportsTags`.
+   */
+  supportsProject?: boolean;
   list(filters: BranchListOptions): Promise<BranchListResponse>;
   /** Rejects (404 ApiError) when missing; never resolves null. */
   detail(id: string, options?: BranchDetailOptions): Promise<BranchPageDetail>;
+  /** Additive: older/local adapters can project their existing detail read. */
+  selectedPullRequestDetail?(
+    id: string,
+    selection: BranchSelectedPullRequestIdentity
+  ): Promise<BranchSelectedPullRequestDetailResponse | BranchPageDetail>;
+  /** Optional for older adapters; null means the cloud endpoint is unavailable. */
+  collaborators?(
+    artifactIds: readonly string[]
+  ): Promise<ArtifactCollaboratorBatchResponse | null>;
   comments(
     id: string,
     options?: BranchCommentsOptions
@@ -93,8 +168,27 @@ export type BranchesDataSource = {
    * still propagates to the query lifecycle.
    */
   trace(id: string, options?: BranchTraceOptions): Promise<BranchTraceResult>;
+  tracePage?(
+    id: string,
+    options?: BranchTracePageOptions
+  ): Promise<BranchTracePageResult>;
+  /**
+   * ISS-10980: one newest-first page of a branch's Activity feed, from
+   * `GET /branches/[id]/activity` (ISS-10994). Optional for the same reason the
+   * Session port's `activityPage` is: desktop Local mode has no synced
+   * activity, and the Activity tab reads that absence as its empty state
+   * rather than as a failed read.
+   */
+  activityPage?(
+    request: BranchActivityPageRequest
+  ): Promise<ArtifactActivityFeedResult>;
   usage(filters: BranchQueryFilters): Promise<BranchUsageSummary>;
   analytics(filters: BranchQueryFilters): Promise<BranchAnalytics>;
+  /**
+   * ISS-9437 — optional pre-list read of the ordering the producer says it is
+   * serving. Optional so older injected sources degrade to today's behavior.
+   */
+  listStatusOrdering?(): Promise<BranchListStatusOrderingResponse | null>;
   /**
    * Additive exact-cohort analytics. Optional so older injected sources and
    * installed Desktop preloads degrade to unavailable instead of crashing.
@@ -111,18 +205,39 @@ export type BranchesDataSource = {
    */
   pageData(filters: BranchListOptions): Promise<BranchesPageData>;
   subscribe?(onChange: (change: BranchesChange) => void): () => void;
+  /**
+   * ISS-10332 / PLN-2086 Milestone 2: set or clear one branch's priority — the
+   * WRITE half of the port and the seam the Priority cell's mutation reads
+   * through, so the desktop local store supplies its own implementation
+   * (Milestone 3) without the hook, the cell or the grid changing. Optional
+   * like `subscribe`: a source that cannot write offers no method, and the cell
+   * renders the mark read-only rather than a control that cannot commit.
+   */
+  updatePriority?(
+    id: string,
+    input: UpdateArtifactPriorityRequest
+  ): Promise<UpdateBranchPriorityResponse>;
 };
 
 /** The slice of the API client the HTTP data source needs. */
 type BranchesHttpClient = {
   get<T>(path: string, options?: RequestInit): Promise<T>;
   post?<T>(path: string, body?: unknown): Promise<T>;
+  /** ISS-10332: the write verb `updatePriority` rides; optional like `post`. */
+  patch?<T>(path: string, body: unknown): Promise<T>;
 };
 
-function withQuery(path: string, filters: BranchQueryFilters): string {
-  const qs = buildSearchParams(filters).toString();
-  return qs ? `${path}?${qs}` : path;
-}
+export type BranchesHttpDataSourceOptions = {
+  observeBranchListWork?: (work: CompleteBranchListWork) => void;
+  /**
+   * PRD-721 / ISS-9346: send the list read's filter and sort as the canonical
+   * `listQuery` expression. Defaults on, because the web app deploys with the
+   * API that compiles it. A caller whose API may be older than that compiler
+   * (an installed Desktop build reading the cloud) turns it off: an older
+   * route refuses the unknown param.
+   */
+  canonicalListQuery?: boolean;
+};
 
 /**
  * The HTTP data source — the single place that builds the REST URLs/query
@@ -133,24 +248,45 @@ function withQuery(path: string, filters: BranchQueryFilters): string {
  * alongside the loaded items current detail consumers render.
  */
 export function createHttpBranchesDataSource(
-  api: BranchesHttpClient
+  api: BranchesHttpClient,
+  options: BranchesHttpDataSourceOptions = {}
 ): BranchesDataSource {
+  const patch = api.patch;
   return {
-    scope: "http",
-    list: (filters) => getCompleteBranchList(api, filters),
-    detail: (id, options) =>
-      api.get<BranchPageDetail>(
-        selectedPullRequestPath(`/branches/${id}`, options)
+    scope: HTTP_BRANCHES_DATA_SOURCE_SCOPE,
+    supportsSplitPageData: true,
+    supportsTags: true,
+    supportsProject: true,
+    list: (filters) => getBranchListWithServerFallback(api, filters, options),
+    detail: (id, options) => readBranchDetailWithLazyChecks(api, id, options),
+    selectedPullRequestDetail: (id, selection) =>
+      readBranchSelectedPullRequestDetail(api, id, selection),
+    collaborators: (artifactIds) =>
+      readArtifactCollaborators(
+        api,
+        CollaboratorArtifactType.Branch,
+        artifactIds
       ),
     comments: (id, options) =>
       api.get<BranchPrCommentsResponse>(
         selectedPullRequestPath(`/branches/${id}/comments`, options)
       ),
     trace: (id, options) => getCompleteTrace(api, id, options),
+    tracePage: (id, options) =>
+      readBranchTracePage(
+        api.get.bind(api),
+        (branchId, traceOptions) =>
+          getCompleteTrace(api, branchId, traceOptions),
+        id,
+        options
+      ),
+    activityPage: (request) =>
+      api.get<ArtifactActivityFeedResult>(branchActivityPagePath(request)),
+    ...httpBranchCustomFieldValuesRead(api),
     usage: (filters) =>
       api.get<BranchUsageSummary>(withQuery("/branches/usage", filters)),
-    analytics: (filters) =>
-      api.get<BranchAnalytics>(withQuery("/branches/analytics", filters)),
+    analytics: (filters) => getBranchAnalyticsWithServerFallback(api, filters),
+    listStatusOrdering: () => readBranchListStatusOrdering(api),
     cohortAnalytics: async (request) => {
       if (!api.post) {
         return null;
@@ -169,28 +305,23 @@ export function createHttpBranchesDataSource(
         throw error;
       }
     },
-    // No combined REST route yet — the redundant-read cost this exists to avoid
-    // is a desktop-local (SQLite/IPC) concern; apps/api has no analogous doubled
-    // scan today. Fetching both concurrently still saves one round trip's worth
-    // of wall-clock time versus sequential awaits.
-    //
-    // FEA-4177 — independent failure domains: these are two separate requests, so
-    // `Promise.all` would give them ONE failure domain (an analytics failure
-    // would reject the whole read and blank the table). The list is the required
-    // half (rethrow its rejection so the table shows a real error), but an
-    // analytics rejection degrades ONLY the summary cards (`analytics` omitted,
-    // `analyticsError: true`) while the list still renders.
-    //
-    // whitlockk review: don't `await Promise.allSettled([list, analytics])` — that
-    // makes the required list WAIT for the optional analytics request, so a list
-    // that has already failed while analytics stalls never surfaces its rejection
-    // and the page hangs on loading. Reflect the analytics promise to a settled
-    // result IMMEDIATELY, await the list DIRECTLY (its rejection propagates the
-    // instant it lands), then inspect analytics only after the list resolves.
+    // FEA-4177: list is required, analytics is optional. Reflect analytics
+    // immediately so a stalled optional read cannot hide a list failure.
     pageData: async (filters) => {
-      const listPromise = getCompleteBranchList(api, filters);
+      if (filters.pageMode === BranchListPageMode.Server) {
+        return readServerPageData(filters, {
+          readList: (nextFilters) =>
+            getCompleteBranchList(api, nextFilters, options),
+          readAnalytics: (nextFilters) =>
+            getBranchAnalyticsWithServerFallback(api, nextFilters),
+          readLegacy: (nextFilters) =>
+            getLegacyPageData(api, nextFilters, options),
+          parseCurrentPage: parseCurrentServerPage,
+        });
+      }
+      const listPromise = getCompleteBranchList(api, filters, options);
       const analyticsResultPromise = reflectToSettled(
-        api.get<BranchAnalytics>(withQuery("/branches/analytics", filters))
+        getBranchAnalyticsWithServerFallback(api, filters)
       );
       const list = await listPromise;
       const analyticsResult = await analyticsResultPromise;
@@ -199,7 +330,120 @@ export function createHttpBranchesDataSource(
       }
       return { list, analytics: analyticsResult.value };
     },
+    // ISS-10332: `PATCH /branches/[id]`, a strict `{priority, expectedPriority?,
+    // surface?}` body (PLN-2086 Milestone 1). Offered only when the client can
+    // PATCH, so a read-only double never advertises a write it cannot make.
+    ...(patch
+      ? {
+          updatePriority: (id: string, input: UpdateArtifactPriorityRequest) =>
+            patch<UpdateBranchPriorityResponse>(`/branches/${id}`, input),
+        }
+      : {}),
     // no `subscribe` — HTTP is poll-only, exactly like the Sessions HTTP source.
+  };
+}
+
+async function getBranchListWithServerFallback(
+  api: BranchesHttpClient,
+  filters: BranchListOptions,
+  options: BranchesHttpDataSourceOptions
+): Promise<BranchListResponse> {
+  if (filters.pageMode !== BranchListPageMode.Server) {
+    return getCompleteBranchList(api, filters, options);
+  }
+  try {
+    const response = await getCompleteBranchList(api, filters, options);
+    const current = parseCurrentServerPage(response);
+    return (
+      current ?? getCompleteBranchList(api, legacyFilters(filters), options)
+    );
+  } catch (error) {
+    if (!isLegacyServerPageQueryRejection(error)) {
+      throw error;
+    }
+    return getCompleteBranchList(api, legacyFilters(filters), options);
+  }
+}
+
+async function getLegacyPageData(
+  api: BranchesHttpClient,
+  filters: BranchListOptions,
+  options: BranchesHttpDataSourceOptions
+): Promise<BranchesPageData> {
+  const legacy = legacyFilters(filters);
+  const listPromise = getCompleteBranchList(api, legacy, options);
+  const analyticsResultPromise = reflectToSettled(
+    getBranchAnalyticsWithServerFallback(api, legacy)
+  );
+  const list = await listPromise;
+  const analyticsResult = await analyticsResultPromise;
+  return analyticsResult.status === "rejected"
+    ? { list, analyticsError: true }
+    : { list, analytics: analyticsResult.value };
+}
+
+async function getBranchAnalyticsWithServerFallback(
+  api: BranchesHttpClient,
+  filters: BranchQueryFilters
+): Promise<BranchAnalytics> {
+  try {
+    return await api.get<BranchAnalytics>(
+      withQuery("/branches/analytics", filters)
+    );
+  } catch (error) {
+    if (
+      filters.pageMode !== BranchListPageMode.Server ||
+      !isLegacyServerAnalyticsRejection(error)
+    ) {
+      throw error;
+    }
+    return api.get<BranchAnalytics>(
+      withQuery("/branches/analytics", legacyServerAnalyticsFilters(filters))
+    );
+  }
+}
+
+function parseCurrentServerPage(
+  response: BranchListResponse
+): BranchListResponse | null {
+  if (!hasBranchServerPageCapability(response)) {
+    return null;
+  }
+  try {
+    return parseBranchServerPageResponse(response);
+  } catch {
+    throw new ApiError(
+      "Branches server page response is invalid.",
+      502,
+      BRANCH_LIST_INVALID_PAGE_RESPONSE_CODE
+    );
+  }
+}
+
+function isLegacyServerAnalyticsRejection(error: unknown): boolean {
+  return (
+    isLegacyServerPageQueryRejection(error) ||
+    (error instanceof ApiError &&
+      error.status === 400 &&
+      error.message.includes("server pages require"))
+  );
+}
+
+function legacyFilters(filters: BranchListOptions): BranchQueryFilters {
+  return {
+    ...(filters.startDate ? { startDate: filters.startDate } : {}),
+    ...(filters.endDate ? { endDate: filters.endDate } : {}),
+  };
+}
+
+function legacyServerAnalyticsFilters(
+  filters: BranchListOptions
+): BranchQueryFilters {
+  const { forceRefresh: _forceRefresh, ...queryFilters } = filters;
+  return {
+    ...queryFilters,
+    limit: BRANCH_LIST_SERVER_PAGE_SIZE,
+    offset: 0,
   };
 }
 
@@ -222,33 +466,26 @@ function selectedPullRequestPath(
 
 async function getCompleteBranchList(
   api: BranchesHttpClient,
-  filters: BranchQueryFilters
+  filters: BranchQueryFilters,
+  options: BranchesHttpDataSourceOptions
 ): Promise<BranchListResponse> {
   if (filters.limit !== undefined || filters.offset !== undefined) {
     return withReadSource(
-      await api.get<BranchListResponse>(withQuery("/branches", filters)),
+      await api.get<BranchListResponse>(
+        branchListPath(filters, options.canonicalListQuery)
+      ),
       ReadSource.Cloud
     );
   }
 
-  const firstPage = await getBranchListPage(api, filters, 0);
-  const discoveredRemainingPageCount = getRemainingBranchListPageCount(
-    firstPage.total
+  const { pages, work } = await readCompleteBranchListPages((offset) =>
+    getBranchListPage(api, filters, offset, options)
   );
-  const remainingPageCount =
-    firstPage.hasMore === true && firstPage.items.length > 0
-      ? discoveredRemainingPageCount
-      : 0;
-  if (firstPage.hasMore === true && firstPage.items.length > 0) {
-    assertCompleteBranchListPage(firstPage, 0, firstPage.total);
+  options.observeBranchListWork?.(work);
+  const firstPage = pages[0];
+  if (!firstPage) {
+    throw new RangeError("Branches list returned no first page");
   }
-  const remainingPages = await getRemainingBranchListPages(
-    api,
-    filters,
-    remainingPageCount,
-    firstPage.total
-  );
-  const pages = [firstPage, ...remainingPages];
   const items: BranchListResponse["items"] = [];
   const total = firstPage.total;
   let viewerScope: BranchListResponse["viewerScope"] | undefined;
@@ -299,12 +536,14 @@ async function getCompleteBranchList(
   const sessionCostUsd = publishSessionMap(sessionCost);
   const lifetimeSessionCostUsd = publishSessionMap(lifetimeSessionCost);
   const sessionBranchCount = publishSessionMap(sessionBranchCountAccumulator);
+  const lastActiveCohort = consistentLastActiveCohort(pages, filters);
   return {
     items,
     total,
     viewerScope: viewerScope ?? BranchViewerScope.Organization,
     hasMore: false,
     readSource,
+    ...(lastActiveCohort ? { lastActiveCohort } : {}),
     ...(sessionCostUsd ? { sessionCostUsd } : {}),
     ...(lifetimeSessionCostUsd ? { lifetimeSessionCostUsd } : {}),
     ...(sessionBranchCount ? { sessionBranchCount } : {}),
@@ -316,20 +555,46 @@ async function getCompleteTrace(
   id: string,
   options?: BranchTraceOptions
 ): Promise<BranchTraceResult> {
+  try {
+    const firstPage = normalizeBranchTracePage(
+      await getTracePage(api, completeTracePath(id), options?.signal)
+    );
+    if (!firstPage || firstPage.metadataReason) {
+      return getPaginatedTrace(api, id, options);
+    }
+    return getPaginatedTrace(api, id, options, firstPage);
+  } catch (error) {
+    if (options?.signal?.aborted || isAbortError(error)) {
+      throw error;
+    }
+    if (shouldFallbackFromCompleteTraceFailure(error)) {
+      return getPaginatedTrace(api, id, options);
+    }
+    return degradedTraceResult([], null, pageFailureReason(error));
+  }
+}
+
+async function getPaginatedTrace(
+  api: BranchesHttpClient,
+  id: string,
+  options?: BranchTraceOptions,
+  firstPage?: NormalizedBranchTracePage
+): Promise<BranchTraceResult> {
   const items: MergedTraceItem[] = [];
   let offset = 0;
   let hasMore = true;
   let traceState: BranchTraceState | null = null;
   let sawLegacyMetadata = false;
+  let nextPage = firstPage;
 
   try {
     while (hasMore) {
-      const rawPage = await getTracePage(
-        api,
-        tracePagePath(id, offset),
-        options?.signal
-      );
-      const page = normalizeBranchTracePage(rawPage);
+      const page =
+        nextPage ??
+        normalizeBranchTracePage(
+          await getTracePage(api, tracePagePath(id, offset), options?.signal)
+        );
+      nextPage = undefined;
       if (!page) {
         return degradedTraceResult(
           items,
@@ -486,12 +751,27 @@ function tracePagePath(id: string, offset: number): string {
   return `/branches/${id}/trace?limit=${BRANCH_TRACE_PAGE_LIMIT}&offset=${offset}`;
 }
 
+function completeTracePath(id: string): string {
+  return `/branches/${id}/trace?complete=true`;
+}
+
 function getTracePage(
   api: BranchesHttpClient,
   path: string,
   signal?: AbortSignal
 ): Promise<unknown> {
   return signal ? api.get<unknown>(path, { signal }) : api.get<unknown>(path);
+}
+
+function shouldFallbackFromCompleteTraceFailure(error: unknown): boolean {
+  if (!(error instanceof ApiError)) {
+    return true;
+  }
+  return !isTerminalCompleteTraceStatus(error.status);
+}
+
+function isTerminalCompleteTraceStatus(status: number): boolean {
+  return status === 401 || status === 403 || status === 429;
 }
 
 function degradedTraceResult(
@@ -569,7 +849,12 @@ type SessionMapAccumulator = {
 };
 
 function newSessionMapAccumulator(): SessionMapAccumulator {
-  return { merged: {}, saw: false, skewed: false };
+  // ISS-8565: null-prototype, because `merged[sessionId]` below is keyed by a
+  // session id that can be `__proto__` (a rollout file with no UUID in its name
+  // yields the bare filename). On a plain `{}` that write hits the inherited
+  // setter and creates no own key, so the session's cost vanished from the
+  // merged map even once the page schema started preserving it.
+  return { merged: Object.create(null), saw: false, skewed: false };
 }
 
 /**
@@ -620,7 +905,10 @@ function publishSessionMap(
   accumulator: SessionMapAccumulator
 ): Record<string, number> | undefined {
   if (accumulator.saw && !accumulator.skewed) {
-    return accumulator.merged;
+    // Spread DEFINES, so the own `__proto__` key survives while consumers get
+    // back the ordinary prototype they expect rather than the null-prototype
+    // accumulator.
+    return { ...accumulator.merged };
   }
   return;
 }
@@ -628,97 +916,47 @@ function publishSessionMap(
 function getBranchListPage(
   api: BranchesHttpClient,
   filters: BranchQueryFilters,
-  offset: number
+  offset: number,
+  options: BranchesHttpDataSourceOptions
 ): Promise<BranchListResponse> {
   return api.get<BranchListResponse>(
-    withQuery("/branches", {
-      ...filters,
-      limit: BRANCH_LIST_PAGE_LIMIT,
-      offset,
-    })
+    branchListPath(
+      {
+        ...filters,
+        limit: BRANCH_LIST_COMPLETE_COHORT_PAGE_SIZE,
+        offset,
+      },
+      options.canonicalListQuery
+    )
   );
 }
 
-/** Derive the remaining page count from the first response's total. */
-function getRemainingBranchListPageCount(total: number): number {
-  if (!Number.isSafeInteger(total) || total < 0) {
-    throw new RangeError("Branches list returned an invalid total");
+function consistentLastActiveCohort(
+  pages: readonly BranchListResponse[],
+  filters: BranchQueryFilters
+): BranchListResponse["lastActiveCohort"] {
+  const parsed = pages.map((page) =>
+    branchLastActiveCohortSchema.safeParse(page.lastActiveCohort)
+  );
+  if (parsed.some((result) => !result.success)) {
+    return;
   }
-  return Math.max(0, Math.ceil(total / BRANCH_LIST_PAGE_LIMIT) - 1);
+  const cohorts = parsed.flatMap((result) =>
+    result.success ? [result.data] : []
+  );
+  const first = cohorts[0];
+  if (
+    !first ||
+    first.cohortKey !== branchListCohortKey(filters) ||
+    cohorts.some((cohort) => JSON.stringify(cohort) !== JSON.stringify(first))
+  ) {
+    return;
+  }
+  return first;
 }
 
 /**
- * Fetch remaining pages through a fixed worker pool while storing each response
- * at its page index, so later folding is independent of completion order. Page
- * indices are claimed lazily to avoid allocating an unbounded offset queue from
- * corrupt-but-safe integer totals. Once a request rejects, active requests may
- * settle but no worker claims another page.
+ * `scope` of the default HTTP source. Named so a caller that keys a cache by the
+ * active source can name the default without re-typing the literal.
  */
-async function getRemainingBranchListPages(
-  api: BranchesHttpClient,
-  filters: BranchQueryFilters,
-  pageCount: number,
-  total: number
-): Promise<BranchListResponse[]> {
-  const pages = new Map<number, BranchListResponse>();
-  let nextPageIndex = 1;
-  let failed = false;
-  let firstError: unknown;
-
-  const fetchNextPages = async (): Promise<void> => {
-    while (!failed) {
-      const pageIndex = nextPageIndex;
-      nextPageIndex += 1;
-      if (pageIndex > pageCount) {
-        return;
-      }
-
-      try {
-        const page = await getBranchListPage(
-          api,
-          filters,
-          pageIndex * BRANCH_LIST_PAGE_LIMIT
-        );
-        assertCompleteBranchListPage(page, pageIndex, total);
-        pages.set(pageIndex, page);
-      } catch (error) {
-        if (!failed) {
-          firstError = error;
-        }
-        failed = true;
-        return;
-      }
-    }
-  };
-
-  const workerCount = Math.min(BRANCH_LIST_PAGE_CONCURRENCY, pageCount);
-  await Promise.all(
-    Array.from({ length: workerCount }, () => fetchNextPages())
-  );
-  if (failed) {
-    throw firstError;
-  }
-  return Array.from(pages.entries())
-    .sort(([leftIndex], [rightIndex]) => leftIndex - rightIndex)
-    .map(([, page]) => page);
-}
-
-/** Fail closed when a page cannot reconcile with page one's cohort total. */
-function assertCompleteBranchListPage(
-  page: BranchListResponse,
-  pageIndex: number,
-  total: number
-): void {
-  const offset = pageIndex * BRANCH_LIST_PAGE_LIMIT;
-  const expectedItemCount = Math.min(
-    BRANCH_LIST_PAGE_LIMIT,
-    Math.max(0, total - offset)
-  );
-  const expectedHasMore = offset + expectedItemCount < total;
-  if (
-    page.items.length !== expectedItemCount ||
-    page.hasMore !== expectedHasMore
-  ) {
-    throw new RangeError("Branches list pagination metadata is inconsistent");
-  }
-}
+export const HTTP_BRANCHES_DATA_SOURCE_SCOPE = "http";

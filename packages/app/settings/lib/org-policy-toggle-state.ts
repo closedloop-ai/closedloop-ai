@@ -2,6 +2,7 @@ import type {
   Organization,
   UpdateOrganizationInput,
 } from "@repo/api/src/types/organization";
+import { INLINE_EDIT_SAVE_ERROR_MESSAGE } from "@repo/app/shared/lib/inline-edit-save-error";
 import type { Alert } from "@repo/design-system/components/ui/alert";
 import type { Badge } from "@repo/design-system/components/ui/badge";
 import type { ComponentProps } from "react";
@@ -18,7 +19,6 @@ type AlertVariant = ComponentProps<typeof Alert>["variant"];
  */
 export const OrgPolicyField = {
   SearchIncludeTranscripts: "searchIncludeTranscripts",
-  SessionSyncPolicyEnabled: "sessionSyncPolicyEnabled",
 } as const satisfies Record<
   string,
   keyof Organization & keyof UpdateOrganizationInput
@@ -89,6 +89,9 @@ export const ORG_POLICY_FIELD_STATE_BADGES: Record<
 
 export type OrgPolicySaveAlert = { message: string; variant: AlertVariant };
 
+/** Compatibility name for the shared ISS-10792 save-failure copy. */
+export const ORG_POLICY_SAVE_FAILED_MESSAGE = INLINE_EDIT_SAVE_ERROR_MESSAGE;
+
 /**
  * Canonical inline alert per save outcome. `null` means the card shows nothing
  * — success is already visible in the switch once the org query refetches. The
@@ -103,7 +106,7 @@ export const ORG_POLICY_SAVE_OUTCOME_ALERTS: Record<
   [OrgPolicySaveOutcome.Saving]: null,
   [OrgPolicySaveOutcome.Applied]: null,
   [OrgPolicySaveOutcome.RequestFailed]: {
-    message: "Couldn't save that change. Try again.",
+    message: ORG_POLICY_SAVE_FAILED_MESSAGE,
     variant: "error",
   },
   [OrgPolicySaveOutcome.NotConfirmed]: {
@@ -221,8 +224,6 @@ export function buildOrgPolicyUpdateInput(
   switch (field) {
     case OrgPolicyField.SearchIncludeTranscripts:
       return { id, searchIncludeTranscripts: value };
-    case OrgPolicyField.SessionSyncPolicyEnabled:
-      return { id, sessionSyncPolicyEnabled: value };
     default: {
       const exhaustive: never = field;
       return exhaustive;

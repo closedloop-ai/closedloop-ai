@@ -15,18 +15,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopAuthStatus } from "../../../../shared/contracts";
 import { FirstLaunchDashboard } from "../first-launch-dashboard";
 
-// ---------------------------------------------------------------------------
-// Contract 2 & 3: DashboardEmpty gating formula + errored-insights behavior
+// Contract 2 & 3: DashboardEmptySurface gating formula + errored-insights behavior
 //
-// Tested through FirstLaunchDashboard since DashboardEmpty is module-private.
+// Tested through FirstLaunchDashboard, which owns the branch that mounts it.
 // Uses the same mock harness as first-launch-dashboard.test.tsx.
 //
-// Production formula (first-launch-dashboard.tsx:183-184, 334, 341-342):
+// Production formula, delegated through resolveDashboardState:
 //   analyticsLoaded = delivery.isSuccess && utilization.isSuccess && agents.isSuccess
-//   hasData         = sessionsTotal > 0
-//   loading         = !analyticsLoaded || (grew && !settled)
-//   empty           = !(loading || hasData)
-// ---------------------------------------------------------------------------
+//   sessionsKnown   = sessionsTotal > 0 || sessionsCountFresh
+//   loading         = retrying || analyticsPending || sessions/import analyzing
+//   empty           = !(loading || analyticsError || sessionsFailed || hasData)
 
 const STUB_DASHBOARD_ROWS = vi.hoisted(() => [
   { tour: "stats" },
@@ -35,6 +33,21 @@ const STUB_DASHBOARD_ROWS = vi.hoisted(() => [
   { tour: "prs" },
   { tour: "distribution" },
 ]);
+
+// The row identities the shell compares `row.tour` against. Real values rather
+// than stubs: this suite mocks `dashboard-tiles` for its ROW LIST, and a mock
+// that drops the const would leave every comparison reading `undefined` and
+// silently rendering neither branch.
+const REAL_DASHBOARD_ROW_TOUR = vi.hoisted(() => ({
+  Stats: "stats",
+  Activity: "activity",
+  Models: "models",
+  AgentPipeline: "agent-pipeline",
+  Autonomy: "autonomy",
+  Frustration: "frustration",
+  Prs: "prs",
+  Distribution: "distribution",
+}));
 
 const hooks = vi.hoisted(() => ({
   DashboardRowContent: vi.fn(),
@@ -48,7 +61,7 @@ const hooks = vi.hoisted(() => ({
 // ISS-5112: out of scope for the status-indicator contract, but the page now
 // reads both. `useDesktopAuth` throws without its provider, and the harness row's
 // local SQLite read wants a QueryClient — stub both at their signed-out, flag-off
-// answers (the real behavior lives in guest-tour-account-dialog.test.tsx). The
+// answers (the real behavior lives in guest-tour-account-request.test.tsx). The
 // status is assigned from the enum in `beforeEach`, not inside the factory: a
 // `vi.mock` factory runs during the import phase, before this file's own imports
 // are initialized.
@@ -65,9 +78,6 @@ vi.mock("../../../shared-agent-sessions/desktop-auth-provider", () => ({
     signOut: vi.fn(),
   }),
 }));
-vi.mock("../tour/use-tour-harnesses", () => ({
-  useTourHarnesses: () => ({ harnesses: [], ready: true }),
-}));
 
 vi.mock("@repo/app/agents/hooks/use-agent-sessions", () => ({
   useAgentSessions: hooks.useAgentSessions,
@@ -77,7 +87,11 @@ vi.mock("@repo/app/agents/hooks/use-agent-sessions", () => ({
 // real `resolveDashboardState` under test still runs.
 vi.mock("../dashboard-state", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../dashboard-state")>()),
-  useDashboardSessionSource: () => ({ ready: true, unavailable: false }),
+  useDashboardSessionSource: () => ({
+    ready: true,
+    importInProgress: false,
+    unavailable: false,
+  }),
   // ISS-6002 (review): a zero only counts once a read has landed WITH the
   // store up. This suite drives a single static query fixture, so stub the
   // freshness verdict too — it is subject-tested in dashboard-state.test.ts.
@@ -98,8 +112,12 @@ vi.mock("@repo/app/insights/hooks/use-dashboard-range", () => ({
     deltaLabel: "vs. prior 30 days",
   }),
 }));
-vi.mock("@repo/app/insights/components/overview/ai-impact-card", () => ({
-  AiImpactCard: () => null,
+// ISS-10486: the shell mounts the SLOT, which owns the card's ready/degraded/
+// loading verdict over its own sections — so this is the seam to stub, and
+// stubbing the card underneath it would leave the slot's real resolution
+// running over a module that no longer exports what it reads.
+vi.mock("@repo/app/insights/components/overview/ai-impact-slot", () => ({
+  AiImpactSlot: () => null,
 }));
 // This contract test is about the status-indicator state machine, not the row
 // catalog, so the stub returns a fixed row set. ISS-5061 re-gate: the shell now
@@ -108,6 +126,10 @@ vi.mock("@repo/app/insights/components/overview/ai-impact-card", () => ({
 // this file stays out of the gate's business.
 vi.mock("@repo/app/insights/components/overview/dashboard-tiles", () => ({
   DASHBOARD_ROWS: STUB_DASHBOARD_ROWS,
+  // The shell compares `row.tour` against these, so a partial mock that omits
+  // the const leaves every comparison reading `undefined` rather than failing.
+  // Real values, not stubs — the comparisons are against the live vocabulary.
+  DashboardRowTour: REAL_DASHBOARD_ROW_TOUR,
   dashboardRowsFor: () => STUB_DASHBOARD_ROWS,
 }));
 vi.mock("@repo/app/insights/lib/tile-availability", () => ({
@@ -129,22 +151,17 @@ vi.mock("@repo/app/agents/components/sessions/synced-sessions-table", () => ({
   SyncedSessionsTable: () => <div data-testid="synced-sessions-table" />,
 }));
 vi.mock("../dashboard-loading", () => ({
-  DashboardLoading: ({ analyticsPct }: { analyticsPct: number }) => (
-    <div data-analytics-pct={analyticsPct} data-testid="dashboard-loading" />
-  ),
+  DashboardLoading: () => <div data-testid="dashboard-loading" />,
 }));
-vi.mock("../tour/tour", () => ({
-  Tour: (props: { active: boolean }) => {
-    hooks.Tour(props);
-    return null;
-  },
-}));
-vi.mock("../tour/tour-hint", () => ({ TourHint: () => null }));
-// Out of scope for the status-indicator contract: the read-source badge owns its
-// own app-core-mode hook (covered by dashboard-read-source-badge.test.tsx).
-vi.mock("../dashboard-read-source-badge", () => ({
-  DashboardReadSourceBadge: () => null,
-}));
+vi.mock(
+  "@repo/app/onboarding/components/dashboard-tour/dashboard-tour",
+  () => ({
+    Tour: (props: { active: boolean }) => {
+      hooks.Tour(props);
+      return null;
+    },
+  })
+);
 vi.mock("../layout/page-shell", () => ({
   PageShell: ({
     actions,
@@ -249,11 +266,9 @@ beforeEach(() => {
   authStatus.value = DesktopAuthStatus.SignedOut;
 });
 
-// ---------------------------------------------------------------------------
-// Contract 2: DashboardEmpty gating formula (FEA-2650)
-// ---------------------------------------------------------------------------
+// Contract 2: DashboardEmptySurface gating formula (FEA-2650)
 
-describe("DashboardEmpty gating formula (FEA-2650)", () => {
+describe("DashboardEmptySurface gating formula (FEA-2650)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal(
@@ -271,16 +286,11 @@ describe("DashboardEmpty gating formula (FEA-2650)", () => {
     vi.unstubAllGlobals();
   });
 
-  // FEA-2650: pin the EXACT production formula —
-  //   loading = !analyticsLoaded || (grew && !settled)
-  //   empty   = !(loading || hasData)
-  // With analyticsLoaded=true, grew=false, sessionsTotal=0:
-  //   loading = false || (false && !false) = false
-  //   empty   = !(false || false) = true
-  // The empty state renders WITHOUT `settled` being true — `grew` is false
-  // (the session total never exceeded its initial value), so the
-  // `(grew && !settled)` term is false regardless of `settled`.
-  it("shows empty when analytics loaded + zero sessions + no import growth — even without settled", () => {
+  // FEA-2650 + ISS-6002: pin the production state —
+  //   loading = false because analytics and the session count are known
+  //   empty   = true because there is no error, failed session read, or data
+  // Live import status is false, so no local import work keeps the skeleton up.
+  it("shows empty when analytics loaded + zero sessions + no active import", () => {
     allInsightsLoaded();
     hooks.useAgentSessions.mockReturnValue(
       sessionsResult({ data: { total: 0, items: [] } })
@@ -296,7 +306,7 @@ describe("DashboardEmpty gating formula (FEA-2650)", () => {
   // FEA-2650: pin that when analytics are still loading, the loading skeleton
   // shows even with zero sessions — never the misleading "No agent sessions
   // yet" message while data may still be arriving.
-  // Formula: analyticsLoaded=false → loading=true → empty=!(true||false)=false
+  // Formula: analyticsLoaded=false → loading=true → empty=false
   it("shows loading skeleton — NOT the empty state — while analytics are still loading with zero sessions", () => {
     hooks.useDeliveryInsights.mockReturnValue(
       insightResult({ isSuccess: false, isLoading: true })
@@ -338,7 +348,6 @@ describe("DashboardEmpty gating formula (FEA-2650)", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Contract 3: Errored insights section behavior (FEA-3240)
 //
 // Production formula: analyticsError = delivery.isError || utilization.isError || agents.isError
@@ -346,10 +355,9 @@ describe("DashboardEmpty gating formula (FEA-2650)", () => {
 // skeleton and renders a degraded/error state with a Retry button. Clicking
 // Retry invalidates all insights queries and shows normal loading treatment
 // until all three settle. If all three succeed on retry, the dashboard renders.
-// ---------------------------------------------------------------------------
 
 const queryClientMocks = vi.hoisted(() => ({
-  invalidateQueries: vi.fn(),
+  invalidateQueries: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@tanstack/react-query", async () => {
@@ -364,6 +372,15 @@ vi.mock("@tanstack/react-query", async () => {
   };
 });
 
+// PLN-1875 Step 9: the page now reads the guided-onboarding run to reconcile the
+// two tour-seen records. The real `useGuidedDashboardTour` stays in the render
+// path; only its API client, auth adapter and QueryClient are stubbed out.
+vi.mock("@repo/app/onboarding/hooks/use-guided-onboarding", async () => {
+  const { guidedOnboardingStubModule } = await import(
+    "./guided-onboarding-stub"
+  );
+  return guidedOnboardingStubModule();
+});
 const RETRY_NAME_PATTERN = /retry/i;
 
 describe("Errored insights section — error state and retry (FEA-3240)", () => {
@@ -465,28 +482,12 @@ describe("Errored insights section — error state and retry (FEA-3240)", () => 
       insightResult({ isSuccess: false, isError: false, isFetching: true })
     );
 
+    // `rerender` re-wraps its argument in the SAME wrapper `renderDashboard`
+    // installed, so re-passing the providers here would nest a second copy and
+    // REMOUNT `FirstLaunchDashboard` — discarding the `retrying` state this case
+    // exists to observe. Rerender the bare element so the instance survives.
     act(() => {
-      rerender(
-        <FeatureFlagAdapterProvider
-          adapter={createStaticFeatureFlagAdapter({ enabledFlags: [] })}
-        >
-          <InsightsDataSourceProvider
-            value={{
-              availableScopes: [InsightsScope.Me],
-              availableSections: [
-                InsightsSection.Delivery,
-                InsightsSection.Utilization,
-                InsightsSection.Agents,
-              ],
-              getAgents: vi.fn(),
-              getDelivery: vi.fn(),
-              getUtilization: vi.fn(),
-            }}
-          >
-            <FirstLaunchDashboard />
-          </InsightsDataSourceProvider>
-        </FeatureFlagAdapterProvider>
-      );
+      rerender(<FirstLaunchDashboard />);
     });
 
     expect(screen.getByTestId("dashboard-loading")).toBeDefined();

@@ -36,6 +36,7 @@
 import { isClosedloopUser } from "./activity-metrics.js";
 import { safe } from "./db-helpers.js";
 import type { DesktopPrisma } from "./prisma-client.js";
+import { canonicalRankingKeySql } from "./session-timestamp-form.js";
 
 /** The resolved signed-in identity, as the desktop main process reports it. */
 export type SessionIdentity = {
@@ -68,7 +69,11 @@ export type SessionIdentityInsertBinding = {
 export const SessionOwnerClaimSkip = {
   /** Nobody is signed in; a NULL owner is the honest value, so nothing is stamped. */
   NoIdentity: "no_identity",
-  /** The store already holds another account's sessions; claiming would misattribute them. */
+  /**
+   * The store already holds another account's sessions AND none of the unowned
+   * rows can be attributed from local evidence — see
+   * {@link claimUnownedSessionIdentity} for the one case that now can.
+   */
   ForeignOwnerPresent: "foreign_owner_present",
 } as const;
 export type SessionOwnerClaimSkip =
@@ -118,6 +123,26 @@ export function buildSessionIdentityInsert(
  * them. The guard covers every case where the store retained evidence of the
  * other account; it cannot invent evidence that was never written.
  *
+ * ISS-11843 (operator ruling, Marisol Ashgrove 2026-10-01: "all guest since last
+ * user get stamped with the newly logged in person"): a store that has served
+ * two accounts no longer refuses outright. The blanket bail stranded every
+ * session captured while NOBODY was signed in, permanently, on any machine a
+ * second account had ever touched — sign in, sign out, work as a guest, sign in
+ * as someone else, and that guest work could never be attributed to anyone.
+ *
+ * What the foreign-owner case claims instead is exactly the guest window: rows
+ * that are unowned AND started strictly after the newest OWNED session. Those
+ * cannot belong to an earlier account — that account's own rows carry its stamp
+ * and sit before the boundary — so the person signing in now is the only
+ * candidate local evidence offers. Rows at or before the boundary, and rows with
+ * no `started_at` to place, stay NULL exactly as before.
+ *
+ * The same ruling's other half is the hard part, and it is structural rather
+ * than argued: every statement here is written in terms of
+ * {@link UNOWNED_SESSION_PREDICATE}, so an OWNED row cannot be rewritten by this
+ * pass under any branch. User 1's sessions keep user 1's stamp and never sync
+ * under user 2.
+ *
  * `updated_at` is deliberately NOT bumped. That column is the local→cloud sync
  * watermark, and the cloud already resolves these sessions' owner from the
  * authenticated principal at ingest (which is why web shows an Owner today);
@@ -152,7 +177,7 @@ export function claimUnownedSessionIdentity(
       return { claimed: 0, skipped: null };
     }
     // The account identity is the (user_id, organization_id) PAIR — the same
-    // atomic identity `OrgSyncPolicyAccountIdentity` uses — so a differing ORG
+    // atomic identity `AuthSessionAccountIdentity` uses — so a differing ORG
     // under the same user is foreign too. Guarding only the user axis would let
     // an org switch silently repaint every historical row with the new org.
     //
@@ -172,7 +197,10 @@ export function claimUnownedSessionIdentity(
       organizationId
     );
     if (Number(foreign[0]?.foreign_owners ?? 0) > 0) {
-      return { claimed: 0, skipped: SessionOwnerClaimSkip.ForeignOwnerPresent };
+      return await claimGuestSessionsSinceLastOwner(client, {
+        organizationId,
+        userId,
+      });
     }
     const claimed = await client.$executeRawUnsafe(
       `UPDATE sessions SET user_id = $1, organization_id = $2 WHERE ${UNOWNED_SESSION_PREDICATE}`,
@@ -194,8 +222,16 @@ export function claimUnownedSessionIdentity(
  * terms of this one predicate so they cannot disagree about which rows the claim
  * may touch, and so a row that already knows its organization is never rewritten
  * to a NULL one.
+ *
+ * ISS-9284: exported so the rehearsal's deliberate COPY of it can be held to it
+ * by a test. `scripts/rehearsal-build-store.ts` is executed inside a merge-base
+ * worktree and may not import this module, so it re-declares the string; the
+ * export exists only so `test/rehearsal-build-store.test.ts` — which runs in the
+ * PR checkout and has no such constraint — can assert the two still agree. Not
+ * an invitation to build a second claim path on it.
  */
-const UNOWNED_SESSION_PREDICATE = "user_id IS NULL AND organization_id IS NULL";
+export const UNOWNED_SESSION_PREDICATE =
+  "user_id IS NULL AND organization_id IS NULL";
 
 /** Session ids per `session_activity_metrics` re-stamp statement. */
 const CLAIM_METRICS_CHUNK = 200;
@@ -236,4 +272,109 @@ async function refreshClaimedActivityMetricsCohort(
       ...chunk
     );
   }
+}
+
+/**
+ * Rows an OWNED session has already been stamped on — the boundary the guest
+ * window opens after. Deliberately `OR`, matching the foreign-owner probe: a row
+ * that knows only its organization still proves an account was present.
+ */
+const OWNED_SESSION_PREDICATE =
+  "user_id IS NOT NULL OR organization_id IS NOT NULL";
+
+/**
+ * `started_at` as a CANONICAL ranking key — NULL whenever the stored text is not
+ * a real instant this expression can place.
+ *
+ * Not the raw column, which is the whole point. `sessions.started_at` is TEXT
+ * and the stored corpus carries mixed ISO forms, so a byte comparison is not a
+ * chronological one: `2026-06-22T10:00:00Z` sorts ABOVE `2026-06-22T10:00:00.500Z`
+ * while being earlier, and an offset form loses outright. Comparing or
+ * aggregating the raw column here would pick the wrong boundary and claim the
+ * wrong rows — `no-lexical-timestamp-aggregate` refuses it, correctly.
+ */
+const canonicalStartedAtRankingKey = canonicalRankingKeySql("started_at");
+
+/**
+ * The guest window: unowned, and started strictly after the newest owned
+ * session. `$${boundaryParam}` is the caller's placeholder for that boundary,
+ * because the probe and the UPDATE bind it at different positions — the one
+ * predicate string still backs both, so they cannot disagree about which rows
+ * are claimable.
+ *
+ * The `IS NOT NULL` half is explicit: a row whose timestamp cannot be placed on
+ * the canonical scale cannot be placed relative to the boundary either, and the
+ * honest answer for such a row is to leave it unattributed. Strict `>` for the
+ * same reason — a guest row sharing the boundary instant is not evidence of
+ * anything.
+ *
+ * The {@link UNOWNED_SESSION_PREDICATE} half is REDUNDANT today and kept
+ * deliberately: the boundary is the MAX ranking key over owned rows, so no owned
+ * row can exceed it and the timestamp alone already excludes them. It is stated
+ * anyway because it is the invariant the operator ruling turns on ("I don't want
+ * to re-stamp user 1's sessions with user 2"), and a future change to how the
+ * boundary is chosen — the last owned row of the PREVIOUS identity, say — would
+ * make it the only thing enforcing it. No test can exercise it while the
+ * boundary is defined this way; it is belt to the boundary's braces, not a
+ * proven guard.
+ */
+function guestWindowPredicate(boundaryParam: number): string {
+  return `${UNOWNED_SESSION_PREDICATE}
+      AND (${canonicalStartedAtRankingKey}) IS NOT NULL
+      AND (${canonicalStartedAtRankingKey}) > $${boundaryParam}`;
+}
+
+/**
+ * ISS-11843: the foreign-owner arm of {@link claimUnownedSessionIdentity}.
+ *
+ * Claims the guest window defined above and nothing else. Returns the unchanged
+ * {@link SessionOwnerClaimSkip.ForeignOwnerPresent} when there is no boundary to
+ * measure from (every owned row predates `started_at`, so the window cannot be
+ * computed) or when no unowned row falls inside it — both are "local evidence
+ * cannot attribute these", which is what that skip has always meant.
+ */
+async function claimGuestSessionsSinceLastOwner(
+  client: RawWriteExecutor & {
+    $queryRawUnsafe: <T>(query: string, ...values: unknown[]) => Promise<T>;
+  },
+  identity: { userId: string; organizationId: string | null }
+): Promise<SessionOwnerClaimResult> {
+  // ALL-OR-NOTHING, the same posture `allOrNothingCanonicalSortSql` takes: the
+  // MAX ignores NULL keys, so if even one owned row cannot be placed on the
+  // canonical scale the boundary it returns is too LOW and the window opens over
+  // rows that may predate that account. Counting both tells us whether every
+  // owned row was placeable; if any was not, there is no boundary we can trust
+  // and the honest answer is the unchanged refusal.
+  const boundaryRows = await client.$queryRawUnsafe<
+    Array<{ boundary: string | null; owned: number; placeable: number }>
+  >(
+    `SELECT MAX(${canonicalStartedAtRankingKey}) AS boundary,
+            COUNT(*) AS owned,
+            COUNT(${canonicalStartedAtRankingKey}) AS placeable
+       FROM sessions WHERE ${OWNED_SESSION_PREDICATE}`
+  );
+  const row = boundaryRows[0];
+  const boundary = row?.boundary ?? null;
+  if (!boundary || Number(row?.owned ?? 0) !== Number(row?.placeable ?? -1)) {
+    return { claimed: 0, skipped: SessionOwnerClaimSkip.ForeignOwnerPresent };
+  }
+  const targets = await client.$queryRawUnsafe<Array<{ id: string }>>(
+    `SELECT id FROM sessions WHERE ${guestWindowPredicate(1)}`,
+    boundary
+  );
+  if (targets.length === 0) {
+    return { claimed: 0, skipped: SessionOwnerClaimSkip.ForeignOwnerPresent };
+  }
+  const claimed = await client.$executeRawUnsafe(
+    `UPDATE sessions SET user_id = $1, organization_id = $2 WHERE ${guestWindowPredicate(3)}`,
+    identity.userId,
+    identity.organizationId,
+    boundary
+  );
+  await refreshClaimedActivityMetricsCohort(
+    client,
+    targets.map((row) => row.id),
+    identity
+  );
+  return { claimed, skipped: null };
 }

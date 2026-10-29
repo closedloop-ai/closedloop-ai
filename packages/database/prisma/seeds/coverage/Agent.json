@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "Legacy agents table: no product code reads or writes it (only the seed reset clears it)."
+}

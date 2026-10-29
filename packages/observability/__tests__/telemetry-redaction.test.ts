@@ -5,7 +5,7 @@ import { buildTelemetryTraceContext } from "../telemetry/context";
 import { emitConnectionStateEvent } from "../telemetry/emitter";
 import { ConnectionState, emitProtocolMetric } from "../telemetry/metrics";
 import { Origin } from "../telemetry/origin";
-import { TelemetryCategory } from "../telemetry/schema";
+import { TelemetryCategory } from "../telemetry/telemetry-category";
 
 const RAW_GATEWAY_SESSION_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 

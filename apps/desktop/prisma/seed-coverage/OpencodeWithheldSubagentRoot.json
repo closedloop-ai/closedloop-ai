@@ -1,0 +1,4 @@
+{
+  "status": "skipped",
+  "reason": "OpenCode subagent subtrees withheld because their root failed to parse (ISS-5266); empty is the healthy state."
+}

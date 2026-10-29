@@ -38,23 +38,13 @@ Guarded by `!app.isPackaged`. These are unsafe in packaged builds and are enforc
 |---|---|
 | `SYMPHONY_GATEWAY_FALLBACK_ORIGIN` | Fallback proxy origin for unimplemented routes. |
 | `SYMPHONY_WORKTREE_PARENT_DIR` | Override worktree parent (default: sibling of repo). |
-| `CLOSEDLOOP_SYMPHONY_TEST_RAW_CLAUDE_PIPELINE=1` | Bypass normal Symphony pipeline, run raw Claude. |
 | `CL_PLUGIN_VERSION` | Override `code@closedloop-ai` plugin version (semver, max 64 chars). |
-
-## Desktop client — tailer and watcher tuning
-
-| Variable | Purpose |
-|---|---|
-| `CLOSEDLOOP_TAILER_POLL_MS` | Output tailer poll interval. |
-| `CLOSEDLOOP_TAILER_THROTTLE_MS` | Tailer event throttle. |
-| `CLOSEDLOOP_WATCHER_POLL_MS` | Boot-recovery live-loop PID watcher interval (default 3000 ms). |
 
 ## Desktop client — passed to children (informational)
 
 | Variable | Purpose |
 |---|---|
 | `CLOSEDLOOP_WORKDIR` | Working directory for run artifacts. |
-| `HOME`, `USER`, `SHELL`, `TERM`, `NODE_ENV` | Inherited into deploy children for shell sanity. |
 
 ## Plugins — session environment
 
@@ -94,5 +84,6 @@ Written to `{WORKDIR}/.closedloop-ai/config.env` by `setup-closedloop.sh`, injec
 | Variable | Purpose |
 |---|---|
 | `SLACK_BOT_TOKEN` | Release and CI notifications, posted with `chat.postMessage`. The bot must be a member of the target channel. |
-| `SLACK_GITHUB_REPO_CHANNEL_ID` | Destination channel for those notifications. A repository **variable**, not a secret — a channel id is not sensitive. Required alongside the token: the notify action rejects an empty channel. |
+| `SLACK_GITHUB_REPO_CHANNEL_ID` | Destination channel for the remaining notifications. A repository **variable**, not a secret — a channel id is not sensitive. Required alongside the token: the notify action rejects an empty channel. |
+| `SLACK_STATUS_INFO_CHANNEL_ID` | Destination channel for the status notifications routed to it: the green ref advancing and a Desktop build being ready. A repository **variable**, not a secret — a channel id is not sensitive. Required alongside the token: the notify action rejects an empty channel. |
 | `GITHUB_TOKEN` | Automatic in CI; needs `contents: write`. |

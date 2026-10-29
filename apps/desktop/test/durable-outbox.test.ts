@@ -10,13 +10,20 @@
  * tested mechanics rather than re-deriving them.
  */
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
+import { AgentComponentInvocationSyncLocalError } from "../src/main/agent-sync/agent-component-invocation-sync-constants.js";
+import { InvocationRowRetryDeadLetterCause } from "../src/main/agent-sync/invocation-sync-rejection-policy.js";
 import {
+  deadLetteredOutboxWriteWhere,
   decideOutboxFailure,
+  invocationOutboxDeadLetterFields,
+  invocationOutboxRetryFields,
   OutboxFailureOutcome,
   outboxDeadLetterFields,
+  outboxPreserveCountersRePendFields,
   outboxRePendFields,
   outboxRetryFields,
+  pendingOutboxWriteWhere,
   readyOutboxWhere,
 } from "../src/main/sync/durable-outbox.js";
 import {
@@ -30,9 +37,12 @@ const BASE_MS = 30_000;
 const MAX_MS = 15 * 60_000;
 
 describe("sync-lane contract: OutboxStatus", () => {
-  test("narrows both members and rejects anything else", () => {
+  test("narrows every member and rejects anything else", () => {
     assert.equal(asOutboxStatus("pending"), OutboxStatus.Pending);
     assert.equal(asOutboxStatus("dead_lettered"), OutboxStatus.DeadLettered);
+    // ISS-7246: a withheld row is classified, not unknown — a build that read it
+    // as unknown would count a not-owed session as unaccounted work.
+    assert.equal(asOutboxStatus("withheld"), OutboxStatus.Withheld);
     // The column is unconstrained TEXT in both outbox tables, so a value written
     // by a skewed build must surface as "unknown" rather than silently passing
     // through as a status the caller will mislabel.
@@ -105,11 +115,82 @@ describe("outboxRetryFields", () => {
   });
 });
 
+describe("invocation durable outbox fields", () => {
+  test("scopes pending and dead-lettered writes by status", () => {
+    assert.deepEqual(
+      pendingOutboxWriteWhere({ sourceKey: "invocations:target-1" }),
+      {
+        sourceKey: "invocations:target-1",
+        status: OutboxStatus.Pending,
+      }
+    );
+    assert.deepEqual(
+      deadLetteredOutboxWriteWhere({ sourceKey: "invocations:target-1" }),
+      {
+        sourceKey: "invocations:target-1",
+        status: OutboxStatus.DeadLettered,
+      }
+    );
+  });
+
+  test("composes shared retry fields with invocation-only durability columns", () => {
+    assert.deepEqual(
+      invocationOutboxRetryFields({
+        attemptCount: 7,
+        permanentAttemptCount: 2,
+        nextAttemptAt: "2026-08-03T12:01:00.000Z",
+        reason: InvocationRowRetryDeadLetterCause.AckMismatch,
+        nowIso: NOW_ISO,
+        laneStalledSince: null,
+      }),
+      {
+        attemptCount: 7,
+        permanentAttemptCount: 2,
+        nextAttemptAt: "2026-08-03T12:01:00.000Z",
+        lastError: InvocationRowRetryDeadLetterCause.AckMismatch,
+        laneStalledSince: null,
+        updatedAt: NOW_ISO,
+      }
+    );
+  });
+
+  test("dead-letters invocation rows without preserving a lane stall", () => {
+    assert.deepEqual(
+      invocationOutboxDeadLetterFields({
+        attemptCount: 5,
+        permanentAttemptCount: 3,
+        reason:
+          AgentComponentInvocationSyncLocalError.EnvironmentalStallExhausted,
+        nowIso: NOW_ISO,
+      }),
+      {
+        status: OutboxStatus.DeadLettered,
+        attemptCount: 5,
+        permanentAttemptCount: 3,
+        nextAttemptAt: null,
+        lastError:
+          AgentComponentInvocationSyncLocalError.EnvironmentalStallExhausted,
+        laneStalledSince: null,
+        updatedAt: NOW_ISO,
+      }
+    );
+  });
+});
+
 describe("outboxRePendFields", () => {
   test("restores pending and restarts the bounded budget from scratch", () => {
     assert.deepEqual(outboxRePendFields(NOW_ISO), {
       status: OutboxStatus.Pending,
       attemptCount: 0,
+      nextAttemptAt: null,
+      lastError: null,
+      updatedAt: NOW_ISO,
+    });
+  });
+
+  test("can re-pend while preserving lane-owned retry counters", () => {
+    assert.deepEqual(outboxPreserveCountersRePendFields(NOW_ISO), {
+      status: OutboxStatus.Pending,
       nextAttemptAt: null,
       lastError: null,
       updatedAt: NOW_ISO,

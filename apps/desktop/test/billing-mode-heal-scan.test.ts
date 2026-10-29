@@ -19,12 +19,22 @@
  * The statement under test is the production builder's own output — not a
  * paraphrase — so a future edit that reintroduces a non-sargable form fails
  * here.
+ *
+ * marisolashgrove review (ISS-12439): `billingModeHealChunkSelectSql`'s
+ * `INDEXED BY sqlite_autoindex_sessions_1` is a hard dependency on that
+ * SQLite-generated name, which holds only because `0001_init` declares `id` as
+ * the PRIMARY KEY with no UNIQUE constraint declared ahead of it. `INDEXED BY`
+ * a missing index is a PREPARE error, not a fallback — a future migration that
+ * rebuilds `sessions` with a different constraint order would throw on every
+ * heal chunk, on a user's machine, rather than failing a build. The test below
+ * asserts the index exists by that exact name in a freshly migrated schema, so
+ * a rebuild that shifts it fails HERE in CI instead.
  */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { billingModeHealChunkSelectSql } from "../src/main/database/billing-mode-heal.js";
 import { openTestDb } from "./agent-db-test-utils.js";
 
@@ -91,6 +101,29 @@ test("ISS-5259: the bounded chunk read plans as an id range, not a full scan", a
       unboundedPlan,
       FULL_SCAN_RE,
       `chunk 0 has no bound to range over, got: ${unboundedPlan}`
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ISS-12439: the migrated schema still names the primary-key autoindex billingModeHealChunkSelectSql pins", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "billing-heal-autoindex-"));
+  const db = await openTestDb(dir);
+  try {
+    const rows = await db.prisma.client.$queryRawUnsafe<{ name: string }[]>(
+      `SELECT name FROM sqlite_master
+       WHERE type = 'index' AND tbl_name = 'sessions' AND name = $1`,
+      "sqlite_autoindex_sessions_1"
+    );
+    assert.equal(
+      rows.length,
+      1,
+      "sqlite_autoindex_sessions_1 must exist on `sessions` — if a migration " +
+        "rebuilds the table with a different constraint order, " +
+        "billingModeHealChunkSelectSql's INDEXED BY throws a prepare error on " +
+        "every heal chunk; update that pin alongside the migration that moves it"
     );
   } finally {
     await db.close();

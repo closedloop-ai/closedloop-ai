@@ -11,7 +11,10 @@
  * loud failure — a returned count that must reconcile with the rows it claims
  * to have written, or a `catch` that turns a Prisma code into a distinct
  * outcome — so the throw is load-bearing and every conversion in this batch is
- * `select`, never a batch form.
+ * `select`, never a batch form. The exception is the GitHub list cleanup's
+ * projection write (ISS-11212): it must skip a row a webhook changed after the
+ * list was read, so it is `updateManyAndReturn`, and the rows it returns are
+ * the count.
  *
  * These tests run against `createFakeDelegate`, which models the row set and
  * reproduces those semantics, so a site rewritten to `updateMany` fails here
@@ -25,7 +28,13 @@ import { GitHubCommentThreadKind } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/observability/log", () => ({
-  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  log: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    flush: vi.fn().mockResolvedValue(undefined),
+  },
 }));
 
 vi.mock("@repo/database", async (importOriginal) => {
@@ -58,11 +67,12 @@ import {
   mockWithDbCall,
   mockWithDbTx,
 } from "@/__tests__/utils/db-helpers";
-import { softDeleteGitHubCommentProjection } from "@/app/comments/github-projection";
+import { softDeleteAbsentGitHubComments } from "@/app/comments/service/github/github-projection-delete";
 import { projectsService } from "@/app/projects/service";
 import { tagService } from "@/app/tags/service";
 
 const ORG_ID = "org-1";
+const ACTOR = { userId: "test-actor", authMethod: "session" } as const;
 const BRANCH_ARTIFACT_ID = "branch-artifact-1";
 const PR_DETAIL_ID = "pr-detail-1";
 const DELETED_AT = new Date("2026-03-01T00:00:00.000Z");
@@ -74,37 +84,46 @@ type SoftDeleteTx = {
 };
 
 /**
- * `softDeleteGitHubCommentProjection` reads its targets with `findMany` and then
- * updates each one by primary key, so the row set here is what the loop walks.
- * `stalePresent: false` removes the projection row the loop will try to update
- * while leaving the `findMany` result intact — the missing-row case, which is
- * the only way to tell `update` and `updateMany` apart.
+ * `softDeleteAbsentGitHubComments` reads its targets with `findMany`, then
+ * deletes the projections that still qualify in one write that returns them,
+ * and updates each returned comment by primary key. `stalePresent: false`
+ * removes the projection row the write will look for while leaving the
+ * `findMany` result intact: the row a concurrent writer took between the read
+ * and the write, which must not be reported as deleted.
  */
 function makeSoftDeleteTx(options: { stalePresent: boolean }): SoftDeleteTx {
   const projectionRow = {
     commentId: "comment-1",
     threadId: "thread-1",
     githubCommentId: "gh-stale-1",
+    githubUpdatedAt: null,
     githubDeletedAt: null,
+    // The comment's local write time. The write's `comment` relation filter
+    // reads it; this double flattens a relation filter onto the row.
+    updatedAt: new Date("2026-02-01T00:00:00.000Z"),
   };
 
   const projection = createFakeDelegate(
     options.stalePresent ? [{ ...projectionRow }] : [],
     [["commentId"]]
   );
-  // The read that seeds the loop is scoped by relation filters the fake does not
-  // model, so it is stubbed directly; the WRITE path is what this suite covers.
-  projection.findMany.mockResolvedValue([
-    { commentId: projectionRow.commentId, threadId: projectionRow.threadId },
-  ]);
+  // Both reads are scoped by relation filters the fake does not model, so they
+  // are stubbed directly: the stale-comment read, then the live-comment probe
+  // over the touched threads. The WRITE path is what this suite covers.
+  projection.findMany
+    .mockResolvedValueOnce([
+      {
+        commentId: projectionRow.commentId,
+        threadId: projectionRow.threadId,
+        githubCommentId: projectionRow.githubCommentId,
+      },
+    ])
+    .mockResolvedValueOnce([]);
 
   const threadProjection = createFakeDelegate(
     [{ threadId: "thread-1", deletedAt: null }],
     [["threadId"]]
   );
-  threadProjection.findMany.mockResolvedValue([
-    { threadId: "thread-1", commentProjections: [] },
-  ]);
 
   const comment = createFakeDelegate(
     options.stalePresent ? [{ id: "comment-1", deletedAt: null }] : [],
@@ -118,6 +137,8 @@ function makeSoftDeleteTx(options: { stalePresent: boolean }): SoftDeleteTx {
   };
 }
 
+const noLock = () => Promise.resolve();
+
 function softDeleteInput() {
   return {
     organizationId: ORG_ID,
@@ -125,20 +146,24 @@ function softDeleteInput() {
     pullRequestDetailId: PR_DETAIL_ID,
     threadKind: GitHubCommentThreadKind.REVIEW_THREAD,
     liveGithubCommentIds: new Set<string>(),
+    listedAt: DELETED_AT,
+    maxComments: 50,
     deletedAt: DELETED_AT,
   };
 }
 
-describe("ISS-6320 parity: softDeleteGitHubCommentProjection", () => {
+describe("ISS-6320 parity: softDeleteAbsentGitHubComments", () => {
   it("soft-deletes the stale projection and its comment, and reports the count", async () => {
     const tx = makeSoftDeleteTx({ stalePresent: true });
 
-    const result = await softDeleteGitHubCommentProjection(
+    const result = await softDeleteAbsentGitHubComments(
       tx as never,
-      softDeleteInput()
+      softDeleteInput(),
+      noLock
     );
 
-    expect(result).toEqual({ comments: 1, threads: 1 });
+    expect(result.commentIds).toHaveLength(1);
+    expect(result.deletedThreadCount).toBe(1);
     expect(tx.gitHubCommentProjection.rows[0]?.githubDeletedAt).toEqual(
       DELETED_AT
     );
@@ -148,26 +173,36 @@ describe("ISS-6320 parity: softDeleteGitHubCommentProjection", () => {
     );
   });
 
-  it("propagates P2025 rather than reporting a soft-delete that never happened", async () => {
+  it("reports only the rows its write deleted, not the rows its read found", async () => {
     const tx = makeSoftDeleteTx({ stalePresent: false });
 
-    // The returned `{ comments }` counts the rows the READ found, not the rows
-    // the loop wrote. Under `updateMany` this call resolves to
-    // `{ comments: 1 }` for a projection nobody touched; the throw is what
-    // keeps the count honest.
-    await expect(
-      softDeleteGitHubCommentProjection(tx as never, softDeleteInput())
-    ).rejects.toMatchObject({ code: PrismaWriteErrorCode.NotFound });
+    const result = await softDeleteAbsentGitHubComments(
+      tx as never,
+      softDeleteInput(),
+      noLock
+    );
+
+    expect(result).toEqual({
+      commentIds: [],
+      threadIds: [],
+      deletedThreadCount: 0,
+    });
+    expect(tx.comment.writes).toEqual([]);
+    expect(tx.gitHubCommentThreadProjection.writes).toEqual([]);
   });
 
-  it("returns only each model's primary key from the three discarded writes", async () => {
+  it("returns only each model's primary key from the three writes", async () => {
     const tx = makeSoftDeleteTx({ stalePresent: true });
 
-    await softDeleteGitHubCommentProjection(tx as never, softDeleteInput());
+    await softDeleteAbsentGitHubComments(
+      tx as never,
+      softDeleteInput(),
+      noLock
+    );
 
     expect(tx.gitHubCommentProjection.writes).toEqual([
       expect.objectContaining({
-        method: "update",
+        method: "updateManyAndReturn",
         selected: [PrimaryKeyColumn.GitHubCommentProjection],
       }),
     ]);
@@ -308,7 +343,8 @@ describe("ISS-6320 parity: tagService.applyTag", () => {
       "tag-1",
       TagEntityType.Artifact,
       "artifact-1",
-      ORG_ID
+      ORG_ID,
+      ACTOR
     );
 
     expect(db.tagArtifact.rows).toHaveLength(1);
@@ -336,7 +372,8 @@ describe("ISS-6320 parity: tagService.applyTag", () => {
       "tag-1",
       TagEntityType.Artifact,
       "artifact-1",
-      ORG_ID
+      ORG_ID,
+      ACTOR
     );
 
     expect(db.tagArtifact.rows).toHaveLength(1);

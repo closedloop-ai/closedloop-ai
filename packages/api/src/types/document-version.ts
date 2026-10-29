@@ -62,3 +62,26 @@ export type CreatedDocumentVersionInlineImage = {
   markdownImage: string;
   attachment: FileAttachment;
 };
+
+/**
+ * Postgres int4 max. `DocumentVersion.version` is a Prisma `Int`, so an ordinal
+ * above this cannot name a row — but Prisma rejects the out-of-range comparand
+ * rather than returning empty, and the callers' catch would report that as a
+ * 500. Named per-domain like the repo's other int4 bounds (`PR_INT_MAX`,
+ * `FRUSTRATION_RAW_MAX`) rather than reusing one that documents another column.
+ */
+export const MAX_DOCUMENT_VERSION_NUMBER = 2_147_483_647;
+
+/**
+ * The single guard every version locator shares: the API's `?version=` query
+ * param and `/versions/{versionRef}` path segment, and the app detail pages'
+ * `?version=` param. `Number.isInteger` already rejects `NaN` and `Infinity`,
+ * so an unparseable or overlong digit string fails here too.
+ */
+export function isValidVersionNumber(value: number): boolean {
+  return (
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= MAX_DOCUMENT_VERSION_NUMBER
+  );
+}

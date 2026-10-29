@@ -88,9 +88,9 @@ const resolvedThread: CommentThreadItem = {
 };
 
 const meta = {
-  title: "App Core/Documents/Comments Section",
+  title: "Composites v1.0/Documents/Comments Section",
   component: CommentsSectionView,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   // The view resolves the current viewer through `useCurrentUser` to decide
   // reopen permission, so it needs the app-core ports mounted. Without them
   // every story in this file throws "Auth hooks require an
@@ -122,6 +122,14 @@ export const Empty: Story = {
 };
 
 export const Threaded: Story = {
+  // This story manages open/reply/submit/resolve state locally so the
+  // interactions actually do something — those props are always overridden
+  // by that local state, so the Controls entries for them would be dead.
+  parameters: {
+    controls: {
+      exclude: ["open", "onOpenChange", "onSubmitComment"],
+    },
+  },
   render: (args) => {
     function StatefulCommentsSection() {
       const [threadItems, setThreadItems] = useState(args.comments ?? comments);

@@ -31,9 +31,11 @@ import type { SyncedSessionLoadOptions } from "../agent-sync/agent-session-sync-
  *   dropped key is 52.5% of every metadata blob the full-corpus fallback would
  *   otherwise parse.
  *
- * The DETAIL and branch-trace reads hydrate separately and take none of these.
+ * The DETAIL and branch-trace reads hydrate separately and take none of these
+ * omissions.
  */
 export const LIST_LOAD: SyncedSessionLoadOptions = {
+  readOnly: true,
   omitEventData: true,
   omitTokenEventCostColumns: true,
   omitPreviewStrippedMetadata: true,

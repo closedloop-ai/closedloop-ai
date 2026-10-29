@@ -11,7 +11,7 @@ All project tools accept either a UUID or a human-readable slug (e.g. `PRO-7`). 
 
 | Field | Values | Description |
 |-------|--------|-------------|
-| `priority` | `LOW`, `MEDIUM`, `HIGH`, `URGENT` | Project priority |
+| `priority` | `LOW`, `MEDIUM`, `HIGH`, `URGENT`, `null` | Project priority. `null` means the project has none — the same field an artifact carries. A project created without one reads back as `null`. |
 | `status` | `NOT_STARTED`, `IN_PROGRESS`, `COMPLETED`, `ARCHIVED` | Project lifecycle status |
 
 ---
@@ -69,9 +69,53 @@ get-project(
 
 ---
 
+## Listing Teams
+
+Every project belongs to a team, so `list-teams` is where the `teamId` that `create-project` requires comes from. Teams are identified by **UUID only** — there is no slug form.
+
+**Tool**: `list-teams`
+**Underlying API**: `GET /teams`
+
+```
+list-teams(
+  limit?: number,   // 1–100, default 25
+  offset?: number   // Pagination offset, default 0
+)
+```
+
+The response is the same paginated envelope `list-projects` returns. Each item includes `id`, `name`, `slug`, `memberCount`, `projectCount`, and `updatedAt`:
+
+```json
+{
+  "total": 2,
+  "offset": 0,
+  "limit": 25,
+  "returned": 2,
+  "hasMore": false,
+  "nextOffset": null,
+  "items": [
+    {
+      "id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "name": "Platform",
+      "slug": "platform",
+      "memberCount": 6,
+      "projectCount": 12,
+      "updatedAt": "2025-01-15T10:00:00Z"
+    }
+  ]
+}
+```
+
+The organization is resolved from the connection you authenticated with, so a caller only ever sees its own organization's teams.
+
+---
+
 ## Creating a Project
 
 Use `create-project` to create a new top-level container for documents. The assigned slug (`PRO-*`) is returned in the response and is the preferred handle for future calls.
+
+**A project must belong to a team.** Pass `teamId`. A project with no team has no
+URL in the web app, so a human cannot open it or see the documents inside it.
 
 **Tool**: `create-project`
 **Underlying API**: `POST /projects`
@@ -79,20 +123,41 @@ Use `create-project` to create a new top-level container for documents. The assi
 ```
 create-project(
   name: string,
+  teamId?: string,     // UUID; required in practice — see below
   description?: string,
   priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT",
   status?: "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED" | "ARCHIVED"
 )
 ```
 
+Omit `priority` to create the project with no priority. `null` is not accepted
+here — on create there is no existing value to clear, so omission already says
+it.
+
+`teamId` is optional in the tool schema so that a call without one still reaches
+the server, where it is refused with a 400 that lists the teams in this
+organization — so a wrong call self-corrects without a prior lookup. Treat that
+roster as best-effort rather than guaranteed. It is attached only when the
+server can read it, and a failed read returns the refusal sentence on its own
+rather than turning an invalid request into a 500. It is also bounded by a
+character budget; when an organization has more teams than fit, the error says
+how many were omitted and points at `list-teams`, which is the complete set. If
+a retry still names no teams, the id has to come from `list-teams` (or
+`GET /teams`) on a read-scoped connection, or from a human in the web app.
+
 **Example workflow**:
 
 ```
 1. create-project(
      name: "Enterprise Onboarding",
+     teamId: "7c9e6679-7425-40de-944b-e07fc1f90ae7",
      priority: "HIGH"
    )
    → returns { slug: "PRO-26", ... }
+
+   // Don't know the team id? Call list-teams, or call without it and
+   // read the 400: "At least one team is required. Teams in this
+   // organization: Platform (7c9e6679-...), Growth (2b1f...)." Then retry.
 
 2. create-document(
      title: "Onboarding Revamp",
@@ -106,7 +171,7 @@ create-project(
 
 ## Updating a Project
 
-Use `update-project` to change a project's metadata or status by UUID or slug. Only the fields you pass are modified.
+Use `update-project` to change a project's metadata, status, or owning teams by UUID or slug. Only the fields you pass are modified.
 
 **Tool**: `update-project`
 **Underlying API**: `PUT /projects/:projectId`
@@ -115,11 +180,35 @@ Use `update-project` to change a project's metadata or status by UUID or slug. O
 update-project(
   projectId: string,   // PRO-* slug or UUID
   name?: string,
+  teamIds?: string[],  // Team UUIDs from list-teams — replaces the current set
   description?: string,
-  priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT",
+  priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT" | null,
   status?: "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED" | "ARCHIVED"
 )
 ```
+
+**`priority` has three states.** Omit it to leave the project's priority alone,
+pass a member to set it, or pass `null` to CLEAR it. Those are three different
+requests: omission is not the same as `null`.
+
+**`teamIds` replaces the project's teams rather than adding to them.** The server
+deletes every existing team link and recreates exactly the set you send, so pass
+every team the project should belong to — not just the new one. Omitting
+`teamIds` leaves the teams untouched. An empty array is refused rather than
+applied, because clearing the last team is what produces the state below.
+
+**Setting `teamIds` is how a teamless project is repaired.** A project created
+before a team was required has no team link, which leaves it with no URL in the
+web app: it does not appear in the project list, and a search hit for it has no
+page to open. Attaching a team makes it reachable again.
+
+As with `create-project`, a team id that does not resolve comes back as a 400
+naming the teams in this organization — on the same best-effort terms described
+there. A write-scoped connection is not offered `list-teams`, which is
+read-scoped, so sending any id and reading the roster off the refusal is that
+caller's only discovery path, and it has no fallback of its own when the roster
+is absent: retry once, and if the refusal still names no teams, the id has to
+come from a read-scoped connection or a human.
 
 ---
 

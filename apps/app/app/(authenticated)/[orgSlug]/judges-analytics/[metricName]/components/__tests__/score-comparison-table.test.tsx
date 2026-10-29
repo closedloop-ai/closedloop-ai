@@ -25,9 +25,7 @@ afterEach(() => {
   cleanup();
 });
 
-// ---------------------------------------------------------------------------
 // Factories
-// ---------------------------------------------------------------------------
 
 function makeRow(overrides?: Partial<JudgeScoreRow>): JudgeScoreRow {
   return {
@@ -46,9 +44,7 @@ function makeRow(overrides?: Partial<JudgeScoreRow>): JudgeScoreRow {
   };
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 describe("ScoreComparisonTable — empty state", () => {
   test("renders empty state message when rows is empty", () => {
@@ -71,11 +67,11 @@ describe("ScoreComparisonTable — artifact links", () => {
     const link = screen.getByRole("link", { name: "My Implementation Plan" });
     expect(link).toBeTruthy();
     expect(link.getAttribute("href")).toBe(
-      "/test-org/implementation-plans/my-implementation-plan"
+      "/test-org/documents/my-implementation-plan"
     );
   });
 
-  test("uses artifact-specific route prefix for PRD rows", () => {
+  test("links PRD rows to the shared document route", () => {
     render(
       <ScoreComparisonTable
         rows={[
@@ -90,7 +86,7 @@ describe("ScoreComparisonTable — artifact links", () => {
 
     const link = screen.getByRole("link", { name: "Product Requirements" });
     expect(link.getAttribute("href")).toBe(
-      "/test-org/prds/product-requirements"
+      "/test-org/documents/product-requirements"
     );
   });
 

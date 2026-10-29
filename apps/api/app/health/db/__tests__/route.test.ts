@@ -4,6 +4,7 @@ import {
   DbHealthHostType,
   DbHealthSource,
   DbHealthSslMode,
+  DbHealthTransportError,
 } from "@repo/api/src/types/db-health";
 import {
   afterEach,
@@ -32,13 +33,21 @@ vi.mock("@vercel/functions", () => ({
 }));
 
 vi.mock("@repo/observability/log", () => ({
-  log: { error: vi.fn(), flush: vi.fn().mockResolvedValue(undefined) },
+  log: { error: vi.fn(), flush: vi.fn(async () => undefined), info: vi.fn() },
 }));
 
-import { withDb } from "@repo/database";
+import { getDatabaseTransportPosture, withDb } from "@repo/database";
 import { GET } from "../route";
 
 const mockWithDb = withDb as unknown as Mock;
+const mockTransportPosture = getDatabaseTransportPosture as unknown as Mock;
+
+/** Every non-transport check green, so the verdict turns on transport alone. */
+function mockAllDbChecksHealthy() {
+  mockWithDb.mockResolvedValueOnce(undefined);
+  mockWithDb.mockResolvedValueOnce([{ total: 5n, pending: 0n }]);
+  mockWithDb.mockResolvedValueOnce([{ count: 42n }]);
+}
 
 const TEST_TOKEN = "test-db-health-token";
 const HAD_DB_HEALTH_TOKEN = Object.hasOwn(process.env, "DB_HEALTH_TOKEN");
@@ -280,6 +289,132 @@ describe("GET /health/db", () => {
     expect(body.checks.tables).toMatchObject({
       status: DbHealthCheckStatus.Error,
       error: "not_run",
+    });
+  });
+
+  // ISS-8410. This is the branch the issue exists to close: before it, this
+  // exact payload answered `ok: true` beside `sslMode: "insecure"`, so
+  // `ALLOW_INSECURE_SSL=1` degraded every production connection to unverified
+  // TLS, failed nothing, and alerted no one.
+  it("fails the overall verdict when transport TLS is insecure", async () => {
+    mockTransportPosture.mockReturnValueOnce({
+      status: DbHealthCheckStatus.Error,
+      hostType: DbHealthHostType.Rds,
+      sslMode: DbHealthSslMode.Insecure,
+      authMode: DbHealthAuthMode.Iam,
+      source: DbHealthSource.PgHostIam,
+      verifiedRdsTls: false,
+      error: DbHealthTransportError.TlsInsecure,
+    });
+    mockAllDbChecksHealthy();
+
+    const response = await GET(makeRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.ok).toBe(false);
+    // Every other check is green — transport alone moved the verdict.
+    expect(body.checks.connectivity.status).toBe(DbHealthCheckStatus.Ok);
+    expect(body.checks.migrations.status).toBe(DbHealthCheckStatus.Ok);
+    expect(body.checks.tables.status).toBe(DbHealthCheckStatus.Ok);
+    expect(body.checks.transport).toMatchObject({
+      sslMode: DbHealthSslMode.Insecure,
+      error: DbHealthTransportError.TlsInsecure,
+    });
+  });
+
+  // Unknown means the posture could not be READ, not that it is fine. An
+  // exclusion-based term (`!== insecure`) let this through — and the IAM pool
+  // reaches it on a configuration it happily connects on, so this is the same
+  // hole wearing a different sslMode.
+  it("fails the overall verdict when the transport posture is unreadable", async () => {
+    mockTransportPosture.mockReturnValueOnce({
+      status: DbHealthCheckStatus.Error,
+      hostType: DbHealthHostType.Unknown,
+      sslMode: DbHealthSslMode.Unknown,
+      authMode: DbHealthAuthMode.Unknown,
+      source: DbHealthSource.Unknown,
+      verifiedRdsTls: false,
+      error: DbHealthTransportError.UnknownPosture,
+    });
+    mockAllDbChecksHealthy();
+
+    const response = await GET(makeRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.ok).toBe(false);
+    expect(body.checks.tables.status).toBe(DbHealthCheckStatus.Ok);
+  });
+
+  // `Disabled` on a REMOTE host is `sslmode=disable` — plaintext credentials on
+  // the wire. It must not be graded healthier than the encrypted-but-unverified
+  // case above just because localhost shares its sslMode.
+  it("fails the overall verdict when a remote host has TLS disabled entirely", async () => {
+    mockTransportPosture.mockReturnValueOnce({
+      status: DbHealthCheckStatus.Error,
+      hostType: DbHealthHostType.Other,
+      sslMode: DbHealthSslMode.Disabled,
+      authMode: DbHealthAuthMode.Password,
+      source: DbHealthSource.DatabaseUrl,
+      verifiedRdsTls: false,
+      error: DbHealthTransportError.TlsDisabled,
+    });
+    mockAllDbChecksHealthy();
+
+    const response = await GET(makeRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.ok).toBe(false);
+    expect(body.checks.tables.status).toBe(DbHealthCheckStatus.Ok);
+  });
+
+  // A publicly-trusted non-RDS host (a Neon preview) verifies against the same
+  // bundle. Keying the term on `verifiedRdsTls` instead of `Verified` would
+  // degrade it, so this pins the difference.
+  it("keeps the overall verdict ok for a verified non-RDS transport", async () => {
+    mockTransportPosture.mockReturnValueOnce({
+      status: DbHealthCheckStatus.Error,
+      hostType: DbHealthHostType.Other,
+      sslMode: DbHealthSslMode.Verified,
+      authMode: DbHealthAuthMode.Password,
+      source: DbHealthSource.DatabaseUrl,
+      verifiedRdsTls: false,
+      error: DbHealthTransportError.NotRds,
+    });
+    mockAllDbChecksHealthy();
+
+    const response = await GET(makeRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.ok).toBe(true);
+  });
+
+  // The counterweight: `transport.status` is an error for EVERY posture that is
+  // not verified RDS TLS, localhost included. Folding the status in instead of
+  // naming the safe set would answer not-ok in local development.
+  it("keeps the overall verdict ok for a localhost transport with TLS off", async () => {
+    mockTransportPosture.mockReturnValueOnce({
+      status: DbHealthCheckStatus.Error,
+      hostType: DbHealthHostType.Localhost,
+      sslMode: DbHealthSslMode.Disabled,
+      authMode: DbHealthAuthMode.Password,
+      source: DbHealthSource.DatabaseUrl,
+      verifiedRdsTls: false,
+      error: DbHealthTransportError.TlsDisabled,
+    });
+    mockAllDbChecksHealthy();
+
+    const response = await GET(makeRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.checks.transport).toMatchObject({
+      status: DbHealthCheckStatus.Error,
+      sslMode: DbHealthSslMode.Disabled,
     });
   });
 });

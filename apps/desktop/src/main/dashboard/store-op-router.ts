@@ -3,7 +3,7 @@
  *
  * Two store ops must not execute in the db-host when a main-process
  * coordinator is available: `packScanner.run` (FEA-3628, the filesystem walk)
- * and `catalog.fetch.run` (ISS-5274, ~20 `gh`/HTTPS calls). Routing them here
+ * and `catalog.fetch.run` (ISS-5274, ~20 HTTPS calls). Routing them here
  * — inside `invokeStoreOp` — covers EVERY trigger with no call-site edits: for
  * the catalog that is boot, the 24h timer, and the `desktop:db:catalog-refresh`
  * IPC. Each coordinator's own fallback goes through the UN-intercepted

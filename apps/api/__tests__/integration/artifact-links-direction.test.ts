@@ -31,7 +31,7 @@ import { describe, expect, it } from "vitest";
  *   2. PR.sourceLinks[source.type=DOCUMENT]  → empty (this is the bug shape).
  *   3. Document.sourceLinks[target.type=PR]  → returns the produced PR.
  *   4. Document.targetLinks[target.type=PR]  → empty.
- *   5. Service layer: findResolvedLinks(doc, Source) vs (doc, Target) vs
+ *   5. Service layer: findResolvedLinksPage(doc, Source) vs (doc, Target) vs
  *      (pr, Source) vs (pr, Target) each return the expected directed slice.
  *
  * Any handler that regresses to the wrong relation fails cases 1-2 or 3-4.
@@ -51,6 +51,8 @@ import {
   withDb,
 } from "@repo/database";
 import { keys } from "@repo/database/keys";
+import { unwrapCreatedLink } from "@/__tests__/support/artifact-links/create-link.test-helpers";
+import { windowForCursor } from "@/app/artifact-links/resolved-page";
 import { artifactLinksService } from "@/app/artifact-links/service";
 import { documentService } from "@/app/documents/document-service";
 import {
@@ -183,18 +185,24 @@ async function seedDirectionFixture(
   docId: string,
   prId: string
 ): Promise<{ produceLinkId: string }> {
-  const produceLink = await artifactLinksService.createLink(orgId, {
-    sourceId: docId,
-    targetId: prId,
-    linkType: LinkType.Produces,
-  });
+  const produceLink = unwrapCreatedLink(
+    await artifactLinksService.createLink(orgId, {
+      sourceId: docId,
+      targetId: prId,
+      linkType: LinkType.Produces,
+    })
+  );
   // Noise link in the reverse direction — must NOT appear in direction-
-  // scoped queries below.
-  await artifactLinksService.createLink(orgId, {
-    sourceId: prId,
-    targetId: docId,
-    linkType: LinkType.RelatesTo,
-  });
+  // scoped queries below. Unwrapped so a future rejection of this edge fails
+  // the fixture loudly; silently losing it would leave the "returns exactly
+  // one" assertions passing with nothing left to discriminate against.
+  unwrapCreatedLink(
+    await artifactLinksService.createLink(orgId, {
+      sourceId: prId,
+      targetId: docId,
+      linkType: LinkType.RelatesTo,
+    })
+  );
   return { produceLinkId: produceLink.id };
 }
 
@@ -317,7 +325,7 @@ describe.skipIf(!hasDatabase)("ArtifactLink direction contract", () => {
     });
   });
 
-  describe("findResolvedLinks direction slices", () => {
+  describe("findResolvedLinksPage direction slices", () => {
     it("doc + Target returns outgoing PRODUCES; doc + Source excludes it", async () => {
       await autoRollbackTransaction(async () => {
         const { testOrgId, testProjectId, testUser } = await setupTestData();
@@ -345,12 +353,14 @@ describe.skipIf(!hasDatabase)("ArtifactLink direction contract", () => {
         // Doc is the source of PRODUCES → its "target" direction returns the
         // outgoing PRODUCES link to the PR. The noise RELATES_TO link is in
         // the other direction and must be filtered out by the linkType.
-        const outgoing = await artifactLinksService.findResolvedLinks(
-          testOrgId,
-          doc.id,
-          LinkDirection.Target,
-          LinkType.Produces
-        );
+        const { items: outgoing } =
+          await artifactLinksService.findResolvedLinksPage(
+            testOrgId,
+            doc.id,
+            LinkDirection.Target,
+            windowForCursor(),
+            LinkType.Produces
+          );
         expect(outgoing).toHaveLength(1);
         expect(outgoing[0]?.source.id).toBe(doc.id);
         expect(outgoing[0]?.target.id).toBe(pr.id);
@@ -358,12 +368,14 @@ describe.skipIf(!hasDatabase)("ArtifactLink direction contract", () => {
 
         // Doc is the source of PRODUCES, NOT the target. Source direction
         // (i.e. "links arriving at me") with PRODUCES filter must be empty.
-        const incomingProduces = await artifactLinksService.findResolvedLinks(
-          testOrgId,
-          doc.id,
-          LinkDirection.Source,
-          LinkType.Produces
-        );
+        const { items: incomingProduces } =
+          await artifactLinksService.findResolvedLinksPage(
+            testOrgId,
+            doc.id,
+            LinkDirection.Source,
+            windowForCursor(),
+            LinkType.Produces
+          );
         expect(incomingProduces).toHaveLength(0);
       });
     });
@@ -394,12 +406,14 @@ describe.skipIf(!hasDatabase)("ArtifactLink direction contract", () => {
 
         // PR is the target of PRODUCES → its "source" direction returns the
         // incoming PRODUCES link from the doc.
-        const incoming = await artifactLinksService.findResolvedLinks(
-          testOrgId,
-          pr.id,
-          LinkDirection.Source,
-          LinkType.Produces
-        );
+        const { items: incoming } =
+          await artifactLinksService.findResolvedLinksPage(
+            testOrgId,
+            pr.id,
+            LinkDirection.Source,
+            windowForCursor(),
+            LinkType.Produces
+          );
         expect(incoming).toHaveLength(1);
         expect(incoming[0]?.source.id).toBe(doc.id);
         expect(incoming[0]?.source.type).toBe(ArtifactType.Document);
@@ -407,12 +421,14 @@ describe.skipIf(!hasDatabase)("ArtifactLink direction contract", () => {
 
         // PR is NOT the source of PRODUCES. Target direction (i.e. "links
         // I produce") with PRODUCES filter must be empty.
-        const outgoingProduces = await artifactLinksService.findResolvedLinks(
-          testOrgId,
-          pr.id,
-          LinkDirection.Target,
-          LinkType.Produces
-        );
+        const { items: outgoingProduces } =
+          await artifactLinksService.findResolvedLinksPage(
+            testOrgId,
+            pr.id,
+            LinkDirection.Target,
+            windowForCursor(),
+            LinkType.Produces
+          );
         expect(outgoingProduces).toHaveLength(0);
       });
     });
@@ -445,18 +461,22 @@ describe.skipIf(!hasDatabase)("ArtifactLink direction contract", () => {
           pr.id
         );
 
-        const fromDoc = await artifactLinksService.findResolvedLinks(
-          testOrgId,
-          doc.id,
-          LinkDirection.Both,
-          LinkType.Produces
-        );
-        const fromPr = await artifactLinksService.findResolvedLinks(
-          testOrgId,
-          pr.id,
-          LinkDirection.Both,
-          LinkType.Produces
-        );
+        const { items: fromDoc } =
+          await artifactLinksService.findResolvedLinksPage(
+            testOrgId,
+            doc.id,
+            LinkDirection.Both,
+            windowForCursor(),
+            LinkType.Produces
+          );
+        const { items: fromPr } =
+          await artifactLinksService.findResolvedLinksPage(
+            testOrgId,
+            pr.id,
+            LinkDirection.Both,
+            windowForCursor(),
+            LinkType.Produces
+          );
 
         expect(fromDoc).toHaveLength(1);
         expect(fromPr).toHaveLength(1);

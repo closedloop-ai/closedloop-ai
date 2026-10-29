@@ -22,12 +22,21 @@ export type OutboundUrlPolicyDecision =
     };
 
 /**
+ * The surfaces a Desktop fetch still validates. `OutboundNetworkSurface` is the
+ * telemetry vocabulary and still names a surface no Desktop fetch validates.
+ */
+type ValidatedOutboundNetworkSurface = Extract<
+  OutboundNetworkSurface,
+  "loop_attachment_download"
+>;
+
+/**
  * Validates an outbound URL for a specific Desktop fetch surface before any
  * network I/O. Decisions intentionally expose only parsed descriptor fields so
  * callers cannot log signed URL paths, query credentials, or object keys.
  */
 export function validateOutboundUrlForSurface(
-  surface: OutboundNetworkSurface,
+  surface: ValidatedOutboundNetworkSurface,
   rawUrl: string
 ): OutboundUrlPolicyDecision {
   let parsed: URL;
@@ -43,14 +52,7 @@ export function validateOutboundUrlForSurface(
     return deny(surface, "credentialed_url", "external", descriptor);
   }
 
-  if (
-    surface === "loop_attachment_download" ||
-    surface === "loop_support_upload"
-  ) {
-    return validateAttachmentUrl(surface, parsed, descriptor);
-  }
-
-  return validateDeployHealthUrl(surface, parsed, descriptor);
+  return validateAttachmentUrl(surface, parsed, descriptor);
 }
 
 function validateAttachmentUrl(
@@ -83,28 +85,6 @@ function validateAttachmentUrl(
   }
 
   return allow(surface, "s3_virtual_hosted", descriptor);
-}
-
-function validateDeployHealthUrl(
-  surface: OutboundNetworkSurface,
-  parsed: URL,
-  descriptor: UrlDescriptor
-): OutboundUrlPolicyDecision {
-  if (!(parsed.protocol === "http:" || parsed.protocol === "https:")) {
-    return deny(surface, "unsupported_protocol", "external", descriptor);
-  }
-
-  const hostClass = classifyHostname(parsed.hostname);
-  if (hostClass === "loopback") {
-    return allow(surface, "loopback", descriptor);
-  }
-
-  return deny(
-    surface,
-    denyReasonForDeployHostClass(hostClass),
-    hostClass,
-    descriptor
-  );
 }
 
 type UrlDescriptor = Pick<
@@ -230,13 +210,6 @@ function denyReasonForAddressClass(
     return "ip_literal_not_allowed";
   }
   return null;
-}
-
-function denyReasonForDeployHostClass(
-  destinationClass: OutboundNetworkDestinationClass
-): OutboundNetworkDecisionReason {
-  const addressReason = denyReasonForAddressClass(destinationClass);
-  return addressReason ?? "deploy_host_not_allowed";
 }
 
 function normalizeHostname(hostname: string): string {

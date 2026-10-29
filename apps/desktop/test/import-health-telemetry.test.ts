@@ -6,8 +6,9 @@
  *   1. a fault-injected import failure produces the tagged counter THROUGH THE
  *      RELAY — the assertions decode the real OTLP protobuf the runtime shipped
  *      to the transport, not an in-process spy;
- *   2. the local success path emits nothing (a healthy install is silent, which
- *      is what makes the count-of-breaches monitor shape valid);
+ *   2. the local success path still reports (ISS-6335 replaced ISS-5103's
+ *      silent-when-healthy rule with an explicit `imported`/`empty` outcome, so
+ *      absence of a record now means the process stopped reporting);
  *   3. the `import.group_label` cardinality set is closed and asserted EXACTLY —
  *      by value, and structurally against the write-core call sites via the
  *      TypeScript AST (never a raw-text scan of the source).
@@ -23,35 +24,25 @@
  */
 import assert from "node:assert/strict";
 import path from "node:path";
-import { afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   ImportGroupLabel,
   ImportHealthEvent,
+  ImportOutcome,
 } from "@closedloop-ai/telemetry-contract/app";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
 import { TelemetryEmitMetadataKey } from "@closedloop-ai/telemetry-contract/emit";
+import { TelemetryHarnessName } from "@closedloop-ai/telemetry-contract/resource";
 import { metrics, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
-import { KeylessTelemetrySignal } from "@repo/shared-platform/keyless-telemetry";
 import ts from "typescript6";
-import type {
-  Harness,
-  NormalizedSession,
-} from "../src/main/collectors/types.js";
-import type {
-  Importer,
-  ImportResult,
-} from "../src/main/dashboard/agent-dashboard-db-types.js";
-import { WriteQueueCancelOutcome } from "../src/main/database/write-queue.js";
+import { afterEach, test } from "vitest";
+import type { Importer } from "../src/main/dashboard/agent-dashboard-db-types.js";
 import {
-  asOtlpRecordArray,
-  decodeOtlpAttributes,
-} from "../src/main/otlp/decode-utilities.js";
-import {
-  getOtlpRequestType,
-  OtlpExportKind,
-} from "../src/main/otlp/proto-descriptor.js";
+  type WriteDispatchProbe,
+  WriteDispatchState,
+  WriteQueueCancelOutcome,
+} from "../src/main/database/write-queue.js";
 import {
   createDesktopOtelRuntime,
   type DesktopOtelRuntime,
@@ -61,7 +52,16 @@ import {
   createImportHealthTracker,
   installImportHealthTracking,
 } from "../src/main/telemetry/import-health-telemetry.js";
-import type { DesktopTelemetryTransport } from "../src/main/telemetry/relay-telemetry-transport.js";
+import {
+  decodeRelayImportRecords,
+  HARNESS,
+  importerReturning,
+  NO_AUTOMATIC_TICK_MS,
+  SESSION,
+  type StubTransport,
+  stablePendingIds,
+  startRelayRuntime as startRelayRuntimeFixture,
+} from "./helpers/import-health-fixtures.js";
 import { forEachNode, parseTypeScriptFile } from "./helpers/ts-ast.js";
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -77,7 +77,9 @@ const WRITE_CORE_PATH = path.join(
 /**
  * The exact `import.group_label` value set, spelled out here rather than derived
  * from the contract so a silent edit to the contract fails this test. Order is
- * the write-core execution order, with the version-skew fallback last.
+ * the write-core execution order a desktop that emitted every one of them used,
+ * with the version-skew fallback last; the four {@link RETIRED_GROUP_LABELS}
+ * keep their historical position.
  */
 const EXPECTED_GROUP_LABELS = [
   "events",
@@ -87,6 +89,7 @@ const EXPECTED_GROUP_LABELS = [
   "link_snapshot_before",
   "artifact_links",
   "pull_requests",
+  "pr_link_teardown_watermark",
   "segment_work_item_refs",
   "component_invocations",
   "link_snapshot_after",
@@ -97,12 +100,26 @@ const EXPECTED_GROUP_LABELS = [
 ];
 
 /**
- * `runGroup` is called directly with a literal label at most call sites; the two
- * link-fingerprint groups go through the `snapshotLinks(label)` wrapper, which
- * forwards its own literal argument. Both are collected so the guard sees every
- * label write-core can actually produce.
+ * ISS-8758 retired the first three groups: the link fingerprint is now bracketed
+ * inside each writing phase's own transaction instead of a pair of standalone
+ * snapshot groups, and the watermark bump commits with the change it describes
+ * instead of in a tolerant group of its own. ISS-8905 retired the fourth, the
+ * compensating bump ISS-8758 itself had to add, by moving the `normalized_pr`
+ * teardown into the pull-requests transaction so delete and restore share a
+ * commit and nothing is left to compensate for. All four stay in the CONTRACT
+ * because an older desktop build still emits them and the collector validates
+ * against that closed set — removing a value would reject a version-skewed
+ * install's telemetry — but no current call site produces one.
  */
-const LABEL_CALLEE_NAMES = new Set(["runGroup", "snapshotLinks"]);
+const RETIRED_GROUP_LABELS = new Set<string>([
+  ImportGroupLabel.LinkSnapshotBefore,
+  ImportGroupLabel.LinkSnapshotAfter,
+  ImportGroupLabel.SyncWatermark,
+  ImportGroupLabel.PrLinkTeardownWatermark,
+]);
+
+/** `runGroup` is called with a literal label at every call site. */
+const LABEL_CALLEE_NAMES = new Set(["runGroup"]);
 
 let activeRuntime: DesktopOtelRuntime | null = null;
 
@@ -114,107 +131,14 @@ afterEach(async () => {
   logs.disable();
 });
 
-type StubTransport = DesktopTelemetryTransport & {
-  shipments: Array<{ signal: KeylessTelemetrySignal; body: Uint8Array }>;
-};
-
-function createStubTransport(): StubTransport {
-  const shipments: Array<{
-    signal: KeylessTelemetrySignal;
-    body: Uint8Array;
-  }> = [];
-  return {
-    shipments,
-    start() {},
-    stop() {},
-    flush() {
-      return Promise.resolve();
-    },
-    export(signal, body) {
-      shipments.push({ signal, body: Uint8Array.from(body) });
-      return Promise.resolve(true);
-    },
-  };
-}
-
-/**
- * Decode the attributes of every log record the runtime actually shipped over
- * the relay, keeping only the import-health ones (identified by the
- * `import.event` discriminator). The record's event name is deliberately not
- * read here: the desktop's own OTLP descriptor does not carry the LogRecord
- * `event_name` field, so the names are pinned on the local-buffer path instead.
- */
-function decodeRelayImportRecords(
-  transport: StubTransport
-): Record<string, unknown>[] {
-  const logRequestType = getOtlpRequestType(OtlpExportKind.Logs);
-  const decoded: Record<string, unknown>[] = [];
-  for (const shipment of transport.shipments) {
-    if (shipment.signal !== KeylessTelemetrySignal.Logs) {
-      continue;
-    }
-    const request = logRequestType.toObject(
-      logRequestType.decode(shipment.body),
-      { bytes: String, longs: String }
-    ) as { resourceLogs?: unknown };
-    for (const resourceLog of asOtlpRecordArray(request.resourceLogs)) {
-      for (const scopeLog of asOtlpRecordArray(resourceLog.scopeLogs)) {
-        for (const record of asOtlpRecordArray(scopeLog.logRecords)) {
-          const attributes = decodeOtlpAttributes(
-            asOtlpRecordArray(record.attributes)
-          );
-          if (attributes[TelemetryAttribute.ImportEvent] === undefined) {
-            continue;
-          }
-          decoded.push(attributes);
-        }
-      }
-    }
-  }
-  return decoded;
-}
-
 async function startRelayRuntime(): Promise<{
   runtime: DesktopOtelRuntime;
   transport: StubTransport;
 }> {
-  const transport = createStubTransport();
-  const runtime = createDesktopOtelRuntime({
-    appVersion: "9.9.9",
-    env: { CLOSEDLOOP_DEPLOYMENT_ENVIRONMENT_NAME: "desktop-prod" },
-    getAppInstallationId: () => "install_import_health",
-    isPackaged: false,
-    telemetryTransport: transport,
-  });
-  activeRuntime = runtime;
-  await runtime.start();
-  return { runtime, transport };
+  const started = await startRelayRuntimeFixture("install_import_health");
+  activeRuntime = started.runtime;
+  return started;
 }
-
-/** A stand-in session — the tracker never reads its fields, only the result. */
-const SESSION = { sessionId: "session-1" } as unknown as NormalizedSession;
-const HARNESS = "claude" as Harness;
-
-function importerReturning(...results: ImportResult[]): Importer {
-  const queue = [...results];
-  return {
-    importSession: () =>
-      Promise.resolve(queue.shift() ?? { skipped: true, reactivated: false }),
-  };
-}
-
-/**
- * A sentinel snapshot source returning the same ids every call, so a second tick
- * sees every id as a survivor.
- */
-function stablePendingIds(
-  ...ids: string[]
-): (limit: number) => Promise<string[]> {
-  return (limit: number) => Promise.resolve(ids.slice(0, Math.max(1, limit)));
-}
-
-/** A tick cadence long enough that only explicit `flushNow()` calls fire. */
-const NO_AUTOMATIC_TICK_MS = 600_000;
 
 test("a fault-injected import failure ships the tagged counter through the relay", async () => {
   const { runtime, transport } = await startRelayRuntime();
@@ -294,16 +218,18 @@ test("a fault-injected import failure ships the tagged counter through the relay
         attributes[TelemetryAttribute.ImportEvent] === ImportHealthEvent.Pass
     )
     .map((attributes) => ({
+      outcome: attributes[TelemetryAttribute.ImportOutcome],
       incomplete: attributes[TelemetryAttribute.ImportSessionsIncomplete],
       pending: attributes[TelemetryAttribute.ImportSessionsPendingRevision],
     }));
 
   // The first tick cannot yet prove anything is stuck (nothing to compare
   // against), so it reports the two incomplete imports and zero survivors. The
-  // second tick reports the four ids that outlived a full tick.
+  // second tick reports the four ids that outlived a full tick — and with no
+  // import completing in that window, the outcome is the wedge.
   assert.deepEqual(passRecords, [
-    { incomplete: 2, pending: 0 },
-    { incomplete: 0, pending: 4 },
+    { outcome: ImportOutcome.Imported, incomplete: 2, pending: 0 },
+    { outcome: ImportOutcome.Wedged, incomplete: 0, pending: 4 },
   ]);
 
   // The record carries counts and the emit envelope's schema stamp only — no
@@ -317,11 +243,70 @@ test("a fault-injected import failure ships the tagged counter through the relay
     Object.keys(passAttributes ?? {}).sort(),
     [
       TelemetryAttribute.ImportEvent,
+      TelemetryAttribute.ImportOutcome,
       TelemetryAttribute.ImportSessionsIncomplete,
       TelemetryAttribute.ImportSessionsPendingRevision,
       TelemetryEmitMetadataKey.SchemaName,
     ].sort()
   );
+});
+
+/**
+ * ISS-12036: a window whose only imports were byte-identical re-offers is NOT a
+ * wedge.
+ *
+ * `write-core.ts` sets `skipped` for a no-op re-import (FEA-3227), so such a
+ * result counted as an entered import and could never raise `progressed` —
+ * `isDurableImportProgress` reads it as no progress, correctly, because nothing
+ * was written. The wedge term was bare `started`, so a source the orphan
+ * self-heal re-offers on every pass reported `wedged` forever on an install
+ * where nothing was wrong: 134 of 208 outcomes on the install ISS-12036
+ * measured, every one of them with `sessionsIncomplete: 0` and
+ * `sessionsPendingRevision: 0`.
+ *
+ * The third window is the counterfactual that keeps the exemption from
+ * excusing a real wedge: one genuine no-row refusal alongside the no-ops — the
+ * FEA-2027 unsafe-token-count shape, which is `{ skipped, !reactivated }` with
+ * no `unchanged` — still reports it.
+ *
+ * MUTATION: count an `unchanged` result as `unlanded` in `observe` and the
+ * second window reads `wedged`.
+ */
+test("ISS-12036: a window of byte-identical re-offers is empty, not wedged", async () => {
+  const emitted: DesktopImportHealthEventInput[] = [];
+  const tracker = createImportHealthTracker({
+    emitImportHealth: (input) => emitted.push(input),
+    listPendingRevisionSessionIds: () => Promise.resolve([]),
+    tickMs: NO_AUTOMATIC_TICK_MS,
+  });
+  const noOp = { skipped: true, reactivated: false, unchanged: true };
+  // A refusal that wrote no row: the same `{ skipped, !reactivated }` shape,
+  // deliberately WITHOUT `unchanged`.
+  const refusal = { skipped: true, reactivated: false };
+
+  // Window 1: nothing offered at all.
+  await tracker.flushNow();
+  // Window 2: two no-op re-offers and nothing else.
+  const noOps = tracker.wrapImporter(importerReturning(noOp, noOp));
+  await noOps.importSession(SESSION, HARNESS);
+  await noOps.importSession(SESSION, HARNESS);
+  await tracker.flushNow();
+  // Window 3: the same two no-ops plus one genuine refusal.
+  const mixed = tracker.wrapImporter(importerReturning(noOp, noOp, refusal));
+  await mixed.importSession(SESSION, HARNESS);
+  await mixed.importSession(SESSION, HARNESS);
+  await mixed.importSession(SESSION, HARNESS);
+  await tracker.flushNow();
+
+  assert.deepEqual(
+    emitted
+      .filter((input) => input.kind === ImportHealthEvent.Pass)
+      .map((input) =>
+        input.kind === ImportHealthEvent.Pass ? input.outcome : input.kind
+      ),
+    [ImportOutcome.Empty, ImportOutcome.Empty, ImportOutcome.Wedged]
+  );
+  tracker.dispose();
 });
 
 test("a session that is merely mid-import is never counted as stuck", async () => {
@@ -346,9 +331,27 @@ test("a session that is merely mid-import is never counted as stuck", async () =
   await tracker.flushNow();
   await tracker.flushNow();
 
-  // No id survived a full tick, so nothing is reported — even though every tick
-  // saw a row sitting at the sentinel.
-  assert.deepEqual(emitted, []);
+  // Every tick saw a row sitting at the sentinel, but no id survived a full
+  // tick — so the survivor count stays zero throughout. The baseline tick has
+  // no prior snapshot and so cannot yet tell a churning row from a parked one;
+  // it leans `wedged` rather than claim a clear sentinel it did not verify.
+  // From the second tick on, survivorship IS provable and the healthy backfill
+  // reads `empty`, so a consecutive-window monitor never fires on it.
+  assert.deepEqual(
+    emitted.map((input) =>
+      input.kind === ImportHealthEvent.Pass
+        ? {
+            outcome: input.outcome,
+            pending: input.sessionsPendingRevision,
+          }
+        : input.kind
+    ),
+    [
+      { outcome: ImportOutcome.Wedged, pending: 0 },
+      { outcome: ImportOutcome.Empty, pending: 0 },
+      { outcome: ImportOutcome.Empty, pending: 0 },
+    ]
+  );
   tracker.dispose();
 });
 
@@ -363,13 +366,21 @@ test("the sentinel is reported even when no import result is ever observed", asy
   // No importer is ever wrapped and no result ever arrives — the wedged-DB case,
   // where `importSessionBounded` resolves a synthetic timeout result ABOVE this
   // decorator and our own await never returns. The tick is what makes the stuck
-  // backlog visible anyway.
+  // backlog visible anyway: the baseline tick cannot yet PROVE survivorship, so
+  // it reports zero survivors while still naming the window wedged.
   await tracker.flushNow();
   await tracker.flushNow();
 
   assert.deepEqual(emitted, [
     {
       kind: ImportHealthEvent.Pass,
+      outcome: ImportOutcome.Wedged,
+      sessionsIncomplete: 0,
+      sessionsPendingRevision: 0,
+    },
+    {
+      kind: ImportHealthEvent.Pass,
+      outcome: ImportOutcome.Wedged,
       sessionsIncomplete: 0,
       sessionsPendingRevision: 2,
     },
@@ -424,7 +435,7 @@ test("import-health records carry their distinct event names on the local path",
   }
 });
 
-test("the local success path emits nothing at all", async () => {
+test("the local success path reports an explicit outcome rather than silence", async () => {
   const { runtime, transport } = await startRelayRuntime();
   const emitted: DesktopImportHealthEventInput[] = [];
   const tracker = createImportHealthTracker({
@@ -449,11 +460,31 @@ test("the local success path emits nothing at all", async () => {
   await runtime.shutdown();
   activeRuntime = null;
 
-  // No failed group, nothing incomplete, nothing stuck → no record is emitted,
-  // so a healthy fleet contributes zero to the monitor's window.
-  assert.deepEqual(emitted, []);
-  assert.deepEqual(decodeRelayImportRecords(transport), []);
-  assert.deepEqual(runtime.getBufferedRecords(), []);
+  // ISS-6335: no failed group, nothing incomplete, nothing stuck — and the
+  // window still reports. The first tick saw both imports land (`imported`);
+  // the second saw no work at all (`empty`). ISS-5103 suppressed both, which is
+  // what made a healthy install indistinguishable from a dead one.
+  assert.deepEqual(emitted, [
+    {
+      kind: ImportHealthEvent.Pass,
+      outcome: ImportOutcome.Imported,
+      sessionsIncomplete: 0,
+      sessionsPendingRevision: 0,
+    },
+    {
+      kind: ImportHealthEvent.Pass,
+      outcome: ImportOutcome.Empty,
+      sessionsIncomplete: 0,
+      sessionsPendingRevision: 0,
+    },
+  ]);
+  // And they reach the relay, not just the in-process seam.
+  assert.deepEqual(
+    decodeRelayImportRecords(transport).map(
+      (attributes) => attributes[TelemetryAttribute.ImportOutcome]
+    ),
+    [ImportOutcome.Imported, ImportOutcome.Empty]
+  );
 });
 
 test("counters increment only in the branch whose precondition held", async () => {
@@ -481,6 +512,7 @@ test("counters increment only in the branch whose precondition held", async () =
   assert.deepEqual(emitted, [
     {
       kind: ImportHealthEvent.Pass,
+      outcome: ImportOutcome.Imported,
       sessionsIncomplete: 1,
       sessionsPendingRevision: 0,
     },
@@ -555,13 +587,23 @@ test("a throwing sentinel sample or emit seam never reaches the import pipeline"
     failedGroups: [ImportGroupLabel.Events],
   });
 
-  // The tick resolves rather than rejecting, and the pass record is SKIPPED
-  // rather than shipped with a pending count that could not be computed.
+  // The tick resolves rather than rejecting, and the window is reported as
+  // `error` rather than shipped with a pending count that could not be
+  // computed — the survivor count is OMITTED, never zeroed, so an uncomputed
+  // sample cannot read as "nothing is stuck".
   await assert.doesNotReject(() => tracker.flushNow());
-  assert.deepEqual(
-    emitted.map((input) => input.kind),
-    [ImportHealthEvent.GroupFailed]
-  );
+  assert.deepEqual(emitted, [
+    {
+      kind: ImportHealthEvent.GroupFailed,
+      groupLabel: ImportGroupLabel.Events,
+      count: 1,
+    },
+    {
+      kind: ImportHealthEvent.Pass,
+      outcome: ImportOutcome.Error,
+      sessionsIncomplete: 1,
+    },
+  ]);
   assert.equal(logged.length, 1);
 
   tracker.dispose();
@@ -603,7 +645,10 @@ test("a result arriving after dispose neither emits nor restarts sampling", asyn
   await pending;
 
   // The late result is dropped rather than reopening a tally on a disposed
-  // tracker, and no further sampling is triggered.
+  // tracker, and no further sampling is triggered. ISS-6335 adds a second
+  // reason the record stays absent: with the outcome now emitted on every tick,
+  // a pass record here would ship an `empty` window describing a tracker that
+  // no longer exists.
   await tracker.flushNow();
   assert.deepEqual(emitted, []);
   assert.equal(sampleCalls, 1);
@@ -638,6 +683,7 @@ test("installImportHealthTracking drains the tally on shutdown", async () => {
     },
     {
       kind: ImportHealthEvent.Pass,
+      outcome: ImportOutcome.Imported,
       sessionsIncomplete: 1,
       sessionsPendingRevision: 0,
     },
@@ -695,7 +741,8 @@ test("import.group_label is a closed set matching the write-core call sites exac
   assert.deepEqual(
     [...callSiteLabels].sort(),
     EXPECTED_GROUP_LABELS.filter(
-      (label) => label !== ImportGroupLabel.Unknown
+      (label) =>
+        label !== ImportGroupLabel.Unknown && !RETIRED_GROUP_LABELS.has(label)
     ).sort()
   );
 });
@@ -780,6 +827,46 @@ test("the decorator forwards cancelInFlightWrite verbatim, reason included", asy
   tracker.dispose();
 });
 
+const QUEUED_PROBE: WriteDispatchProbe = {
+  state: WriteDispatchState.Queued,
+  taskSeq: 17,
+};
+
+test("ISS-7256: the decorator forwards hasUndispatchedWrite — the manager sees only this wrapper", async () => {
+  const asked: string[] = [];
+  const tracker = createImportHealthTracker({
+    emitImportHealth: () => undefined,
+    listPendingRevisionSessionIds: () => Promise.resolve([]),
+    tickMs: NO_AUTOMATIC_TICK_MS,
+  });
+  const wrapped = tracker.wrapImporter({
+    importSession: () => Promise.resolve({ skipped: true, reactivated: false }),
+    hasUndispatchedWrite: (sessionId: string) => {
+      asked.push(sessionId);
+      return Promise.resolve(QUEUED_PROBE);
+    },
+  });
+
+  // `importSessionBounded` only ever holds this wrapper, so a hook the decorator
+  // drops is a hook that does not exist in production.
+  const waiting = await wrapped.hasUndispatchedWrite?.("session-1");
+
+  assert.deepEqual(asked, ["session-1"]);
+  assert.deepEqual(
+    waiting,
+    QUEUED_PROBE,
+    "the PROBE is forwarded whole — a decorator that collapsed it to a boolean would drop the taskSeq the re-arm's staleness check needs"
+  );
+
+  // An importer without the optional probe must not gain one — the bound then
+  // keeps its pre-ISS-7256 behavior rather than reading a fabricated answer.
+  const bare = tracker.wrapImporter({
+    importSession: () => Promise.resolve({ skipped: true, reactivated: false }),
+  });
+  assert.equal(bare.hasUndispatchedWrite, undefined);
+  tracker.dispose();
+});
+
 test("shutdown completes even when the sentinel read never resolves", {
   timeout: 15_000,
 }, async () => {
@@ -818,4 +905,137 @@ test("shutdown completes even when the sentinel read never resolves", {
       count: 1,
     },
   ]);
+});
+
+test("ISS-8600: the three occurrence records ship exactly import.event and harness.name", async () => {
+  const { runtime, transport } = await startRelayRuntime();
+  const tracker = createImportHealthTracker({
+    emitImportHealth: (input: DesktopImportHealthEventInput) =>
+      runtime.emitImportHealthEvent(input),
+    listPendingRevisionSessionIds: stablePendingIds(),
+    tickMs: NO_AUTOMATIC_TICK_MS,
+  });
+
+  // No `flushNow()` anywhere below, and that is the point: unlike the window
+  // tallies these are OCCURRENCES and must reach the relay on the spot. A
+  // regression that accumulated them into the five-minute tick would ship
+  // nothing here.
+  tracker.noteWatchLost(TelemetryHarnessName.Copilot);
+  // Two DIFFERENT harnesses, and the first is deliberately not the one batch
+  // collector shipping today: the tracker used to stamp `opencode` on every
+  // materialize record itself, and a same-harness pair here would leave that
+  // hardcode green.
+  tracker.noteMaterializeOutcome(
+    TelemetryHarnessName.Cursor,
+    ImportHealthEvent.MaterializeFailed
+  );
+  tracker.noteMaterializeOutcome(
+    TelemetryHarnessName.OpenCode,
+    ImportHealthEvent.MaterializeTimedOut
+  );
+
+  await runtime.shutdown();
+  activeRuntime = null;
+
+  const records = decodeRelayImportRecords(transport);
+  // EXACT key sets, per kind, decoded off the wire. These records ride a pipe
+  // contractually limited to counts and closed enums, so this is what stops a
+  // later edit smuggling a watch root's path or a session id onto them — and it
+  // is also what stops `sourcesRemaining` being copied across from the backfill
+  // records it does not describe.
+  for (const kind of [
+    ImportHealthEvent.WatchLost,
+    ImportHealthEvent.MaterializeFailed,
+    ImportHealthEvent.MaterializeTimedOut,
+  ]) {
+    const attributes = records.find(
+      (candidate) => candidate[TelemetryAttribute.ImportEvent] === kind
+    );
+    assert.ok(attributes, `${kind} must reach the relay`);
+    assert.deepEqual(
+      Object.keys(attributes).sort(),
+      [
+        TelemetryAttribute.ImportEvent,
+        TelemetryAttribute.HarnessName,
+        TelemetryEmitMetadataKey.SchemaName,
+      ].sort(),
+      `${kind} must carry exactly import.event and harness.name`
+    );
+  }
+
+  const occurrences: string[] = [
+    ImportHealthEvent.WatchLost,
+    ImportHealthEvent.MaterializeFailed,
+    ImportHealthEvent.MaterializeTimedOut,
+  ];
+  assert.deepEqual(
+    records
+      .filter((attributes) =>
+        occurrences.includes(String(attributes[TelemetryAttribute.ImportEvent]))
+      )
+      .map((attributes) => [
+        attributes[TelemetryAttribute.ImportEvent],
+        attributes[TelemetryAttribute.HarnessName],
+      ]),
+    [
+      // Every occurrence record carries the harness its CALLER named — the
+      // watcher's is whichever collector went dark, and a materialize pass's is
+      // whichever store the lane that owns the runner regenerates.
+      [ImportHealthEvent.WatchLost, TelemetryHarnessName.Copilot],
+      [ImportHealthEvent.MaterializeFailed, TelemetryHarnessName.Cursor],
+      [ImportHealthEvent.MaterializeTimedOut, TelemetryHarnessName.OpenCode],
+    ]
+  );
+});
+
+test("ISS-8600: occurrence reports after dispose, from an unknown harness, or into a throwing seam are all swallowed", () => {
+  const emitted: DesktopImportHealthEventInput[] = [];
+  const logged: string[] = [];
+  let throwOnEmit = false;
+  const tracker = createImportHealthTracker({
+    emitImportHealth: (input) => {
+      if (throwOnEmit) {
+        throw new Error("relay dispatch failed");
+      }
+      emitted.push(input);
+    },
+    listPendingRevisionSessionIds: stablePendingIds(),
+    tickMs: NO_AUTOMATIC_TICK_MS,
+    log: (message) => logged.push(message),
+  });
+
+  // A harness outside the contract's closed `harness.name` set is dropped
+  // rather than widening the attribute's cardinality at runtime.
+  tracker.noteWatchLost("aider");
+  assert.deepEqual(emitted, [], "an unknown harness must emit nothing");
+  // Dropped is not the same as silent. The trigger is a code defect — the
+  // collectors gained a harness the contract has not learned — so the key that
+  // caused it has to be recoverable from the collector log, the way the
+  // ISS-6116 harness-progress path already reports its own drop.
+  assert.deepEqual(
+    logged.filter((message) => message.includes("aider")),
+    ["import-health watch lost: unknown harness key aider"],
+    "an unknown harness key must be named on the local log"
+  );
+
+  // A throwing emit seam must not reach the collector pass that reported.
+  throwOnEmit = true;
+  tracker.noteWatchLost(TelemetryHarnessName.Claude);
+  tracker.noteMaterializeOutcome(
+    TelemetryHarnessName.OpenCode,
+    ImportHealthEvent.MaterializeFailed
+  );
+  throwOnEmit = false;
+
+  tracker.dispose();
+  tracker.noteWatchLost(TelemetryHarnessName.Claude);
+  tracker.noteMaterializeOutcome(
+    TelemetryHarnessName.OpenCode,
+    ImportHealthEvent.MaterializeTimedOut
+  );
+  assert.deepEqual(
+    emitted,
+    [],
+    "a report after dispose must not resurrect a torn-down window"
+  );
 });

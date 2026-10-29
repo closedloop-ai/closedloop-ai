@@ -163,8 +163,8 @@ async function downloadAsset(
   // The https check above only vets the ORIGINAL url; a 3xx would let the asset
   // host redirect us to http or an internal address (169.254.169.254, a private
   // range) and fetch would silently follow it, defeating the guard. Refuse to
-  // follow any redirect, matching the presigned-download fetches in
-  // transcript-read-cache.ts / loop-finalizer.ts.
+  // follow any redirect, matching the presigned-download fetch in
+  // transcript-read-cache.ts.
   const response = await fetchImpl(url, {
     redirect: "error",
     signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),

@@ -1,26 +1,15 @@
-import {
-  BranchBillingMode,
-  BranchPhase,
-  BranchStatus,
-} from "@repo/api/src/types/branch";
+import { BranchStatus } from "@repo/api/src/types/branch";
 import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
-import {
-  BranchCostCompleteness,
-  BranchCostCompletenessReason,
-} from "@repo/api/src/types/branch-usage";
 import { GitHubPRState } from "@repo/api/src/types/github";
-import { TokenCostNotPricedReason } from "@repo/cost/genai-cost";
-import { describe, expect, it, vi } from "vitest";
+import type { TurnActor } from "@repo/api/src/types/session-transcript-turn";
+import { buildMergedTrace } from "@repo/lib/branches/merged-trace";
+import { describe, expect, it } from "vitest";
 import {
   makeBranchDetail as dDetail,
   makeBranchSession as dSession,
 } from "../../__tests__/branch-fixtures";
 import {
   activeIdleSpans,
-  type BranchTokenRow,
-  buildVsReworkSplit,
-  costPerBranch,
-  costPerSession,
   describeLeadTime,
   isBranchMerged,
   isLeadTimeValueUnavailable,
@@ -34,110 +23,10 @@ import {
   locPerDollarBaseline30d,
   medianPrSize,
   type PhaseSegment,
-  perHourPerActorBuckets,
-  projectBranchUsageSummary,
   reconcilePhaseSegments,
-  resolveBranchPhase,
 } from "../branch-derivations";
-import {
-  isLocPerDollarCostUnavailable,
-  LOC_MERGED_UNAVAILABLE_MESSAGE,
-  LOC_PER_DOLLAR_COST_UNAVAILABLE_MESSAGE,
-  LOC_UNAVAILABLE_MESSAGE,
-  resolveLocPerDollarUnavailableReason,
-} from "../branch-loc-per-dollar";
-
-// Priced cost = inputTokens + outputTokens for every model EXCEPT "unpriced",
-// which the library "drops" (reason set). Cost is linear in tokens, matching the
-// real genai-prices behavior the derivations rely on.
-vi.mock("@repo/cost/genai-cost", async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>();
-  return {
-    ...actual,
-    computeTokenCost: vi.fn(
-      (input: { model: string; inputTokens: number; outputTokens: number }) => {
-        const invalidCount = !(
-          Number.isFinite(input.inputTokens) &&
-          Number.isFinite(input.outputTokens)
-        );
-        if (input.model === "unpriced" || invalidCount) {
-          return {
-            priced: false,
-            provider: null,
-            costUsd: null,
-            inputCostUsd: null,
-            outputCostUsd: null,
-            reason: invalidCount
-              ? TokenCostNotPricedReason.InvalidCount
-              : TokenCostNotPricedReason.UnknownModel,
-          };
-        }
-        return {
-          priced: true,
-          provider: "test",
-          costUsd: input.inputTokens + input.outputTokens,
-          inputCostUsd: input.inputTokens,
-          outputCostUsd: input.outputTokens,
-          reason: null,
-        };
-      }
-    ),
-  };
-});
 
 const NOT_MERGED_RE = /hasn't merged/i;
-
-function row(overrides: Partial<BranchTokenRow> = {}): BranchTokenRow {
-  return {
-    sessionId: "s1",
-    owner: "alice",
-    model: "claude",
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    ...overrides,
-  };
-}
-
-describe("costPerSession / costPerBranch", () => {
-  it("sums priced (session,model) groups and drops unpriced models", () => {
-    const rows = [
-      row({
-        sessionId: "s1",
-        model: "claude",
-        inputTokens: 10,
-        outputTokens: 1,
-      }),
-      row({
-        sessionId: "s1",
-        model: "claude",
-        inputTokens: 20,
-        outputTokens: 2,
-      }),
-      row({
-        sessionId: "s1",
-        model: "unpriced",
-        inputTokens: 99,
-        outputTokens: 9,
-      }),
-    ];
-    // (s1,claude): input 30 + output 3 = 33; unpriced dropped.
-    expect(costPerSession(rows)).toBe(33);
-    expect(costPerBranch(rows)).toBe(33);
-  });
-
-  it("returns null when every row is unpriced", () => {
-    const rows = [row({ model: "unpriced", inputTokens: 5, outputTokens: 5 })];
-    expect(costPerSession(rows)).toBeNull();
-    expect(costPerBranch(rows)).toBeNull();
-  });
-
-  it("returns null for an empty corpus", () => {
-    expect(costPerSession([])).toBeNull();
-    expect(costPerBranch([])).toBeNull();
-  });
-});
 
 describe("locPerDollar / locPerDollarBaseline30d", () => {
   it("returns null on null LOC, null cost, or zero cost (never 0)", () => {
@@ -261,310 +150,162 @@ describe("activeIdleSpans", () => {
     expect(result.activeMs).toBe(0);
     expect(result.idleMs).toBe(300_000);
   });
-});
 
-describe("perHourPerActorBuckets", () => {
-  it("groups by hour then actor, folds null owner into 'unattributed', sums tokens + cost", () => {
-    const rows = [
-      row({
-        hourStart: "2026-06-17T00:00:00.000Z",
-        owner: "alice",
-        inputTokens: 10,
-        outputTokens: 1,
-      }),
-      row({
-        hourStart: "2026-06-17T00:00:00.000Z",
-        owner: "alice",
-        inputTokens: 5,
-        outputTokens: 0,
-      }),
-      row({
-        hourStart: "2026-06-17T00:00:00.000Z",
-        owner: null,
-        inputTokens: 2,
-        outputTokens: 2,
-      }),
-      row({
-        hourStart: "2026-06-17T01:00:00.000Z",
-        owner: "alice",
-        inputTokens: 1,
-        outputTokens: 1,
-      }),
-    ];
-    const buckets = perHourPerActorBuckets(rows);
-    expect(buckets.map((b) => b.hourStart)).toEqual([
-      "2026-06-17T00:00:00.000Z",
-      "2026-06-17T01:00:00.000Z",
-    ]);
-    const hour0 = buckets[0];
-    const alice = hour0.byActor.find((a) => a.owner === "alice");
-    const unattributed = hour0.byActor.find((a) => a.owner === null);
-    expect(alice?.inputTokens).toBe(15);
-    expect(alice?.estimatedCostUsd).toBe(16); // 15 input + 1 output
-    expect(unattributed?.estimatedCostUsd).toBe(4); // 2 + 2
-  });
-
-  it("respects the timeZone option (UTC default vs an explicit zone)", () => {
-    const timestamp = new Date("2026-06-17T02:30:00.000Z");
-    const utc = perHourPerActorBuckets([
-      row({ timestamp, owner: "a", inputTokens: 1 }),
-    ]);
-    const chicago = perHourPerActorBuckets(
-      [row({ timestamp, owner: "a", inputTokens: 1 })],
-      { timeZone: "America/Chicago" }
-    );
-    expect(utc[0].hourStart).toBe("2026-06-17T02:00:00.000Z");
-    // 02:30Z is 21:30 the previous day in CDT (UTC-5).
-    expect(chicago[0].hourStart).toBe("2026-06-16T21:00:00");
-    expect(utc[0].hourStart).not.toBe(chicago[0].hourStart);
-  });
-});
-
-describe("resolveBranchPhase", () => {
-  it("maps canonical values and known SessionPhase-key aliases", () => {
-    expect(resolveBranchPhase({ phase: BranchPhase.Rework })).toBe(
-      BranchPhase.Rework
-    );
-    expect(resolveBranchPhase({ phase: "code_review" })).toBe(
-      BranchPhase.Review
-    );
-    expect(resolveBranchPhase({ phase: "coding" })).toBe(BranchPhase.Implement);
-    expect(resolveBranchPhase({ phase: "testing" })).toBe(BranchPhase.Verify);
-  });
-
-  it("returns null for absent or unknown keys", () => {
-    expect(resolveBranchPhase({ phase: null })).toBeNull();
-    expect(resolveBranchPhase({})).toBeNull();
-    expect(resolveBranchPhase({ phase: "totally-unknown" })).toBeNull();
-  });
-});
-
-describe("projectBranchUsageSummary", () => {
-  const H0 = "2026-06-17T00:00:00.000Z";
-  const H1 = "2026-06-17T01:00:00.000Z";
-  const rows: BranchTokenRow[] = [
-    row({
+  /**
+   * ISS-8720. The cases above pair point events, whose end IS their start, so
+   * they read the same under either derivation. A `tools` run has an extent, and
+   * counting it as a pause is what made this walk contradict the trace's own
+   * idle row on the same tab.
+   */
+  const toolRunItems: MergedTraceItem[] = [
+    {
+      type: "tools",
       sessionId: "s1",
-      owner: "alice",
-      hourStart: H0,
-      billingMode: BranchBillingMode.Subscription,
-      phase: BranchPhase.Implement,
-      inputTokens: 10,
-      outputTokens: 1,
-    }),
-    row({
+      t: at(0),
+      tMs: 0,
+      endMs: base + 600_000,
+      summary: "12 migration tools",
+      hasFail: false,
+      failN: 0,
+    },
+    {
+      type: "say",
       sessionId: "s1",
-      owner: "alice",
-      hourStart: H0,
-      billingMode: BranchBillingMode.Subscription,
-      phase: BranchPhase.Implement,
-      inputTokens: 20,
-      outputTokens: 2,
-    }),
-    row({
-      sessionId: "s2",
-      owner: "bob",
-      hourStart: H1,
-      billingMode: BranchBillingMode.Api,
-      phase: BranchPhase.Rework,
-      inputTokens: 5,
-      outputTokens: 0,
-    }),
-    row({
-      sessionId: "s3",
-      owner: null,
-      hourStart: H0,
-      billingMode: null,
-      phase: null,
-      inputTokens: 3,
-      outputTokens: 3,
-    }),
+      t: at(960_000),
+      tMs: 960_000,
+      cumCostUsd: null,
+      actorName: "alice",
+      text: "after the pause",
+    },
   ];
 
-  it("projects totals, the billing split, hour buckets, phase stacks, and byActor", () => {
-    const summary = projectBranchUsageSummary(rows, { branchCount: 3 });
-    expect(summary.viewerScope).toBe("self");
-    expect(summary.totalBranches).toBe(3);
-    expect(summary.totalInputTokens).toBe(38);
-    expect(summary.totalOutputTokens).toBe(6);
-    expect(summary.totalEstimatedCost).toBe(44); // all "claude": 38 input + 6 output
-    expect(summary.subscriptionEstimatedCost).toBe(33); // s1: 30 + 3
-    expect(summary.apiEstimatedCost).toBe(5); // s2: 5 + 0 (null-billing s3 in neither split)
-    expect(summary.costCompleteness).toEqual({
-      completeness: BranchCostCompleteness.Partial,
-      reason: BranchCostCompletenessReason.SourceIdentityUnavailable,
-      subtotalUsd: 44,
-    });
+  it("counts a tool run as active and idles only the pause after it", () => {
+    const result = activeIdleSpans(toolRunItems);
 
-    expect(summary.hourBuckets.map((b) => b.hourStart)).toEqual([H0, H1]);
-    const h0Alice = summary.hourBuckets[0].byActor.find(
-      (a) => a.owner === "alice"
-    );
-    const h0Unattributed = summary.hourBuckets[0].byActor.find(
-      (a) => a.owner === null
-    );
-    expect(h0Alice?.estimatedCostUsd).toBe(33);
-    expect(h0Unattributed?.estimatedCostUsd).toBe(6);
-
-    const implement = summary.phaseStacks.find(
-      (p) => p.phase === BranchPhase.Implement
-    );
-    const rework = summary.phaseStacks.find(
-      (p) => p.phase === BranchPhase.Rework
-    );
-    expect(implement).toMatchObject({
-      estimatedCostUsd: 33,
-      inputTokens: 30,
-      sessionCount: 1,
-    });
-    expect(rework).toMatchObject({ estimatedCostUsd: 5, sessionCount: 1 });
-    // s3 has no resolvable phase -> excluded from phaseStacks.
-    expect(summary.phaseStacks).toHaveLength(2);
-
-    expect(summary.byActor.map((a) => a.owner)).toEqual(["alice", "bob", null]);
-    expect(
-      summary.byActor.find((a) => a.owner === "bob")?.estimatedCostUsd
-    ).toBe(5);
+    // 10m of run, then 6m of real pause — not one 16m gap.
+    expect(result.activeMs).toBe(600_000);
+    expect(result.idleMs).toBe(360_000);
+    expect(result.idleSpans).toEqual([
+      { startT: at(600_000), endT: at(960_000), gapMs: 360_000 },
+    ]);
   });
 
-  it("projects the empty canonical summary for no rows", () => {
-    const summary = projectBranchUsageSummary([]);
-    expect(summary).toEqual({
-      viewerScope: "self",
-      totalBranches: 0,
-      totalInputTokens: 0,
-      totalOutputTokens: 0,
-      totalCacheReadTokens: 0,
-      totalCacheWriteTokens: 0,
-      totalEstimatedCost: 0,
-      subscriptionEstimatedCost: 0,
-      apiEstimatedCost: 0,
-      costCompleteness: {
-        completeness: BranchCostCompleteness.Complete,
-        subtotalUsd: 0,
-        lanes: { subscriptionEquivalentCost: 0, apiEstimatedCost: 0 },
+  it("agrees with the merged-trace builder on the same pause", () => {
+    const [span] = activeIdleSpans(toolRunItems).idleSpans;
+    const marker = buildMergedTrace([
+      {
+        sessionId: "s1",
+        startedAt: at(0),
+        actorName: "alice",
+        harness: "claude",
+        turnItems: [
+          {
+            type: "tools",
+            _row: 0,
+            t: at(0),
+            tMs: base,
+            endMs: base + 600_000,
+            cum: 0,
+            actor: TRACE_ACTOR,
+            summary: "12 migration tools",
+            items: [],
+            hasFail: false,
+            failN: 0,
+            cats: {},
+          },
+          {
+            type: "say",
+            _row: 1,
+            t: at(960_000),
+            tMs: base + 960_000,
+            cum: 0,
+            actor: TRACE_ACTOR,
+            text: "after the pause",
+          },
+        ],
       },
-      hourBuckets: [],
-      phaseStacks: [],
-      byActor: [],
-    });
+    ]).find((item) => item.type === "idle");
+
+    // The whole point of the shared `mergedTraceItemEndMs`: one pause, one
+    // duration, one start instant — whichever of the two surfaces states it.
+    expect(marker).toMatchObject({ gapMs: span?.gapMs, t: span?.startT });
   });
 
-  it("preserves a verified zero as a partial subtotal", () => {
-    const summary = projectBranchUsageSummary([
-      row({ billingMode: BranchBillingMode.Api }),
+  /**
+   * ISS-8767. `mergedTraceItemEndMs` is also this walk's sweep-line advance, so
+   * an impossible `endMs` moved `cursorMs` to the garbage instant: `activeMs`
+   * absorbed the whole span and no LATER entry could ever be `> cursorMs`, so
+   * every remaining idle span vanished. Two five-minute pauses follow the bad
+   * run, and both must survive it.
+   */
+  const corruptExtentItems = (endMs: number): MergedTraceItem[] => [
+    {
+      type: "tools",
+      sessionId: "s1",
+      t: at(0),
+      tMs: 0,
+      endMs,
+      summary: "12 migration tools",
+      hasFail: false,
+      failN: 0,
+    },
+    {
+      type: "say",
+      sessionId: "s1",
+      t: at(300_000),
+      tMs: 300_000,
+      cumCostUsd: null,
+      actorName: "alice",
+      text: "after the first pause",
+    },
+    {
+      type: "say",
+      sessionId: "s1",
+      t: at(600_000),
+      tMs: 600_000,
+      cumCostUsd: null,
+      actorName: "alice",
+      text: "after the second pause",
+    },
+  ];
+
+  it.each([
+    ["NaN", Number.NaN],
+    ["a nanosecond stamp read as ms", Date.now() * 1_000_000],
+    ["a fractional millisecond", base + 0.5],
+    ["a pre-epoch instant", -1],
+    ["a blank stamp folded to 0", Number("")],
+  ])("keeps both later idle spans when the run carries %s", (_label, endMs) => {
+    const result = activeIdleSpans(corruptExtentItems(endMs));
+
+    expect(result.idleSpans).toEqual([
+      { startT: at(0), endT: at(300_000), gapMs: 300_000 },
+      { startT: at(300_000), endT: at(600_000), gapMs: 300_000 },
     ]);
-    expect(summary.costCompleteness).toEqual({
-      completeness: BranchCostCompleteness.Partial,
-      reason: BranchCostCompletenessReason.SourceIdentityUnavailable,
-      subtotalUsd: 0,
-      lanes: { subscriptionEquivalentCost: 0, apiEstimatedCost: 0 },
-    });
+    // The refused extent contributes no duration at all — never a plausible
+    // one, and never the garbage magnitude that inflated this session's share
+    // of the hourly cost bars through `computeBurstSpans`.
+    expect(result.activeMs).toBe(0);
+    expect(result.idleMs).toBe(600_000);
   });
 
-  it("marks all-unpriced evidence unavailable without changing legacy zeros", () => {
-    const summary = projectBranchUsageSummary([
-      row({ model: "unpriced", inputTokens: 5 }),
+  it("still counts a healthy extent as active, so the refusal cannot fire on good data", () => {
+    const result = activeIdleSpans(corruptExtentItems(base + 240_000));
+
+    // A real four-minute run, then a one-minute pause below the threshold, then
+    // the five-minute pause that is genuinely idle.
+    expect(result.activeMs).toBe(300_000);
+    expect(result.idleSpans).toEqual([
+      { startT: at(300_000), endT: at(600_000), gapMs: 300_000 },
     ]);
-    expect(summary.totalEstimatedCost).toBe(0);
-    expect(summary.subscriptionEstimatedCost).toBe(0);
-    expect(summary.apiEstimatedCost).toBe(0);
-    expect(summary.costCompleteness).toEqual({
-      completeness: BranchCostCompleteness.Unavailable,
-      reason: BranchCostCompletenessReason.SourceIdentityUnavailable,
-    });
   });
 
-  it("preserves a clean typed subtotal when a corrupt peer poisons the coarse legacy group", () => {
-    const summary = projectBranchUsageSummary([
-      row({ sessionId: "clean", inputTokens: 5 }),
-      row({ sessionId: "corrupt", inputTokens: Number.POSITIVE_INFINITY }),
-    ]);
-    expect(summary.totalEstimatedCost).toBe(0);
-    expect(summary.costCompleteness).toEqual({
-      completeness: BranchCostCompleteness.Partial,
-      reason: BranchCostCompletenessReason.Malformed,
-      subtotalUsd: 5,
-    });
-  });
-
-  it("marks a group malformed before opposite-signed rows can cancel", () => {
-    const summary = projectBranchUsageSummary([
-      row({ sessionId: "canceling", inputTokens: -5 }),
-      row({ sessionId: "canceling", inputTokens: 10 }),
-      row({ sessionId: "clean", inputTokens: 3 }),
-    ]);
-    expect(summary.costCompleteness).toEqual({
-      completeness: BranchCostCompleteness.Partial,
-      reason: BranchCostCompletenessReason.Malformed,
-      subtotalUsd: 3,
-    });
-  });
-
-  it("reconciles classified typed lanes to the known subtotal", () => {
-    const summary = projectBranchUsageSummary([
-      row({
-        sessionId: "subscription",
-        billingMode: BranchBillingMode.Subscription,
-        inputTokens: 1,
-      }),
-      row({
-        sessionId: "api",
-        billingMode: BranchBillingMode.Api,
-        inputTokens: 2,
-      }),
-    ]);
-    expect(summary.costCompleteness).toEqual({
-      completeness: BranchCostCompleteness.Partial,
-      reason: BranchCostCompletenessReason.SourceIdentityUnavailable,
-      subtotalUsd: 3,
-      lanes: { subscriptionEquivalentCost: 1, apiEstimatedCost: 2 },
-    });
-    expect(summary.subscriptionEstimatedCost).toBe(1);
-    expect(summary.apiEstimatedCost).toBe(2);
-  });
-});
-
-describe("buildVsReworkSplit", () => {
-  it("computes the 2-state split (rework = rework + review phases)", () => {
-    const rows = [
-      row({
-        sessionId: "s1",
-        phase: BranchPhase.Implement,
-        inputTokens: 70,
-        outputTokens: 0,
-      }),
-      row({
-        sessionId: "s1",
-        phase: BranchPhase.Rework,
-        inputTokens: 20,
-        outputTokens: 0,
-      }),
-      row({
-        sessionId: "s1",
-        phase: BranchPhase.Review,
-        inputTokens: 10,
-        outputTokens: 0,
-      }),
-    ];
-    // build = 70, rework = 30, total 100.
-    expect(buildVsReworkSplit(rows)).toEqual({ buildPct: 70, reworkPct: 30 });
-  });
-
-  it("folds unknown phases into Build", () => {
-    const rows = [row({ phase: null, inputTokens: 50, outputTokens: 0 })];
-    expect(buildVsReworkSplit(rows)).toEqual({ buildPct: 100, reworkPct: 0 });
-  });
-
-  it("returns null pcts when nothing prices", () => {
-    const rows = [
-      row({ model: "unpriced", phase: BranchPhase.Implement, inputTokens: 5 }),
-    ];
-    expect(buildVsReworkSplit(rows)).toEqual({
-      buildPct: null,
-      reworkPct: null,
-    });
-  });
+  const TRACE_ACTOR: TurnActor = {
+    name: "alice",
+    sessionId: "s1",
+    human: "alice",
+    color: "",
+  };
 });
 
 // FEA-2276 removed `partitionBuildVsRework` (the coarse Build/Rework split); its
@@ -755,88 +496,6 @@ describe("isLeadTimeValueUnavailable (FEA-4236 muted no-data value)", () => {
     expect(isLeadTimeValueUnavailable(LeadTimeDisplayStatus.InProgress)).toBe(
       false
     );
-  });
-});
-
-describe("resolveLocPerDollarUnavailableReason (FEA-4229/4236 caption SSOT)", () => {
-  it("merged branch with no churn → the merged lines-changed sync-gap reason", () => {
-    expect(
-      resolveLocPerDollarUnavailableReason({
-        churn: null,
-        totalCostUsd: null,
-        merged: true,
-      })
-    ).toBe(LOC_MERGED_UNAVAILABLE_MESSAGE);
-  });
-
-  it("non-merged branch with no churn → the generic lines-changed reason", () => {
-    expect(
-      resolveLocPerDollarUnavailableReason({
-        churn: null,
-        totalCostUsd: 4,
-        merged: false,
-      })
-    ).toBe(LOC_UNAVAILABLE_MESSAGE);
-  });
-
-  it("churn known but cost missing → the COST reason (never a lines-changed lie)", () => {
-    expect(
-      resolveLocPerDollarUnavailableReason({
-        churn: 42,
-        totalCostUsd: null,
-        merged: true,
-      })
-    ).toBe(LOC_PER_DOLLAR_COST_UNAVAILABLE_MESSAGE);
-  });
-
-  it("churn known but cost is zero → the COST reason from the raw cost input (never a $0.00 caption)", () => {
-    // The resolver owns the zero-cost denominator decision (it takes the raw
-    // cost, not a pre-computed boolean), so a priced-$0.00 branch reads the cost
-    // gap instead of "N lines changed · $0.00" beneath "No data" — no caller can
-    // classify $0.00 wrong.
-    expect(
-      resolveLocPerDollarUnavailableReason({
-        churn: 25,
-        totalCostUsd: 0,
-        merged: true,
-      })
-    ).toBe(LOC_PER_DOLLAR_COST_UNAVAILABLE_MESSAGE);
-  });
-
-  it("both churn and a usable (positive) cost → no reason (the value is available)", () => {
-    expect(
-      resolveLocPerDollarUnavailableReason({
-        churn: 42,
-        totalCostUsd: 3.5,
-        merged: true,
-      })
-    ).toBeNull();
-  });
-
-  it("no churn takes precedence over a missing cost (lines-changed gap wins)", () => {
-    // Both inputs missing on a merged branch reads as the dominant, VQA-reported
-    // lines-changed sync gap, not the cost gap.
-    expect(
-      resolveLocPerDollarUnavailableReason({
-        churn: null,
-        totalCostUsd: null,
-        merged: true,
-      })
-    ).toBe(LOC_MERGED_UNAVAILABLE_MESSAGE);
-  });
-});
-
-describe("isLocPerDollarCostUnavailable (zero denominator mirrors locPerDollar)", () => {
-  it("null cost is unavailable", () => {
-    expect(isLocPerDollarCostUnavailable(null)).toBe(true);
-  });
-
-  it("zero cost is unavailable (no usable denominator)", () => {
-    expect(isLocPerDollarCostUnavailable(0)).toBe(true);
-  });
-
-  it("a positive cost is available", () => {
-    expect(isLocPerDollarCostUnavailable(4.2)).toBe(false);
   });
 });
 

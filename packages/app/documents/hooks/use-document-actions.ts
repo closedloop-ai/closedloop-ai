@@ -6,7 +6,7 @@ import { downloadAsMarkdown } from "@repo/app/shared/lib/download-utils";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { useCallback } from "react";
-import { useDeleteDocument, useUpdateDocument } from "./use-documents";
+import { useDeleteDocument } from "./use-documents";
 
 type UseArtifactActionsConfig = {
   artifact: DocumentDetail;
@@ -14,20 +14,19 @@ type UseArtifactActionsConfig = {
 };
 
 /**
- * Hook to manage artifact actions: delete, rename, download, and copy.
+ * Hook to manage artifact actions: delete, download, and copy.
  *
  * **Use this hook when:** Your component needs to perform artifact operations (toolbar buttons, action menus).
  *
  * **What it provides:**
  * - Delete operation with automatic navigation after success
- * - Rename operation (updates title and fileName)
  * - Download operation (exports content as markdown file)
  * - Copy operation (copies content to clipboard)
- * - Loading states for each operation
+ * - `isDeleting` while a delete is in flight
  *
  * **Example usage:**
  * ```tsx
- * const { handleDelete, handleRename, handleDownload, handleCopy, isDeleting } =
+ * const { handleDelete, handleDownload, handleCopy, isDeleting } =
  *   useDocumentActions({ artifact, redirectPath: "/prds" });
  *
  * <Button onClick={handleDownload}>Download</Button>
@@ -43,11 +42,9 @@ export function useDocumentActions(config: UseArtifactActionsConfig) {
 
   // TanStack Query mutations
   const deleteArtifact = useDeleteDocument();
-  const updateArtifact = useUpdateDocument();
 
   // Derived state
   const isDeleting = deleteArtifact.isPending;
-  const isRenaming = updateArtifact.isPending;
 
   /**
    * Delete the artifact and redirect to the specified path.
@@ -69,29 +66,6 @@ export function useDocumentActions(config: UseArtifactActionsConfig) {
         });
       }),
     [artifact.id, deleteArtifact, redirectPath, navigation]
-  );
-
-  /**
-   * Rename the artifact by updating its title and fileName.
-   * Shows success toast on completion, error toast on failure.
-   */
-  const handleRename = useCallback(
-    (title: string, fileName: string): Promise<boolean> =>
-      new Promise((resolve) => {
-        updateArtifact.mutate(
-          { id: artifact.id, title, fileName },
-          {
-            onSuccess: () => {
-              toast.success("Artifact renamed");
-              resolve(true);
-            },
-            onError: () => {
-              resolve(false);
-            },
-          }
-        );
-      }),
-    [artifact.id, updateArtifact]
   );
 
   /**
@@ -126,12 +100,10 @@ export function useDocumentActions(config: UseArtifactActionsConfig) {
   return {
     // Action handlers
     handleDelete,
-    handleRename,
     handleDownload,
     handleCopy,
 
     // Loading states
     isDeleting,
-    isRenaming,
   };
 }

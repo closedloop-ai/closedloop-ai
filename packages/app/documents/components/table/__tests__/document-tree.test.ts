@@ -13,8 +13,6 @@ import {
 import { createMockDocument } from "@repo/app/shared/test-fixtures/documents";
 import { describe, expect, it } from "vitest";
 
-// ---- Fixtures ----
-
 function makeItem(
   id: string,
   assigneeId: string | null,
@@ -31,8 +29,6 @@ function makeItem(
 function assignedTo(target: string): (item: DocumentRowItem) => boolean {
   return (item) => item.data.assigneeId === target;
 }
-
-// ---- Tests ----
 
 describe("filterDisplayGroups", () => {
   it("keeps a group whose root matches and preserves its full subtree", () => {
@@ -228,6 +224,71 @@ describe("groupByProjectTree — DEPLOYMENT artifacts (FEA-1763)", () => {
     expect(docGroup).toBeDefined();
     expect(docGroup?.children).toHaveLength(0);
     expect(groups.some((group) => group.groupKey === "dep-root")).toBe(false);
+  });
+});
+
+describe("groupByProjectTree — multi-parent lineage (ISS-5732)", () => {
+  it("renders each true root with only its own descendants", () => {
+    // Two roots must stay two groups on the way to the table: this is the
+    // surface the ticket's "expanding either PRD shows only valid descendants"
+    // criterion is actually read on.
+    const prdA = createMockDocument({
+      id: "prd-a",
+      slug: "PRD-513",
+      title: "PRD A",
+    });
+    const prdB = createMockDocument({
+      id: "prd-b",
+      slug: "PRD-602",
+      title: "PRD B",
+    });
+    const shared = createMockDocument({
+      id: "fea-shared",
+      slug: "FEA-3730",
+      title: "Shared",
+    });
+    const onlyB = createMockDocument({
+      id: "fea-only-b",
+      slug: "FEA-3577",
+      title: "B only",
+    });
+
+    const groups = groupByProjectTree(
+      [
+        {
+          root: makeArtifact("prd-a", ArtifactType.Document),
+          children: [
+            {
+              ...makeArtifact("fea-shared", ArtifactType.Document),
+              linkType: LinkType.Produces,
+              depth: 1,
+              parentId: "prd-a",
+            },
+          ],
+        },
+        {
+          root: makeArtifact("prd-b", ArtifactType.Document),
+          children: [
+            {
+              ...makeArtifact("fea-only-b", ArtifactType.Document),
+              linkType: LinkType.Produces,
+              depth: 1,
+              parentId: "prd-b",
+            },
+          ],
+        },
+      ],
+      [prdA, prdB, shared, onlyB]
+    );
+
+    const idsUnder = (groupKey: string) =>
+      groups
+        .find((group) => group.groupKey === groupKey)
+        ?.children.map((child) => child.data.id) ?? [];
+
+    expect(groups.map((group) => group.groupKey)).toEqual(["prd-a", "prd-b"]);
+    expect(idsUnder("prd-a")).toEqual(["fea-shared"]);
+    expect(idsUnder("prd-b")).toEqual(["fea-only-b"]);
   });
 });
 

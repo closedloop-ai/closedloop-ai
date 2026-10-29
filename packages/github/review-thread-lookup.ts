@@ -223,33 +223,6 @@ function githubErrorStatus(error: unknown): number | null {
 }
 
 /**
- * Looks up GitHub review-thread node ids for REST review-comment database ids.
- * Both thread pages and per-thread comment pages are paginated so replies past
- * the first nested GraphQL page can still be resolved later.
- */
-export async function fetchReviewThreadNodeIdsByCommentId(
-  octokit: GraphqlClient,
-  owner: string,
-  repo: string,
-  pullNumber: number,
-  maxPages: number
-): Promise<Map<number, string>> {
-  const metadataByCommentId = await fetchReviewThreadMetadataByCommentId(
-    octokit,
-    owner,
-    repo,
-    pullNumber,
-    maxPages
-  );
-  return new Map(
-    [...metadataByCommentId.entries()].map(([commentId, metadata]) => [
-      commentId,
-      metadata.id,
-    ])
-  );
-}
-
-/**
  * Looks up GitHub review-thread ids and resolved state for REST review-comment
  * database ids so Branch View can reconcile local state to GitHub thread truth.
  */
@@ -260,13 +233,110 @@ export async function fetchReviewThreadMetadataByCommentId(
   pullNumber: number,
   maxPages: number
 ): Promise<Map<number, { id: string; isResolved: boolean }>> {
+  const { metadataByCommentId } = await readReviewThreadMetadata(
+    octokit,
+    owner,
+    repo,
+    pullNumber,
+    { maxPagesPerConnection: maxPages, maxRequests: Number.POSITIVE_INFINITY }
+  );
+  return metadataByCommentId;
+}
+
+async function fetchRemainingThreadCommentPages(
+  octokit: GraphqlClient,
+  threadIdsByCommentId: Map<number, { id: string; isResolved: boolean }>,
+  thread: ReviewThreadNode,
+  maxPages: number,
+  budget: ReviewThreadRequestBudget
+): Promise<boolean> {
+  let cursor = thread.comments.pageInfo.endCursor;
+
+  for (
+    let page = 2;
+    page <= maxPages &&
+    thread.comments.pageInfo.hasNextPage &&
+    budget.remainingRequests > 0;
+    page++
+  ) {
+    budget.remainingRequests -= 1;
+    const response = await octokit.graphql<ReviewThreadCommentsResponse>(
+      `
+      query PullRequestReviewThreadMoreCommentIds(
+        $threadId: ID!
+        $cursor: String
+      ) {
+        node(id: $threadId) {
+          ... on PullRequestReviewThread {
+            comments(first: 100, after: $cursor) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+              nodes {
+                databaseId
+              }
+            }
+          }
+        }
+      }
+    `,
+      { threadId: thread.id, cursor }
+    );
+
+    const comments = response.node?.comments;
+    if (!comments) {
+      return false;
+    }
+    recordThreadCommentIds(threadIdsByCommentId, thread, comments);
+    thread.comments = comments;
+    cursor = comments.pageInfo.endCursor;
+  }
+  return !thread.comments.pageInfo.hasNextPage;
+}
+
+function recordThreadCommentIds(
+  threadIdsByCommentId: Map<number, { id: string; isResolved: boolean }>,
+  thread: ReviewThreadNode,
+  comments: ReviewThreadCommentsConnection
+) {
+  for (const comment of comments.nodes) {
+    if (typeof comment.databaseId === "number") {
+      threadIdsByCommentId.set(comment.databaseId, {
+        id: thread.id,
+        isResolved: thread.isResolved,
+      });
+    }
+  }
+}
+
+/**
+ * `fetchReviewThreadMetadataByCommentId` plus whether the read reached the last
+ * thread page and every thread's last comment page within `bounds`.
+ */
+export async function readReviewThreadMetadata(
+  octokit: GraphqlClient,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  bounds: ReviewThreadReadBounds
+): Promise<ReviewThreadMetadataRead> {
   const threadIdsByCommentId = new Map<
     number,
     { id: string; isResolved: boolean }
   >();
+  const budget: ReviewThreadRequestBudget = {
+    remainingRequests: bounds.maxRequests,
+  };
+  let threadCommentsComplete = true;
   let cursor: string | null = null;
 
-  for (let page = 1; page <= maxPages; page++) {
+  for (
+    let page = 1;
+    page <= bounds.maxPagesPerConnection && budget.remainingRequests > 0;
+    page++
+  ) {
+    budget.remainingRequests -= 1;
     const response: ReviewThreadLookupResponse =
       await octokit.graphql<ReviewThreadLookupResponse>(
         `
@@ -308,108 +378,40 @@ export async function fetchReviewThreadMetadataByCommentId(
       response.repository?.pullRequest?.reviewThreads ?? null;
     for (const thread of reviewThreads?.nodes ?? []) {
       recordThreadCommentIds(threadIdsByCommentId, thread, thread.comments);
-      await fetchRemainingThreadCommentPages(
+      const threadComplete = await fetchRemainingThreadCommentPages(
         octokit,
         threadIdsByCommentId,
         thread,
-        maxPages
+        bounds.maxPagesPerConnection,
+        budget
       );
+      threadCommentsComplete &&= threadComplete;
     }
 
     if (!reviewThreads?.pageInfo.hasNextPage) {
-      break;
+      return {
+        metadataByCommentId: threadIdsByCommentId,
+        complete: reviewThreads !== null && threadCommentsComplete,
+      };
     }
     cursor = reviewThreads.pageInfo.endCursor;
   }
 
-  return threadIdsByCommentId;
+  return { metadataByCommentId: threadIdsByCommentId, complete: false };
 }
 
-async function fetchRemainingThreadCommentPages(
-  octokit: GraphqlClient,
-  threadIdsByCommentId: Map<number, { id: string; isResolved: boolean }>,
-  thread: ReviewThreadNode,
-  maxPages: number
-): Promise<void> {
-  let cursor = thread.comments.pageInfo.endCursor;
-
-  for (
-    let page = 2;
-    page <= maxPages && thread.comments.pageInfo.hasNextPage;
-    page++
-  ) {
-    const response = await octokit.graphql<ReviewThreadCommentsResponse>(
-      `
-      query PullRequestReviewThreadMoreCommentIds(
-        $threadId: ID!
-        $cursor: String
-      ) {
-        node(id: $threadId) {
-          ... on PullRequestReviewThread {
-            comments(first: 100, after: $cursor) {
-              pageInfo {
-                hasNextPage
-                endCursor
-              }
-              nodes {
-                databaseId
-              }
-            }
-          }
-        }
-      }
-    `,
-      { threadId: thread.id, cursor }
-    );
-
-    const comments = response.node?.comments;
-    if (!comments) {
-      return;
-    }
-    recordThreadCommentIds(threadIdsByCommentId, thread, comments);
-    thread.comments = comments;
-    cursor = comments.pageInfo.endCursor;
-  }
-}
-
-function recordThreadCommentIds(
-  threadIdsByCommentId: Map<number, { id: string; isResolved: boolean }>,
-  thread: ReviewThreadNode,
-  comments: ReviewThreadCommentsConnection
-) {
-  for (const comment of comments.nodes) {
-    if (typeof comment.databaseId === "number") {
-      threadIdsByCommentId.set(comment.databaseId, {
-        id: thread.id,
-        isResolved: thread.isResolved,
-      });
-    }
-  }
-}
+export type ReviewThreadMetadataRead = {
+  metadataByCommentId: Map<number, { id: string; isResolved: boolean }>;
+  complete: boolean;
+};
 
 /**
- * Resolve a single review-thread node id for a REST review-comment database id.
- * Lookup failures and pagination-cap misses intentionally return null so
- * route-time comment writes do not retry or convert a successful REST write
- * into a provider failure.
+ * `maxPagesPerConnection` caps the thread pages and, separately, each thread's
+ * comment pages; `maxRequests` caps every GraphQL request of the read.
  */
-export async function fetchReviewThreadNodeIdByCommentId(
-  octokit: GraphqlClient,
-  owner: string,
-  repo: string,
-  pullNumber: number,
-  commentId: number
-): Promise<string | null> {
-  try {
-    const threadIdsByCommentId = await fetchReviewThreadNodeIdsByCommentId(
-      octokit,
-      owner,
-      repo,
-      pullNumber,
-      MAX_PR_METADATA_PAGES
-    );
-    return threadIdsByCommentId.get(commentId) ?? null;
-  } catch {
-    return null;
-  }
-}
+export type ReviewThreadReadBounds = {
+  maxPagesPerConnection: number;
+  maxRequests: number;
+};
+
+type ReviewThreadRequestBudget = { remainingRequests: number };

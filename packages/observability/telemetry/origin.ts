@@ -8,6 +8,8 @@ export const Origin = {
   Api: "api",
   Relay: "relay",
   Mcp: "mcp",
+  Realtime: "realtime",
+  DocSync: "doc-sync",
   Unknown: "unknown",
 } as const;
 
@@ -34,9 +36,7 @@ function resolveOrigin(): Origin {
     return matched;
   }
 
-  // Use console.warn directly to avoid circular import with ../log. That same
-  // cycle is why the severity is a literal rather than `LogLevel.Warn`: log.ts
-  // evaluates this module while its own consts are still in TDZ.
+  // Use console.warn directly to avoid circular import with ../log.
   // `status` is Datadog's reserved severity attribute and `level` is not, so
   // both are stamped, matching log.ts's own fallback warning — otherwise this
   // drain line's severity rests on per-service level remapping (ISS-6341).

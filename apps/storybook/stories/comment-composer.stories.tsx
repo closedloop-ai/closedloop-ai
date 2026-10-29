@@ -1,7 +1,8 @@
+import { GitHubMark } from "@repo/design-system/components/ui/brand-icons";
 import { Button } from "@repo/design-system/components/ui/button";
 import { CommentComposer } from "@repo/design-system/components/ui/comment-composer";
 import type { Meta, StoryObj } from "@storybook/react";
-import { AtSign, GithubIcon, Paperclip } from "lucide-react";
+import { AtSign, Paperclip } from "lucide-react";
 import { type ComponentProps, useState } from "react";
 
 function CommentComposerStory(args: ComponentProps<typeof CommentComposer>) {
@@ -21,9 +22,9 @@ function CommentComposerStory(args: ComponentProps<typeof CommentComposer>) {
 }
 
 const meta = {
-  title: "Design System/Documents & Conversation/Comment Composer",
+  title: "Composites v1.0/Documents/Comment Composer",
   component: CommentComposerStory,
-  tags: ["autodocs"],
+  tags: ["deprecated", "autodocs"],
   parameters: { layout: "padded" },
   args: {
     onSubmit: () => undefined,
@@ -38,7 +39,7 @@ export const Conversation: Story = {
     containerClassName: "border-border border-t bg-background p-3",
     helperText: (
       <div className="mb-1 flex items-center gap-1.5 text-muted-foreground text-xs">
-        <GithubIcon className="h-3 w-3" />
+        <GitHubMark className="h-3 w-3" />
         <span>Comments here sync to GitHub · PR #142</span>
       </div>
     ),

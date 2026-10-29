@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   resolveSessionLimits,
   SESSION_LIMIT_STALE_AFTER_MS,
@@ -41,36 +41,6 @@ test("resolveSessionLimits: null when there are no snapshots", () => {
   assert.equal(resolveSessionLimits([], NOW), null);
 });
 
-test("resolveSessionLimits: prefers the fresh RICH statusline sample", () => {
-  const resolved = resolveSessionLimits(
-    [
-      stored(SessionLimitSnapshotSource.RateLimitEvent, 100, NOW - 1000),
-      stored(SessionLimitSnapshotSource.Statusline, 42, NOW - 2000),
-    ],
-    NOW
-  );
-  // RICH wins on richness even though the COARSE sample is fresher.
-  assert.equal(resolved?.fiveHour?.utilization, 42);
-  // The winning sample's provenance is stamped onto the rendered snapshot.
-  assert.equal(resolved?.source, SessionLimitSnapshotSource.Statusline);
-});
-
-test("resolveSessionLimits: stamps the COARSE source when RICH is stale", () => {
-  const resolved = resolveSessionLimits(
-    [
-      stored(
-        SessionLimitSnapshotSource.Statusline,
-        42,
-        NOW - SESSION_LIMIT_STALE_AFTER_MS - 1
-      ),
-      stored(SessionLimitSnapshotSource.RateLimitEvent, 100, NOW - 1000),
-    ],
-    NOW
-  );
-  assert.equal(resolved?.fiveHour?.utilization, 100);
-  assert.equal(resolved?.source, SessionLimitSnapshotSource.RateLimitEvent);
-});
-
 test("resolveSessionLimits: uses freshest RICH sample among several", () => {
   const resolved = resolveSessionLimits(
     [
@@ -82,28 +52,13 @@ test("resolveSessionLimits: uses freshest RICH sample among several", () => {
   assert.equal(resolved?.fiveHour?.utilization, 55);
 });
 
-test("resolveSessionLimits: falls back to COARSE when RICH is stale", () => {
-  const resolved = resolveSessionLimits(
-    [
-      stored(
-        SessionLimitSnapshotSource.Statusline,
-        42,
-        NOW - SESSION_LIMIT_STALE_AFTER_MS - 1
-      ),
-      stored(SessionLimitSnapshotSource.RateLimitEvent, 100, NOW - 1000),
-    ],
-    NOW
-  );
-  assert.equal(resolved?.fiveHour?.utilization, 100);
-});
-
 test("resolveSessionLimits: returns null when every sample is stale", () => {
   const staleOld = NOW - SESSION_LIMIT_STALE_AFTER_MS - 10_000;
   const staleNew = NOW - SESSION_LIMIT_STALE_AFTER_MS - 1000;
   const resolved = resolveSessionLimits(
     [
       stored(SessionLimitSnapshotSource.Statusline, 42, staleOld),
-      stored(SessionLimitSnapshotSource.RateLimitEvent, 100, staleNew),
+      stored(SessionLimitSnapshotSource.UsageApi, 100, staleNew),
     ],
     NOW
   );
@@ -124,7 +79,7 @@ test("SessionLimitsSnapshotStore: keeps only the freshest per source", () => {
 test("SessionLimitsSnapshotStore: resolve is null before any record; clear resets", () => {
   const store = new SessionLimitsSnapshotStore();
   assert.equal(store.resolve(NOW), null);
-  store.record(stored(SessionLimitSnapshotSource.RateLimitEvent, 100, NOW));
+  store.record(stored(SessionLimitSnapshotSource.UsageApi, 100, NOW));
   assert.equal(store.resolve(NOW)?.fiveHour?.utilization, 100);
   store.clear();
   assert.equal(store.resolve(NOW), null);

@@ -5,6 +5,7 @@ import { Dialog as DialogPrimitive } from "radix-ui"
 import { XIcon } from "lucide-react"
 
 import { cn } from "@closedloop-ai/design-system/lib/utils"
+import { ModalDialogOpenMarker } from "@closedloop-ai/design-system/hooks/use-modal-dialog-open"
 
 function Dialog({
   ...props
@@ -49,10 +50,12 @@ function DialogOverlay({
 function DialogContent({
   className,
   children,
+  size = "default",
   showCloseButton = true,
   showOverlay = true,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
+  size?: DialogContentSize
   showCloseButton?: boolean
   showOverlay?: boolean
 }) {
@@ -62,12 +65,14 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border p-6 shadow-lg duration-200 sm:max-w-lg",
+          "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border p-6 shadow-lg duration-200",
+          dialogContentSizeClasses[size],
           className
         )}
         {...props}
       >
         {children}
+        <ModalDialogOpenMarker />
         {showCloseButton && (
           <DialogPrimitive.Close
             data-slot="dialog-close"
@@ -130,6 +135,21 @@ function DialogDescription({
     />
   )
 }
+
+type DialogContentSize = keyof typeof dialogContentSizeClasses
+
+const dialogContentSizeClasses = {
+  default: "w-full max-w-[calc(100%-2rem)] sm:max-w-lg",
+  large:
+    "h-[min(680px,calc(100dvh-2rem))] w-[min(900px,calc(100vw-2rem))] max-w-[900px] sm:max-w-[900px]",
+  // For a dialog that hosts its own multi-column layout rather than a single
+  // column of fields. Same clamp idiom as `large`, one step wider and taller,
+  // so the sizes stay comparable and neither caller invents its own numbers.
+  // The radius rides the size because at this frame the base `rounded-lg` reads
+  // tight, and a caller overriding it separately is how the two drift apart.
+  xlarge:
+    "h-[min(880px,calc(100dvh-2rem))] w-[min(1180px,calc(100vw-2rem))] max-w-[1180px] rounded-2xl sm:max-w-[1180px]",
+} as const
 
 export {
   Dialog,

@@ -1,5 +1,4 @@
 import type {
-  BackendMismatchBody as SharedBackendMismatchBody,
   CheckResult as SharedCheckResult,
   CheckResultDebug as SharedCheckResultDebug,
   CheckResultRepair as SharedCheckResultRepair,
@@ -7,19 +6,13 @@ import type {
   ComputeTargetSecurity as SharedComputeTargetSecurity,
   ComputeTargetServerCapabilities as SharedComputeTargetServerCapabilities,
   DesktopSecurityReason as SharedDesktopSecurityReason,
-  HealthCheckRepairStep as SharedHealthCheckRepairStep,
   RemediationLink as SharedRemediationLink,
 } from "@closedloop-ai/loops-api/compute-target";
 import {
-  CheckSeverity as sharedCheckSeverity,
   CLAUDE_CLI_CHECK_ID as sharedClaudeCliCheckId,
   CODEX_CLI_CHECK_ID as sharedCodexCliCheckId,
   DesktopSecurityStatus as sharedDesktopSecurityStatus,
-  HealthCheckRepairAction as sharedHealthCheckRepairAction,
-  HealthCheckRepairStepStatus as sharedHealthCheckRepairStepStatus,
-  PluginUpdateOutcome as sharedPluginUpdateOutcome,
 } from "@closedloop-ai/loops-api/compute-target";
-import { z } from "zod";
 import type { JsonObject, JsonValue } from "./common";
 
 // Re-export the primitives that are shared verbatim with @closedloop-ai/loops-api
@@ -32,30 +25,11 @@ export type DesktopSecurityStatus =
 export type DesktopSecurityReason = SharedDesktopSecurityReason;
 export type ComputeTargetSecurity = SharedComputeTargetSecurity;
 export type CheckResultDebug = SharedCheckResultDebug;
-export const CheckSeverity = sharedCheckSeverity;
-export type CheckSeverity = (typeof CheckSeverity)[keyof typeof CheckSeverity];
 export const CLAUDE_CLI_CHECK_ID = sharedClaudeCliCheckId;
 export const CODEX_CLI_CHECK_ID = sharedCodexCliCheckId;
-export const PluginUpdateOutcome = sharedPluginUpdateOutcome;
-export type PluginUpdateOutcome =
-  (typeof PluginUpdateOutcome)[keyof typeof PluginUpdateOutcome];
 export type RemediationLink = SharedRemediationLink;
 export type CheckResult = SharedCheckResult;
 export type CheckResultRepair = SharedCheckResultRepair;
-export const HealthCheckRepairAction = sharedHealthCheckRepairAction;
-export type HealthCheckRepairAction =
-  (typeof HealthCheckRepairAction)[keyof typeof HealthCheckRepairAction];
-export const HealthCheckRepairStepStatus = sharedHealthCheckRepairStepStatus;
-export type HealthCheckRepairStepStatus =
-  (typeof HealthCheckRepairStepStatus)[keyof typeof HealthCheckRepairStepStatus];
-export type HealthCheckRepairStep = SharedHealthCheckRepairStep;
-/**
- * `BackendMismatchBody` is the `"backend_mismatch"` variant of the 409
- * compute-target conflict union. The `"multiple_targets"` variant is
- * `ComputeTargetConflictBody` (defined below).
- */
-export type BackendMismatchBody = SharedBackendMismatchBody;
-
 /**
  * API-side ComputeTarget: the shared loops-api contract plus the api/app-only
  * `selectedHarness` field. `selectedHarness` is intentionally kept out of the
@@ -104,22 +78,6 @@ export type HealthCheckResponse = {
   };
 };
 
-/**
- * Result of a gateway Repair run: the ordered steps the gateway took (or
- * deliberately skipped), plus the health check it re-ran immediately afterwards
- * so the panel updates in place instead of asking the user to re-check by hand
- * (ISS-5389).
- */
-export type HealthCheckRepairResponse = {
-  steps: HealthCheckRepairStep[];
-  result: HealthCheckResponse;
-  /**
-   * True when this response was served from a repair that was already running —
-   * a second press joined the in-flight run instead of starting a second one.
-   */
-  joinedInFlight?: boolean;
-};
-
 export type ComputeTargetHealthCheckSnapshot = {
   id: string;
   organizationId: string;
@@ -136,38 +94,17 @@ export type ComputeTargetHealthCheckSnapshot = {
   updatedAt: Date;
 };
 
-export type UpsertComputeTargetHealthCheckSnapshotInput = {
-  expectedMcpUrl?: string | null;
-  latestVersion?: string | null;
-  pluginAutoUpdateEnabled?: boolean;
-  result: HealthCheckResponse;
-};
-
 export const COMPUTE_TARGET_SIGNING_FEATURE_FLAG_KEY =
   "compute-target-signing" as const;
-export const EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY =
-  "explicit-compute-selection" as const;
-export const HARNESS_SELECTION_FEATURE_FLAG_KEY = "harness-selection" as const;
-/**
- * Closed-by-default gate for the System Check "Repair" control (ISS-5389).
- * Web-only: the desktop renderer does not mount a System Check surface, so
- * there is no desktop Labs twin to keep in lockstep.
- */
-export const SYSTEM_CHECK_REPAIR_FEATURE_FLAG_KEY =
-  "system-check-repair" as const;
 
 /**
  * The System Check Repair gateway operation (ISS-5389).
  *
- * Both live here rather than in each app because THREE independent catalogs
- * have to agree on them: the Desktop approval catalog, the API's desktop-command
- * wire catalog, and the API's per-path authorization at command creation. A
- * repair that is missing from any one of them is rejected as an unmapped
- * operation, or worse, waved through without its ownership check.
- *
- * Repair mutates the target machine (it clears binary-path overrides and runs
- * `claude plugin enable`), so it is deliberately NOT folded into the read-only
- * `health_check` operation id.
+ * Current Desktop builds no longer serve it (ISS-12749), but installed older
+ * builds still do, and repair mutates the target machine (it clears binary-path
+ * overrides and runs `claude plugin enable`). So the API's desktop-command wire
+ * catalog and its per-path ownership check at command creation keep reading
+ * these until no such build remains.
  */
 export const HEALTH_CHECK_REPAIR_OPERATION_ID = "health_check_repair" as const;
 export const HEALTH_CHECK_REPAIR_PATH =
@@ -216,40 +153,12 @@ export type RegisterComputeTargetResponse = {
   isOnline: boolean;
 };
 
-export type UpdateComputeTargetInput = {
-  machineName?: string;
-  platform?: string;
-  capabilities?: JsonObject;
-  supportedOperations?: string[];
-  gatewayId?: string;
-  desktopSecurityUpgradeProtocolVersion?: number;
-  selectedHarness?: HarnessType;
-};
-
-export type ComputeTargetHeartbeatResponse = {
-  ok: true;
-};
-
 export type RelayOperationDispatchRequest = {
   operationId: string;
   operation: string;
   params: JsonValue;
   streaming: boolean;
 };
-
-export type RelayResultIngestRequest =
-  | {
-      operationId: string;
-      result: JsonValue;
-      sequence?: number;
-    }
-  | {
-      operationId: string;
-      event: JsonValue;
-      done?: boolean;
-      error?: string;
-      sequence?: number;
-    };
 
 export const DesktopCommandStatus = {
   Queued: "queued",
@@ -387,69 +296,6 @@ export type DesktopCommandEvent = {
   createdAt: string;
 };
 
-export const computeTargetConflictBodyValidator = z.object({
-  error: z.literal("multiple_targets"),
-  message: z.string(),
-  availableTargets: z.array(
-    z.object({
-      id: z.string(),
-      machineName: z.string(),
-      status: z.string(),
-    })
-  ),
-});
-
-// The `"multiple_targets"` variant of the 409 compute-target conflict union.
-// The `"backend_mismatch"` variant is `BackendMismatchBody`, re-exported from
-// @closedloop-ai/loops-api at the top of this file. Future 409 variants should
-// be added to the shared contract and unioned for exhaustive client handling.
-export type ComputeTargetConflictBody = z.infer<
-  typeof computeTargetConflictBodyValidator
->;
-
-// Compute preference
-
-export const ComputePreference = {
-  Local: "LOCAL",
-  Cloud: "CLOUD",
-} as const;
-export type ComputePreference =
-  (typeof ComputePreference)[keyof typeof ComputePreference];
-
-export type ComputePreferenceResponse = {
-  preferredComputeMode: ComputePreference;
-  computeTargetId?: string;
-  /** True only when the user has persisted an explicit Cloud or Local choice. */
-  isExplicit?: boolean;
-  /**
-   * The user's persisted Cloud-launch harness. Omitted when unset (the client
-   * falls back to the Claude default via `parseSelectedHarness(null)`). Distinct
-   * from a ComputeTarget's per-row `selectedHarness`, which governs Local.
-   */
-  selectedHarness?: HarnessType;
-};
-
-export type SetComputePreferenceRequest = {
-  mode: ComputePreference;
-  computeTargetId?: string;
-  /** Cloud-launch harness to persist on `User.preferredHarness`. */
-  selectedHarness?: HarnessType;
-};
-
-export const ComputePreferenceRequiredError =
-  "compute_preference_required" as const;
-export const ComputePreferenceRequiredMessage =
-  "Select Cloud or a local compute target before starting a loop." as const;
-export type ComputePreferenceRequiredBody = {
-  error: typeof ComputePreferenceRequiredError;
-  message: typeof ComputePreferenceRequiredMessage;
-};
-
-export type SetComputeTargetSharingResponse = {
-  id: string;
-  isSharedWithOrg: boolean;
-};
-
 export const DESKTOP_SECURITY_UPGRADE_OPERATION_ID =
   "desktop_security_upgrade" as const;
 
@@ -496,12 +342,6 @@ export const HarnessType = {
   Codex: "codex",
 } as const;
 export type HarnessType = (typeof HarnessType)[keyof typeof HarnessType];
-
-export const setComputePreferenceRequestValidator = z.object({
-  mode: z.enum(ComputePreference),
-  computeTargetId: z.string().uuid().optional(),
-  selectedHarness: z.enum(HarnessType).optional(),
-});
 
 export function isMcpProviderAvailable(
   availability: McpProviderAvailability
@@ -580,26 +420,6 @@ export function deriveAvailableHarnesses(
 }
 
 /**
- * Storage schema version of a persisted System Check snapshot
- * (`ComputeTargetHealthCheck.schemaVersion`).
- *
- * Bumped to 2 by ISS-5811. Version 1 rows were written by an API build whose
- * validator had never heard of `severity`, so every row in them had the field
- * STRIPPED on the way into storage — and a stripped `severity` is not a neutral
- * loss: `resolveCheckSeverity` falls back to `!passed → error`, so an
- * undeterminable plugin row reads back as a proven failure and keeps blocking
- * the command. Plugin rows sit in the one-day default freshness window
- * (`HEALTH_CHECK_DEFAULT_FRESHNESS_MS`), so without a version signal a snapshot
- * written moments before the deploy would go on blocking for up to 24h after
- * the fix shipped.
- *
- * Consumers treat a snapshot BELOW this version as unusable rather than stale
- * data to render — falling through to a live check is always safe, where
- * trusting a v1 row reproduces the outage this ticket exists to end.
- */
-export const HEALTH_CHECK_SNAPSHOT_SCHEMA_VERSION = 2;
-
-/**
  * Whether `target` belongs to the viewer who asked for it.
  *
  * Deliberately NOT `target.userId === <the signed-in user's id>`: those are two
@@ -612,8 +432,8 @@ export const HEALTH_CHECK_SNAPSHOT_SCHEMA_VERSION = 2;
  *
  * The viewer-scoped list response already answers this server-side:
  * `toComputeTarget` populates `ownerName` ONLY for targets the viewer does not
- * own, so its absence IS the ownership signal, and it is the signal the compute
- * target picker, the settings card and the pre-loop system check already read.
+ * own, so its absence IS the ownership signal, and it is the signal the
+ * Settings compute-target rows already read.
  *
  * Scoped to viewer-annotated list responses (`GET /compute-targets`);
  * single-target register/update responses carry no viewer context.
@@ -622,4 +442,101 @@ export function isComputeTargetOwnedByViewer(
   target: Pick<ComputeTarget, "ownerName">
 ): boolean {
   return !target.ownerName;
+}
+
+const VALID_HARNESS_VALUES = new Set<string>(Object.values(HarnessType));
+
+/**
+ * Narrow a stored `selectedHarness` string to a known {@link HarnessType},
+ * defaulting to Claude. The column is free-text TEXT, so an older row (or a
+ * value a newer build wrote) must degrade to the default rather than reach a
+ * dispatch path as an unlaunchable harness.
+ *
+ * Lives beside {@link HarnessType}, the contract it narrows to, so its
+ * `apps/api` consumers (compute-target record mapping and the compute-targets
+ * service) share one membership test instead of drifting copies.
+ */
+export function parseSelectedHarness(
+  value: string | null | undefined
+): HarnessType {
+  return value != null && VALID_HARNESS_VALUES.has(value)
+    ? (value as HarnessType)
+    : HarnessType.Claude;
+}
+
+/**
+ * The socket event the cloud answers a `desktop.hello` with, named so the two
+ * RELAYED API sites that construct the frame — `internal/relay/socket-event`'s
+ * hello handler and its sequence-gap re-ack — cannot drift from the relay that
+ * stamps `mintingApiOrigin` onto it in flight. A rename that missed the relay
+ * would silently stop the stamp: every ack still delivered, and the adoption
+ * guard simply never armed again.
+ *
+ * The relay is not the only emitter, and the third site answers through this
+ * same constant. `apps/api/lib/desktop-gateway-socket-server.ts` emits its own
+ * ack twice on the direct-connect socket and never passes through the relay, so
+ * it stamps its own statement (ISS-9152): the API's configured
+ * `NEXT_PUBLIC_API_URL`, reduced by the same {@link toMintingApiOrigin}. That
+ * transport needs one as much as the relayed one does — the desktop has one
+ * gateway socket client, it dials `getRelayOrigin()` at the same
+ * `/desktop-gateway` namespace both servers mount, and `apiOrigin` remains a
+ * separate setting, so a profile pointing `relayOrigin` straight at API
+ * deployment A while `apiOrigin` says B reaches that server and reproduces the
+ * exact crossed pairing ISS-9081 refuses.
+ *
+ * The desktop subscriber likewise keeps its own literal. Its listener is pinned
+ * by an AST guard (`cloud-socket-presence.test.ts`) that reads the event name
+ * out of the source, and an identifier there would narrow that guard to a name
+ * match. A subscriber that drifts fails loudly anyway — no ack is ever
+ * dispatched — which is the case this constant is not needed for.
+ */
+export const DESKTOP_HELLO_ACK_SOCKET_EVENT = "desktop.hello.ack" as const;
+
+/**
+ * ISS-9081: the API that actually resolved a compute target, stated on
+ * `desktop.hello.ack` — by the relay on the relayed transport, and by the API's
+ * own socket server on the direct one (ISS-9152) — so the desktop can guard
+ * adoption on a fact instead of inferring one from the id.
+ *
+ * The desktop retains a target id bound to the origin that minted it
+ * (ISS-8702), but the ack carried no origin, so `remember` had to stamp the
+ * origin the desktop is *currently* pointed at. That is wrong whenever the two
+ * disagree: the relay resolves the target against its OWN `CLOSEDLOOP_API_URL`
+ * and the desktop's `relayOrigin` is a separate setting from its `apiOrigin`,
+ * so a re-register inside environment A hands back a fresh A-minted id that
+ * gets stamped as B's.
+ *
+ * Optional forever, on both sides. A relay on an older build never sends it and
+ * the receiver must behave exactly as it did before; a desktop on an older
+ * build drops it at the parse. Omitted rather than sent as `null` when the
+ * sender cannot name its own API, per the cross-repo omission rule.
+ *
+ * Carried raw, exactly as the sender spells it: the receiver owns the
+ * comparison and normalizes both sides with the same function, so a second
+ * normalization here could only disagree with it. Symmetric with the desktop's
+ * own `apiOrigin` setting, which is likewise a URL string normalized on compare.
+ */
+export type DesktopHelloAckMintingOrigin = {
+  mintingApiOrigin?: string;
+};
+
+/**
+ * The bare origin a sender states as `mintingApiOrigin`, or `undefined` when
+ * there is nothing parseable to state — in which case the sender OMITS the
+ * field. Shared by both emitters (the relay's forwarded acks and the API's
+ * direct socket server) so the two transports cannot spell the statement
+ * differently. Mirrors the desktop's own `normalizeEnvironmentKey`, which reads
+ * it back and lives under `apps/desktop/src/shared`, out of reach from here.
+ */
+export function toMintingApiOrigin(
+  value: string | undefined
+): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    return new URL(value).origin;
+  } catch {
+    return undefined;
+  }
 }

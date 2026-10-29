@@ -1,27 +1,31 @@
-import type { LoopCommand } from "@closedloop-ai/loops-api/commands";
-import { DESKTOP_ANALYTICS_STRING_MAX_LENGTH } from "@repo/api/src/types/desktop-analytics";
+import { OnboardingAnalyticsEvent } from "@repo/api/src/types/onboarding-analytics";
 import type { TokenCostNotPricedReason } from "../../shared/token-cost.js";
 import type { AgentSessionSyncTelemetryEvent } from "../agent-sync/agent-session-sync-service-options.js";
 import type {
   DesktopAnalyticsEvent,
   DesktopAnalyticsEventName,
 } from "../cloud/cloud-protocol.js";
+import { sanitizeAnalyticsProperties } from "./analytics-property-sanitizer.js";
+import {
+  buildDesktopClientVersionTrace,
+  getDesktopClientVersion,
+  setDesktopClientVersion,
+} from "./desktop-client-version.js";
 import { drainTelemetryWithDeadline } from "./shutdown-deadline.js";
 import type {
   DesktopShutdownDiagnostics,
   DesktopUpdateDiagnostics,
-  ExecutePlanSourceDiagnostics,
   OutboundNetworkDiagnostics,
-  PluginUpdateDiagnostics,
   StoreIntegrityDiagnostics,
-  SupportUploadDiagnostics,
   TelemetryCategory,
   TelemetryDiagnostics,
   TelemetryEmitter,
+  TelemetryEventPayload,
   TelemetrySeverity,
   TelemetryTraceContext,
   TokenCostPricingMissSurface,
 } from "./telemetry-protocol.js";
+import { getTelemetryRelaySink } from "./telemetry-relay-sink.js";
 import {
   type EnrichedTelemetryEvent,
   TelemetryService,
@@ -37,6 +41,17 @@ export type ObservabilityOptions = {
   telemetryFlush?: (options: { timeoutMs: number }) => Promise<void>;
   analytics?: ProductAnalyticsTransport;
   desktopClientVersion?: string;
+  /**
+   * ISS-10502 (PRD-736 decision #11): the install's node_uuid, stamped on every
+   * product-analytics event as `device_id` — the pre/post-auth join key. A
+   * PROPERTY only: it is never aliased and never `identify`-ed to a person.
+   */
+  deviceId?: string;
+  /**
+   * ISS-9743 — the commit this bundle was built from. Omitted when the process
+   * cannot resolve one; `desktopClientVersion` alone names no source build.
+   */
+  desktopBuildCommit?: string;
 };
 
 export type ProductAnalyticsTransport = {
@@ -49,57 +64,28 @@ export type ProductAnalyticsTransport = {
   flush: (options: { timeoutMs: number }) => Promise<void>;
 };
 
-type HealthCheckTelemetryInput = {
-  id: string;
-  passed: boolean;
-  error?: string;
-  debug?: {
-    errorCode?: string;
-    stderr?: string;
-    resolvedPath?: string;
-    shell?: string;
-    platform?: NodeJS.Platform;
-    foundAt?: string[];
-  };
-};
-
 export class Observability {
   private static telemetry: TelemetryService | null = null;
   private static telemetryFlush:
     | ((options: { timeoutMs: number }) => Promise<void>)
     | null = null;
   private static analytics: ProductAnalyticsTransport | null = null;
-  private static desktopClientVersion = "";
+  private static analyticsDeviceId: string | null = null;
 
   // FEA-1969 — dedup set for token-cost pricing-miss events. Bounds telemetry
   // volume: the costing layers run per-row on every branch read/projection, so
   // an undeduped emit would flood the relay. Keyed per `tokenCostPricingMiss`.
   private static readonly pricingMissSeen = new Set<string>();
 
-  // Checks for which healthcheck telemetry is emitted. Extend this allowlist in future PRs.
-  private static readonly HEALTH_CHECK_TELEMETRY_IDS = new Set(["claude-cli"]);
-  // Volume math: one stuck user + 30-second poll = ~120 polls/hour.
-  // This design emits: 1x failure_detected on first sighting, then
-  // 7x failure_persistent over an 8-hour session. Negligible Datadog volume.
   // Clock-backward: negative delta < HEARTBEAT_MS -> heartbeat skipped (correct).
-  // App restart: state is memory-only; re-launch re-emits failure_detected (correct).
   private static readonly HEARTBEAT_MS = 60 * 60 * 1000; // 1 hour
 
-  private static healthCheckState = new Map<
-    string,
-    {
-      lastState: "passing" | "failing";
-      lastErrorCode?: string;
-      lastEmittedAt: number;
-    }
-  >();
-
   // FEA-1999 — cadence state for the SQLite store integrity probe. Memory-only
-  // (re-launch re-emits the first signal), mirroring `healthCheckState`. Bounds
-  // Datadog volume: a failure emits once on detection (or when the affected
-  // object set changes), re-emits only on the heartbeat while it persists, and a
-  // recovery / first-healthy probe emits one clean signal — repeated identical
-  // states are suppressed.
+  // (re-launch re-emits the first signal). Bounds Datadog volume: a failure
+  // emits once on detection (or when the affected object set changes),
+  // re-emits only on the heartbeat while it persists, and a recovery /
+  // first-healthy probe emits one clean signal — repeated identical states are
+  // suppressed.
   private static storeIntegrityState: {
     lastState: "healthy" | "failing";
     lastIssueKey: string;
@@ -110,11 +96,12 @@ export class Observability {
   static init(options: ObservabilityOptions): void {
     Observability.telemetry = new TelemetryService({
       sendTelemetry: options.telemetrySend,
+      desktopBuildCommit: options.desktopBuildCommit,
     });
     Observability.telemetryFlush = options.telemetryFlush ?? null;
     Observability.analytics = options.analytics ?? null;
-    Observability.desktopClientVersion = options.desktopClientVersion ?? "";
-    Observability.healthCheckState.clear();
+    Observability.analyticsDeviceId = options.deviceId ?? null;
+    setDesktopClientVersion(options.desktopClientVersion ?? "");
     Observability.storeIntegrityState = null;
   }
 
@@ -126,8 +113,8 @@ export class Observability {
     Observability.telemetry = null;
     Observability.telemetryFlush = null;
     Observability.analytics = null;
-    Observability.desktopClientVersion = "";
-    Observability.healthCheckState.clear();
+    Observability.analyticsDeviceId = null;
+    setDesktopClientVersion("");
     Observability.pricingMissSeen.clear();
     Observability.storeIntegrityState = null;
   }
@@ -156,7 +143,7 @@ export class Observability {
   static getTelemetryEmitter(): TelemetryEmitter {
     return {
       emit(event) {
-        Observability.telemetry?.emit(event);
+        Observability.deliverTelemetry(event);
       },
     };
   }
@@ -360,19 +347,6 @@ export class Observability {
     );
   }
 
-  /** Emits structured lifecycle diagnostics for failure support bundle uploads. */
-  static supportUploadLifecycle(input: SupportUploadDiagnostics): void {
-    const severity: TelemetrySeverity =
-      input.outcome === "failed" ? "warn" : "info";
-    Observability.emitTelemetry(
-      severity,
-      "desktop.support_upload",
-      `Support upload ${input.outcome}`,
-      { loopId: input.loopId, jobId: input.loopId },
-      { supportUpload: input }
-    );
-  }
-
   /** Emits bounded Desktop auto-update telemetry through the relay path. */
   static electronUpdateInitiated(input: DesktopUpdateDiagnostics): void {
     Observability.emitTelemetry(
@@ -406,58 +380,27 @@ export class Observability {
     );
   }
 
-  /** Emits bounded Closedloop plugin update attempt telemetry through the relay path. */
-  static pluginUpdateAttempted(input: PluginUpdateDiagnostics): void {
-    Observability.emitTelemetry(
-      "info",
-      "plugin_update.attempted",
-      "Plugin update attempted",
-      {},
-      { pluginUpdate: input }
-    );
-    Observability.captureAnalytics("plugin_update_attempted", {
-      plugin_count: input.pluginIds.length,
-      duration_ms: input.durationMs,
-    });
-  }
-
-  /** Emits bounded Closedloop plugin update success telemetry through the relay path. */
-  static pluginUpdateSucceeded(input: PluginUpdateDiagnostics): void {
-    Observability.emitTelemetry(
-      "info",
-      "plugin_update.succeeded",
-      "Plugin update succeeded",
-      {},
-      { pluginUpdate: input }
-    );
-    Observability.captureAnalytics("plugin_update_succeeded", {
-      plugin_count: input.pluginIds.length,
-      duration_ms: input.durationMs,
-    });
-  }
-
-  /** Emits bounded Closedloop plugin update failure telemetry through the relay path. */
-  static pluginUpdateFailed(input: PluginUpdateDiagnostics): void {
-    Observability.emitTelemetry(
-      "error",
-      "plugin_update.failed",
-      "Plugin update failed",
-      {},
-      { pluginUpdate: input }
-    );
-    Observability.captureAnalytics("plugin_update_failed", {
-      plugin_count: input.pluginIds.length,
-      duration_ms: input.durationMs,
-      failure_reason: input.failureReason,
-    });
-  }
-
   // --- Sandbox (product analytics only) ---
 
   static sandboxBlocked(operationClass: string): void {
     Observability.captureAnalytics("sandbox_blocked_operation", {
       operation_class: operationClass,
     });
+  }
+
+  // --- Renderer surface analytics (product analytics only, ISS-8752) ---
+
+  /**
+   * Forward one renderer-originated surface-attributed event (already
+   * validated against the renderer-permitted subset by the IPC handler) to the
+   * product-analytics transport. Same enrichment/clamping as every other
+   * product analytics event.
+   */
+  static rendererSurfaceAnalytics(
+    event: DesktopAnalyticsEventName,
+    properties: Record<string, unknown>
+  ): void {
+    Observability.captureAnalytics(event, properties);
   }
 
   // --- Agent session sync (product analytics only) ---
@@ -470,180 +413,6 @@ export class Observability {
       sync_mode: event.syncMode,
       session_count: event.sessionCount,
       payload_bytes: event.payloadBytes,
-    });
-  }
-
-  // --- Job lifecycle (telemetry only) ---
-
-  static jobStarted(
-    commandId: string | undefined,
-    operationId: string | undefined,
-    loopId: string,
-    pid: number,
-    command?: LoopCommand
-  ): void {
-    Observability.emitTelemetry(
-      "info",
-      "job.started",
-      `Job started with pid=${pid}`,
-      {
-        commandId,
-        operationId,
-        loopId,
-        jobId: loopId,
-      },
-      Observability.withLifecycleCommand(undefined, command)
-    );
-  }
-
-  static jobPlanSourceResolved(
-    commandId: string | undefined,
-    operationId: string | undefined,
-    loopId: string,
-    planSource: ExecutePlanSourceDiagnostics
-  ): void {
-    Observability.emitTelemetry(
-      "info",
-      "job.plan_source_resolved",
-      `EXECUTE plan source resolved: ${planSource.source}`,
-      {
-        commandId,
-        operationId,
-        loopId,
-        jobId: loopId,
-      },
-      { planSource }
-    );
-  }
-
-  static jobCompleted(
-    commandId: string | undefined,
-    operationId: string | undefined,
-    loopId: string,
-    diagnostics?: TelemetryDiagnostics,
-    loopSessionId?: string,
-    command?: LoopCommand
-  ): void {
-    Observability.emitTelemetry(
-      "info",
-      "job.completed",
-      "Job completed successfully",
-      {
-        commandId,
-        operationId,
-        loopId,
-        jobId: loopId,
-        loopSessionId,
-      },
-      Observability.withLifecycleCommand(diagnostics, command)
-    );
-  }
-
-  static jobFailed(
-    commandId: string | undefined,
-    operationId: string | undefined,
-    loopId: string,
-    exitCode: number,
-    diagnostics?: TelemetryDiagnostics,
-    loopSessionId?: string,
-    command?: LoopCommand
-  ): void {
-    const baseDiagnostics: TelemetryDiagnostics = diagnostics
-      ? { ...diagnostics, exitCode }
-      : { exitCode };
-    Observability.emitTelemetry(
-      "error",
-      "job.failed",
-      `Process exited with code ${exitCode}`,
-      { commandId, operationId, loopId, jobId: loopId, loopSessionId },
-      Observability.withLifecycleCommand(baseDiagnostics, command)
-    );
-  }
-
-  static jobCancelled(
-    commandId: string | undefined,
-    operationId: string | undefined,
-    loopId: string,
-    exitCode: number,
-    diagnostics?: TelemetryDiagnostics,
-    loopSessionId?: string,
-    command?: LoopCommand
-  ): void {
-    const baseDiagnostics: TelemetryDiagnostics = diagnostics
-      ? { ...diagnostics, exitCode }
-      : { exitCode };
-    Observability.emitTelemetry(
-      "info",
-      "job.cancelled",
-      `Process cancelled (exit code ${exitCode})`,
-      { commandId, operationId, loopId, jobId: loopId, loopSessionId },
-      Observability.withLifecycleCommand(baseDiagnostics, command)
-    );
-  }
-
-  static jobAuthChallenge(
-    commandId: string | undefined,
-    operationId: string | undefined,
-    loopId: string,
-    exitCode: number,
-    diagnostics?: TelemetryDiagnostics,
-    loopSessionId?: string
-  ): void {
-    Observability.emitTelemetry(
-      "error",
-      "job.auth_challenge",
-      `Auth challenge detected (exit code ${exitCode})`,
-      { commandId, operationId, loopId, jobId: loopId, loopSessionId },
-      diagnostics ? { ...diagnostics, exitCode } : { exitCode }
-    );
-  }
-
-  // --- Preflight (telemetry only) ---
-
-  static preflightBinaryNotFound(
-    commandId: string | undefined,
-    operationId: string | undefined,
-    loopId: string
-  ): void {
-    Observability.emitTelemetry(
-      "error",
-      "preflight.binary_not_found",
-      "claude CLI not found in PATH",
-      {
-        commandId,
-        operationId,
-        loopId,
-      }
-    );
-  }
-
-  static preflightScriptNotFound(
-    commandId: string | undefined,
-    operationId: string | undefined,
-    loopId: string
-  ): void {
-    Observability.emitTelemetry(
-      "error",
-      "preflight.script_not_found",
-      "run-loop.sh not found in plugin cache",
-      {
-        commandId,
-        operationId,
-        loopId,
-      }
-    );
-  }
-
-  static preflightSpawnFailed(
-    commandId: string | undefined,
-    operationId: string | undefined,
-    loopId: string,
-    message: string
-  ): void {
-    Observability.emitTelemetry("error", "preflight.spawn_failed", message, {
-      commandId,
-      operationId,
-      loopId,
     });
   }
 
@@ -677,10 +446,7 @@ export class Observability {
     Observability.pricingMissSeen.add(dedupKey);
 
     const reason = args.resolveReason();
-    const trace: TelemetryTraceContext = {};
-    if (Observability.desktopClientVersion) {
-      trace.desktopClientVersion = Observability.desktopClientVersion;
-    }
+    const trace = buildDesktopClientVersionTrace();
 
     Observability.emitTelemetry(
       "warn",
@@ -696,85 +462,6 @@ export class Observability {
         },
       }
     );
-  }
-
-  // --- Health check telemetry ---
-
-  static healthCheckResult(check: HealthCheckTelemetryInput): void {
-    if (!Observability.HEALTH_CHECK_TELEMETRY_IDS.has(check.id)) {
-      return;
-    }
-
-    const state: "passing" | "failing" = check.passed ? "passing" : "failing";
-    const errorCode = check.debug?.errorCode;
-    const prior = Observability.healthCheckState.get(check.id);
-    const now = Date.now();
-
-    let category: TelemetryCategory | null = null;
-    if (!prior) {
-      category = state === "failing" ? "healthcheck.failure_detected" : null;
-    } else if (prior.lastState !== state) {
-      category =
-        state === "failing"
-          ? "healthcheck.failure_detected"
-          : "healthcheck.recovered";
-    } else if (state === "failing" && prior.lastErrorCode !== errorCode) {
-      category = "healthcheck.failure_detected";
-    } else if (
-      state === "failing" &&
-      now - prior.lastEmittedAt >= Observability.HEARTBEAT_MS
-    ) {
-      category = "healthcheck.failure_persistent";
-    }
-
-    Observability.healthCheckState.set(check.id, {
-      lastState: state,
-      lastErrorCode: errorCode,
-      lastEmittedAt: category ? now : (prior?.lastEmittedAt ?? now),
-    });
-
-    if (!category) {
-      return;
-    }
-
-    const message =
-      category === "healthcheck.recovered"
-        ? "recovered"
-        : (check.error ?? "health check failed");
-    const severity: TelemetrySeverity =
-      category === "healthcheck.recovered" ? "info" : "error";
-
-    Observability.emitTelemetry(
-      severity,
-      category,
-      message,
-      {},
-      {
-        extra: {
-          check_id: check.id,
-          error_code: errorCode,
-          shell: check.debug?.shell,
-          platform: check.debug?.platform,
-          found_elsewhere: (check.debug?.foundAt?.length ?? 0) > 0,
-          resolved_path: check.debug?.resolvedPath,
-          found_at: check.debug?.foundAt,
-          stderr: check.debug?.stderr,
-        },
-      }
-    );
-    if (
-      category === "healthcheck.failure_detected" ||
-      category === "healthcheck.failure_persistent" ||
-      category === "healthcheck.recovered"
-    ) {
-      Observability.captureAnalytics(category, {
-        check_id: check.id,
-        error_code: errorCode,
-        found_elsewhere: (check.debug?.foundAt?.length ?? 0) > 0,
-        platform: check.debug?.platform,
-        shell: check.debug?.shell,
-      });
-    }
   }
 
   // --- Store integrity health (FEA-1999) ---
@@ -839,10 +526,7 @@ export class Observability {
     // free text, so the message can never carry row content.
     const message = Observability.storeIntegrityMessage(category, diagnostics);
 
-    const trace: TelemetryTraceContext = {};
-    if (Observability.desktopClientVersion) {
-      trace.desktopClientVersion = Observability.desktopClientVersion;
-    }
+    const trace = buildDesktopClientVersionTrace();
 
     Observability.emitTelemetry(severity, category, message, trace, {
       storeIntegrity: diagnostics,
@@ -948,19 +632,6 @@ export class Observability {
 
   // --- Internal helpers ---
 
-  private static withLifecycleCommand(
-    diagnostics: TelemetryDiagnostics | undefined,
-    command: LoopCommand | undefined
-  ): TelemetryDiagnostics | undefined {
-    if (command === undefined) {
-      return diagnostics;
-    }
-    return {
-      ...diagnostics,
-      lifecycle: { ...diagnostics?.lifecycle, command },
-    };
-  }
-
   // commandId is a log/event attribute for correlation only — must not be promoted to a Datadog metric tag dimension
   private static emitTelemetry(
     severity: TelemetrySeverity,
@@ -969,13 +640,35 @@ export class Observability {
     trace: TelemetryTraceContext,
     diagnostics?: TelemetryDiagnostics
   ): void {
-    Observability.telemetry?.emit({
+    Observability.deliverTelemetry({
       severity,
       category,
       message,
       trace,
       diagnostics,
     });
+  }
+
+  /**
+   * ISS-7109 — the single chokepoint every desktop telemetry event leaves
+   * through, and the one place that knows this process may not own the
+   * transport.
+   *
+   * In main the sink is null and this is `telemetry?.emit(event)` unchanged. In
+   * a child process (the FEA-2038 DB host) `telemetry` is null because
+   * `Observability.init` never ran there, so the optional chain below would
+   * DISCARD the event; the installed relay carries it to main instead, which
+   * re-emits it on the child's behalf. Routing here rather than at any single
+   * reporter is what makes the fix hold for every emit the child can reach —
+   * present and future — instead of the one call site that exposed it.
+   */
+  private static deliverTelemetry(event: TelemetryEventPayload): void {
+    const relay = getTelemetryRelaySink();
+    if (relay) {
+      relay(event);
+      return;
+    }
+    Observability.telemetry?.emit(event);
   }
 
   private static captureAnalytics(
@@ -986,39 +679,25 @@ export class Observability {
       event,
       properties: sanitizeAnalyticsProperties({
         ...properties,
-        desktop_client_version: Observability.desktopClientVersion,
+        desktop_client_version: getDesktopClientVersion(),
         platform: process.platform,
+        // ISS-10502 review (tamsinb/whitlockk on #7748): the FTUE family ONLY.
+        // The relay refuses a whole payload on an unknown property key, so
+        // stamping every event would make a newer Desktop against an older API
+        // lose its ENTIRE analytics lane instead of just the new event family —
+        // which that API rejects by event name anyway, so scoping the key to
+        // the events that need it costs nothing and caps the blast radius.
+        ...(Observability.analyticsDeviceId !== null &&
+        ONBOARDING_ANALYTICS_EVENT_NAMES.has(event)
+          ? { device_id: Observability.analyticsDeviceId }
+          : {}),
       }),
       occurredAt: new Date().toISOString(),
     });
   }
 }
 
-function sanitizeAnalyticsProperties(
-  properties: Record<string, unknown>
-): Record<string, unknown> {
-  const sanitized: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(properties)) {
-    if (value === undefined) {
-      continue;
-    }
-    // The cloud caps each string property at DESKTOP_ANALYTICS_STRING_MAX_LENGTH
-    // and rejects the entire event on overflow, so clamp here to truncate the
-    // offending value instead of silently dropping the whole diagnostic.
-    if (typeof value === "string") {
-      sanitized[key] = value.slice(0, DESKTOP_ANALYTICS_STRING_MAX_LENGTH);
-      continue;
-    }
-    // The cloud validates every numeric property with z.number().finite() and
-    // likewise rejects the entire event on a NaN/Infinity value (e.g. a
-    // time_to_resolve_ms computed from a missing/malformed createdAt), so coerce
-    // non-finite numbers to null — an accepted value — instead of dropping the
-    // whole diagnostic.
-    if (typeof value === "number" && !Number.isFinite(value)) {
-      sanitized[key] = null;
-      continue;
-    }
-    sanitized[key] = value;
-  }
-  return sanitized;
-}
+/** The FTUE event family (PRD-736) — the only events that carry `device_id`. */
+const ONBOARDING_ANALYTICS_EVENT_NAMES: ReadonlySet<string> = new Set(
+  Object.values(OnboardingAnalyticsEvent)
+);

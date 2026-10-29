@@ -2,7 +2,7 @@ import type { DocumentRowData } from "@repo/app/documents/lib/artifact-row-adapt
 import { AppCoreStoryProviders } from "@repo/app/shared/storybook/decorators";
 import { makeArtifact } from "@repo/app/shared/test-fixtures/documents";
 import { SidebarProvider } from "@repo/design-system/components/ui/sidebar";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -89,13 +89,6 @@ vi.mock("@repo/app/documents/hooks/use-documents", () => ({
 vi.mock("@repo/design-system/hooks/use-container-width", () => ({
   useContainerWidth: () => ({ ref: { current: null }, width: 375 }),
 }));
-vi.mock("@repo/app/branches/hooks/use-branches", () => ({
-  useBranchList: () => ({
-    data: { items: [] },
-    isLoading: false,
-    isError: false,
-  }),
-}));
 vi.mock("@repo/app/documents/hooks/use-artifact-favorites", () => ({
   useFavoriteArtifacts: () => emptyQuery,
   useIsFavoriteArtifact: () => false,
@@ -103,13 +96,6 @@ vi.mock("@repo/app/documents/hooks/use-artifact-favorites", () => ({
 }));
 vi.mock("@repo/app/documents/hooks/use-delete-row-item", () => ({
   useDeleteRowItem: () => vi.fn(),
-}));
-vi.mock("@repo/app/projects/hooks/use-merged-project-trees", () => ({
-  useMergedProjectTrees: () => ({
-    data: null,
-    isLoading: false,
-    isError: false,
-  }),
 }));
 vi.mock("@repo/app/projects/hooks/use-assigned-artifact-tree", () => ({
   useAssignedArtifactTree: () => ({
@@ -200,9 +186,20 @@ describe("MyTasksPage — mobile width (FEA-3927)", () => {
 
   it("keeps the filter-category control accessible at mobile width", () => {
     render(<MyTasksPage />, { wrapper: Wrapper });
-    for (const label of ["All", "PRDs", "Issues", "Plans", "Branches"]) {
+    for (const label of ["All", "PRDs", "Issues", "Plans"]) {
       expect(screen.getByRole("radio", { name: label })).toBeInTheDocument();
     }
     expect(screen.getByLabelText("Filter items")).toBeInTheDocument();
+
+    // ISS-5540: those radios need an owner that says what the choice is FOR.
+    // This group renders no visible label of its own, so without an explicit
+    // name a screen-reader user reaches four options and no idea what they
+    // filter — and `radiogroup` REQUIRES a name where the `group` it replaced
+    // only recommended one. Scoped with `within` so this asserts ownership
+    // rather than mere co-presence in the document.
+    const filterGroup = screen.getByRole("radiogroup", {
+      name: "Filter by artifact type",
+    });
+    expect(within(filterGroup).getAllByRole("radio")).toHaveLength(4);
   });
 });

@@ -10,7 +10,7 @@
  * use. Routes import this service directly; `service.ts` does not re-export it.
  */
 import type { DocumentType } from "@repo/api/src/types/document";
-import { LoopStatus } from "@repo/api/src/types/loop";
+import { InsightsScope } from "@repo/api/src/types/insights";
 import type {
   ContributionDay,
   DocumentsByType,
@@ -25,30 +25,19 @@ import type {
 import { MilestoneKind } from "@repo/api/src/types/user";
 import { ArtifactType, GitHubPRState, Prisma, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
-
-// Average loop concurrency (see computeAvgLoopConcurrency) is derived by
-// materializing a user's loops and running an O(n²) interval-overlap scan, so
-// the read must stay bounded for heavy users. Like the contribution heatmap it
-// is scoped to the trailing year (`startedAt >= oneYearAgo`) and additionally
-// capped to the most recent LOOP_CONCURRENCY_SCAN_CAP rows (newest-first) so
-// both the memory footprint and the quadratic scan stay bounded regardless of
-// how many loops a user has started. This is an approximate KPI, so degrading
-// to the most recent window past the cap is acceptable; a sweep-line rewrite of
-// the overlap scan is tracked separately as a perf follow-on (FEA-3500). A
-// supporting (organizationId, userId, startedAt) index for this
-// startedAt-ordered/range-scanned read is likewise tracked separately (the
-// existing (organizationId, userId, createdAt) index already keeps the scan
-// org+user-selective); adding the migration here is deferred, mirroring the
-// MERGED_PR_SCAN_CAP index note in insights/merged-pr-queries.ts.
-export const LOOP_CONCURRENCY_SCAN_CAP = 10_000;
+import {
+  countDistinctMergedPrsFrom,
+  PROJECTED_PR_IDENTITY_SQL,
+} from "@/app/insights/merged-pr-queries";
+import { orgMergedPullRequestMembershipSql } from "@/lib/pull-request-population";
 
 export const userProfileService = {
   /**
    * Range-scoped headline metrics for the profile header (FEA-4064).
    *
    * This is the ONLY read the profile range toggle re-fetches. It carries every
-   * range-dependent number (documents, comments, PRs landed, loops, tokens,
-   * cost, avg loop concurrency) and is deliberately split from the fixed-window
+   * range-dependent number (documents, comments, PRs landed) and is
+   * deliberately split from the fixed-window
    * contribution heatmap (`getUserContributionHeatmap`) so a range click never
    * re-issues the trailing-year heatmap SQL, and so a slow/failing heatmap read
    * can never fail this ranged response (widget independence).
@@ -62,36 +51,16 @@ export const userProfileService = {
     startDate?: Date
   ): Promise<UserProfileHeadline> {
     try {
-      const oneYearAgo = new Date();
-      oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-
       // Shared createdAt lower bound for the ranged aggregates. When startDate
       // is omitted this stays undefined, so each query's createdAt filter is a
       // no-op and the totals remain all-time exactly as before.
       const rangedCreatedAt = startDate ? { gte: startDate } : undefined;
-
-      // Lower bound applied to the PR's own merge time for "PRs Landed" — the PR
-      // lands in the window it MERGED in, independent of when its branch artifact
-      // was created (FEA-4064). Undefined when all-time, same no-op semantics.
-      const rangedMergedAt = startDate ? { gte: startDate } : undefined;
-
-      // Lower bound for the O(n²) concurrency scan. It must stay windowed so the
-      // quadratic overlap scan stays bounded, so it never widens past the trailing
-      // year; when a range narrower than a year is selected it tightens to that
-      // range so Avg Loop Concurrency reflects the SAME window as its label rather
-      // than a trailing-year value (FEA-4064). Ranges are 30d/90d/1y, all ≥
-      // oneYearAgo, so `startDate` (when present) is always the tighter bound.
-      const concurrencyStartedAtFloor =
-        startDate && startDate > oneYearAgo ? startDate : oneYearAgo;
 
       const [
         totalArtifacts,
         artifactsByTypeRaw,
         totalComments,
         totalPRsLanded,
-        totalLoops,
-        loopConcurrencyData,
-        loopTokenAggregate,
       ] = await Promise.all([
         // Total document artifacts created
         withDb((db) =>
@@ -127,64 +96,15 @@ export const userProfileService = {
             },
           })
         ),
-        // Merged branches with current PR evidence created by the user, windowed
-        // by when the PR actually LANDED (currentPullRequestDetail.mergedAt), not
-        // when the branch artifact was created (FEA-4064). A branch cut months ago
-        // but merged inside the selected window is a landing in that window; the
-        // Insights "PRs Landed" KPI windows on this same mergedAt field. Served by
-        // the (organizationId, prState, mergedAt) index on PullRequestDetail.
-        withDb((db) =>
-          db.artifact.count({
-            where: {
-              organizationId,
-              type: ArtifactType.BRANCH,
-              createdById: userId,
-              branch: {
-                currentPullRequestDetail: {
-                  prState: GitHubPRState.MERGED,
-                  mergedAt: rangedMergedAt,
-                },
-              },
-            },
-          })
-        ),
-        // Total loops initiated
-        withDb((db) =>
-          db.loop.count({
-            where: { userId, organizationId, createdAt: rangedCreatedAt },
-          })
-        ),
-        // Loop concurrency: loops with timing data. Bounded to the selected
-        // window (or the trailing year when all-time) and the most recent
-        // LOOP_CONCURRENCY_SCAN_CAP rows (newest-first) so the O(n²) overlap scan
-        // stays bounded for heavy users, mirroring how the contribution heatmap
-        // read is windowed (FEA-3500). The lower bound is `concurrencyStartedAtFloor`
-        // so 30d/90d show a window-matching average rather than a trailing-year
-        // value under the selected-window label (FEA-4064). `startedAt >= floor`
-        // also preserves the prior "has timing data" filter, since a null
-        // startedAt cannot satisfy the lower bound.
-        withDb((db) =>
-          db.loop.findMany({
-            where: {
-              userId,
-              organizationId,
-              startedAt: { gte: concurrencyStartedAtFloor },
-            },
-            select: { startedAt: true, completedAt: true, status: true },
-            orderBy: { startedAt: "desc" },
-            take: LOOP_CONCURRENCY_SCAN_CAP,
-          })
-        ),
-        // Loop token/cost totals
-        withDb((db) =>
-          db.loop.aggregate({
-            where: { userId, organizationId, createdAt: rangedCreatedAt },
-            _sum: {
-              tokensInput: true,
-              tokensOutput: true,
-              estimatedCost: true,
-            },
-          })
+        // DISTINCT merged pull requests from the user's branches, windowed by
+        // when the PR actually LANDED (mergedAt), not when the branch was
+        // created (FEA-4064). Counted on the SAME projected-identity basis and
+        // org-merged membership as the Delivery KPI (cr on PR #6112) — one
+        // number for one universe: a multi-PR branch lands each PR, a twin
+        // projection lands once.
+        countDistinctMergedPrsFrom(
+          { organizationId, userId, scope: InsightsScope.Me },
+          startDate ?? null
         ),
       ]);
 
@@ -197,18 +117,16 @@ export const userProfileService = {
         }
       );
 
-      const avgConcurrency = computeAvgLoopConcurrency(loopConcurrencyData);
-
       return {
         totalDocuments: totalArtifacts,
         documentsByType: artifactsByType,
         totalComments,
         totalPRsLanded,
-        totalLoops,
-        avgConcurrency,
-        totalTokensInput: loopTokenAggregate._sum.tokensInput ?? 0,
-        totalTokensOutput: loopTokenAggregate._sum.tokensOutput ?? 0,
-        totalEstimatedCost: Number(loopTokenAggregate._sum.estimatedCost ?? 0),
+        totalLoops: 0,
+        avgConcurrency: 0,
+        totalTokensInput: 0,
+        totalTokensOutput: 0,
+        totalEstimatedCost: 0,
       };
     } catch (error) {
       log.error("[users-service] Failed to get user profile headline", {
@@ -350,7 +268,7 @@ export const userProfileService = {
    * Lifetime milestones/achievements for the profile (FEA-4108).
    *
    * Milestones are lifetime cumulative totals that crossed a threshold: PRs
-   * landed, documents created, and tokens used. Each is sourced from existing
+   * landed and documents created. Each is sourced from existing
    * per-user org-scoped aggregates — no cross-org queries. Only EARNED
    * milestones (a real threshold actually crossed) are returned, so the
    * Milestones section renders nothing rather than a fake empty state when the
@@ -358,124 +276,88 @@ export const userProfileService = {
    *
    * `earnedAt` is the timestamp of the activity that put the running total over
    * the threshold (the N-th merged PR's mergedAt / the N-th document's
-   * createdAt / the completion of the loop whose tokens first pushed the
-   * cumulative total over the mark), so a milestone reflects when it was
-   * actually reached. Token crossings use loop completion — not creation —
-   * because tokens accrue during a run, so a run spanning midnight would
-   * otherwise be credited before its tokens existed.
+   * createdAt), so a milestone reflects when it was actually reached.
    */
   async getUserProfileMilestones(
     userId: string,
     organizationId: string
   ): Promise<UserProfileMilestones> {
     try {
-      const [prLandedRows, documentDates, tokenThresholdRows] =
-        await Promise.all([
-          // Merge timestamps of the user's landed PRs, oldest-first and capped, so
-          // the N-th entry is when the user reached N lifetime landed PRs. Counted
-          // as BRANCH artifacts whose CURRENT PR detail merged — the same dedupe
-          // identity the headline "PRs landed" count uses (one branch = one
-          // landing). Counting PullRequestDetail rows directly would double-count a
-          // branch that has more than one merged PR-detail row (re-projected /
-          // re-fetched history), diverging from the headline.
-          withDb((db) =>
-            db.artifact.findMany({
-              where: {
-                organizationId,
-                type: ArtifactType.BRANCH,
-                createdById: userId,
-                branch: {
-                  currentPullRequestDetail: {
-                    prState: GitHubPRState.MERGED,
-                    mergedAt: { not: null },
-                  },
-                },
-              },
-              select: {
-                branch: {
-                  select: {
-                    currentPullRequestDetail: { select: { mergedAt: true } },
-                  },
-                },
-              },
-              // The branch's landing time is its current PR detail's mergedAt.
-              orderBy: {
-                branch: { currentPullRequestDetail: { mergedAt: "asc" } },
-              },
-              take: MILESTONE_SCAN_CAP,
-            })
-          ),
-          // Creation timestamps of the user's document artifacts, oldest-first and
-          // capped, so the N-th entry is when the user reached N lifetime docs.
-          withDb((db) =>
-            db.artifact.findMany({
-              where: {
-                createdById: userId,
-                organizationId,
-                type: ArtifactType.DOCUMENT,
-              },
-              select: { createdAt: true },
-              orderBy: { createdAt: "asc" },
-              take: MILESTONE_SCAN_CAP,
-            })
-          ),
-          // Token-threshold crossings computed entirely in SQL: a window running
-          // a cumulative token sum over the user's loops in completion order, from
-          // which we return exactly one row per crossed TOKEN_THRESHOLDS value —
-          // the loop whose completion first pushed the lifetime total to or past
-          // that threshold. This returns at most TOKEN_THRESHOLDS.length rows
-          // regardless of how many loops the user has, so the read does not grow
-          // with lifetime activity. The crossing timestamp is COALESCE(completed_at,
-          // created_at): tokens are the loop's final totals, updated as the run
-          // executes, so completion is when the total was actually reached —
-          // created_at would credit a midnight-crossing run before it happened.
-          withDb((db) =>
-            db.$queryRaw<{ threshold: number; earned_at: Date }[]>(
-              Prisma.sql`
-                WITH cumulative AS (
+      const [prLandedThresholdRows, documentDates] = await Promise.all([
+        // PR-landed threshold crossings computed entirely in SQL (Kerensa,
+        // cr-96292: SQL-side, not a capped app-side scan). One landing
+        // instant per DISTINCT pull request — the projected identity the
+        // Delivery KPI dedupes on, so a twin projection lands once and a
+        // multi-PR branch lands each PR (cr on PR #6112) — admitted by the
+        // SAME org-merged membership as the headline and Insights, ranked
+        // in landing order, returning exactly one row per crossed
+        // PR_LANDED_THRESHOLDS value. Exact regardless of how many PRs the
+        // user has landed; the retired createdAt-ordered scan was only an
+        // approximation of landing order past its cap.
+        withDb((db) =>
+          db.$queryRaw<{ threshold: number; earned_at: Date }[]>(
+            Prisma.sql`
+                WITH landings AS (
                   SELECT
-                    COALESCE(completed_at, created_at) AS ts,
-                    SUM(tokens_input + tokens_output) OVER (
-                      ORDER BY COALESCE(completed_at, created_at), id
-                      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                    ) AS running_total
-                  FROM loops
-                  WHERE user_id = ${userId}::uuid
-                    AND organization_id = ${organizationId}::uuid
-                    AND (tokens_input + tokens_output) > 0
+                    ${PROJECTED_PR_IDENTITY_SQL} AS identity,
+                    MIN(p.merged_at) AS landed_at
+                  FROM pull_request_detail p
+                  JOIN artifacts a ON a.id = p.branch_artifact_id
+                  LEFT JOIN github_installation_repositories pr_repository
+                    ON pr_repository.id = p.repository_id
+                  WHERE a.organization_id = ${organizationId}::uuid
+                    AND a.type = ${ArtifactType.BRANCH}::"ArtifactType"
+                    AND a.created_by_id = ${userId}::uuid
+                    AND p.pr_state = ${GitHubPRState.MERGED}::"GitHubPRState"
+                    AND p.merged_at IS NOT NULL
+                    AND ${orgMergedPullRequestMembershipSql(organizationId)}
+                  GROUP BY 1
+                ),
+                ordered AS (
+                  SELECT
+                    landed_at,
+                    ROW_NUMBER() OVER (ORDER BY landed_at, identity) AS n
+                  FROM landings
                 ),
                 thresholds AS (
                   SELECT UNNEST(${Prisma.sql`ARRAY[${Prisma.join([
-                    ...TOKEN_THRESHOLDS,
-                  ])}]::bigint[]`}) AS threshold
+                    ...PR_LANDED_THRESHOLDS,
+                  ])}]::int[]`}) AS threshold
                 )
-                SELECT
-                  t.threshold::bigint AS threshold,
-                  MIN(c.ts) AS earned_at
+                SELECT t.threshold::int AS threshold, o.landed_at AS earned_at
                 FROM thresholds t
-                JOIN cumulative c ON c.running_total >= t.threshold
-                GROUP BY t.threshold
+                JOIN ordered o ON o.n = t.threshold
                 ORDER BY t.threshold
               `
-            )
-          ),
-        ]);
+          )
+        ),
+        // Creation timestamps of the user's document artifacts, oldest-first and
+        // capped, so the N-th entry is when the user reached N lifetime docs.
+        withDb((db) =>
+          db.artifact.findMany({
+            where: {
+              createdById: userId,
+              organizationId,
+              type: ArtifactType.DOCUMENT,
+            },
+            select: { createdAt: true },
+            orderBy: { createdAt: "asc" },
+            take: MILESTONE_SCAN_CAP,
+          })
+        ),
+      ]);
 
       const milestones: UserMilestone[] = [];
       milestones.push(
-        ...earnedThresholdMilestones(
+        ...earnedCrossingMilestones(
           MilestoneKind.PrsLanded,
-          PR_LANDED_THRESHOLDS,
-          prLandedRows.map(
-            (row) => row.branch?.currentPullRequestDetail?.mergedAt ?? null
-          )
+          prLandedThresholdRows
         ),
         ...earnedThresholdMilestones(
           MilestoneKind.DocumentsCreated,
           DOCUMENTS_THRESHOLDS,
           documentDates.map((row) => row.createdAt)
-        ),
-        ...earnedTokenMilestones(tokenThresholdRows)
+        )
       );
 
       // Newest-earned first so the freshest achievement leads the list.
@@ -519,76 +401,23 @@ function buildContributionHeatmap(
   return result;
 }
 
-/**
- * Compute average loop concurrency: when this user has a loop running,
- * how many loops are they running simultaneously on average?
- *
- * For each loop's start time, counts how many other loops overlapped,
- * then averages those counts.
- */
-const TERMINAL_LOOP_STATUSES = new Set<string>([
-  LoopStatus.Completed,
-  LoopStatus.Failed,
-  LoopStatus.Cancelled,
-  LoopStatus.TimedOut,
-]);
-
-function computeAvgLoopConcurrency(
-  loops: {
-    startedAt: Date | null;
-    completedAt: Date | null;
-    status: string;
-  }[]
-): number {
-  const now = new Date();
-
-  const intervals = loops
-    .filter((l): l is typeof l & { startedAt: Date } => l.startedAt !== null)
-    .map((l) => ({
-      start: l.startedAt,
-      end:
-        TERMINAL_LOOP_STATUSES.has(l.status) && l.completedAt
-          ? l.completedAt
-          : now,
-    }));
-
-  if (intervals.length === 0) {
-    return 0;
-  }
-
-  let totalConcurrent = 0;
-  for (const point of intervals) {
-    let concurrent = 0;
-    for (const interval of intervals) {
-      if (interval.start <= point.start && interval.end >= point.start) {
-        concurrent++;
-      }
-    }
-    totalConcurrent += concurrent;
-  }
-
-  return Math.round((totalConcurrent / intervals.length) * 10) / 10;
-}
-
 // Trailing-year window for the consecutive-active-days streak scan (FEA-4108).
 // Bounds the distinct-active-days read the same way the heatmap is bounded; a
 // run longer than this window is reported as the window once it reaches the
 // earliest scanned day.
 export const STREAK_SCAN_DAYS = 366;
 
-// Upper bound on the per-user ordered timestamp reads that back the lifetime
-// milestone thresholds (FEA-4108). The largest threshold is the only value the
-// milestone logic needs beyond, so this cap comfortably covers every threshold
-// while keeping the read bounded for prolific users.
+// Upper bound on the per-user ordered document-created timestamp read that
+// backs the documents milestone (FEA-4108). The largest threshold is the only
+// value the milestone logic needs beyond, so this cap comfortably covers every
+// threshold while keeping the read bounded for prolific users. The PR-landed
+// milestone computes its crossings in SQL and needs no cap.
 export const MILESTONE_SCAN_CAP = 20_000;
 
 // Lifetime thresholds a cumulative total crosses to earn a milestone
 // (FEA-4108). Ascending; every crossed threshold earns its own milestone.
 export const PR_LANDED_THRESHOLDS = [10, 50, 100, 250, 500, 1000] as const;
 export const DOCUMENTS_THRESHOLDS = [10, 50, 100, 250, 500, 1000] as const;
-export const TOKEN_THRESHOLDS = [
-  1_000_000, 10_000_000, 100_000_000, 1_000_000_000, 10_000_000_000,
-] as const;
 
 /**
  * Compute the current and best consecutive-active-days streak from a sorted
@@ -670,16 +499,17 @@ function earnedThresholdMilestones(
 }
 
 /**
- * Map the SQL-computed token-threshold crossings to milestones. Each row is a
- * crossed TOKEN_THRESHOLDS value plus the completion timestamp of the loop that
- * first pushed the lifetime total to or past it (see the query above). The
+ * Map SQL-computed threshold crossings (the PR-landed query above) to
+ * milestones. Each row is a crossed threshold value plus the timestamp of
+ * the activity that first pushed the lifetime total to or past it. The
  * threshold-crossing walk itself is done in SQL, so this is a straight map.
  */
-function earnedTokenMilestones(
-  tokenThresholdRows: { threshold: number | bigint; earned_at: Date }[]
+function earnedCrossingMilestones(
+  kind: MilestoneKind,
+  rows: { threshold: number | bigint; earned_at: Date }[]
 ): UserMilestone[] {
-  return tokenThresholdRows.map((row) => ({
-    kind: MilestoneKind.TokensUsed,
+  return rows.map((row) => ({
+    kind,
     threshold: Number(row.threshold),
     earnedAt: row.earned_at,
   }));

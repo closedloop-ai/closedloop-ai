@@ -4,16 +4,14 @@ import {
   ArtifactType,
   LinkType,
 } from "@repo/api/src/types/artifact";
+import { createTestQueryClient } from "@repo/app/shared/test-utils";
 import { describe, expect, test } from "vitest";
 import {
   artifactLinkKeys,
   invalidateArtifactLinkQueries,
 } from "../use-artifact-links";
-import { createTestQueryClient } from "./test-utils";
 
-// ---------------------------------------------------------------------------
 // Factories
-// ---------------------------------------------------------------------------
 
 function buildEndpoint(
   overrides: Partial<ArtifactLinkEndpoint> = {}
@@ -25,6 +23,7 @@ function buildEndpoint(
     status: "ACTIVE",
     priority: null,
     assigneeId: null,
+    assignee: null,
     createdById: "user-1",
     updatedAt: new Date("2024-01-01"),
     type: ArtifactType.Document,
@@ -58,9 +57,7 @@ function buildResolvedLink(
   };
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 /** Seed a resolved-artifact-link query and return the QueryClient. */
 function seedResolvedQuery(
@@ -81,9 +78,7 @@ function isQueryStale(
   return state?.isInvalidated ?? false;
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 describe("invalidateArtifactLinkQueries", () => {
   test("invalidates query whose cached data contains artifact as source", () => {

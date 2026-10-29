@@ -6,7 +6,7 @@ import {
   sumSessionLocDedupedByBranch,
 } from "./session-loc.js";
 
-const REPO = "closedloop-ai/example-repo";
+const REPO = "closedloop-ai/closedloop-ai";
 
 function fallback(loc: number, branch: string): SessionLocEntry {
   return {

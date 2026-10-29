@@ -9,10 +9,15 @@ import type { Meta, StoryObj } from "@storybook/react";
  * the buttons can be checked at a time.
  */
 const meta: Meta<typeof RadioGroup> = {
-  title: "Design System/Primitives/Radio Group",
+  title: "Primitives v1.0/Inputs/Radio Group",
   component: RadioGroup,
-  tags: ["autodocs"],
-  argTypes: {},
+  tags: ["deprecated", "autodocs"],
+  argTypes: {
+    variant: {
+      options: ["default", "segmented"],
+      control: { type: "radio" },
+    },
+  },
   args: {
     defaultValue: "comfortable",
     className: "grid gap-2 grid-cols-[1rem_1fr] items-center",
@@ -37,3 +42,23 @@ type Story = StoryObj<typeof meta>;
  * The default form of the radio group.
  */
 export const Default: Story = {};
+
+/**
+ * The `segmented` variant: the outline segmented control's look with radio
+ * keyboard behavior, where arrow keys move the selection. Each item's children
+ * are its visible label and accessible name.
+ */
+export const Segmented: Story = {
+  args: {
+    variant: "segmented",
+    className: undefined,
+    "aria-label": "Density",
+  },
+  render: (args) => (
+    <RadioGroup {...args}>
+      <RadioGroupItem value="default">Default</RadioGroupItem>
+      <RadioGroupItem value="comfortable">Comfortable</RadioGroupItem>
+      <RadioGroupItem value="compact">Compact</RadioGroupItem>
+    </RadioGroup>
+  ),
+};

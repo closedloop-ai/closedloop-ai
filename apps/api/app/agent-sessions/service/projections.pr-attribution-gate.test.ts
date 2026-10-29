@@ -11,6 +11,8 @@
 // dropped. These tests pin the single reconciled rule and its deliberate
 // backward-compatibility escape for pre-link legacy rows.
 
+import { ArtifactType } from "@repo/api/src/types/artifact";
+import { BranchParticipationKind } from "@repo/api/src/types/branch";
 import { PullRequestState } from "@repo/api/src/types/document";
 import {
   SessionArtifactLinkKind,
@@ -38,7 +40,7 @@ vi.mock("@repo/observability/telemetry/metrics", async () => {
   return telemetryModuleMock();
 });
 
-const REPO = "closedloop-ai/example-repo";
+const REPO = "closedloop-ai/closedloop-ai";
 const OTHER_REPO = "closedloop-ai/other-repo";
 const MERGED_AT = new Date("2026-07-26T09:00:00.000Z");
 const VERIFIED_AT = new Date("2026-07-26T09:01:00.000Z");
@@ -125,6 +127,27 @@ function cwdBranchSourceLink(prNumber: number) {
   };
 }
 
+function sessionBranchSourceLink(branchName: string) {
+  return {
+    branchParticipation: BranchParticipationKind.Wrote,
+    metadata: {
+      linkKind: SessionArtifactLinkKind.SessionBranch,
+      repositoryFullName: REPO,
+      source: "DETERMINISTIC",
+      confidence: 1.0,
+      extractorVersion: 1,
+    },
+    target: {
+      id: `branch-${branchName}`,
+      name: branchName,
+      type: ArtifactType.Branch,
+      branch: {
+        repository: { fullName: REPO },
+      },
+    },
+  };
+}
+
 function installSession({
   pullRequests,
   sourceLinks,
@@ -136,11 +159,11 @@ function installSession({
   repositoryFullName?: string | null;
   branch?: string;
 }) {
+  const branchLinks = branch ? [sessionBranchSourceLink(branch)] : [];
   installDb({
     sessionDetail: {
       findMany: vi.fn().mockResolvedValue([
         buildSessionListRecord({
-          branch,
           ...(repositoryFullName === undefined ? {} : { repositoryFullName }),
           pullRequests,
           artifact: {
@@ -148,7 +171,7 @@ function installSession({
             status: "completed",
             slug: "SES-ATTR",
             project: null,
-            sourceLinks,
+            sourceLinks: [...branchLinks, ...sourceLinks],
           },
         }),
       ]),

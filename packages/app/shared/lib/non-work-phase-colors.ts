@@ -1,15 +1,12 @@
 /**
  * ISS-4790 — the one muted-grey sub-palette for the three NON-WORK activity
- * buckets, shared by the session activity strip/breakdown
- * (`agents/lib/session-activity-phases.ts`) and the branch cost-to-merge bar
+ * buckets, read by the branch cost-to-merge bar
  * (`branches/lib/activity-taxonomy-display.ts`).
  *
- * The two surfaces legitimately own DIFFERENT chart palettes for the named work
- * phases (`explore` is `--chart-5` on the session strip and `--chart-1` on the
- * branch bar), but these three greys were byte-identical copies in both files,
- * each docstring pointing at the other as the reason for its values. That is a
- * single value with two declarations — retune it in one place and the panels
- * silently stop matching — so it lives here instead.
+ * It was hoisted here because the session phase surface and the branch bar each
+ * declared a byte-identical copy. ISS-7867 retired the session surface, so the
+ * branch bar is the only consumer today; the values stay here rather than being
+ * inlined back, since this is the palette the branch bar's own test pins.
  *
  * `idle`, `other`, and `unattributed` are three DIFFERENT honest remainders that
  * render as adjacent rows and adjacent bar slices, so they must not share one

@@ -17,6 +17,7 @@ import {
 } from "@closedloop-ai/loops-api/insights";
 import type { CategoryBucket } from "@repo/api/src/types/insights";
 import { Prisma, withDb } from "@repo/database";
+import { bucketByLabelCounts } from "@/app/insights/service/buckets";
 
 // DB-summed token columns for the KPI row + token-distribution donut, over the
 // selected period. Replaces materializing every token row to reduce in JS.
@@ -140,16 +141,25 @@ export async function fetchAgentsSpendBreakdowns(
  * not raw tokens; the distinct-model KPI is this array's length. Each model is
  * rounded to cents independently, exactly as the prior `groupBy` read did — this
  * chart's per-model values are unchanged by the ISS-4463 fusion.
+ *
+ * ISS-8052: ranked by {@link bucketByLabelCounts} rather than by a local
+ * comparator, so the descending-value-then-ascending-label decision ISS-4754
+ * made for every other Insights bucket applies here too. A bare
+ * `b.value - a.value` left equal-spend models in the arrival order of an
+ * unordered `GROUP BY GROUPING SETS` — and this array both reaches the byte-
+ * compared Layer 5.3 fixture AND picks the top-N models the model-usage series
+ * stacks, so a tie resolving differently on two reads could change which model
+ * collapses into "Other".
  */
 function modelBucketsFrom(rows: SpendBreakdownRow[]): CategoryBucket[] {
-  return rows
-    .filter((row) => row.field === "model" && row.model !== null)
-    .map((row) => ({
-      key: row.model ?? "",
-      label: row.model ?? "",
-      value: roundCents(Number(row.cost ?? 0)),
-    }))
-    .sort((a, b) => b.value - a.value);
+  return bucketByLabelCounts(
+    rows
+      .filter((row) => row.field === "model" && row.model !== null)
+      .map((row) => ({
+        label: row.model ?? "",
+        value: roundCents(Number(row.cost ?? 0)),
+      }))
+  );
 }
 
 /**
@@ -248,6 +258,11 @@ function allocateCents(values: number[], targetTotal: number): number[] {
   return cents.map((value) => value / CENTS_SCALE);
 }
 
-function roundCents(value: number): number {
+/**
+ * Exported so the golden Layer-5.3 oracle mapper can round the SIGNED
+ * per-model figures to the precision this chart actually reports, instead of
+ * hand-rolling a second rounding rule that would drift from this one.
+ */
+export function roundCents(value: number): number {
   return Math.round(value * CENTS_SCALE) / CENTS_SCALE;
 }

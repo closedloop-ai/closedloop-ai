@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { describe, test } from "vitest";
 import type { SyncedAgentSession } from "../src/main/agent-sync/agent-session-sync-contract.js";
 import { getSharedAgentSessionDetail } from "../src/main/session/shared-agent-session-detail-read.js";
 import {
@@ -9,18 +9,31 @@ import {
 } from "./shared-agent-sessions-test-helpers.js";
 
 /**
- * ISS-4667: the desktop-local LOC/$ projection. Split out of
- * `shared-agent-sessions-api.test.ts` so the cost-efficiency contract — which
- * numerator the ratio divides cost into, and how it reconciles with the "Lines
- * changed" row rendered beside it — reads as one unit instead of being buried
- * in the mapper's omnibus detail assertions.
+ * The desktop-local LOC/$ projection.
  *
- * Every fixture here bills $0.25 (`billingMode: "api"`), so the expected ratio
- * is always `numerator / 0.25`.
+ * ISS-9964 / ISS-9980 (RULED 2026-09-11): the LOC/$ numerator is the lines a
+ * session landed in MERGED authored PRs, and nothing else. The desktop gateway
+ * has no merged-PR data before its first cloud sync — the merged roll-up is
+ * derived server-side — so the numerator here is NOT KNOWABLE rather than zero,
+ * and the ratio is reported as unavailable (`null`).
+ *
+ * This file previously pinned the ISS-4667 contract: a numerator of
+ * `max(local working-tree diff, branch diff)`, reading 528 and 16016 on the two
+ * fixtures below. Those rungs are retired, not re-homed — the branch and
+ * working-tree scalars measure work in progress (transcript-derived rather than
+ * git per FEA-3922/FEA-3923, and folding a delegated sub-agent's churn in per
+ * ISS-5402), so neither belongs in a delivered-code figure. The expectations
+ * changed because the ruling changed what the number means, not to turn a red
+ * green.
+ *
+ * `null` here is "nobody could look yet", NOT a measured zero. A session that
+ * genuinely merged nothing reports `0` — that distinction is the whole point of
+ * the ruling, and it is pinned on the shared derivation in
+ * `packages/api/src/utils/loc-per-dollar.test.ts`.
  */
 
 describe("shared agent sessions LOC/$ projection", () => {
-  test("with no branch diff, the numerator is the local working-tree diff", async () => {
+  test("reports no ratio for a local-only session, because no merged LOC is knowable yet", async () => {
     const localSession = {
       ...session({ id: "session-local-only", status: "completed" }),
       linesAdded: 120,
@@ -36,30 +49,23 @@ describe("shared agent sessions LOC/$ projection", () => {
       "session-local-only"
     );
 
-    // Numerator = 120 + 12 = 132 lines. locPerDollar = 132 / $0.25 = 528, and
-    // kloc = 132 / 1000 = 0.132 — the SAME basis, in the two different units.
+    // The raw churn still flows through untouched — it is a real local
+    // measurement and the Properties panel still has uses for it. What it is no
+    // longer allowed to do is stand in as a delivered-code numerator.
     assert.equal(detail?.linesAdded, 120);
     assert.equal(detail?.linesRemoved, 12);
-    assert.equal(detail?.locPerDollar, 528);
-    assert.equal(detail?.kloc, 0.132);
+    assert.equal(detail?.locPerDollar, null);
+    assert.equal(detail?.kloc, null);
   });
 
-  // ISS-4667 (whitlockk): the local LOC/$ projection must divide cost into the SAME
-  // numerator the shared "Lines changed" row shows — `max(localDiff, branchDiff)`
-  // — not the bare local working-tree residual. A merged multi-PR session whose
-  // local diff has collapsed to 56 lines but whose branch diff is 4,004 must read
-  // its efficiency over 4,004, or the ratio contradicts the lines it claims to be
-  // over.
-  test("reconciles with the larger branch diff, not the local residual", async () => {
+  test("a large branch diff does not resurrect a numerator either", async () => {
     const mergedSession = {
       ...session({
         id: "session-merged-multi-pr",
         status: "completed",
       }),
-      // Local working-tree residual after the branches merged/reset: tiny.
       linesAdded: 50,
       linesRemoved: 6,
-      // The real delivered code lives in the branch diff (4,004 lines changed).
       branchDiffStats: {
         linesAdded: 3315,
         linesRemoved: 689,
@@ -77,11 +83,10 @@ describe("shared agent sessions LOC/$ projection", () => {
       "session-merged-multi-pr"
     );
 
-    // Cost is $0.25 (api billing). Numerator = max(56 local, 4004 branch) = 4004.
-    // locPerDollar = 4004 / 0.25 = 16016; kloc = 4004 / 1000 = 4.004. Both derive
-    // from the SAME 4,004-line basis the "Lines changed" row prints — they cannot
-    // disagree, and the ratio is NOT the ~224 the 56-line residual would produce.
-    assert.equal(detail?.locPerDollar, 16_016);
-    assert.equal(detail?.kloc, 4.004);
+    // 4,004 branch-diff lines are present and still not a numerator: the branch
+    // diff is exactly the rung ISS-9980 retired. Reporting 16016 LOC/$ from it
+    // would be a confident number over a basis the session never merged.
+    assert.equal(detail?.locPerDollar, null);
+    assert.equal(detail?.kloc, null);
   });
 });

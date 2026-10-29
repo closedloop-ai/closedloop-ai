@@ -22,8 +22,9 @@ vi.mock("../trace-markdown", () => ({
   },
 }));
 
+import { SessionTrace } from "../session-trace";
 // Imported after the mock is registered (vitest hoists vi.mock above imports).
-import { SessionTrace, type SessionTraceItem } from "../session-trace";
+import type { SessionTraceItem } from "../session-trace-groups";
 
 afterEach(() => {
   cleanup();

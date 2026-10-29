@@ -2,20 +2,17 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, test } from "node:test";
-import { SettingsStore } from "../src/main/settings/settings-store.js";
 import {
+  DATA_SYNC_LEVELS,
   DataSyncLevel,
-  type SyncObservabilityTier,
-  syncTierAllowsSessionMetadata,
-  syncTierAllowsTranscripts,
-} from "../src/shared/contracts.js";
+  RECOMMENDED_DATA_SYNC_LEVEL,
+} from "@repo/api/src/types/data-sync-level";
+import { afterEach, test } from "vitest";
+import { SettingsStore } from "../src/main/settings/settings-store.js";
+import type { SyncObservabilityTier } from "../src/shared/contracts.js";
 import {
   coercePersistedDataSyncLevel,
-  DATA_SYNC_LEVELS,
-  DEFAULT_DATA_SYNC_LEVEL,
   dataSyncLevelToBooleans,
-  grandfatherConsentTier,
   legacyFlagsToDataSyncLevel,
   normalizeDataSyncLevel,
   syncObservabilityTierToDataSyncLevel,
@@ -260,13 +257,13 @@ test("syncObservabilityTierToDataSyncLevel never widens: metadata maps to Metada
 });
 
 // FEA-4055: the per-level presentational copy (titles, data-lines, caveats)
-// moved to the shared `@repo/app/shared/lib/data-sync-copy` module so onboarding
+// lives in the shared `@repo/app/shared/lib/data-sync-copy` module so onboarding
 // and Settings render from ONE source. Its egress-honesty invariants — "no
 // synced session-CONTENT line while `transcriptSyncEnabled` is false", and
-// "Redacted advertises metadata-only egress until the lane ships" — are asserted
-// there, pinned against this module's `dataSyncLevelToBooleans`, in the renderer
-// parity test `apps/desktop/src/renderer/components/settings/__tests__/data-sync-copy-parity.test.ts`
-// (a `node:test` runner cannot import the TSX-adjacent shared copy module).
+// "Redacted advertises metadata-only egress until the lane ships" — pin that
+// copy against this module's `dataSyncLevelToBooleans` and live in the RENDERER
+// suite (`src/renderer/components/settings/__tests__/data-sync-egress-honesty.test.ts`),
+// because a `node:test` runner cannot import the TSX-adjacent copy module.
 
 // --- FEA-3907: server-side level validation ---
 
@@ -308,13 +305,18 @@ test("setDataSyncLevel persists the level AND derives the connectivity/sync flag
   assert.equal(store.getSyncObservabilityTier(), "local");
 });
 
-test("a fresh install shows the recommended metadata default WITHOUT manufacturing sync consent", () => {
+test("a fresh install lands on the recommended level WITHOUT manufacturing sync consent", () => {
   const store = makeStore();
-  // The level display defaults to metadata for a new device.
-  assert.equal(store.getDataSyncLevel(), DEFAULT_DATA_SYNC_LEVEL);
-  assert.equal(store.getDataSyncLevel(), DataSyncLevel.Metadata);
-  // But the PRD-532 §7 sync-consent tier must stay null (not-consented) — the
-  // migration must not silently grant a metadata tier the user never chose.
+  // ISS-10554 (operator ruling: "we default to full sync") replaced this test's
+  // first expectation: the first-launch seed now persists the recommended level
+  // and the connectivity flags it derives, so reconciliation agrees with it
+  // instead of pulling a fresh profile back to the metadata floor.
+  //
+  // The SECOND expectation is the one that never moved, and it is why the level
+  // change is not an egress change: the PRD-532 §7 consent tier stays null
+  // (not-consented), so nothing leaves the device until the user answers.
+  assert.equal(RECOMMENDED_DATA_SYNC_LEVEL, DataSyncLevel.Full);
+  assert.equal(store.getDataSyncLevel(), RECOMMENDED_DATA_SYNC_LEVEL);
   assert.equal(store.getSyncObservabilityTier(), null);
 });
 
@@ -493,264 +495,7 @@ test("setDataSyncLevel persists level + flags as one atomic write (survives a fr
   assert.equal(reloaded.getTranscriptSyncEnabled(), false);
 });
 
-// --- Regression: grandfather prior sync behavior into a consent tier ---
-//
-// A pre-fix build backfilled the data-sync LEVEL from the legacy flags but left
-// `syncObservabilityTier` null; the separate FEA-3462 reconciliation only floored
-// installs with `onboardingCompleted: true` to `metadata`. An install that was
-// full-syncing (the only pre-tier behavior) but never completed onboarding fell
-// through both, and once `unified-auth-onboarding` turned on the app.ts gates read
-// its null tier as "not consented" and hard-disabled BOTH lanes — it went dark
-// while the Data & Sync tab still showed "Full". The migration must now derive the
-// tier from what the install was actually doing so the level and the gate agree.
-
-test("regression: a full-syncing install with no saved tier is grandfathered to full (not left null → go-dark)", () => {
-  const store = makeStore({
-    cloudConnectionEnabled: true,
-    transcriptSyncEnabled: true,
-  });
-  assert.equal(store.getDataSyncLevel(), DataSyncLevel.Full);
-  const tier = store.getSyncObservabilityTier();
-  assert.equal(
-    tier,
-    "full",
-    "prior full-sync behavior must establish the full consent tier"
-  );
-  // The app.ts gates read this tier for a non-null value: full permits BOTH lanes,
-  // so the install keeps syncing even under unified-auth-onboarding.
-  assert.equal(syncTierAllowsSessionMetadata(tier), true);
-  assert.equal(syncTierAllowsTranscripts(tier), true);
-});
-
-test("regression: a persisted Full level with an absent tier backfills the full tier (the FEA-3907 pre-fix gap)", () => {
-  // The exact broken on-disk state: a prior migration set the level to Full but
-  // never wrote the tier, so its top guard used to bail before it could heal.
-  const store = makeStore({
-    dataSyncLevel: DataSyncLevel.Full,
-    cloudConnectionEnabled: true,
-    transcriptSyncEnabled: true,
-    // no syncObservabilityTier
-  });
-  assert.equal(store.getDataSyncLevel(), DataSyncLevel.Full);
-  assert.equal(
-    store.getSyncObservabilityTier(),
-    "full",
-    "an already-persisted syncing level must heal its missing tier"
-  );
-});
-
-test("grandfather: a metadata-only install (connected, transcript off) is restored to the metadata tier", () => {
-  const store = makeStore({
-    cloudConnectionEnabled: true,
-    transcriptSyncEnabled: false,
-  });
-  assert.equal(store.getDataSyncLevel(), DataSyncLevel.Metadata);
-  const tier = store.getSyncObservabilityTier();
-  assert.equal(tier, "metadata");
-  // metadata permits the aggregate lane but keeps transcript contents local.
-  assert.equal(syncTierAllowsSessionMetadata(tier), true);
-  assert.equal(syncTierAllowsTranscripts(tier), false);
-});
-
-test("grandfather (FEA-3462): an install onboarded before the tier step lands on the metadata floor", () => {
-  const store = makeStore({ onboardingCompleted: true });
-  assert.equal(
-    store.getSyncObservabilityTier(),
-    "metadata",
-    "a stranded onboarded install keeps its prior metadata lane"
-  );
-});
-
-test("grandfather: a disconnected install keeps a null tier (nothing synced; no consent manufactured)", () => {
-  const store = makeStore({ cloudConnectionEnabled: false });
-  assert.equal(store.getDataSyncLevel(), DataSyncLevel.Off);
-  assert.equal(
-    store.getSyncObservabilityTier(),
-    null,
-    "Off derives the local tier, which is deliberately not pinned — leaves null"
-  );
-});
-
-test("grandfather does not overwrite an explicit tier (a full tier with transcript off stays full)", () => {
-  const store = makeStore({
-    cloudConnectionEnabled: true,
-    transcriptSyncEnabled: false,
-    syncObservabilityTier: "full",
-  });
-  // Level reconciles to Redacted, but the separately-consented full tier survives.
-  assert.equal(store.getDataSyncLevel(), DataSyncLevel.Redacted);
-  assert.equal(store.getSyncObservabilityTier(), "full");
-});
-
-test("grandfather does not manufacture a tier for a fresh install", () => {
-  const store = makeStore();
-  assert.equal(store.getDataSyncLevel(), DEFAULT_DATA_SYNC_LEVEL);
-  assert.equal(
-    store.getSyncObservabilityTier(),
-    null,
-    "a brand-new device must stay not-yet-consented"
-  );
-});
-
-// --- Review follow-ups: null-is-not-absent, reconcile-before-derive, onboarded floor ---
-
-test("grandfather does not overwrite an EXPLICITLY persisted null tier (not-consented is a choice)", () => {
-  // The SyncConsent UI persists an explicit `null` via SettingsStore.update. A
-  // present-but-null tier is an authoritative "not consented yet" choice, distinct
-  // from an absent key — the migration must not read it as license to grandfather.
-  const store = makeStore({
-    syncObservabilityTier: null,
-    cloudConnectionEnabled: true,
-    transcriptSyncEnabled: true,
-  });
-  assert.equal(
-    store.getSyncObservabilityTier(),
-    null,
-    "an explicit null consent choice must survive the migration"
-  );
-});
-
-test("grandfather reads live legacy flags: disconnected stays null despite a stale Full level", () => {
-  // A persisted Full level whose connection was flipped off out-of-band (Relay
-  // tab). Grandfathering now reads the live legacy flags, not the level:
-  // `cloudConnectionEnabled` is false, so it manufactures no tier — never a `full`
-  // tier on a store that is currently disconnected and syncing nothing. The stale
-  // persisted Full level and transcriptSyncEnabled=true are ignored.
-  const store = makeStore({
-    dataSyncLevel: DataSyncLevel.Full,
-    cloudConnectionEnabled: false,
-    transcriptSyncEnabled: true,
-  });
-  assert.equal(store.getDataSyncLevel(), DataSyncLevel.Off);
-  assert.equal(
-    store.getSyncObservabilityTier(),
-    null,
-    "a disconnected store must not manufacture a full tier from a stale level"
-  );
-});
-
-test("grandfather keeps the FEA-3462 metadata floor for an onboarded install that is Off", () => {
-  // An onboarded legacy install that is currently disconnected. Old FEA-3462 gave
-  // it the `metadata` floor; the consolidation must preserve that (not drop to
-  // null) so a later reconnect resumes the aggregate lane instead of staying gated.
-  const store = makeStore({
-    onboardingCompleted: true,
-    cloudConnectionEnabled: false,
-  });
-  assert.equal(
-    store.getSyncObservabilityTier(),
-    "metadata",
-    "an onboarded install must never drop below the metadata floor"
-  );
-  // The floor stays metadata-only: transcript contents never leave on this path.
-  assert.equal(syncTierAllowsTranscripts("metadata"), false);
-});
-
-test("grandfather: onboarded + persisted-Full + disconnected reconciles to Off but floors at metadata", () => {
-  // The level still reconciles to Off for display (getDataSyncLevel), but the tier
-  // is grandfathered from the live legacy flags: disconnected → null for a
-  // non-onboarded install, floored to metadata for an onboarded one.
-  const store = makeStore({
-    onboardingCompleted: true,
-    dataSyncLevel: DataSyncLevel.Full,
-    cloudConnectionEnabled: false,
-    transcriptSyncEnabled: true,
-  });
-  assert.equal(store.getDataSyncLevel(), DataSyncLevel.Off);
-  assert.equal(store.getSyncObservabilityTier(), "metadata");
-});
-
-// --- grandfatherConsentTier: the single consent-inference SSOT (pure) ---
-
-test("grandfatherConsentTier: connected install grandfathers by what it was syncing", () => {
-  // Transcript on → full (the only pre-tier behavior); transcript off → metadata.
-  assert.equal(
-    grandfatherConsentTier(
-      {
-        cloudConnectionEnabled: true,
-        transcriptSyncEnabled: true,
-        syncObservabilityTier: null,
-      },
-      false
-    ),
-    "full"
-  );
-  assert.equal(
-    grandfatherConsentTier(
-      {
-        cloudConnectionEnabled: true,
-        transcriptSyncEnabled: false,
-        syncObservabilityTier: null,
-      },
-      false
-    ),
-    "metadata"
-  );
-});
-
-test("grandfatherConsentTier: disconnected (or local-pinned) grandfathers nothing, unless onboarded", () => {
-  for (const flags of [
-    // Disconnected — even with a stale transcriptSyncEnabled=true, nothing synced.
-    {
-      cloudConnectionEnabled: false,
-      transcriptSyncEnabled: true,
-      syncObservabilityTier: null,
-    },
-    // Connected but a legacy `local` tier pinned all sync off.
-    {
-      cloudConnectionEnabled: true,
-      transcriptSyncEnabled: true,
-      syncObservabilityTier: "local",
-    },
-  ] as const) {
-    assert.equal(
-      grandfatherConsentTier(flags, false),
-      null,
-      "no prior sync + not onboarded → no consent manufactured"
-    );
-    assert.equal(
-      grandfatherConsentTier(flags, true),
-      "metadata",
-      "onboarded keeps the FEA-3462 metadata floor (never escalates to full)"
-    );
-  }
-});
-
-test("grandfatherConsentTier equals the level→tier composition it replaced (drift guard)", () => {
-  // Pin the new SSOT against the old two-step derivation for every reachable input
-  // so the two can never disagree: tier == booleans(legacyLevel).tier, with the
-  // `local → onboarded ? metadata : null` floor the migration applied.
-  const connectivity = [true, false] as const;
-  const transcript = [true, false] as const;
-  // The migration only calls this with an ABSENT tier (null in the flags); the
-  // other tier values are covered for totality. Derive them from the canonical
-  // closed set so a newly added tier is exercised here automatically rather than
-  // silently escaping this guard.
-  const tiers = [null, ...SYNC_OBSERVABILITY_TIERS];
-  for (const cloudConnectionEnabled of connectivity) {
-    for (const transcriptSyncEnabled of transcript) {
-      for (const syncObservabilityTier of tiers) {
-        for (const onboardingCompleted of [true, false]) {
-          const flags = {
-            cloudConnectionEnabled,
-            transcriptSyncEnabled,
-            syncObservabilityTier,
-          };
-          const legacyTier = dataSyncLevelToBooleans(
-            legacyFlagsToDataSyncLevel(flags)
-          ).syncObservabilityTier;
-          const flooredLocal = onboardingCompleted ? "metadata" : null;
-          const expected = legacyTier === "local" ? flooredLocal : legacyTier;
-          assert.equal(
-            grandfatherConsentTier(flags, onboardingCompleted),
-            expected,
-            `mismatch for ${JSON.stringify({ ...flags, onboardingCompleted })}`
-          );
-        }
-      }
-    }
-  }
-});
+// Legacy consent migration regressions: settings-unset-sync-consent.test.ts.
 
 // --- Exhaustiveness guards at the untrusted boundaries ---
 

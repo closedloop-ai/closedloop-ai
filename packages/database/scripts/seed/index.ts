@@ -4,10 +4,10 @@
 import type { PrismaClient } from "../../generated/client";
 import type { TransactionClient } from "../../generated/internal/prismaNamespace";
 import { seedCuratedCatalog } from "../../prisma/seeds/catalog-seed";
+import { seedApiKeys } from "./api-keys";
 import { seedCoreEntities } from "./core";
 import { seedCustomizationEntities } from "./customization";
 import { seedEvaluationEntities } from "./evaluation";
-import { seedExecutionEntities } from "./execution";
 import { seedExtendedEntities } from "./extended";
 import { seedError, seedLog } from "./helpers";
 import { seedIntegrationEntities } from "./integrations";
@@ -117,7 +117,6 @@ export async function runSeed(
       name: "SlugCounter",
       query: prisma.slugCounter.count({ where: { organizationId } }),
     },
-    { name: "Loop", query: prisma.loop.count({ where: { organizationId } }) },
     {
       name: "GitHubInstallation",
       query: prisma.gitHubInstallation.count({ where: { organizationId } }),
@@ -224,12 +223,6 @@ export async function runSeed(
       }),
     },
     {
-      name: "LoopEvent",
-      query: prisma.loopEvent.count({
-        where: { loop: { organizationId } },
-      }),
-    },
-    {
       name: "Prompt",
       query: prisma.prompt.count({ where: { organizationId } }),
     },
@@ -284,7 +277,8 @@ async function runSeedModules(
 
   const coreResult = await seedCoreEntities(prisma, context, plan);
 
-  await seedExecutionEntities(prisma, context, coreResult, plan);
+  // Profile-gated; a no-op for every profile outside SEED_API_KEY_PROFILES.
+  await seedApiKeys(prisma, context, plan);
 
   await seedIntegrationEntities(prisma, context, coreResult, plan);
 
@@ -308,8 +302,6 @@ async function runSeedModulesInBatches(
 
   const core = await seedCoreEntities(prisma, context, plan);
 
-  await seedExecutionEntities(prisma, context, core, plan);
-
   await seedIntegrationEntities(prisma, context, core, plan);
 
   await seedEvaluationEntities(prisma, context, core, plan);
@@ -320,7 +312,7 @@ async function runSeedModulesInBatches(
 }
 
 function formatTargets(targets: SeedProfileTargets): string {
-  return `projects=${targets.projects},artifacts=${targets.artifacts},comments=${targets.comments},loops=${targets.loops}`;
+  return `projects=${targets.projects},artifacts=${targets.artifacts},comments=${targets.comments}`;
 }
 
 function auditProfileTargets(
@@ -332,7 +324,6 @@ function auditProfileTargets(
     { model: "Project", key: "projects" },
     { model: "Artifact", key: "artifacts" },
     { model: "Comment", key: "comments" },
-    { model: "Loop", key: "loops" },
   ] as const;
 
   seedLog("Profile target audit:");

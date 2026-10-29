@@ -48,8 +48,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { describe, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { describe, test } from "vitest";
 import {
   resolveTypecheckConcurrency,
   TYPECHECK_PROJECTS,

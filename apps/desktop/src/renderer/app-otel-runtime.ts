@@ -10,6 +10,7 @@ import {
   WebTracerProvider,
 } from "@opentelemetry/sdk-trace-web";
 import { sanitizeDesktopException } from "../shared/exception-sanitizer";
+import { exponentialBackoffMs } from "../shared/exponential-backoff";
 import {
   buildRenderCommitBridgeRecord,
   type RenderCommitEvent,
@@ -21,6 +22,7 @@ import {
   type RendererOtelBridgePayload,
   type RendererOtelBridgeRecord,
   type RendererOtelExceptionAttributes,
+  RendererOtelExportFailureReason,
   type RendererOtelExportResult,
 } from "../shared/renderer-otel-bridge-constants";
 import {
@@ -62,6 +64,20 @@ const RENDERER_BOOTSTRAP_RECORD: RendererOtelBridgeRecord = {
 const RENDERER_TRACER_NAME = "closedloop-desktop-renderer";
 const RENDERER_EXCEPTION_SPAN_NAME = "exception";
 
+/**
+ * ISS-6329 — bounded re-offer ladder for exceptions raised before the main OTel
+ * runtime finished booting. Six scheduled retries on the shared backoff
+ * schedule span ~11.75s past the immediate first attempt, which comfortably
+ * covers a real main-process boot; past that the queue is dropped, so a runtime
+ * that never starts costs a fixed handful of IPC calls rather than a timer that
+ * outlives the window. The queue cap bounds a renderer throwing in a loop while
+ * main is still coming up.
+ */
+export const PENDING_EXCEPTION_QUEUE_LIMIT = 8;
+export const PENDING_EXCEPTION_MAX_RETRIES = 6;
+const PENDING_EXCEPTION_RETRY_BASE_MS = 250;
+const PENDING_EXCEPTION_RETRY_MAX_MS = 4000;
+
 export function createRendererOtelRuntime({
   exportTelemetry,
   renderCommitSampler,
@@ -70,6 +86,11 @@ export function createRendererOtelRuntime({
   let startPromise: Promise<void> | null = null;
   let terminalNoop = false;
   let started = false;
+  const pendingExceptions: RendererOtelBridgeRecord[] = [];
+  let pendingExceptionRetries = 0;
+  let pendingExceptionLadderSpent = false;
+  let pendingExceptionDrainActive = false;
+  let pendingExceptionTimer: ReturnType<typeof setTimeout> | null = null;
   const shouldKeepRenderCommit =
     renderCommitSampler ??
     (() => Math.random() < RENDERER_RENDER_COMMIT_SAMPLE_RATE);
@@ -83,23 +104,12 @@ export function createRendererOtelRuntime({
         return;
       }
       if (!started) {
-        exportTelemetry({
-          records: [
-            {
-              signal: DesktopOtelSignal.Log,
-              name: RENDERER_EXCEPTION_SPAN_NAME,
-              attributes: rendererExceptionAttributes(input),
-            },
-          ],
-        })
-          .then((result) => {
-            if (isTerminalRendererOtelResult(result)) {
-              terminalNoop = true;
-            }
-          })
-          .catch(() => {
-            terminalNoop = true;
-          });
+        queuePendingException({
+          signal: DesktopOtelSignal.Log,
+          name: RENDERER_EXCEPTION_SPAN_NAME,
+          attributes: rendererExceptionAttributes(input),
+        });
+        startPendingExceptionDrain();
         return;
       }
       withStartedRendererRuntime(() => {
@@ -135,6 +145,10 @@ export function createRendererOtelRuntime({
     },
     async shutdown() {
       terminalNoop = true;
+      clearPendingExceptionRetry();
+      pendingExceptions.length = 0;
+      pendingExceptionRetries = 0;
+      pendingExceptionLadderSpent = false;
       if (startPromise) {
         await startPromise;
       }
@@ -156,7 +170,7 @@ export function createRendererOtelRuntime({
     });
     if (!probeResult.ok) {
       if (isTerminalRendererOtelResult(probeResult)) {
-        terminalNoop = true;
+        latchTerminalNoop();
       }
       return;
     }
@@ -164,9 +178,7 @@ export function createRendererOtelRuntime({
     const exporter = new RendererOtelSpanExporter(
       bridgeExport,
       () => terminalNoop,
-      () => {
-        terminalNoop = true;
-      }
+      latchTerminalNoop
     );
     provider = new WebTracerProvider({
       spanProcessors: [new SimpleSpanProcessor(exporter)],
@@ -180,19 +192,142 @@ export function createRendererOtelRuntime({
       return Promise.resolve();
     }
     if (!exportTelemetry) {
-      terminalNoop = true;
+      latchTerminalNoop();
       return Promise.resolve();
     }
     if (!startPromise) {
       startPromise = startRendererRuntime(exportTelemetry)
         .catch(() => {
-          terminalNoop = true;
+          latchTerminalNoop();
         })
         .finally(() => {
           startPromise = null;
         });
     }
     return startPromise;
+  }
+
+  function queuePendingException(record: RendererOtelBridgeRecord): void {
+    // Overflow drops the newest: the first exceptions of a window are the ones
+    // that explain the rest. Once the ladder is spent nothing is queued at all,
+    // so a runtime that never starts costs a fixed number of IPC calls for the
+    // window rather than one more per exception, forever.
+    if (
+      !pendingExceptionLadderSpent &&
+      pendingExceptions.length < PENDING_EXCEPTION_QUEUE_LIMIT
+    ) {
+      pendingExceptions.push(record);
+    }
+  }
+
+  function clearPendingExceptionRetry(): void {
+    if (pendingExceptionTimer !== null) {
+      clearTimeout(pendingExceptionTimer);
+      pendingExceptionTimer = null;
+    }
+  }
+
+  function schedulePendingExceptionRetry(): void {
+    if (terminalNoop) {
+      pendingExceptions.length = 0;
+      return;
+    }
+    if (pendingExceptionTimer !== null || pendingExceptions.length === 0) {
+      return;
+    }
+    if (pendingExceptionRetries >= PENDING_EXCEPTION_MAX_RETRIES) {
+      // Give up on BUFFERING only. `terminalNoop` stays false, so the probe and
+      // span paths keep re-offering and still recover if main comes up late —
+      // this is a bounded queue, not the latch ISS-6329 removes.
+      pendingExceptionLadderSpent = true;
+      pendingExceptions.length = 0;
+      return;
+    }
+    pendingExceptionRetries += 1;
+    const delayMs = exponentialBackoffMs(
+      pendingExceptionRetries,
+      PENDING_EXCEPTION_RETRY_BASE_MS,
+      PENDING_EXCEPTION_RETRY_MAX_MS
+    );
+    pendingExceptionTimer = setTimeout(() => {
+      // Released as the timer FIRES, so a cancelled or completed timer can
+      // never suppress the next scheduling attempt.
+      pendingExceptionTimer = null;
+      startPendingExceptionDrain();
+    }, delayMs);
+  }
+
+  function startPendingExceptionDrain(): void {
+    drainPendingExceptions().catch(latchTerminalNoop);
+  }
+
+  /**
+   * The ONLY way `terminalNoop` is set outside shutdown. Latching means no
+   * later export in this window can succeed, so the pre-start queue and its
+   * armed timer are dead weight the moment it happens — clearing them here is
+   * what stops a superseded timer firing into a drain that can never send.
+   */
+  function latchTerminalNoop(): void {
+    terminalNoop = true;
+    clearPendingExceptionRetry();
+    pendingExceptions.length = 0;
+  }
+
+  /**
+   * ONE record per export, never a merged batch. The main-side parser rejects
+   * the WHOLE payload over `RENDERER_OTEL_MAX_BATCH_BYTES` and fails a batch on
+   * its first unparseable record, so merging the queue would let one oversized
+   * or malformed exception take every other queued exception down with it —
+   * the exact loss this ticket exists to stop, one layer further in.
+   *
+   * Single-flight, because the record in flight is still at the head of the
+   * queue: concurrent drains would send it twice.
+   */
+  async function drainPendingExceptions(): Promise<void> {
+    if (pendingExceptionDrainActive || !exportTelemetry) {
+      return;
+    }
+    pendingExceptionDrainActive = true;
+    try {
+      while (!terminalNoop && pendingExceptions.length > 0) {
+        const result = await exportTelemetry({
+          records: [pendingExceptions[0]],
+        }).catch(() => null);
+        if (!consumePendingExceptionResult(result)) {
+          return;
+        }
+      }
+      pendingExceptionRetries = 0;
+      // A drained queue is the one unambiguous "main is up now" signal the
+      // renderer gets. Without this the tracer provider stays unstarted after a
+      // boot race until some render commit happens to re-drive the probe.
+      ensureStarted().catch(latchTerminalNoop);
+    } finally {
+      pendingExceptionDrainActive = false;
+    }
+  }
+
+  /** True to keep draining; false to stop (retry scheduled, or terminal). */
+  function consumePendingExceptionResult(
+    result: RendererOtelExportResult | null
+  ): boolean {
+    // A throwing bridge means no IPC handler is listening at all — terminal,
+    // exactly as it was before ISS-6329.
+    if (result === null || isTerminalRendererOtelResult(result)) {
+      latchTerminalNoop();
+      return false;
+    }
+    // A record the bridge cannot parse will never parse, so re-offering it
+    // would burn the whole ladder and strand every exception behind it.
+    if (
+      result.ok ||
+      result.reason === RendererOtelExportFailureReason.InvalidPayload
+    ) {
+      pendingExceptions.shift();
+      return true;
+    }
+    schedulePendingExceptionRetry();
+    return false;
   }
 
   function withStartedRendererRuntime(callback: () => void): void {
@@ -206,9 +341,7 @@ export function createRendererOtelRuntime({
           callback();
         }
       })
-      .catch(() => {
-        terminalNoop = true;
-      });
+      .catch(latchTerminalNoop);
   }
 }
 

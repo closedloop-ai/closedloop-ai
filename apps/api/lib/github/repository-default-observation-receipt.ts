@@ -1,6 +1,6 @@
 import { GitHubFetchMechanism } from "@repo/api/src/types/github-read-model";
 import type { RepositoryDefaultSource } from "@repo/api/src/types/repository-default-identity";
-import type { TransactionClient } from "@repo/database";
+import { type TransactionClient, withDb } from "@repo/database";
 import type { RepositoryInput } from "@/app/integrations/github/service/repository-sync";
 
 /** Durable authority targets that consume webhook deliveries independently. */
@@ -138,4 +138,33 @@ function repositoryReceiptClaimKey(
   observationKey: string
 ): string {
   return `${targetId}\0${source}\0${observationKey}`;
+}
+
+/**
+ * ISS-12780: how long a receipt is kept. GitHub redelivers a webhook delivery
+ * only within 3 days of it ("You can redeliver webhook deliveries that occurred
+ * in the past 3 days", docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/redelivering-webhooks,
+ * read 2026-10-20), and every receipt is claimed while its delivery is being
+ * handled, so `createdAt` is never earlier than the delivery it records.
+ * Unverified: whether a redelivery can itself be redelivered for another 3
+ * days. A redelivery keeps the original GUID, so its duplicate claim leaves
+ * `createdAt` at the first attempt, and a chain of redeliveries could outlive
+ * the receipt. ISS-12841 tracks confirming that or refreshing the window on a
+ * duplicate claim.
+ */
+export const REPOSITORY_DEFAULT_OBSERVATION_RECEIPT_RETENTION_MS = 259_200_000;
+
+/** Deletes receipts older than the retention window, for the daily cron. */
+export async function sweepExpiredRepositoryDefaultObservationReceipts(
+  now: number = Date.now()
+): Promise<{ deleted: number; cutoff: string }> {
+  const cutoff = new Date(
+    now - REPOSITORY_DEFAULT_OBSERVATION_RECEIPT_RETENTION_MS
+  );
+  const { count } = await withDb((db) =>
+    db.repositoryDefaultObservationReceipt.deleteMany({
+      where: { createdAt: { lt: cutoff } },
+    })
+  );
+  return { deleted: count, cutoff: cutoff.toISOString() };
 }

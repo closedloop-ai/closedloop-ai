@@ -21,7 +21,7 @@
  * bodies (see test/helpers/admin-fetch.ts).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import { ClaudeCodeAnalyticsClient } from "../src/main/cost/claude-code-analytics-client.js";
 import { makeFetch } from "./helpers/admin-fetch.js";
 

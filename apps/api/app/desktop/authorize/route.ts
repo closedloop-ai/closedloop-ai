@@ -2,12 +2,20 @@ import "server-only";
 
 import { z } from "zod";
 import {
+  DesktopConnectRejectionCause,
+  DesktopConnectStage,
+  desktopConnectRejected,
   desktopContractError,
   desktopContractSuccess,
 } from "@/app/desktop/contract";
+import {
+  DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES,
+  readBoundedJsonBody,
+} from "@/app/desktop/route-helpers";
 import { canonicalizeTrustedOrigin } from "@/lib/auth/canonical-trusted-origin";
 import { normalizeEd25519SpkiPublicKeyPem } from "@/lib/auth/ed25519-spki-pem";
 import { resolveSessionUser } from "@/lib/auth/session-user";
+import { withRequestCompleted } from "@/lib/observability/with-request-completed";
 import { desktopAuthorizeService } from "./service";
 
 /**
@@ -27,13 +35,38 @@ const authorizeRequestValidator = z
   })
   .strict();
 
-export async function POST(request: Request) {
-  const session = await resolveSessionUser().catch(() => null);
+async function handlePost(request: Request) {
+  let session: Awaited<ReturnType<typeof resolveSessionUser>>;
+  try {
+    session = await resolveSessionUser();
+  } catch {
+    // A session lookup that FAILED is not an authorization decision, so it must
+    // not wear one (ISS-5118). Reuses this route's existing retryable bucket
+    // rather than adding a code — the contract deliberately collapses every
+    // server-side failure into one 503. Identical shape to the sibling
+    // /desktop/onboarding-attempt mint.
+    //
+    // That collapse is why this reports at all: on the wire an auth-provider
+    // outage is indistinguishable from a mint fault, and `cause` is the only
+    // server-side signal telling them apart. It rides the shared BOUNDED
+    // emitter rather than a bare `log.error`, because this catch sits ahead of
+    // any auth decision — so an unauthenticated caller can drive it once per
+    // request for as long as the outage lasts, which is exactly the
+    // amplification `apps/api/AGENTS.md` ("Emission and Abuse Control") forbids.
+    // Suppressed occurrences are rolled up, never discarded (#5958).
+    return desktopConnectRejected(503, "DESKTOP_AUTHORIZE_FAILED", true, {
+      stage: DesktopConnectStage.Authorize,
+      cause: DesktopConnectRejectionCause.SessionLookupFaulted,
+    });
+  }
   if (!session) {
     return desktopContractError(401, "SESSION_REQUIRED", false);
   }
 
-  const rawBody = await request.json().catch(() => null);
+  const { rawBody } = await readBoundedJsonBody(
+    request,
+    DESKTOP_HANDSHAKE_REQUEST_MAX_BYTES
+  );
   const parsedBody = authorizeRequestValidator.safeParse(rawBody);
   if (!parsedBody.success) {
     return desktopContractError(400, "INVALID_DESKTOP_AUTHORIZE", false);
@@ -86,3 +119,5 @@ export async function POST(request: Request) {
 
   return desktopContractSuccess(outcome.value);
 }
+
+export const POST = withRequestCompleted(handlePost);

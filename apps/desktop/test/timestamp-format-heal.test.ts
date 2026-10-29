@@ -13,7 +13,7 @@
  * the heal, and is stranded permanently. These cases pin that pairing.
  */
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { isCanonicalUtcTimestamp } from "../src/main/database/session-timestamp-form.js";
 import { normalizeStoredTimestampFormats } from "../src/main/database/timestamp-format-maintenance.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
@@ -366,7 +366,7 @@ const SEED_ARTIFACT_SQL = `INSERT INTO artifacts
 
 const SEED_PULL_REQUEST_SQL = `INSERT INTO pull_requests
   (id, session_id, pr_url, pr_number, repo_full_name, observed_at, created_at)
-  VALUES ($1, $2, $3, $4, 'closedloop-ai/example-repo', $5, $6)`;
+  VALUES ($1, $2, $3, $4, 'closedloop-ai/closedloop-ai', $5, $6)`;
 
 const SEED_LINK_SQL = `INSERT INTO session_artifact_links
   (id, session_id, artifact_id, relation, method, evidence, is_primary, status,
@@ -429,7 +429,7 @@ test("ISS-5427: the heal canonicalizes artifact-link observed_at and re-queues i
     await store.query(SEED_PULL_REQUEST_SQL, [
       "pr-1",
       "s-offset",
-      "https://github.com/closedloop-ai/example-repo/pull/5427",
+      "https://github.com/closedloop-ai/closedloop-ai/pull/5427",
       5427,
       "2026-06-22T05:00:00-05:00",
       "2026-06-22T09:00:00.000Z",

@@ -20,8 +20,9 @@ const timeoutError = new ApiError(
 );
 
 const meta = {
-  title: "App Core/Packs/Packs Load Failed",
+  title: "Composites v1.0/Packs/Packs Load Failed",
   component: PacksLoadFailed,
+  tags: ["deprecated", "autodocs"],
   parameters: {
     layout: "centered",
   },

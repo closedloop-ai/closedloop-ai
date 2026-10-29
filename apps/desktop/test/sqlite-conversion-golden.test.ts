@@ -15,12 +15,12 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   type DeliveryInsightsResponse,
   InsightsSection,
 } from "@closedloop-ai/loops-api/insights";
+import { test } from "vitest";
 import {
   Harness,
   type NormalizedSession,

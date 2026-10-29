@@ -5,6 +5,13 @@ vi.mock("@repo/aws/credentials", () => ({
   getAwsCredentials: vi.fn().mockReturnValue(undefined),
 }));
 
+// The monitored plaintext-read event is asserted through the logger it is
+// emitted on, not through the telemetry module — mocking the module under
+// assertion would prove only that the test mocked it.
+vi.mock("@repo/observability/log", () => ({
+  log: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
 // mockSend is the single shared send function injected into the KMSClient mock.
 // Because integration-encryption.ts uses a module-level singleton for the KMS
 // client, we cannot replace it per-test. Instead we reset mockSend before each
@@ -34,10 +41,11 @@ vi.mock("@aws-sdk/client-kms", () => {
 });
 
 import {
+  buildIntegrationTokenColumns,
   decryptIntegrationToken,
   encryptIntegrationToken,
   encryptTokenPair,
-  resolveIntegrationToken,
+  resolveEncryptedIntegrationToken,
 } from "./integration-encryption";
 
 const KMS_KEY_ARN = "arn:aws:kms:us-east-1:123456789012:key/test-key-id";
@@ -273,44 +281,6 @@ describe("distinct encryption contexts per integration type", () => {
   });
 });
 
-describe("resolveIntegrationToken", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-    setupEnv();
-  });
-
-  it("decrypts and returns the token when encrypted is provided", async () => {
-    const fakePlaintext = Buffer.from(PLAINTEXT_TOKEN, "utf-8");
-    mockSend.mockResolvedValueOnce({ Plaintext: fakePlaintext });
-
-    const result = await resolveIntegrationToken(ENCRYPTED_BASE64, null);
-
-    expect(result).toBe(PLAINTEXT_TOKEN);
-    expect(mockSend).toHaveBeenCalledTimes(1);
-  });
-
-  it("returns plaintext without calling KMS when encrypted is null", async () => {
-    const result = await resolveIntegrationToken(null, PLAINTEXT_TOKEN);
-
-    expect(result).toBe(PLAINTEXT_TOKEN);
-    expect(mockSend).not.toHaveBeenCalled();
-  });
-
-  it("returns plaintext without calling KMS when encrypted is undefined", async () => {
-    const result = await resolveIntegrationToken(undefined, PLAINTEXT_TOKEN);
-
-    expect(result).toBe(PLAINTEXT_TOKEN);
-    expect(mockSend).not.toHaveBeenCalled();
-  });
-
-  it("returns null when both encrypted and plaintext are null", async () => {
-    const result = await resolveIntegrationToken(null, null);
-
-    expect(result).toBeNull();
-    expect(mockSend).not.toHaveBeenCalled();
-  });
-});
-
 describe("encryptTokenPair", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -366,5 +336,106 @@ describe("encryptTokenPair", () => {
 
     expect(result.encryptedRefreshToken).toBeNull();
     expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The write-path half of the encryption migration. ISS-11096: the columns are
+ * ciphertext only, with no legacy plaintext key. ISS-5081: a failed encrypt
+ * throws instead of returning plaintext columns to store.
+ */
+describe("buildIntegrationTokenColumns", () => {
+  const REFRESH_TOKEN = "1//0g-test-refresh-token";
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupEnv();
+  });
+
+  it("stores ciphertext only, with no plaintext column, when encryption succeeds", async () => {
+    mockSend.mockResolvedValue({
+      CiphertextBlob: Buffer.from("fake-ciphertext-bytes"),
+    });
+
+    const columns = await buildIntegrationTokenColumns(
+      PLAINTEXT_TOKEN,
+      REFRESH_TOKEN
+    );
+
+    expect(columns).toEqual({
+      accessTokenEncrypted: ENCRYPTED_BASE64,
+      refreshTokenEncrypted: ENCRYPTED_BASE64,
+    });
+  });
+
+  it("throws when encryption fails rather than returning plaintext columns", async () => {
+    mockSend.mockRejectedValue(new Error("kms unavailable"));
+
+    await expect(
+      buildIntegrationTokenColumns(PLAINTEXT_TOKEN, REFRESH_TOKEN)
+    ).rejects.toThrow("kms unavailable");
+  });
+
+  it("throws when only the refresh token fails to encrypt", async () => {
+    mockSend
+      .mockResolvedValueOnce({ CiphertextBlob: Buffer.from("access-cipher") })
+      .mockRejectedValueOnce(new Error("kms unavailable"));
+
+    await expect(
+      buildIntegrationTokenColumns(PLAINTEXT_TOKEN, REFRESH_TOKEN)
+    ).rejects.toThrow("kms unavailable");
+  });
+
+  /**
+   * Google ordinarily reissues NO refresh token on a refresh. Writing `null`
+   * there would delete the organization's only means of refreshing, so the
+   * refresh key must be ABSENT — Prisma leaves an omitted column alone.
+   */
+  it("omits the refresh column when there is no refresh token to store", async () => {
+    mockSend.mockResolvedValue({
+      CiphertextBlob: Buffer.from("fake-ciphertext-bytes"),
+    });
+
+    const columns = await buildIntegrationTokenColumns(
+      PLAINTEXT_TOKEN,
+      undefined
+    );
+
+    expect(columns).toEqual({ accessTokenEncrypted: ENCRYPTED_BASE64 });
+  });
+});
+
+/**
+ * ISS-11096: the Google and Linear read path. Ciphertext only — a row without
+ * one resolves to null, so its caller fails the read instead of falling back.
+ */
+describe("resolveEncryptedIntegrationToken", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupEnv();
+  });
+
+  it("decrypts and returns the token when the row has ciphertext", async () => {
+    mockSend.mockResolvedValueOnce({
+      Plaintext: Buffer.from(PLAINTEXT_TOKEN, "utf-8"),
+    });
+
+    await expect(
+      resolveEncryptedIntegrationToken(ENCRYPTED_BASE64)
+    ).resolves.toBe(PLAINTEXT_TOKEN);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves null without calling KMS when the row has no ciphertext", async () => {
+    await expect(resolveEncryptedIntegrationToken(null)).resolves.toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("propagates a decrypt failure", async () => {
+    mockSend.mockRejectedValueOnce(new Error("kms unavailable"));
+
+    await expect(
+      resolveEncryptedIntegrationToken(ENCRYPTED_BASE64)
+    ).rejects.toThrow("kms unavailable");
   });
 });

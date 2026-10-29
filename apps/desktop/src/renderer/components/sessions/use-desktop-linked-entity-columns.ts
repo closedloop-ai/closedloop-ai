@@ -19,8 +19,9 @@ import type { DesktopAuthState } from "../../types/desktop-api";
  * with the Labs toggle on got no columns and no View-menu entries on data that
  * was already in hand.
  *
- * So the opt-in is the MODE, not the surface: cloud mode has the fields, local
- * mode does not and must never grow two tracks of em dashes.
+ * The opt-in is the selected rows' operands, not the app mode: a composite
+ * fallback may hold cloud and local rows together, and only rows whose producer
+ * supplied these fields establish that the columns can say anything.
  *
  * Lives in its own module rather than inline in `SessionsView` because that
  * component is already near the file-size ceiling, and because the href rule
@@ -39,7 +40,7 @@ export type DesktopLinkedEntityColumns = Readonly<{
 }>;
 
 export function useDesktopLinkedEntityColumns(
-  isCloudMode: boolean,
+  hasLinkedEntityOperands: boolean,
   authState: DesktopAuthState
 ): DesktopLinkedEntityColumns {
   const { identity } = useDesktopIdentity(authState.status, authState.userId);
@@ -60,5 +61,5 @@ export function useDesktopLinkedEntityColumns(
         : null,
     [organizationSlug, webAppOrigin]
   );
-  return { showLinkedEntityColumns: isCloudMode, getIssueHref };
+  return { showLinkedEntityColumns: hasLinkedEntityOperands, getIssueHref };
 }

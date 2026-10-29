@@ -12,8 +12,8 @@
  * upgrade, and converges as soon as that scan commits.
  *
  * Extracted from `agent-dashboard-design-system-runtime.ts` rather than inlined
- * there: that runtime is on the shrink-only `noExcessiveLinesPerFile`
- * grandfather list, so a new cohesive unit belongs in its own module.
+ * there: a new cohesive unit belongs in its own module rather than accreting
+ * onto that runtime (AGENTS.md → "File Size and Organization").
  */
 
 /** The collector-manager option slice this reconciliation contributes. */

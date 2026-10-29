@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, test } from "node:test";
+import { afterEach, describe, test } from "vitest";
 import { OperationDispatcher } from "../src/server/operation-dispatcher.js";
 import { registerGitLocalChangesRoutes } from "../src/server/operations/git-local-changes.js";
 import { ProcessManager } from "../src/server/process-manager.js";

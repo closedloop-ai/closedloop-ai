@@ -25,10 +25,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Mocks — must be declared before imports
 // ---------------------------------------------------------------------------
 
-const { mockWithDb, mockWithDbTx, mockListAllBranchNames } = vi.hoisted(() => ({
+const {
+  mockWithDb,
+  mockWithDbTx,
+  mockWithMigratorClient,
+  mockListAllBranchNames,
+} = vi.hoisted(() => ({
   mockWithDb: vi.fn(),
   mockWithDbTx: vi.fn(),
+  mockWithMigratorClient: vi.fn(),
   mockListAllBranchNames: vi.fn(),
+}));
+
+vi.mock("@/app/preview-schemas/service/migrator-connection", () => ({
+  withMigratorClient: mockWithMigratorClient,
 }));
 
 vi.mock("@repo/database", () => ({
@@ -78,12 +88,17 @@ const {
   mockUpsertObservationsBatch,
   mockDropBlockedByRevalidation,
   mockDropContention,
+  mockOrphanDropContention,
   mockCleanupStaleObservationsSuccess,
   mockDropSuccess,
   mockGitHubBranches,
   mockListSchemas,
   mockRegistryRow,
-} = createPreviewSchemaMocks(mockWithDb, mockListAllBranchNames, mockWithDbTx);
+} = createPreviewSchemaMocks(
+  mockWithDb,
+  mockListAllBranchNames,
+  mockWithMigratorClient
+);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -173,7 +188,7 @@ describe("runDailySweep — merge-queue TTL", () => {
     // implementations, so a leftover would be handed to the next test's first
     // query and cascade failures across the file.
     mockWithDb.mockReset();
-    mockWithDbTx.mockReset();
+    mockWithMigratorClient.mockReset();
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
     clearPolicyEnv();
@@ -283,28 +298,31 @@ describe("runDailySweep — merge-queue TTL", () => {
     ["non-numeric", "soon"],
     ["zero", "0"],
     ["negative", "-4"],
-  ])("falls back to the %s-safe default queue TTL when the env var is %s", async (_label, raw) => {
-    const restore = setEnv("PREVIEW_QUEUE_SCHEMA_TTL_HOURS", raw);
-    try {
-      const schemaName = queueSchema(4448);
-      const branch = queueBranch(4448);
+  ])(
+    "falls back to the %s-safe default queue TTL when the env var is %s",
+    async (_label, raw) => {
+      const restore = setEnv("PREVIEW_QUEUE_SCHEMA_TTL_HOURS", raw);
+      try {
+        const schemaName = queueSchema(4448);
+        const branch = queueBranch(4448);
 
-      mockListSchemas([schemaName]);
-      mockGitHubBranches(["main", branch]);
-      mockRegistryRow({
-        last_seen_at: hoursAgo(DEFAULT_QUEUE_TTL_HOURS + 1),
-        branch,
-      });
-      mockDropSuccess();
-      mockCleanupStaleObservationsSuccess();
+        mockListSchemas([schemaName]);
+        mockGitHubBranches(["main", branch]);
+        mockRegistryRow({
+          last_seen_at: hoursAgo(DEFAULT_QUEUE_TTL_HOURS + 1),
+          branch,
+        });
+        mockDropSuccess();
+        mockCleanupStaleObservationsSuccess();
 
-      const result = await previewSchemaCleanupService.runDailySweep(7);
+        const result = await previewSchemaCleanupService.runDailySweep(7);
 
-      expect(result.counters["ttl-expired"].dropped).toBe(1);
-    } finally {
-      restore();
+        expect(result.counters["ttl-expired"].dropped).toBe(1);
+      } finally {
+        restore();
+      }
     }
-  });
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -319,7 +337,7 @@ describe("runDailySweep — queue schemas and the mass-drop cap", () => {
     // implementations, so a leftover would be handed to the next test's first
     // query and cascade failures across the file.
     mockWithDb.mockReset();
-    mockWithDbTx.mockReset();
+    mockWithMigratorClient.mockReset();
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
     clearPolicyEnv();
@@ -475,7 +493,7 @@ describe("runDailySweep — DROP time budget", () => {
     // implementations, so a leftover would be handed to the next test's first
     // query and cascade failures across the file.
     mockWithDb.mockReset();
-    mockWithDbTx.mockReset();
+    mockWithMigratorClient.mockReset();
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
     clearPolicyEnv();
@@ -499,18 +517,19 @@ describe("runDailySweep — DROP time budget", () => {
       branch: null,
     });
     // The DROP itself, which runs in a transaction and burns the clock.
-    // The transaction issues three statements (two `SET LOCAL` guards plus the
-    // DROP); only the DROP represents real elapsed work, so only it advances
-    // the clock — otherwise one drop would spend 3x its budget.
-    mockWithDbTx.mockImplementationOnce((fn: (tx: unknown) => unknown) =>
-      fn({
-        $executeRawUnsafe: vi.fn((sql: string) => {
-          if (sql.startsWith("DROP SCHEMA")) {
-            vi.advanceTimersByTime(byMs);
-          }
-          return Promise.resolve(0);
-        }),
-      })
+    // Only the DROP statement represents real elapsed work (BEGIN, the two
+    // `SET LOCAL` guards and COMMIT do not), so only it advances the clock —
+    // otherwise one drop would spend several times its budget.
+    mockWithMigratorClient.mockImplementationOnce(
+      (fn: (client: unknown) => unknown) =>
+        fn({
+          query: vi.fn((sql: string) => {
+            if (sql.startsWith("DROP SCHEMA")) {
+              vi.advanceTimersByTime(byMs);
+            }
+            return Promise.resolve({ rows: [] });
+          }),
+        })
     );
   }
 
@@ -669,7 +688,7 @@ describe("runDryRun — parity with the sweep", () => {
     // implementations, so a leftover would be handed to the next test's first
     // query and cascade failures across the file.
     mockWithDb.mockReset();
-    mockWithDbTx.mockReset();
+    mockWithMigratorClient.mockReset();
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
     clearPolicyEnv();
@@ -760,7 +779,7 @@ describe("runDailySweep — drop safety", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWithDb.mockReset();
-    mockWithDbTx.mockReset();
+    mockWithMigratorClient.mockReset();
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
     clearPolicyEnv();
@@ -791,7 +810,7 @@ describe("runDailySweep — drop safety", () => {
 
     expect(result.counters["ttl-expired"].dropped).toBe(0);
     expect(result.counters["ttl-expired"].kept).toBe(1);
-    expect(mockWithDbTx).not.toHaveBeenCalled();
+    expect(mockWithMigratorClient).not.toHaveBeenCalled();
     expect(result.exitCode).toBe(0);
   });
 
@@ -816,7 +835,7 @@ describe("runDailySweep — drop safety", () => {
 
     expect(result.counters.orphan.dropped).toBe(0);
     expect(result.counters.orphan.kept).toBe(1);
-    expect(mockWithDbTx).not.toHaveBeenCalled();
+    expect(mockWithMigratorClient).not.toHaveBeenCalled();
   });
 
   it("fails closed: an unverifiable registry read skips the drop rather than risking it", async () => {
@@ -834,34 +853,88 @@ describe("runDailySweep — drop safety", () => {
 
     expect(result.counters["ttl-expired"].dropped).toBe(0);
     expect(result.counters["ttl-expired"].kept).toBe(1);
-    expect(mockWithDbTx).not.toHaveBeenCalled();
+    expect(mockWithMigratorClient).not.toHaveBeenCalled();
   });
 
   it.each([
+    ["55P03", "adapter-pg"],
+    ["57014", "adapter-pg"],
     ["55P03", "prisma-raw"],
     ["57014", "prisma-raw"],
     ["55P03", "direct"],
     ["57014", "direct"],
-  ] as const)("treats a busy schema (SQLSTATE %s, %s error shape) as kept, not errored, so it cannot page", async (sqlState, shape) => {
-    // lock_timeout / statement_timeout mean the schema is in use — exactly
-    // the schema we must not drop. Routing it to `errored` would return 500
-    // and fire the Slack alert on the sweep behaving as designed.
-    const schemaName = queueSchema(9102);
-    const branch = queueBranch(9102);
+  ] as const)(
+    "treats a busy schema (SQLSTATE %s, %s error shape) as kept, not errored, so it cannot page",
+    async (sqlState, shape) => {
+      // lock_timeout / statement_timeout mean the schema is in use — exactly
+      // the schema we must not drop. Routing it to `errored` would return 500
+      // and fire the Slack alert on the sweep behaving as designed.
+      const schemaName = queueSchema(9102);
+      const branch = queueBranch(9102);
 
-    mockListSchemas([schemaName]);
-    mockGitHubBranches(["main", branch]);
-    mockRegistryRow({ last_seen_at: hoursAgo(13), branch });
-    mockDropContention(sqlState, shape);
-    mockCleanupStaleObservationsSuccess();
+      mockListSchemas([schemaName]);
+      mockGitHubBranches(["main", branch]);
+      mockRegistryRow({ last_seen_at: hoursAgo(13), branch });
+      mockDropContention(sqlState, shape);
+      mockCleanupStaleObservationsSuccess();
 
-    const result = await previewSchemaCleanupService.runDailySweep(7);
+      const result = await previewSchemaCleanupService.runDailySweep(7);
 
-    expect(result.counters["ttl-expired"].dropped).toBe(0);
-    expect(result.counters["ttl-expired"].errored).toBe(0);
-    expect(result.counters["ttl-expired"].kept).toBe(1);
-    expect(result.exitCode).toBe(0);
-  });
+      expect(result.counters["ttl-expired"].dropped).toBe(0);
+      expect(result.counters["ttl-expired"].errored).toBe(0);
+      expect(result.counters["ttl-expired"].kept).toBe(1);
+      expect(result.exitCode).toBe(0);
+    }
+  );
+
+  /**
+   * ISS-8139. The table above drives `dropSchemas`, which serves the
+   * `ttl-expired` and `orphan-branch` buckets. `processOrphansWithGrace` carries
+   * its OWN copy of the same contention fold, and nothing exercised it — so the
+   * `error.code`-vs-`meta.code` mutation (reading one envelope field instead of
+   * going through the extractor) was caught on one path and survived on the
+   * other.
+   *
+   * The consequence is the one the sibling exists to prevent, on a path that
+   * had no guard: a busy schema counted `errored` instead of `kept` turns
+   * exitCode 1 and pages on the sweep behaving exactly as designed.
+   */
+  it.each([
+    ["55P03", "adapter-pg"],
+    ["57014", "adapter-pg"],
+    ["55P03", "prisma-raw"],
+    ["57014", "prisma-raw"],
+    ["55P03", "direct"],
+    ["57014", "direct"],
+  ] as const)(
+    "treats a busy ORPHAN schema (SQLSTATE %s, %s error shape) as kept, not errored",
+    async (sqlState, shape) => {
+      const schemaName = "preview_orph_busy_5150";
+
+      mockListSchemas([schemaName]);
+      mockGitHubBranches(["main"]);
+      mockRegistryRow(null); // orphan at classification
+      // Observed past the 48h grace window, so the drop is actually attempted.
+      mockObservationsBatch([
+        { schema_name: schemaName, first_observed_at: hoursAgo(49) },
+      ]);
+      mockUpsertObservationsBatch();
+      mockOrphanDropContention(sqlState, shape);
+      mockCleanupStaleObservationsSuccess();
+
+      const result = await previewSchemaCleanupService.runDailySweep(7);
+
+      // The DROP must actually have been ATTEMPTED. `kept` is also what the
+      // pre-drop revalidation reports when it decides the schema was
+      // re-registered since classification, so without this the case would pass
+      // having never reached the contention fold at all.
+      expect(mockWithMigratorClient).toHaveBeenCalledOnce();
+      expect(result.counters.orphan.dropped).toBe(0);
+      expect(result.counters.orphan.errored).toBe(0);
+      expect(result.counters.orphan.kept).toBe(1);
+      expect(result.exitCode).toBe(0);
+    }
+  );
 
   it("guards the DROP with lock_timeout and statement_timeout in one transaction", async () => {
     const schemaName = queueSchema(9103);
@@ -872,25 +945,30 @@ describe("runDailySweep — drop safety", () => {
     mockGitHubBranches(["main", branch]);
     mockRegistryRow({ last_seen_at: hoursAgo(13), branch });
     mockRevalidateRegistry({ last_seen_at: new Date(0).toISOString() });
-    mockWithDbTx.mockImplementationOnce((fn: (tx: unknown) => unknown) =>
-      fn({
-        $executeRawUnsafe: vi.fn((sql: string) => {
-          statements.push(sql);
-          return Promise.resolve(0);
-        }),
-      })
+    mockWithMigratorClient.mockImplementationOnce(
+      (fn: (client: unknown) => unknown) =>
+        fn({
+          query: vi.fn((sql: string) => {
+            statements.push(sql);
+            return Promise.resolve({ rows: [] });
+          }),
+        })
     );
     mockCleanupStaleObservationsSuccess();
 
     await previewSchemaCleanupService.runDailySweep(7);
 
-    // Both guards must precede the DROP, and all three must share the one
-    // transaction — `SET LOCAL` outside a transaction would not bind to the
-    // connection the DROP runs on.
-    expect(statements).toHaveLength(3);
-    expect(statements[0]).toMatch(SET_LOCK_TIMEOUT_SQL);
-    expect(statements[1]).toMatch(SET_STATEMENT_TIMEOUT_SQL);
-    expect(statements[2]).toMatch(DROP_SCHEMA_SQL);
+    // Both guards must precede the DROP inside the one transaction — `SET
+    // LOCAL` outside a transaction would not bind to the DROP. And none of it
+    // may ride the runtime pool (ISS-5978).
+    expect(statements).toEqual([
+      "BEGIN",
+      expect.stringMatching(SET_LOCK_TIMEOUT_SQL),
+      expect.stringMatching(SET_STATEMENT_TIMEOUT_SQL),
+      expect.stringMatching(DROP_SCHEMA_SQL),
+      "COMMIT",
+    ]);
+    expect(mockWithDbTx).not.toHaveBeenCalled();
   });
 });
 

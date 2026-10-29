@@ -53,7 +53,7 @@ vi.mock("@repo/linear", () => ({
 vi.mock("@/lib/integration-encryption", () => ({
   encryptIntegrationToken: vi.fn(),
   decryptIntegrationToken: vi.fn(),
-  resolveIntegrationToken: vi.fn(),
+  resolveEncryptedIntegrationToken: vi.fn(),
   encryptTokenPair: vi.fn(),
 }));
 
@@ -74,14 +74,14 @@ import {
 } from "@repo/linear";
 import { documentVersionService } from "@/app/documents/document-version-service";
 import { linearService } from "@/app/integrations/linear/service";
-import { resolveIntegrationToken } from "@/lib/integration-encryption";
+import { resolveEncryptedIntegrationToken } from "@/lib/integration-encryption";
 
 const mockCreateIssues = createIssues as Mock;
 const mockCreateLinearClient = createLinearClient as Mock;
 const mockExtractTasksWithLLM = extractTasksWithLLM as Mock;
 const mockFormatTaskForLinear = formatTaskForLinear as Mock;
 const mockGetTeams = getTeams as Mock;
-const mockResolveIntegrationToken = resolveIntegrationToken as Mock;
+const mockResolveEncryptedToken = resolveEncryptedIntegrationToken as Mock;
 const mockDocumentVersionServiceGetLatest =
   documentVersionService.getLatest as Mock;
 
@@ -94,9 +94,7 @@ function makeLinearIntegration() {
   return {
     id: "integ-1",
     organizationId: ORG_ID,
-    accessToken: "plaintext-access-token",
-    refreshToken: null,
-    accessTokenEncrypted: null,
+    accessTokenEncrypted: "encrypted-access-token",
     refreshTokenEncrypted: null,
     tokenExpiresAt: null,
     linearOrgId: "linear-org-1",
@@ -151,7 +149,7 @@ describe("Linear exportImplementationPlan — artifact org-scoping (FEA-1749)", 
     // Guards the rest of exportImplementationPlan, not the query: proves nothing
     // downstream of the lookup reads `projectId`, so an unparented plan exports
     // exactly like a parented one once FEA-1749 Phase 1 lets the row exist.
-    mockResolveIntegrationToken.mockResolvedValue("plaintext-access-token");
+    mockResolveEncryptedToken.mockResolvedValue("decrypted-access-token");
     mockExtractTasksWithLLM.mockResolvedValue([
       { title: "Task 1", description: "Do task 1", isCompleted: false },
     ]);

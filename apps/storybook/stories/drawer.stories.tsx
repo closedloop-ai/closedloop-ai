@@ -14,10 +14,20 @@ import type { Meta, StoryObj } from "@storybook/react";
  * A drawer component for React.
  */
 const meta: Meta<typeof Drawer> = {
-  title: "Design System/Primitives/Drawer",
+  title: "Primitives v1.0/Overlays/Drawer",
   component: Drawer,
-  tags: ["autodocs"],
-  argTypes: {},
+  tags: ["deprecated", "autodocs"],
+  argTypes: {
+    // Both props are real `boolean`s (vaul's `Drawer.Root`), but this
+    // preview's global `controls.matchers.color` (`.storybook/preview.tsx`)
+    // matches any arg NAME ending in "background" or "color" regardless of
+    // its actual type, so left un-overridden both got auto-assigned a
+    // `color` swatch control — which the addon then rejects outright
+    // ("Control of type color only supports string") since the value is a
+    // boolean. Pinning the real control type here overrides the matcher.
+    shouldScaleBackground: { control: "boolean" },
+    setBackgroundColorOnScale: { control: "boolean" },
+  },
   render: (args) => (
     <Drawer {...args}>
       <DrawerTrigger>Open</DrawerTrigger>

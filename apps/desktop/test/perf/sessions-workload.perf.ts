@@ -37,7 +37,30 @@
  *
  * A step that cannot complete records its elapsed time under `<step>:timeout`
  * and the route continues, so one wedged surface costs one mark rather than the
- * whole profile.
+ * whole profile. That mark is NOT a latency — the step never finished — and
+ * ISS-7785 made `scripts/perf/report.ts` route it into the report's
+ * `unsettledSteps` instead of judging the expired wait bound against the step
+ * budget.
+ *
+ * ISS-7785 also gave the lane two preconditions it used to lack, because the
+ * failure it was filed for was silent: three Sessions steps wedged for eight
+ * minutes and reported as 180s "findings" when the truth was that the list had
+ * rendered zero rows.
+ *
+ *   - The window is widened to "All time" before anything is measured. The
+ *     product default is 7 days, and a snapshot of a machine that has not run
+ *     Desktop in a week has NOTHING in that window — so the lane measured an
+ *     empty list. Widening is a harness setting; the view's shipped default is
+ *     untouched.
+ *   - `requireSandboxSessions` opens the snapshot before launch and refuses a
+ *     run against a sandbox with zero sessions, naming the query that proves it.
+ *
+ * Both preconditions are deliberately cheap, because everything this function
+ * does before the first `measureStep` is charged to `boot-to-dashboard` —
+ * that step's clock starts before the app process exists. The seed is an
+ * in-page write plus a read-back; the population question is answered against
+ * SQLite before launch. Neither waits on a render, so the boot mark still
+ * measures boot.
  *
  * Prerequisites:
  *   - `pnpm -C apps/desktop build`, then a renderer rebuild with
@@ -61,23 +84,25 @@ import {
   ProfilingEnvVar,
 } from "../../src/shared/profiling";
 import {
-  dismissDesktopOnboardingOverlay,
   gotoNav,
   launchDesktopApp,
   openDetailFromList,
 } from "../e2e/helpers/desktop-app";
 import {
   appendMark,
+  appendPhase,
   assertCollectorHomesIsolated,
   closeAppForProfileWrite,
-  DESKTOP_DB_FILE_NAME,
   DESKTOP_USER_DATA_DIR_ENV,
   describeError,
   PerfLane,
+  PerfSurface,
   requireAbsoluteDirEnv,
+  requireSandboxSessions,
   resolveCollectorHomes,
   TIMEOUT_STEP_SUFFIX,
   WORKLOAD_MARKS_FILE_NAME,
+  WORKLOAD_PHASES_FILE_NAME,
   writeRunManifest,
 } from "./helpers/perf-run";
 
@@ -111,6 +136,7 @@ const WorkloadNav = {
   Dashboard: { id: "dashboard", label: "Dashboard" },
   Sessions: { id: "sessions", label: "Sessions" },
   Branches: { id: "branches", label: "Branches" },
+  Agents: { id: "agents", label: "Agents" },
   Insights: { id: "insights", label: "Insights" },
 } as const;
 
@@ -120,6 +146,7 @@ const WorkloadStep = {
   NavSessions: "nav-sessions",
   OpenSessionDetail: "open-session-detail",
   NavBranches: "nav-branches",
+  NavAgents: "nav-agents",
   NavInsights: "nav-insights",
   ReturnDashboard: "return-dashboard",
 } as const;
@@ -131,6 +158,30 @@ const WorkloadStep = {
  * unscoped match can silently resolve against a stale hidden view instead of
  * the surface under measurement.
  */
+/**
+ * Accessible name of the Agents workspace search input — the signal the e2e
+ * agents specs use to prove the workspace mounted. A literal here for the same
+ * reason the nav ids above are: the renderer's module graph does not resolve
+ * from a Playwright runner process.
+ */
+const AGENTS_SEARCH_LABEL = "Search components";
+
+/**
+ * Where the shared date-range control persists the Sessions window, and the
+ * preset this lane selects.
+ *
+ * Literals for the same reason the nav ids above are: the owners
+ * (`useSharedDateRange`'s `shared:date-range:${surface}` and `DATE_RANGES` in
+ * `packages/app/shared/lib/format-utils.ts`) live in the renderer's module
+ * graph, which does not resolve from a Playwright runner process. `"desktop"` is
+ * the surface `SessionsView` passes.
+ *
+ * The value is JSON-encoded — `useLocalStorageState` stores `JSON.stringify` of
+ * the state — so the stored string carries its quotes.
+ */
+const SESSIONS_DATE_RANGE_STORAGE_KEY = "shared:date-range:desktop";
+const ALL_TIME_DATE_RANGE = "all";
+
 const VISIBLE_SESSION_ROW_LINK = 'a[href^="#/sessions/"]:visible';
 const VISIBLE_NEXT_PAGE_CONTROL = '[aria-label="Go to next page"]:visible';
 const VISIBLE_BUSY_REGION = '[aria-busy="true"]:visible';
@@ -166,7 +217,7 @@ test("desktop sessions workload", async () => {
     DESKTOP_USER_DATA_DIR_ENV,
     "Set it to a sandbox built by `node apps/desktop/scripts/perf-prepare-dataset.mjs`."
   );
-  requireSandboxDatabase(userDataDir);
+  requireSandboxSessions(userDataDir);
 
   fs.mkdirSync(runDir, { recursive: true });
   writeRunManifest(runDir, PerfLane.Desktop);
@@ -217,63 +268,166 @@ async function runSessionsRoute(
   runDir: string,
   bootStartedAt: number
 ): Promise<void> {
+  await selectAllTimeSessionsRange(page);
+
   await measureStep(
     runDir,
     WorkloadStep.BootToDashboard,
+    PerfSurface.Dashboard,
     async () => {
-      // The signed-out first-launch overlay intercepts pointer events over the
-      // Dashboard; neutralize it once, before anything is clicked.
-      await dismissDesktopOnboardingOverlay(page);
-      // The app's landing route is Sessions (DEFAULT_NAV_ID), so reaching the
-      // Dashboard is an explicit navigation — this step measures launch through
-      // first Dashboard paint, not launch alone.
+      // Dashboard is the landing route (DEFAULT_NAV_ID), so this navigation is
+      // normally a no-op — the step still measures launch through first Dashboard
+      // paint, not launch alone, and the explicit nav keeps the measurement
+      // honest if the workload is ever re-entered from another surface.
       await gotoNav(page, WorkloadNav.Dashboard.id);
       await waitForNavView(page, WorkloadNav.Dashboard.label);
     },
     bootStartedAt
   );
 
-  await measureStep(runDir, WorkloadStep.NavSessions, async () => {
-    await gotoNav(page, WorkloadNav.Sessions.id);
-    await waitForNavView(page, WorkloadNav.Sessions.label);
-    await expect(firstSessionRowLink(page)).toBeVisible({
-      timeout: STEP_WAIT_MS,
-    });
-  });
+  await measureStep(
+    runDir,
+    WorkloadStep.NavSessions,
+    PerfSurface.Sessions,
+    async () => {
+      await gotoNav(page, WorkloadNav.Sessions.id);
+      await waitForNavView(page, WorkloadNav.Sessions.label);
+      await expect(firstSessionRowLink(page)).toBeVisible({
+        timeout: STEP_WAIT_MS,
+      });
+    }
+  );
 
   await runPaginationSteps(page, runDir);
 
-  await measureStep(runDir, WorkloadStep.OpenSessionDetail, async () => {
-    await openDetailFromList(
-      page,
-      page.locator(VISIBLE_SESSION_ROW_LINK),
-      WorkloadNav.Sessions.label
-    );
-  });
+  await measureStep(
+    runDir,
+    WorkloadStep.OpenSessionDetail,
+    PerfSurface.Sessions,
+    async () => {
+      await openDetailFromList(
+        page,
+        page.locator(VISIBLE_SESSION_ROW_LINK),
+        WorkloadNav.Sessions.label
+      );
+    }
+  );
 
-  await measureStep(runDir, WorkloadStep.NavBranches, async () => {
-    await gotoNav(page, WorkloadNav.Branches.id);
-    await waitForNavView(page, WorkloadNav.Branches.label);
-  });
+  await measureStep(
+    runDir,
+    WorkloadStep.NavBranches,
+    PerfSurface.Branches,
+    async () => {
+      await gotoNav(page, WorkloadNav.Branches.id);
+      await waitForNavView(page, WorkloadNav.Branches.label);
+    }
+  );
 
-  await measureStep(runDir, WorkloadStep.NavInsights, async () => {
-    await gotoNav(page, WorkloadNav.Insights.id);
-    // The real Insights surface, not the Labs gate's hold: assert the view's own
-    // <h1>, which only the mounted bounded view renders (ISS-5037). The
-    // breadcrumb label alone paints while the lazy chunk is still resolving.
-    await expect(
-      page.getByRole("heading", {
-        exact: true,
-        level: 1,
-        name: WorkloadNav.Insights.label,
-      })
-    ).toBeVisible({ timeout: STEP_WAIT_MS });
-  });
+  await measureStep(
+    runDir,
+    WorkloadStep.NavAgents,
+    PerfSurface.Agents,
+    async () => {
+      await gotoNav(page, WorkloadNav.Agents.id);
+      // The workspace's own search control, not the page title. `#/agents` is a
+      // Labs destination behind both `labsNav` and its own `agentsNav` gate
+      // (ISS-5310) — the launch helper seeds both ON — and the gate's hold and
+      // unavailable panels both render a `PageShell` carrying the SAME nav
+      // title, so a title assertion would pass on a page that loaded no
+      // components at all. This control exists only once the workspace mounts,
+      // which is the read this step is here to measure.
+      await expect(page.getByLabel(AGENTS_SEARCH_LABEL)).toBeVisible({
+        timeout: STEP_WAIT_MS,
+      });
+    }
+  );
 
-  await measureStep(runDir, WorkloadStep.ReturnDashboard, async () => {
-    await gotoNav(page, WorkloadNav.Dashboard.id);
-    await waitForNavView(page, WorkloadNav.Dashboard.label);
-  });
+  // ISS-6820: filed under `dashboard`, not a surface of its own. The desktop
+  // Insights view computes the same delivery / utilization / agents analytics
+  // the cloud serves from `/insights/*` under the Dashboard, so filing it
+  // elsewhere would make the two lanes' surface aggregates describe different
+  // things. The step name travels with the surface on every phase row, so
+  // `boot-to-dashboard` and `nav-insights` stay distinguishable.
+  await measureStep(
+    runDir,
+    WorkloadStep.NavInsights,
+    PerfSurface.Dashboard,
+    async () => {
+      await gotoNav(page, WorkloadNav.Insights.id);
+      // The real Insights surface, not the Labs gate's hold: assert the view's own
+      // <h1>, which only the mounted bounded view renders (ISS-5037). The
+      // breadcrumb label alone paints while the lazy chunk is still resolving.
+      await expect(
+        page.getByRole("heading", {
+          exact: true,
+          level: 1,
+          name: WorkloadNav.Insights.label,
+        })
+      ).toBeVisible({ timeout: STEP_WAIT_MS });
+    }
+  );
+
+  await measureStep(
+    runDir,
+    WorkloadStep.ReturnDashboard,
+    PerfSurface.Dashboard,
+    async () => {
+      await gotoNav(page, WorkloadNav.Dashboard.id);
+      await waitForNavView(page, WorkloadNav.Dashboard.label);
+    }
+  );
+}
+
+/**
+ * Point the Sessions window at "All time" before anything is measured.
+ *
+ * A harness setting, not a product change: the lane exists to measure browsing
+ * at CORPUS scale, and the product's 7-day default is what made it measure an
+ * empty list instead (ISS-7785). The view keeps its shipped default; only this
+ * run's persisted selection differs.
+ *
+ * The synthetic `StorageEvent` is REQUIRED, not belt-and-braces. `SessionsView`
+ * is already mounted by the time this runs (the app lands on Sessions) and its
+ * `useLocalStorageState` subscribes through `useSyncExternalStore` to the
+ * `storage` event — which a same-document `setItem` does NOT fire. Without the
+ * dispatch the value sits in localStorage and the mounted view never re-reads
+ * it. This mirrors exactly what the hook's own `setValue` does.
+ *
+ * Seeded through the page rather than by writing a file: Chromium keeps
+ * localStorage in a LevelDB store, so `beforeLaunch` seeding cannot reach it.
+ *
+ * The key is shared with the desktop Branches view, which reads the same
+ * `"desktop"` surface — so `nav-branches` is measured at the same window. That
+ * is the intent: one window for the whole route beats two lanes measuring
+ * different populations.
+ */
+async function selectAllTimeSessionsRange(page: Page): Promise<void> {
+  const stored = await page.evaluate(
+    ({ key, value }) => {
+      const serialized = JSON.stringify(value);
+      localStorage.setItem(key, serialized);
+      window.dispatchEvent(
+        new StorageEvent("storage", { key, newValue: serialized })
+      );
+      return localStorage.getItem(key);
+    },
+    { key: SESSIONS_DATE_RANGE_STORAGE_KEY, value: ALL_TIME_DATE_RANGE }
+  );
+
+  // Read back rather than wait for a row. A row wait here would be charged to
+  // `boot-to-dashboard` — that step's clock starts before the app process exists
+  // — so a slow all-time first paint would inflate a DASHBOARD mark with SESSIONS
+  // work and could file a Dashboard finding for it. Measured at 101,935 ms on a
+  // 5,134-session corpus, which is why this is a read-back and not a wait.
+  //
+  // It still catches what the wait was for: a mistyped key or a quoting slip
+  // leaves the value absent or unquoted here. That the corpus is non-empty is
+  // `requireSandboxSessions`'s job, and that the list actually renders is
+  // `nav-sessions`'s own row assertion — both cheaper and better placed.
+  expect(
+    stored,
+    `${SESSIONS_DATE_RANGE_STORAGE_KEY} did not persist. The Sessions view would stay on its default window and this run would measure the wrong population.`
+  ).toBe(JSON.stringify(ALL_TIME_DATE_RANGE));
 }
 
 /**
@@ -290,6 +444,7 @@ async function runPaginationSteps(page: Page, runDir: string): Promise<void> {
   for (let index = 1; index <= PAGINATE_STEP_COUNT; index += 1) {
     const step = `paginate-${index}`;
     const startedAt = performance.now();
+    const startedAtEpochMs = Date.now();
     try {
       const outcome = await turnToNextSessionsPage(page);
       if (outcome === PaginateOutcome.Exhausted) {
@@ -298,12 +453,20 @@ async function runPaginationSteps(page: Page, runDir: string): Promise<void> {
         );
         return;
       }
-      appendMark(runDir, step, performance.now() - startedAt);
+      recordStep(
+        runDir,
+        step,
+        PerfSurface.Sessions,
+        startedAt,
+        startedAtEpochMs
+      );
     } catch (error) {
-      appendMark(
+      recordStep(
         runDir,
         `${step}${TIMEOUT_STEP_SUFFIX}`,
-        performance.now() - startedAt
+        PerfSurface.Sessions,
+        startedAt,
+        startedAtEpochMs
       );
       console.warn(`[perf] ${step} did not settle: ${describeError(error)}`);
       return;
@@ -319,9 +482,13 @@ async function turnToNextSessionsPage(page: Page): Promise<PaginateOutcome> {
   const nextControl = page.locator(VISIBLE_NEXT_PAGE_CONTROL).first();
   await expect(nextControl).toBeVisible({ timeout: STEP_WAIT_MS });
 
-  // On the last page the shared control stays rendered but is marked
-  // `aria-disabled` and `pointer-events-none`, so a click would burn the full
-  // actionability timeout and report as a hang rather than as end-of-list.
+  // On the last page OF A MULTI-PAGE list the shared control stays rendered but
+  // is marked `aria-disabled` and `pointer-events-none`, so a click would burn
+  // the full actionability timeout and report as a hang rather than as
+  // end-of-list. A SINGLE-page corpus never gets here: `TablePagination` returns
+  // null at `totalPages <= 1`, so the control never renders and the wait above
+  // expires into an unsettled mark. That is what `requireSandboxSessions` warns
+  // about before launch when the corpus is at most one page.
   if ((await nextControl.getAttribute("aria-disabled")) === "true") {
     return PaginateOutcome.Exhausted;
   }
@@ -385,20 +552,50 @@ async function waitForNavView(page: Page, label: string): Promise<void> {
 async function measureStep(
   runDir: string,
   step: string,
+  surface: PerfSurface,
   run: () => Promise<void>,
   startedAt: number = performance.now()
 ): Promise<void> {
+  // Both clocks: the duration is monotonic, while the phase window has to be
+  // wall clock to line up with the `ts` the app's own capture sinks stamp.
+  const startedAtEpochMs = Date.now() - (performance.now() - startedAt);
   try {
     await run();
-    appendMark(runDir, step, performance.now() - startedAt);
+    recordStep(runDir, step, surface, startedAt, startedAtEpochMs);
   } catch (error) {
-    appendMark(
+    recordStep(
       runDir,
       `${step}${TIMEOUT_STEP_SUFFIX}`,
-      performance.now() - startedAt
+      surface,
+      startedAt,
+      startedAtEpochMs
     );
     console.warn(`[perf] ${step} did not settle: ${describeError(error)}`);
   }
+}
+
+/**
+ * Write one step's mark and its surface-attributed window.
+ *
+ * A timed-out step records under its `:timeout` name in BOTH files, so the
+ * phase index can never present a censored duration as a completed one.
+ */
+function recordStep(
+  runDir: string,
+  step: string,
+  surface: PerfSurface,
+  startedAt: number,
+  startedAtEpochMs: number
+): void {
+  const ms = performance.now() - startedAt;
+  appendMark(runDir, step, ms);
+  appendPhase(runDir, {
+    surface,
+    step,
+    ms,
+    startedAtEpochMs,
+    endedAtEpochMs: Date.now(),
+  });
 }
 
 /**
@@ -414,11 +611,18 @@ async function measureStep(
  * into a silent hole.
  */
 function assertCaptureArtifacts(runDir: string): void {
-  const marksPath = path.join(runDir, WORKLOAD_MARKS_FILE_NAME);
-  expect(
-    fs.existsSync(marksPath),
-    `${WORKLOAD_MARKS_FILE_NAME} should have been written to ${runDir}`
-  ).toBe(true);
+  for (const workloadFile of [
+    WORKLOAD_MARKS_FILE_NAME,
+    // ISS-6820: asserted for the same reason the marks file is. Without it the
+    // run has per-step durations but nothing that says WHICH SURFACE each one
+    // measured, which is the whole point of the phase index.
+    WORKLOAD_PHASES_FILE_NAME,
+  ]) {
+    expect(
+      fs.existsSync(path.join(runDir, workloadFile)),
+      `${workloadFile} should have been written to ${runDir}`
+    ).toBe(true);
+  }
 
   for (const fileName of REQUIRED_CAPTURE_ARTIFACTS) {
     const filePath = path.join(runDir, fileName);
@@ -449,15 +653,4 @@ function captureRemedy(fileName: string): string {
     );
   }
   return `Confirm ${ProfilingEnvVar.Dir} reached the app.`;
-}
-
-function requireSandboxDatabase(userDataDir: string): void {
-  const dbPath = path.join(userDataDir, DESKTOP_DB_FILE_NAME);
-  if (!fs.existsSync(dbPath)) {
-    throw new Error(
-      `No ${DESKTOP_DB_FILE_NAME} in ${userDataDir}. ` +
-        `${DESKTOP_USER_DATA_DIR_ENV} must point at a sandbox built by ` +
-        "`node apps/desktop/scripts/perf-prepare-dataset.mjs`, not at a bare directory."
-    );
-  }
 }

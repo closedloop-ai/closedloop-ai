@@ -1,93 +1,14 @@
-/**
- * ISS-5579: full-surface coverage of the Sessions LIST column contract in the
- * Electron renderer.
- *
- * The 25 existing desktop Sessions specs are point-regressions. Between them
- * they assert that *some* header exists (`sessions-table-legibility` checks
- * every header is named and index-paired) and that the `Status` column can be
- * hidden — but none of them states WHICH columns the list has, or in what
- * order. A column could vanish from the desktop grid and all 25 stay green.
- *
- * It is the desktop half of `e2e/sessions-list-surface.spec.ts`: both surfaces
- * render the SAME shared `SessionsTable` from `packages/app/agents`, so the two
- * assert one contract through two adapters. Sort behavior is additionally
- * uncovered on BOTH surfaces today — no existing spec, web or desktop, clicks a
- * sort control.
- *
- * The expected labels are pinned as literals rather than imported from
- * `@repo/app/agents/lib/sessions-table-columns`: that module reaches
- * `@closedloop-ai/design-system/lib/column-order` through an extension-less `@repo/*`
- * subpath, and importing one of those from a desktop e2e spec aborts the whole
- * Electron run at load. The WEB spec derives the same list from the canonical
- * declaration, so a deliberate change to the column spec turns this file red and
- * the two are updated together.
- */
+/** Sorting the shared Sessions headers must reorder rows returned by the local working-set query. */
 
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import { expectFixtureInsideDefaultDateWindow } from "./helpers/date-window-fixture-guard";
+import { sortColumnByOptionsMenu } from "./helpers/grid-column-sort";
 import type { SessionListSeed } from "./helpers/seed-branches-db";
 import {
   cleanupSeededSessionsDirs,
   makeSeededSessionsDirs,
   withSeededSessionsList,
 } from "./helpers/seeded-sessions-list";
-
-/**
- * The header sequence the Sessions spec declares with no user customization —
- * the lead column plus every data column that is not default-hidden, in
- * `SESSIONS_COLUMN_SPECS` order.
- *
- * ISS-5770 REMOVED `Signals` outright — it has no slot in the Sessions
- * prototype, and this list is the prototype's column set. This literal is the
- * desktop half of that change: the WEB twin derives its sequence from
- * `resolveRenderedSessionColumnIds` and so moved by itself, and a declaration
- * change that updates only the deriving side leaves the two surfaces asserting
- * different contracts — which is exactly what happened here. If you change
- * `SESSIONS_COLUMN_SPECS` or `SESSIONS_DEFAULT_HIDDEN_COLUMN_IDS`, this literal
- * is the line you must edit in the same commit.
- */
-const EXPECTED_HEADERS = [
-  "Session",
-  "Status",
-  "Owner",
-  "Autonomy",
-  "Repository",
-  "Linked branches",
-  "Harness",
-  "Model",
-  "Duration",
-  "Cost",
-  "Last active",
-];
-
-/**
- * Column IDs the spec declares but starts hidden
- * (`SESSIONS_DEFAULT_HIDDEN_COLUMN_IDS`) — PR / Merge / Started / Updated.
- *
- * ISS-6005 added `updated` (record-mutation recency, off by default at operator
- * direction). It belongs in THIS list rather than `EXPECTED_HEADERS`, and it is
- * ungated like its three neighbours, so its absence can only mean "hidden by
- * default" — the claim being made. This is the desktop half of the
- * off-by-default proof; a regression that leaked it into the visible set fails
- * here.
- *
- * ISS-5770 added `projects` and `issues` to that constant, but they are
- * deliberately NOT listed here: both are also gated behind `grid-table-v2`,
- * which this environment does not install, so their absence would be evidence
- * about the GATE and not about the default-hidden set. Listing them would make
- * this assertion pass for the wrong reason and keep passing if they leaked out
- * of the hidden set. The three above are ungated, so their absence can only mean
- * "hidden by default", which is the claim being made.
- *
- * Absence is asserted by ID, not by accessible name. A header cell also holds a
- * reorder grip named "Reorder <label> column, use arrow keys", so its
- * accessible name is not the bare label and a `getByRole("columnheader", {
- * exact: true, name: "Started" })` absence check would pass whether or not the
- * column rendered — a test that cannot fail.
- */
-const DEFAULT_HIDDEN_COLUMN_IDS = ["pr", "merge", "started", "updated"];
-
-/** `aria-sort` values an ACTIVE sortable header may carry. */
-const SORTED_ARIA_SORT_PATTERN = /^(ascending|descending)$/;
 
 /** Every header currently claiming the sort, whichever direction. */
 const SORTED_HEADER_SELECTOR =
@@ -96,11 +17,14 @@ const SORTED_HEADER_SELECTOR =
 /** The `aria-sort` value of a header that is ACTIVELY sorting. */
 type SortedDirection = "ascending" | "descending";
 
-/** The direction a second click on the already-active header must land on. */
-const OPPOSITE_DIRECTION: Record<SortedDirection, SortedDirection> = {
-  ascending: "descending",
-  descending: "ascending",
-};
+/**
+ * The Cost column HEADER's rendered label — the one dollar phrase since
+ * ISS-10636, and the word `sortColumnByOptionsMenu` interpolates into the
+ * trigger's accessible name. Re-typed rather than imported because a
+ * `@repo/app/…` specifier only resolves through the renderer's vite alias, not
+ * this spec's Node runtime. The column's ID is still `"cost"`.
+ */
+const COST_COLUMN_HEADER_LABEL = "Total estimated cost";
 
 const SESSION_ONE = "surface session one";
 const SESSION_TWO = "surface session two";
@@ -111,21 +35,51 @@ const SESSION_TWO = "surface session two";
  */
 const SEEDED_ROW_NAME_PATTERN = /^surface session (one|two)$/;
 
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * ISS-8066: the corpus anchor, derived from the run clock rather than pinned.
+ *
+ * These two rows used to be stamped `2026-06-10T12:00–15:00Z`, which put them
+ * inside the default Sessions window on the day they were written and outside it
+ * forever after. Two separate things then had to hold for this file to stay
+ * green: `withSeededSessionsList` widening the range to "All time" (a rescue
+ * invisible from both the assignment site and the assertions), and the seeded
+ * `last_activity_at` staying inside the desktop retention sweep's 90-day horizon
+ * — a sweep that DELETES terminal sessions, which the widening cannot rescue at
+ * all and which the pinned dates were three days from crossing.
+ *
+ * A day back, so every derived instant below is safely in the past on any clock,
+ * and the whole corpus sits inside the default window with no widening needed.
+ * Do NOT re-pin these to a newer literal; that just re-arms both bombs.
+ */
+const SEED_ANCHOR_MS = Date.now() - DAY_MS;
+
+/**
+ * The two rows' instants, keeping the shape the row-order expectations below
+ * were written against: one hour of runtime each, session TWO the more recent.
+ */
+const SESSION_ONE_STARTED_AT = seedInstant(0);
+const SESSION_ONE_ACTIVITY_AT = seedInstant(1);
+const SESSION_TWO_STARTED_AT = seedInstant(2);
+const SESSION_TWO_ACTIVITY_AT = seedInstant(3);
+
 const SEEDED: SessionListSeed[] = [
   {
-    at: "2026-06-10T12:00:00.000Z",
-    endedAt: "2026-06-10T13:00:00.000Z",
+    at: SESSION_ONE_STARTED_AT,
+    endedAt: SESSION_ONE_ACTIVITY_AT,
     estimatedCost: 4.25,
-    lastActivityAt: "2026-06-10T13:00:00.000Z",
+    lastActivityAt: SESSION_ONE_ACTIVITY_AT,
     name: SESSION_ONE,
     sessionId: "iss-5579-surface-1",
     status: "completed",
   },
   {
-    at: "2026-06-10T14:00:00.000Z",
-    endedAt: "2026-06-10T15:00:00.000Z",
+    at: SESSION_TWO_STARTED_AT,
+    endedAt: SESSION_TWO_ACTIVITY_AT,
     estimatedCost: 19.5,
-    lastActivityAt: "2026-06-10T15:00:00.000Z",
+    lastActivityAt: SESSION_TWO_ACTIVITY_AT,
     name: SESSION_TWO,
     sessionId: "iss-5579-surface-2",
     status: "completed",
@@ -157,37 +111,9 @@ const COST_ROW_ORDER: Record<SortedDirection, string[]> = {
 };
 
 test.describe("Desktop Sessions list column surface (ISS-5579)", () => {
-  test("renders every default column, labelled, in the canonical order", async () => {
-    test.setTimeout(180_000);
-    const dirs = makeSeededSessionsDirs("iss5579-cols");
-    try {
-      await withSeededSessionsList(dirs, SEEDED, async (page) => {
-        const headers = page.getByRole("columnheader").locator("visible=true");
-
-        // Presence, label text AND order in one assertion. A per-header sweep
-        // would pass on a shuffled grid; this is the statement of what the list
-        // IS that the 25 point-regressions never make.
-        await expect(headers).toHaveText(EXPECTED_HEADERS, {
-          timeout: 30_000,
-        });
-
-        // Asserted only AFTER the positive above, so these cannot pass
-        // vacuously on a page that never rendered a grid.
-        for (const columnId of DEFAULT_HIDDEN_COLUMN_IDS) {
-          await expect(
-            page
-              .locator(`[role="columnheader"][data-column-id="${columnId}"]`)
-              .locator("visible=true")
-          ).toHaveCount(0);
-        }
-      });
-    } finally {
-      cleanupSeededSessionsDirs(dirs);
-    }
-  });
-
   test("clicking a sortable header reorders the rows by that column", async () => {
     test.setTimeout(180_000);
+    expectSeedInsideDefaultWindow();
     const dirs = makeSeededSessionsDirs("iss5579-sort");
     try {
       await withSeededSessionsList(dirs, SEEDED, async (page) => {
@@ -212,46 +138,40 @@ test.describe("Desktop Sessions list column surface (ISS-5579)", () => {
           timeout: 30_000,
         });
 
-        const costSortButton = costHeader.getByRole("button", {
-          exact: true,
-          name: "Cost",
-        });
-        // Exact name, not `.first()` and not a substring: a reorderable header
-        // renders its drag grip as a button BEFORE the sort button, and that
-        // grip is named "Reorder Cost column, use arrow keys" — so both a
-        // positional pick and a loose name match operate the wrong control.
-        await costSortButton.click();
-
-        await expect(costHeader).toHaveAttribute(
-          "aria-sort",
-          SORTED_ARIA_SORT_PATTERN
+        // ISS-8909: the sort CONTROL moved, not the contract. v1 wrapped the
+        // column label in a button that toggled through the directions, so this
+        // clicked once and read back whichever way it opened. The shared v2
+        // header renders the label as a plain `<span>` and sorts from the
+        // column's options menu, which names each direction — so each ordering
+        // is now requested explicitly instead of inferred.
+        //
+        // BOTH directions are still driven and asserted, which is what keeps
+        // this unfakeable: one of the two Cost orders coincides with the
+        // default order, so a single direction could pass on a grid that never
+        // re-sorted at all. Asserting the other guarantees an order that
+        // differs from the pre-click one.
+        await sortColumnByOptionsMenu(
+          page,
+          page,
+          COST_COLUMN_HEADER_LABEL,
+          "descending"
         );
-        // Direction is READ, not assumed: this spec deliberately does not pin
-        // which way a first click opens (`SORTED_ARIA_SORT_PATTERN`), so the
-        // row order it demands is the one that direction ANNOUNCES. Asserting a
-        // fixed order here would make the test a claim about the toggle's
-        // opening direction rather than about the ordering.
-        const firstDirection = readSortedDirection(
-          await costHeader.getAttribute("aria-sort")
-        );
+        await expect(costHeader).toHaveAttribute("aria-sort", "descending");
         // The reorder lands through a fresh IPC read, so give it the same
         // window the other cross-process assertions in this file get rather
         // than the 8s default.
-        await expect(rowNames).toHaveText(COST_ROW_ORDER[firstDirection], {
+        await expect(rowNames).toHaveText(COST_ROW_ORDER.descending, {
           timeout: 30_000,
         });
 
-        // The second click is what makes this test unfakeable. One of the two
-        // Cost orders coincides with the default order, so a single pass could
-        // land on the direction whose expectation an UNSORTED grid also
-        // satisfies. Toggling to the opposite direction guarantees that the
-        // order asserted below differs from the pre-click order in exactly one
-        // of the two passes — and both are asserted, so the falsifiable one is
-        // always among them.
-        const secondDirection = OPPOSITE_DIRECTION[firstDirection];
-        await costSortButton.click();
-        await expect(costHeader).toHaveAttribute("aria-sort", secondDirection);
-        await expect(rowNames).toHaveText(COST_ROW_ORDER[secondDirection], {
+        await sortColumnByOptionsMenu(
+          page,
+          page,
+          COST_COLUMN_HEADER_LABEL,
+          "ascending"
+        );
+        await expect(costHeader).toHaveAttribute("aria-sort", "ascending");
+        await expect(rowNames).toHaveText(COST_ROW_ORDER.ascending, {
           timeout: 30_000,
         });
 
@@ -286,16 +206,32 @@ function seededRowNames(page: Page): Locator {
     .locator("visible=true");
 }
 
+/** One seeded instant, `hoursAfterAnchor` past {@link SEED_ANCHOR_MS}. */
+function seedInstant(hoursAfterAnchor: number): string {
+  return new Date(SEED_ANCHOR_MS + hoursAfterAnchor * HOUR_MS).toISOString();
+}
+
 /**
- * Narrows a header's raw `aria-sort` to the direction it announces, failing
- * loudly on `none`/absent rather than coercing — a cast would let an
- * un-sorted header pick an arbitrary expected row order.
+ * ISS-8066: the seeded rows are inside the window the Sessions read applies
+ * BEFORE `withSeededSessionsList` widens the range, so this file no longer
+ * depends on that widening for its rows to exist.
+ *
+ * `last_activity_at` is the field the desktop Sessions read windows on
+ * (`session-aggregate-filters.ts`), so it is the field checked. Runs first in
+ * each test, so a re-pinned literal fails here in milliseconds with the range
+ * and the bounds named, instead of as a 30s `getByRole("link")` timeout inside
+ * the helper that reads like the grid stopped rendering.
+ *
+ * A precondition only. The row-order expectations (`DEFAULT_ROW_ORDER`,
+ * `COST_ROW_ORDER`) stay independently-written literals.
  */
-function readSortedDirection(ariaSort: string | null): SortedDirection {
-  if (ariaSort === "ascending" || ariaSort === "descending") {
-    return ariaSort;
-  }
-  throw new Error(
-    `expected the Cost header to announce a sort direction, got aria-sort="${ariaSort}"`
+function expectSeedInsideDefaultWindow(): void {
+  expectFixtureInsideDefaultDateWindow(
+    SESSION_ONE_ACTIVITY_AT,
+    `Seeded "${SESSION_ONE}" lastActivityAt`
+  );
+  expectFixtureInsideDefaultDateWindow(
+    SESSION_TWO_ACTIVITY_AT,
+    `Seeded "${SESSION_TWO}" lastActivityAt`
   );
 }

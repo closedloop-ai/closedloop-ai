@@ -1,6 +1,11 @@
-import { DocumentType } from "@repo/api/src/types/document";
+import {
+  DocumentType,
+  type DocumentWithProject,
+} from "@repo/api/src/types/document";
 import { v7 as uuidv7 } from "uuid";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeDocument } from "@/__tests__/support/documents/document.test-fixtures";
+import { toWireJson } from "@/__tests__/support/wire-json.test-helpers";
 import { documentService } from "@/app/documents/document-service";
 import { GET, POST } from "@/app/documents/route";
 import { projectsService } from "@/app/projects/service";
@@ -12,7 +17,11 @@ import {
 } from "../utils/auth-helpers";
 
 let mockAuthContext: AuthContext = {
-  user: { id: "test-user", organizationId: "test-org" } as any,
+  user: {
+    ...createTestAuthContext().user,
+    id: "test-user",
+    organizationId: "test-org",
+  },
   clerkUserId: "clerk_test",
   clerkOrgId: "org_test",
   authMethod: "session",
@@ -20,11 +29,25 @@ let mockAuthContext: AuthContext = {
 };
 
 vi.mock("@/lib/auth/with-auth", () => ({
-  withAuth: (handler: any) => async (request: any, context: any) =>
-    handler(mockAuthContext, request, context.params),
+  withAuth:
+    (handler: (...args: unknown[]) => Promise<Response>) =>
+    async (request: unknown, context: { params: Promise<unknown> }) =>
+      handler(mockAuthContext, request, context.params),
 }));
 vi.mock("@/app/documents/document-service");
 vi.mock("@/app/projects/service");
+// ISS-7447 made `resolveProjectId` verify the project against the caller's org
+// instead of handing a UUID straight back, so it now issues a real query. This
+// lane has no database, so without this the resolver throws and every
+// project-carrying case below returns 500 — a harness gap, not a behavior
+// change: the identity mock preserves exactly what the old passthrough did, and
+// each assertion below still pins what it always pinned. Same partial mock the
+// sibling `app/documents/route.test.ts` has always used.
+vi.mock("@/lib/identifier-utils", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolveProjectId: vi.fn(async (id: string) => id),
+  resolveArtifactIdentifier: vi.fn(async (id: string) => id),
+}));
 vi.mock("@/app/custom-fields/values-service", () => ({
   customFieldValuesService: {
     getValuesForEntity: vi.fn().mockResolvedValue([]),
@@ -36,28 +59,28 @@ describe("GET /api/artifacts", () => {
 
     // Configure mock auth context for this test suite
     mockAuthContext = createTestAuthContext({
-      user: { organizationId: "test-org-id" } as any,
+      user: { ...createTestAuthContext().user, organizationId: "test-org-id" },
     });
   });
 
   it("returns all latest artifacts for user org", async () => {
-    const mockArtifacts = [
+    const mockArtifacts: DocumentWithProject[] = [
       {
-        id: "1",
-        title: "PRD 1",
+        ...makeDocument({ id: "1", title: "PRD 1", type: DocumentType.Prd }),
         project: null,
-        type: "PRD",
       },
       {
-        id: "2",
-        title: "PLAN 1",
+        ...makeDocument({
+          id: "2",
+          title: "PLAN 1",
+          type: DocumentType.ImplementationPlan,
+        }),
         project: null,
-        type: "IMPLEMENTATION_PLAN",
       },
     ];
 
     vi.mocked(documentService.findAllWithCustomFields).mockResolvedValue(
-      mockArtifacts as any
+      mockArtifacts
     );
 
     const request = createMockRequest({
@@ -69,7 +92,7 @@ describe("GET /api/artifacts", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-    expect(json.data).toEqual(mockArtifacts);
+    expect(json.data).toEqual(toWireJson(mockArtifacts));
   });
 
   it("filters by type query param", async () => {
@@ -154,18 +177,18 @@ describe("POST /api/artifacts", () => {
 
     // Configure mock auth context for this test suite
     mockAuthContext = createTestAuthContext({
-      user: { organizationId: "test-org-id" } as any,
+      user: { ...createTestAuthContext().user, organizationId: "test-org-id" },
     });
   });
 
   it("creates artifact with valid data", async () => {
-    const mockArtifact = {
+    const mockArtifact = makeDocument({
       id: "new-artifact-id",
       title: "New PRD",
-      type: "PRD",
-    };
+      type: DocumentType.Prd,
+    });
 
-    vi.mocked(documentService.create).mockResolvedValue(mockArtifact as any);
+    vi.mocked(documentService.create).mockResolvedValue(mockArtifact);
 
     const request = createMockRequest({
       method: "POST",
@@ -182,7 +205,7 @@ describe("POST /api/artifacts", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-    expect(json.data).toEqual(mockArtifact);
+    expect(json.data).toEqual(toWireJson(mockArtifact));
   });
 
   it("returns validation error for missing title", async () => {
@@ -224,12 +247,16 @@ describe("POST /api/artifacts", () => {
 
   it("passes organizationId and userId to service when creating artifact", async () => {
     mockAuthContext = createTestAuthContext({
-      user: { id: "user-123", organizationId: "test-org-id" } as any,
+      user: {
+        ...createTestAuthContext().user,
+        id: "user-123",
+        organizationId: "test-org-id",
+      },
     });
 
-    vi.mocked(documentService.create).mockResolvedValue({
-      id: "artifact-id",
-    } as any);
+    vi.mocked(documentService.create).mockResolvedValue(
+      makeDocument({ id: "artifact-id" })
+    );
 
     const request = createMockRequest({
       method: "POST",
@@ -252,7 +279,8 @@ describe("POST /api/artifacts", () => {
         title: "Test PRD",
         content: "# My PRD",
         fileName: "my-prd.md",
-      })
+      }),
+      expect.any(Function)
     );
   });
 
@@ -320,12 +348,16 @@ describe("POST /api/artifacts", () => {
   it("creates artifact without checking project ownership", async () => {
     const projectId = uuidv7();
     mockAuthContext = createTestAuthContext({
-      user: { id: "user-123", organizationId: "test-org-id" } as any,
+      user: {
+        ...createTestAuthContext().user,
+        id: "user-123",
+        organizationId: "test-org-id",
+      },
     });
 
-    vi.mocked(documentService.create).mockResolvedValue({
-      id: "artifact-id",
-    } as any);
+    vi.mocked(documentService.create).mockResolvedValue(
+      makeDocument({ id: "artifact-id" })
+    );
 
     const request = createMockRequest({
       method: "POST",
@@ -349,7 +381,8 @@ describe("POST /api/artifacts", () => {
         title: "Test PRD",
         content: "# Test",
         projectId,
-      })
+      }),
+      expect.any(Function)
     );
   });
 });

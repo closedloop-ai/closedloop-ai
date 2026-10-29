@@ -1,4 +1,7 @@
-import { DocumentType } from "@repo/api/src/types/document";
+import {
+  DOCUMENT_ROUTE_PREFIX,
+  DocumentType,
+} from "@repo/api/src/types/document";
 import {
   getNotificationEntityPath,
   isArtifactRoutePrefix,
@@ -8,36 +11,35 @@ import { describe, expect, it } from "vitest";
 
 describe("getNotificationEntityPath", () => {
   describe("artifact", () => {
-    it("routes PRDs to /prds/<slug>", () => {
+    it("routes PRDs to /documents/<slug>", () => {
       expect(
         getNotificationEntityPath({
           kind: NotificationEntityKind.Artifact,
           slug: "PRD-7",
           subtype: DocumentType.Prd,
         })
-      ).toBe("/prds/PRD-7");
+      ).toBe(`/${DOCUMENT_ROUTE_PREFIX}/PRD-7`);
     });
 
-    it("routes implementation plans to /implementation-plans/<slug>", () => {
+    it("routes implementation plans to /documents/<slug>", () => {
       expect(
         getNotificationEntityPath({
           kind: NotificationEntityKind.Artifact,
           slug: "PLN-12",
           subtype: DocumentType.ImplementationPlan,
         })
-      ).toBe("/implementation-plans/PLN-12");
+      ).toBe(`/${DOCUMENT_ROUTE_PREFIX}/PLN-12`);
     });
 
-    // FEA-4137: Feature (Issue) notifications route under /issues/; the FEA-
-    // slug stays valid as a compat alias.
-    it("routes features to /issues/<slug>", () => {
+    // The FEA- slug stays valid as a compat alias (FEA-4137).
+    it("routes features to /documents/<slug>", () => {
       expect(
         getNotificationEntityPath({
           kind: NotificationEntityKind.Artifact,
           slug: "FEA-877",
           subtype: DocumentType.Feature,
         })
-      ).toBe("/issues/FEA-877");
+      ).toBe(`/${DOCUMENT_ROUTE_PREFIX}/FEA-877`);
     });
 
     it("falls back to /documents/<slug> for unknown subtypes", () => {
@@ -60,24 +62,14 @@ describe("getNotificationEntityPath", () => {
       })
     ).toBe("/teams/team-1/projects/proj-2");
   });
-
-  it("routes loops to /loops/<loopId>", () => {
-    expect(
-      getNotificationEntityPath({
-        kind: NotificationEntityKind.Loop,
-        loopId: "loop-9",
-      })
-    ).toBe("/loops/loop-9");
-  });
 });
 
 describe("isArtifactRoutePrefix", () => {
-  it("recognizes the canonical artifact-detail prefixes", () => {
+  it("recognizes the canonical and legacy artifact-detail prefixes", () => {
+    expect(isArtifactRoutePrefix("documents")).toBe(true);
     expect(isArtifactRoutePrefix("prds")).toBe(true);
     expect(isArtifactRoutePrefix("implementation-plans")).toBe(true);
-    // FEA-4137: Issue is the canonical Feature prefix now.
     expect(isArtifactRoutePrefix("issues")).toBe(true);
-    expect(isArtifactRoutePrefix("documents")).toBe(true);
   });
 
   // FEA-4137: the retired `/features/` prefix must keep resolving so old

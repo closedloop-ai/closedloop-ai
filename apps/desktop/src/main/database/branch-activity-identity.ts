@@ -7,6 +7,12 @@ export type NormalizedBranchActivityScope = {
   branchName: string;
 };
 
+/** Maximum repository identity accepted by the synced artifact-ref contract. */
+export const MAX_BRANCH_ACTIVITY_REPOSITORY_LENGTH = 200;
+
+/** Maximum Branch identity accepted by the synced artifact-ref contract. */
+export const MAX_BRANCH_ACTIVITY_NAME_LENGTH = 300;
+
 /** Normalize one repository identity and reject incomplete owner/repo values. */
 export function normalizeActivityRepository(
   value: unknown
@@ -15,7 +21,10 @@ export function normalizeActivityRepository(
     return undefined;
   }
   const normalized = normalizeRepoFullName(value);
-  return REPOSITORY_FULL_NAME_RE.test(normalized) ? normalized : undefined;
+  return REPOSITORY_FULL_NAME_RE.test(normalized) &&
+    normalized.length <= MAX_BRANCH_ACTIVITY_REPOSITORY_LENGTH
+    ? normalized
+    : undefined;
 }
 
 /** Normalize the lookup form of a Branch name without changing case. */
@@ -26,7 +35,10 @@ export function normalizeActivityBranchName(
     return undefined;
   }
   const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
+  return normalized.length > 0 &&
+    normalized.length <= MAX_BRANCH_ACTIVITY_NAME_LENGTH
+    ? normalized
+    : undefined;
 }
 
 /** Stable lookup key for a normalized repository and Branch name. */
@@ -34,14 +46,6 @@ export function branchActivityLookupKey(
   branch: NormalizedBranchActivityScope
 ): string {
   return `${branch.repoFullName}\u0000${branch.branchName}`;
-}
-
-/** Stable lookup key for a normalized repository and PR number. */
-export function pullRequestActivityLookupKey(
-  repoFullName: string,
-  prNumber: number
-): string {
-  return `${repoFullName}\u0000${prNumber}`;
 }
 
 /** Normalize and deduplicate the eligible Branch scope sent to SQLite. */

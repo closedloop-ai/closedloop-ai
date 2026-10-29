@@ -1,0 +1,15 @@
+-- ISS-8593: durable per-id bookkeeping for the COMPONENT sync lane's dead letters.
+--
+-- `dead_lettered_ids` records only bare ids, so everything an entry knew about
+-- itself died with the process: a restart re-seeded every id at attempt 0, due
+-- immediately, and a row that had backed off to the 24h ceiling was re-hammered
+-- on every launch. It also could not say whether a row was TOMBSTONED, and a
+-- tombstoned component's ordering key never advances again — so evicting one at
+-- the tracker's size cap was permanent loss, with no natural change left to
+-- re-drive it.
+--
+-- `dead_letter_attempts` carries `[{ "id": TEXT, "attempts": INTEGER,
+-- "tombstoned": BOOLEAN }]`. Additive and nullable: `dead_lettered_ids` stays the
+-- membership record, so a cursor written before this column — or by a build that
+-- does not know it — loads exactly as it always did and simply seeds at attempt 0.
+ALTER TABLE "sync_state" ADD COLUMN "dead_letter_attempts" JSONB;

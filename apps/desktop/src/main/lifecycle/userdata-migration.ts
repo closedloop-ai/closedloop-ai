@@ -6,6 +6,10 @@ import {
   statSync,
 } from "node:fs";
 import path from "node:path";
+import {
+  DesktopProfileKind,
+  resolveDesktopProfileKind,
+} from "../logging/main-log-location.js";
 
 /**
  * Pre-rename Electron app name. Before the brand rename (FEA-2101) the desktop
@@ -22,13 +26,21 @@ export type UserDataMigrationResult =
   | "skipped-no-legacy-dir"
   | "skipped-target-exists"
   | "skipped-target-has-data"
-  | "skipped-same-path";
+  | "skipped-same-path"
+  | "skipped-user-data-redirected";
 
 type UserDataMigrationDeps = {
   /** Electron `app.getPath("appData")` — the parent of the userData directory. */
   appDataPath: string;
   /** Electron `app.getPath("userData")` — the NEW "Closedloop" directory. */
   userDataPath: string;
+  /**
+   * Electron `app.getName()` — the directory Electron appends to `appData` for
+   * the DEFAULT `userData` path. Read from Electron rather than restated as a
+   * constant here so it cannot drift from the `app.setName` that decides it.
+   * Named to match {@link MainLogLocationInput}, whose shape this satisfies.
+   */
+  appName: string;
   legacyDirName?: string;
   exists?: (targetPath: string) => boolean;
   sameFile?: (a: string, b: string) => boolean;
@@ -58,6 +70,9 @@ type UserDataMigrationDeps = {
  * The migration never overwrites real data: when a distinct new directory holds
  * any entries we leave both in place and warn, rather than clobber a genuine
  * fresh install's state.
+ *
+ * ISS-8955: and it never runs at all against an explicitly-chosen profile. See
+ * the redirect guard below for what that cost before it existed.
  */
 export function migrateLegacyUserDataDirectory(
   deps: UserDataMigrationDeps
@@ -74,6 +89,29 @@ export function migrateLegacyUserDataDirectory(
     deps.legacyDirName ?? LEGACY_DESKTOP_USER_DATA_DIR_NAME
   );
   const newPath = deps.userDataPath;
+
+  // ISS-8955. `--user-data-dir=<path>` (and `app.setPath("userData", …)`)
+  // redirect `userData` but NOT `appData`, so a launch against a chosen profile
+  // still reports the INSTALLED app's directory as the legacy one here. The
+  // target is then absent or empty by construction, which is exactly the
+  // `migrated` / `migrated-replaced-empty-target` branch — and that branch
+  // renames the operator's live profile out from under the running install. A
+  // profile path someone chose is never a migration target.
+  //
+  // `resolveDesktopProfileKind` is the canonical answer to "is this profile the
+  // default one?" — the same predicate that decides where the main log goes, so
+  // a launch cannot be `redirected` for the logger and `default` here. It
+  // compares resolved paths and never stats, which is what makes this hold on a
+  // case-sensitive volume and across devices: the case-insensitive-volume and
+  // same-device coincidences are precisely what let the rename SUCCEED rather
+  // than fail, so a guard leaning on either would be weakest exactly where the
+  // damage is possible.
+  if (resolveDesktopProfileKind(deps) === DesktopProfileKind.Redirected) {
+    log(
+      `userData migration: userData is redirected to ${newPath}; skipping legacy migration`
+    );
+    return "skipped-user-data-redirected";
+  }
 
   if (legacyPath === newPath) {
     // Defensive: only possible if the legacy and new names ever coincide.

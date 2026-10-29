@@ -36,11 +36,14 @@ describe("ISS-4975 deployment-event history migration", () => {
     ['"state" VARCHAR(32) NOT NULL'],
     ['"provider_state" VARCHAR(64) NOT NULL'],
     ['"occurred_at" TIMESTAMP(3) NOT NULL'],
-  ])("declares %s so the dedupe/ordering key can never be null", async (definition) => {
-    const createTable = await readCreateTable();
+  ])(
+    "declares %s so the dedupe/ordering key can never be null",
+    async (definition) => {
+      const createTable = await readCreateTable();
 
-    expect(createTable).toContain(definition);
-  });
+      expect(createTable).toContain(definition);
+    }
+  );
 
   it.each([
     ['"environment_url" TEXT'],

@@ -1,18 +1,29 @@
-import { GitHubProviderResultStatus } from "@repo/github";
+import {
+  GitHubOperationProviderResultStatus,
+  GitHubProviderFailureStage,
+  GitHubProviderResultStatus,
+} from "@repo/github";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockGetInstallationOctokit, mockOctokit } = vi.hoisted(() => ({
-  mockGetInstallationOctokit: vi.fn(),
-  mockOctokit: { marker: "installation-octokit" },
-}));
+const { mockGetInstallationOctokit, mockOctokit, mockLogWarn } = vi.hoisted(
+  () => ({
+    mockGetInstallationOctokit: vi.fn(),
+    mockOctokit: { marker: "installation-octokit" },
+    mockLogWarn: vi.fn(),
+  })
+);
 
 vi.mock("@repo/github/installation-auth", () => ({
   getInstallationOctokit: (installationId: string) =>
     mockGetInstallationOctokit(installationId) ?? Promise.resolve(mockOctokit),
 }));
+vi.mock("@repo/observability/log", () => ({
+  log: { warn: mockLogWarn },
+}));
 
 import {
   acquireInstallationClient,
+  acquireInstallationClientWithStage,
   readWithInstallationClient,
 } from "./installation-client";
 
@@ -53,6 +64,78 @@ describe("acquireInstallationClient", () => {
     await expect(acquireInstallationClient("install-1")).resolves.toEqual({
       status: GitHubProviderResultStatus.ProviderUnavailable,
     });
+  });
+
+  it.each([
+    [404, GitHubProviderResultStatus.ProviderInstallationNotFound],
+    [401, GitHubProviderResultStatus.CredentialUnauthorized],
+    [403, GitHubProviderResultStatus.ProviderPermissionFiltered],
+  ])(
+    "classifies HTTP %i at installation acquisition",
+    async (status, expected) => {
+      mockGetInstallationOctokit.mockReturnValueOnce(
+        Promise.reject(Object.assign(new Error("mint rejected"), { status }))
+      );
+
+      await expect(
+        acquireInstallationClientWithStage("install-1")
+      ).resolves.toEqual({
+        status: expected,
+        stage: GitHubProviderFailureStage.InstallationClientAcquisition,
+      });
+    }
+  );
+
+  it.each([400, 405, 422, 501])(
+    "terminally classifies installation HTTP %i for materialization callers",
+    async (status) => {
+      mockGetInstallationOctokit.mockReturnValueOnce(
+        Promise.reject(Object.assign(new Error("mint rejected"), { status }))
+      );
+
+      await expect(
+        acquireInstallationClientWithStage("install-1")
+      ).resolves.toEqual({
+        status: GitHubOperationProviderResultStatus.InvalidResponse,
+        stage: GitHubProviderFailureStage.InstallationClientAcquisition,
+      });
+    }
+  );
+
+  it.each([408, 500, 502, 503, 504])(
+    "keeps installation HTTP %i retryable for materialization callers",
+    async (status) => {
+      mockGetInstallationOctokit.mockReturnValueOnce(
+        Promise.reject(Object.assign(new Error("mint unavailable"), { status }))
+      );
+
+      await expect(
+        acquireInstallationClientWithStage("install-1")
+      ).resolves.toEqual({
+        status: GitHubProviderResultStatus.ProviderUnavailable,
+        stage: GitHubProviderFailureStage.InstallationClientAcquisition,
+      });
+    }
+  );
+
+  it("preserves the legacy acquisition contract for a permanent response", async () => {
+    mockGetInstallationOctokit.mockReturnValueOnce(
+      Promise.reject(Object.assign(new Error("mint rejected"), { status: 422 }))
+    );
+
+    await expect(acquireInstallationClient("install-1")).resolves.toEqual({
+      status: GitHubProviderResultStatus.ProviderUnavailable,
+    });
+    const logs = JSON.stringify(mockLogWarn.mock.calls);
+    expect(logs).not.toContain("mint rejected");
+    expect(mockLogWarn).toHaveBeenCalledWith(
+      "[github/installation-client] Client acquisition failed",
+      {
+        installationId: "install-1",
+        stage: GitHubProviderFailureStage.InstallationClientAcquisition,
+        status: GitHubOperationProviderResultStatus.InvalidResponse,
+      }
+    );
   });
 });
 

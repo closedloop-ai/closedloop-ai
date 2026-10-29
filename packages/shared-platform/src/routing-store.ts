@@ -14,7 +14,6 @@ const STORAGE_KEY = "engineer-routing-selection:v1";
 const DEFAULT_SELECTION: RoutingSelection = {
   mode: EngineerRoutingMode.CloudRelay,
   computeTargetId: null,
-  source: "auto",
   updatedAt: 0,
 };
 
@@ -50,13 +49,15 @@ function hydrateFromStorage(): void {
       return;
     }
 
+    // A stored `source` (older builds wrote "auto" or "manual") is ignored:
+    // ISS-12617 removed the manual selection, so every stored value loads as
+    // an ordinary selection the surface may repair.
     snapshot = {
       mode: parsed.mode,
       computeTargetId:
         typeof parsed.computeTargetId === "string"
           ? parsed.computeTargetId
           : null,
-      source: parsed.source === "manual" ? "manual" : "auto",
       updatedAt:
         typeof parsed.updatedAt === "number" ? parsed.updatedAt : Date.now(),
     };
@@ -80,20 +81,16 @@ function emitChange(): void {
 
 function normalizeSelection(
   mode: EngineerRoutingMode,
-  computeTargetId: string | null,
-  source: "auto" | "manual"
+  computeTargetId: string | null
 ): RoutingSelection {
   return {
     mode,
     // Preserve computeTargetId for both CloudRelay and LocalElectron modes.
-    // LocalElectron still needs a compute target ID for loop dispatch
-    // (loops go through the API -> desktop gateway, not localhost proxy).
     computeTargetId:
       mode === EngineerRoutingMode.CloudRelay ||
       mode === EngineerRoutingMode.LocalElectron
         ? computeTargetId
         : null,
-    source,
     updatedAt: Date.now(),
   };
 }
@@ -103,8 +100,7 @@ function setSnapshot(next: RoutingSelection): RoutingSelection {
 
   const unchanged =
     snapshot.mode === next.mode &&
-    snapshot.computeTargetId === next.computeTargetId &&
-    snapshot.source === next.source;
+    snapshot.computeTargetId === next.computeTargetId;
 
   if (unchanged) {
     return snapshot;
@@ -129,25 +125,11 @@ export function subscribeRoutingSelection(listener: () => void): () => void {
   };
 }
 
-export function setRoutingManualSelection(
+export function setRoutingAutoSelection(
   mode: EngineerRoutingMode,
   computeTargetId: string | null = null
 ): RoutingSelection {
-  return setSnapshot(normalizeSelection(mode, computeTargetId, "manual"));
-}
-
-export function setRoutingAutoSelection(
-  mode: EngineerRoutingMode,
-  computeTargetId: string | null = null,
-  options?: { force?: boolean }
-): RoutingSelection {
-  hydrateFromStorage();
-
-  if (!options?.force && snapshot.source === "manual") {
-    return snapshot;
-  }
-
-  return setSnapshot(normalizeSelection(mode, computeTargetId, "auto"));
+  return setSnapshot(normalizeSelection(mode, computeTargetId));
 }
 
 export function useRoutingSelection(): RoutingSelection {

@@ -1,10 +1,16 @@
 "use client";
 
 import { useAnalytics } from "@repo/analytics/client";
-import { Surface, type SurfaceAnalyticsCapture } from "@repo/analytics/surface";
-import { SurfaceAnalyticsProvider } from "@repo/analytics/surface-context";
+import {
+  Surface,
+  type SurfaceAnalyticsCapture,
+  type SurfaceAnalyticsPersonPropertySetter,
+} from "@repo/api/src/types/surface-analytics";
+import { pageNameForWebPath } from "@repo/app/shared/observability/click-page-context";
+import { SurfaceAnalyticsProvider } from "@repo/app/shared/observability/surface-analytics-context";
 import { type ReactNode, useCallback, useEffect } from "react";
 import { setClientEventSink } from "@/lib/analytics/client-event-sink";
+import { usePathValue } from "@/lib/navigation/next-adapter";
 
 /**
  * Web adapter for the surface-attributed analytics port (FEA-1517). Supplies
@@ -24,9 +30,23 @@ export function AppSurfaceAnalyticsProvider({
   children: ReactNode;
 }) {
   const analytics = useAnalytics();
+  const pathname = usePathValue();
+  const getClickPage = useCallback(
+    () => ({
+      pageName: pageNameForWebPath(pathname ?? globalThis.location.pathname),
+      entry: pathname ?? globalThis.location.pathname,
+    }),
+    [pathname]
+  );
   const capture = useCallback<SurfaceAnalyticsCapture>(
     (event, properties) => {
       analytics.capture(event, properties);
+    },
+    [analytics]
+  );
+  const setPersonProperties = useCallback<SurfaceAnalyticsPersonPropertySetter>(
+    (properties) => {
+      analytics.setPersonProperties(properties);
     },
     [analytics]
   );
@@ -39,7 +59,12 @@ export function AppSurfaceAnalyticsProvider({
   }, [analytics]);
 
   return (
-    <SurfaceAnalyticsProvider capture={capture} surface={Surface.Web}>
+    <SurfaceAnalyticsProvider
+      capture={capture}
+      getClickPage={getClickPage}
+      setPersonProperties={setPersonProperties}
+      surface={Surface.Web}
+    >
       {children}
     </SurfaceAnalyticsProvider>
   );

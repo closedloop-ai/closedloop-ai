@@ -14,6 +14,10 @@ import {
   ChecksStatus,
   ReviewDecision,
 } from "@repo/api/src/types/branch-checks";
+import {
+  BranchCollaboratorSource,
+  BranchIdentityAvailability,
+} from "@repo/api/src/types/branch-identity";
 import { BranchMetricAvailability } from "@repo/api/src/types/branch-metrics";
 import {
   BranchPhaseAttributionCompleteness,
@@ -42,7 +46,7 @@ import {
 
 export const BRANCH_ID = "branch-details-comprehensive-e2e";
 export const BRANCH_NAME = "feature/comprehensive-branch-details";
-export const REPOSITORY = "closedloop-ai/example-repo";
+export const REPOSITORY = "closedloop-ai/closedloop-ai";
 export const ACTIVE_PR = 4473;
 export const HISTORICAL_PR = 4388;
 export const ACTIVE_DESCRIPTION = "Active pull request delivery evidence";
@@ -67,6 +71,13 @@ The historical PR keeps its **own selected description**.
 
 <!-- ${PR_BODY_AUTOMATION_MARKER} -->`;
 export const BRANCH_OWNER = "Ada Lovelace";
+/**
+ * The project this branch is filed into. Exported so every reader of it — the
+ * top-level `projectName` field and the canonical projection's identity, both
+ * set from this pair below — names the same project (ISS-12453).
+ */
+export const PROJECT_ID = "project-4473";
+export const PROJECT_NAME = "Comprehensive Branch Delivery";
 export const BASE_SHA = "a".repeat(40);
 export const ACTIVE_HEAD_SHA = "b".repeat(40);
 export const HISTORICAL_HEAD_SHA = "c".repeat(40);
@@ -124,6 +135,9 @@ export function detailFor(prNumber: number): BranchPageDetail {
     prState: selected.state,
     prTitle: selected.title,
     prUrl: selected.url,
+    // This complete fixture knows the priority is unset; omission would model
+    // an older source that cannot report it and legitimately hides its row.
+    priority: null,
     repoFullName: REPOSITORY,
     reviewDecision: selected.reviewDecision,
     phaseAttribution: phaseAttributionFor(historical),
@@ -133,6 +147,8 @@ export function detailFor(prNumber: number): BranchPageDetail {
       body: variant.description,
       changedFiles: variant.filesChanged,
       deletions: variant.deletions,
+      authorLogin: "octocat",
+      baseRefName: "main",
       headRefOid: variant.headSha,
       mergeCommitSha: variant.mergeCommitSha,
     },
@@ -146,7 +162,8 @@ export function detailFor(prNumber: number): BranchPageDetail {
       common: {
         identity: {
           artifactId: BRANCH_ID,
-          projectId: "project-4473",
+          projectId: PROJECT_ID,
+          projectName: PROJECT_NAME,
           branchName: BRANCH_NAME,
           repositoryFullName: REPOSITORY,
         },
@@ -161,6 +178,10 @@ export function detailFor(prNumber: number): BranchPageDetail {
             availability: "complete",
             people: [],
             sources: {
+              [BranchCollaboratorSource.PullRequestAuthors]:
+                BranchIdentityAvailability.Complete,
+              [BranchCollaboratorSource.Pushes]:
+                BranchIdentityAvailability.Complete,
               pull_request_comments: "complete",
               branch_comments: "complete",
               session_comments: "complete",
@@ -263,6 +284,31 @@ export function timingIncompleteDetailFor(prNumber: number): BranchPageDetail {
         ? { ...session, endedAt: session.startedAt }
         : session
     ),
+  };
+}
+
+/** Detail fixture whose rendered Session bars share a column with dense trace events. */
+export function denseTimelineDetailFor(prNumber: number): BranchPageDetail {
+  const detail = detailFor(prNumber);
+  const sessionStartMs = Date.parse("2026-08-01T10:00:00.000Z");
+  return {
+    ...detail,
+    sessions: detail.sessions.map((session, index) => {
+      const startedAtMs = sessionStartMs + index * 5 * 60_000;
+      const endedAtMs = sessionStartMs + 55 * 60_000;
+      const startedAt = new Date(startedAtMs).toISOString();
+      const endedAt = new Date(endedAtMs).toISOString();
+      return {
+        ...session,
+        activitySegments: (session.activitySegments ?? []).map((segment) => ({
+          ...segment,
+          endMs: endedAtMs,
+          startMs: startedAtMs,
+        })),
+        endedAt,
+        startedAt,
+      };
+    }),
   };
 }
 
@@ -448,21 +494,42 @@ export function filesFor(
   };
 }
 function sessions(): BranchPageDetail["sessions"] {
-  return ["build", "review", "rework"].map((phase, index) => ({
-    sessionId: `session-${phase}`,
-    slug: `session-${phase}`,
-    name: `${phase[0]!.toUpperCase()}${phase.slice(1)} session`,
-    harness: "codex",
-    startedAt: `2026-07-30T09:${index}0:00.000Z`,
-    endedAt: `2026-07-30T09:${index}5:00.000Z`,
-    isPrimary: index === 0,
-    estimatedCostUsd: 8,
-    inputTokens: 100,
-    outputTokens: 50,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    ownerUserName: index === 0 ? "Ada Lovelace" : "Grace Hopper",
-  }));
+  return ["build", "review", "rework"].map((phase, index) => {
+    const startedAt = `2026-07-30T09:${index}0:00.000Z`;
+    const endedAt = `2026-07-30T09:${index}5:00.000Z`;
+    let activityPhase = "rework";
+    if (index === 0) {
+      activityPhase = "implement";
+    } else if (index === 1) {
+      activityPhase = "review";
+    }
+    return {
+      sessionId: `session-${phase}`,
+      slug: `session-${phase}`,
+      name: `${phase[0]!.toUpperCase()}${phase.slice(1)} session`,
+      harness: "codex",
+      startedAt,
+      endedAt,
+      isPrimary: index === 0,
+      estimatedCostUsd: 8,
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      ownerUserName: index === 0 ? "Ada Lovelace" : "Grace Hopper",
+      activitySegments: [
+        {
+          confidence: 1,
+          costUsd: 8,
+          endMs: Date.parse(endedAt),
+          inputTokens: 100,
+          outputTokens: 50,
+          phase: activityPhase,
+          startMs: Date.parse(startedAt),
+        },
+      ],
+    };
+  });
 }
 
 function branchVariant(historical: boolean) {

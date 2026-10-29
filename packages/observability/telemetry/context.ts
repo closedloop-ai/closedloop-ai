@@ -1,3 +1,4 @@
+import { normalizeDesktopBuildCommit } from "@repo/api/src/types/desktop-build-commit";
 import { z } from "zod";
 
 import type { TelemetryTraceContext } from "./schema";
@@ -70,6 +71,16 @@ export function buildTelemetryTraceContext(
 
   const parseResult = serverVersionSchema.safeParse(rawVersion);
   const serverVersion = parseResult.success ? rawVersion : "unknown";
+  // The last hop before this value becomes a Datadog trace dimension, and the
+  // one hop every producer shares. The desktop wire schema already drops a
+  // non-commit at ingest; re-checking here means a caller that assembles a
+  // trace directly cannot route around that boundary, and it uses the same
+  // shared pattern rather than trusting the `string` annotation. Unlike
+  // `serverVersion` there is no "unknown" fallback: an unresolved commit is
+  // omitted, never substituted.
+  const desktopBuildCommit = normalizeDesktopBuildCommit(
+    overrides.desktopBuildCommit
+  );
 
   return {
     commandId: overrides.commandId ?? "",
@@ -93,6 +104,7 @@ export function buildTelemetryTraceContext(
     ...(overrides.desktopClientVersion !== undefined && {
       desktopClientVersion: overrides.desktopClientVersion,
     }),
+    ...(desktopBuildCommit !== undefined && { desktopBuildCommit }),
     ...(overrides.gatewayProtocolVersion !== undefined && {
       gatewayProtocolVersion: overrides.gatewayProtocolVersion,
     }),

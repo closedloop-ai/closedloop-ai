@@ -9,22 +9,23 @@
  * wrappers that take a status string and render a ToneBadge.
  */
 
-import {
-  DISPLAYED_SESSION_STATUS,
-  SESSION_STATUS,
-} from "@repo/api/src/types/session-status";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { SESSION_STATUS_LABELS } from "@repo/api/src/types/session-status-display";
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
+import { UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY } from "@repo/api/src/types/universal-artifact-status-flag";
 import {
   SESSION_STATUS_SYNC_BADGE_TEST_ID,
   SessionSyncPresentation,
 } from "@repo/app/agents/lib/session-sync-presentation";
 import { getTranscriptDispositionLabel } from "@repo/app/agents/lib/session-sync-status";
 import { AGENT_STATUS } from "@repo/app/agents/lib/session-types";
+import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
+import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
+import { ARTIFACT_STATUS_LABEL_HONESTY_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { TooltipProvider } from "@repo/design-system/components/ui/tooltip";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AgentStatusBadge,
   HarnessBadge,
@@ -62,9 +63,19 @@ const REDUCED_MOTION_MARK_RE = /motion-reduce:ring-2/;
 // ISS-5279: the focus indicator a marked pill uses instead of `Badge`'s own
 // `focus-visible:ring-*`, which collides with the mark on `box-shadow`.
 const FOCUS_OUTLINE_RE = /focus-visible:outline-offset-2/;
+// ISS-12548: the champion host carries the ring for its descendant pill.
+const HOST_PULSE_RING_CLASS_RE =
+  /motion-safe:\[&_\[data-slot=badge\]\]:animate-status-pulse-ring/;
+const HOST_REDUCED_MOTION_MARK_RE =
+  /motion-reduce:\[&_\[data-slot=badge\]\]:ring-2/;
+const POINTER_FOCUS_SUPPRESSION_RE = /data-pointer-focus:outline-none/;
 // The canonical `CloudSyncDisclosure.TranscriptSyncing` sentence, as the tooltip
 // renders it — not a restatement, so list/detail/panel cannot drift.
 const SYNCING_TOOLTIP_RE = /its transcript is still uploading/i;
+const UNKNOWN_STATUS_EXPLANATION_RE =
+  /does not recognize this artifact's status/i;
+const UNIVERSAL_SYNCING_ACCESSIBLE_NAME_RE = /^Running, syncing\.$/i;
+const UNIVERSAL_RUNNING_LABEL_RE = /In progress.*Running/;
 // ISS-5279: a `ToneBadge`'s own geometry, used to COUNT pills. `data-slot`
 // cannot serve here: Radix's `TooltipTrigger asChild` spreads
 // `data-slot="tooltip-trigger"` over the badge's own value, so a tooltip-carrying
@@ -90,6 +101,54 @@ function renderHarness(harness?: string | null) {
   render(<HarnessBadge harness={harness as never} />);
 }
 
+/**
+ * ISS-12548: focus `element` as a pointer or a keyboard would. jsdom has no
+ * focus-visible heuristic, so `:focus-visible` is answered the way Chromium
+ * answers it at the moment focus lands: false after a click, true after Tab.
+ */
+function focusWithOrigin(element: HTMLElement, origin: "keyboard" | "pointer") {
+  const matches = HTMLElement.prototype.matches;
+  const spy = vi
+    .spyOn(HTMLElement.prototype, "matches")
+    .mockImplementation(function (this: HTMLElement, selector: string) {
+      if (selector === ":focus-visible") {
+        return origin === "keyboard";
+      }
+      return matches.call(this, selector);
+    });
+  try {
+    act(() => element.focus());
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+function renderUniversalSession(
+  status: string,
+  options: Readonly<{
+    honesty?: boolean;
+    syncPresentation?: SessionSyncPresentation;
+  }> = {}
+) {
+  const enabledFlags: string[] = [UNIVERSAL_ARTIFACT_STATUS_FLAG_KEY];
+  if (options.honesty) {
+    enabledFlags.push(ARTIFACT_STATUS_LABEL_HONESTY_FEATURE_FLAG_KEY);
+  }
+  return render(
+    <FeatureFlagAdapterProvider
+      adapter={createStaticFeatureFlagAdapter({ enabledFlags })}
+    >
+      <TooltipProvider>
+        <SessionStatusBadge
+          artifactId="session-1"
+          status={status}
+          syncPresentation={options.syncPresentation}
+        />
+      </TooltipProvider>
+    </FeatureFlagAdapterProvider>
+  );
+}
+
 // ── SessionStatusBadge ────────────────────────────────────────────────────────
 
 describe("SessionStatusBadge — known statuses map to the correct label and tone", () => {
@@ -108,13 +167,17 @@ describe("SessionStatusBadge — known statuses map to the correct label and ton
     expect(html).toContain("animate-");
   });
 
-  it("waiting → canonical label with accent tone and pulse animation", () => {
-    renderSession(DISPLAYED_SESSION_STATUS.WAITING);
+  // ISS-10364 (operator ruling, 2026-09-23/24): `waiting` is retired from
+  // `DISPLAYED_SESSION_STATUS` — a row carrying the legacy spelling now folds
+  // to Active like any other value this fold doesn't recognize, so it renders
+  // the ACTIVE badge rather than its own accent-toned "Waiting" pill.
+  it("ISS-10364: a legacy 'waiting' status folds to the ACTIVE badge, not its own pill", () => {
+    renderSession("waiting");
     expect(
-      screen.getByText(SESSION_STATUS_LABELS[DISPLAYED_SESSION_STATUS.WAITING])
+      screen.getByText(SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE])
     ).toBeInTheDocument();
     const html = document.body.innerHTML;
-    expect(html).toMatch(ACCENT_CLASS_RE);
+    expect(html).toMatch(SUCCESS_CLASS_RE);
     expect(html).toContain("animate-");
   });
 
@@ -177,6 +240,96 @@ describe("SessionStatusBadge — safe fallback for unknown / unmapped statuses",
     expect(
       screen.getByText(SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE])
     ).toBeInTheDocument();
+  });
+});
+
+describe("SessionStatusBadge — universal artifact status adoption", () => {
+  it("uses the champion's session vocabulary when the rollout gate is enabled", () => {
+    renderUniversalSession(SESSION_STATUS.ACTIVE);
+
+    expect(screen.getByText(UNIVERSAL_RUNNING_LABEL_RE)).toBeInTheDocument();
+    expect(
+      screen.queryByText(SESSION_STATUS_LABELS[SESSION_STATUS.ACTIVE])
+    ).not.toBeInTheDocument();
+  });
+
+  // ISS-10364 (operator ruling, extended to the universal vocabulary): an
+  // unparsable session status reads Active, so the champion renders Running
+  // and never the Unknown root or its explanation, honesty gate or not.
+  it("reads an unrecognized session status as Active", () => {
+    renderUniversalSession("future_session_status", { honesty: true });
+
+    expect(screen.getByText(UNIVERSAL_RUNNING_LABEL_RE)).toBeInTheDocument();
+    expect(
+      screen.queryByTitle(UNKNOWN_STATUS_EXPLANATION_RE)
+    ).not.toBeInTheDocument();
+  });
+
+  // ISS-10364 (operator ruling, 2026-09-23/24) retired the two tests that used
+  // to live here ("keeps a recognized derived display value ahead of lifecycle
+  // evidence", "preserves the Session-specific Stale explanation on the
+  // champion"). Both depended on `foldToDisplayedSessionStatus` being able to
+  // hand the champion a `displayed` value of `unknown`/`stale` distinct from
+  // `rawStatus` — `SessionStatusBadge` folds `status` to a lifecycle value
+  // BEFORE it ever reaches `sessionStatusView`, so `displayed` is now always
+  // Active/Inactive/Error and the champion can no longer be fed either
+  // retired word through this component. The champion's genuine
+  // unrecognized-raw-status handling is covered by "reads an unrecognized
+  // session status as Active" above.
+
+  it("preserves the sync mark around one canonical lifecycle badge", () => {
+    const { container } = renderUniversalSession(SESSION_STATUS.ACTIVE, {
+      syncPresentation: SessionSyncPresentation.Syncing,
+    });
+
+    const badge = screen.getByTestId(SESSION_STATUS_SYNC_BADGE_TEST_ID);
+    expect(badge).toHaveAccessibleName(UNIVERSAL_SYNCING_ACCESSIBLE_NAME_RE);
+    expect(screen.getByText(UNIVERSAL_RUNNING_LABEL_RE)).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-slot="badge"]')).toHaveLength(1);
+    expect(badge.className).toMatch(HOST_PULSE_RING_CLASS_RE);
+  });
+
+  // ISS-12548: the ring keyframe paints in `currentColor`. Worn by the tooltip
+  // `<button>`, that was the cell's text color, not the pill's tone, so the
+  // ring came out gray; and the button stood 2px taller than the pill (an
+  // inline wrapper's line box), so the ring stood off the pill's top edge. The
+  // pill paints the ring; the button keeps only the focus outline.
+  it("paints the sync ring on the pill, not on the button that wraps it (ISS-12548)", () => {
+    const { container } = renderUniversalSession(SESSION_STATUS.ACTIVE, {
+      syncPresentation: SessionSyncPresentation.Syncing,
+    });
+
+    const host = screen.getByTestId(SESSION_STATUS_SYNC_BADGE_TEST_ID);
+    const hostClasses = host.className.split(" ");
+    expect(hostClasses).not.toContain("motion-safe:animate-status-pulse-ring");
+    expect(hostClasses).not.toContain("motion-reduce:ring-2");
+    expect(host.className).toMatch(HOST_PULSE_RING_CLASS_RE);
+    expect(host.className).toMatch(HOST_REDUCED_MOTION_MARK_RE);
+    expect(host.className).toMatch(FOCUS_OUTLINE_RE);
+    // The wrapper between the button and the pill is a flex box, so the button
+    // is exactly the pill's height and the outline is offset evenly.
+    expect(host.firstElementChild).toHaveClass("flex");
+    expect(
+      host.querySelector('[data-slot="badge"]')?.closest("[aria-hidden]")
+    ).toBe(host.firstElementChild);
+    expect(container.querySelectorAll('[data-slot="badge"]')).toHaveLength(1);
+  });
+
+  it("draws no focus outline for a pill focused by a click (ISS-12548)", () => {
+    renderUniversalSession(SESSION_STATUS.ACTIVE, {
+      syncPresentation: SessionSyncPresentation.Syncing,
+    });
+    const host = screen.getByTestId(SESSION_STATUS_SYNC_BADGE_TEST_ID);
+
+    focusWithOrigin(host, "pointer");
+    expect(host).toHaveAttribute("data-pointer-focus");
+    expect(host.className).toMatch(POINTER_FOCUS_SUPPRESSION_RE);
+
+    act(() => host.blur());
+    expect(host).not.toHaveAttribute("data-pointer-focus");
+
+    focusWithOrigin(host, "keyboard");
+    expect(host).not.toHaveAttribute("data-pointer-focus");
   });
 });
 
@@ -487,6 +640,24 @@ describe("SessionStatusBadge — ISS-5279 sync presentation", () => {
     // WCAG 2.5.3 Label in Name: the name LEADS with the visible word, so a
     // voice-control user saying "click Active" still matches the pill.
     expect(badge.getAttribute("aria-label")).toMatch(SYNCING_LABEL_LEADS_RE);
+  });
+
+  it("draws no focus outline for a pill focused by a click (ISS-12548)", () => {
+    renderSyncing();
+    const badge = screen.getByTestId(SESSION_STATUS_SYNC_BADGE_TEST_ID);
+
+    // Chromium's `:focus-visible` turns on for an ALREADY focused element at
+    // the next keystroke of any kind (Shift, Escape, a screenshot chord), so a
+    // pill that was merely clicked used to grow the offset outline later.
+    focusWithOrigin(badge, "pointer");
+    expect(badge).toHaveAttribute("data-pointer-focus");
+    expect(badge.className).toMatch(POINTER_FOCUS_SUPPRESSION_RE);
+
+    act(() => badge.blur());
+    focusWithOrigin(badge, "keyboard");
+    // Keyboard focus keeps the ISS-5279 outline.
+    expect(badge).not.toHaveAttribute("data-pointer-focus");
+    expect(badge.className).toMatch(FOCUS_OUTLINE_RE);
   });
 
   it("opens the explanation on KEYBOARD FOCUS, not hover alone", async () => {

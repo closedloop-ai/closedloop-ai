@@ -9,6 +9,7 @@ import type {
   UpdateProjectInput,
 } from "@repo/api/src/types/project";
 import { useUpdateProject } from "@repo/app/projects/hooks/use-projects";
+import { INLINE_EDIT_SAVE_ERROR_MESSAGE } from "@repo/app/shared/lib/inline-edit-save-error";
 import type { UseMutationResult } from "@tanstack/react-query";
 import {
   cleanup,
@@ -82,6 +83,7 @@ describe("EditableProjectDescription", () => {
       );
 
       const textarea = within(container).getByRole("textbox");
+      expect(useUpdateProject).toHaveBeenCalledWith();
       expect(textarea).toBeInTheDocument();
       expect(textarea).toHaveValue("Test project description");
     });
@@ -134,6 +136,8 @@ describe("EditableProjectDescription", () => {
         expect(mockMutateAsync).toHaveBeenCalledWith({
           id: projectId,
           description: "Updated description",
+          expectedDescription: "Original description",
+          recoverableErrorOwner: expect.any(Function),
         });
       });
     });
@@ -155,6 +159,8 @@ describe("EditableProjectDescription", () => {
         expect(mockMutateAsync).toHaveBeenCalledWith({
           id: projectId,
           description: "New description",
+          expectedDescription: "Original",
+          recoverableErrorOwner: expect.any(Function),
         });
       });
     });
@@ -189,7 +195,9 @@ describe("EditableProjectDescription", () => {
       expect(mockMutateAsync).not.toHaveBeenCalled();
     });
 
-    it("sends undefined for empty descriptions", async () => {
+    // ISS-11198: a clear used to send nothing while the field showed empty, so
+    // every later guarded save would expect a description the server never held.
+    it("clears the description by writing an empty one under its guard", async () => {
       const { container } = render(
         <EditableProjectDescription
           initialDescription="Original"
@@ -205,7 +213,9 @@ describe("EditableProjectDescription", () => {
       await waitFor(() => {
         expect(mockMutateAsync).toHaveBeenCalledWith({
           id: projectId,
-          description: undefined,
+          description: "",
+          expectedDescription: "Original",
+          recoverableErrorOwner: expect.any(Function),
         });
       });
     });
@@ -307,6 +317,13 @@ describe("EditableProjectDescription", () => {
       });
       // User's input is preserved, not reverted
       expect(textarea).toHaveValue("Updated");
+      expect(textarea).toHaveFocus();
+      expect(textarea).toHaveAccessibleDescription(
+        INLINE_EDIT_SAVE_ERROR_MESSAGE
+      );
+      expect(within(container).getByRole("alert")).toHaveTextContent(
+        INLINE_EDIT_SAVE_ERROR_MESSAGE
+      );
     });
   });
 

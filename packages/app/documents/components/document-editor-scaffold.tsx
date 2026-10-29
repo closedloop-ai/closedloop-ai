@@ -1,56 +1,65 @@
 "use client";
 
+import { DOC_SYNC_EDITOR_FLAG_KEY } from "@repo/api/src/types/doc-sync-editor-flag";
 import type { DocumentDetail } from "@repo/api/src/types/document";
 import { AttachmentsRow } from "@repo/app/documents/components/attachments-row";
 import { CollaborativeEditorBody } from "@repo/app/documents/components/collaborative-editor-body";
-import {
-  DocumentEditorDetails,
-  getDocumentActivityMetadata,
-} from "@repo/app/documents/components/document-editor-details";
+import { DocumentEditorDetails } from "@repo/app/documents/components/document-editor-details";
+import { useDocumentHostDeleteRedirectPath } from "@repo/app/documents/components/document-host-context";
 import { DocumentMetadataBar } from "@repo/app/documents/components/document-metadata-bar";
+import { DocumentRichTextToolbar } from "@repo/app/documents/components/document-rich-text-toolbar";
 import { DocumentFeedRail } from "@repo/app/documents/components/editor/document-feed-rail";
 import { DocumentRoomEventListener } from "@repo/app/documents/components/editor/document-room-event-listener";
 import { EditableDocumentTitle } from "@repo/app/documents/components/editor/editable-document-title";
+import {
+  EditorBodyStatusRegion,
+  editorBodyClassName,
+} from "@repo/app/documents/components/editor-body-status-region";
 import { EditorToolbarRow } from "@repo/app/documents/components/editor-toolbar-row";
 import { deriveAnchorStatus } from "@repo/app/documents/components/feed-sidebar/anchor-status";
 import { CommentPermalinkProvider } from "@repo/app/documents/components/feed-sidebar/comment-permalink-context";
 import type { FeedArtifactType } from "@repo/app/documents/components/feed-sidebar/types";
 import { MoveEntityDialog } from "@repo/app/documents/components/move-entity-dialog";
 import { VersionActionsToolbar } from "@repo/app/documents/components/version-actions-toolbar";
+import { useAnchorRevealWhenEditorReady } from "@repo/app/documents/hooks/use-anchor-reveal-when-editor-ready";
 import { useDocumentActions } from "@repo/app/documents/hooks/use-document-actions";
 import { useDocumentContent } from "@repo/app/documents/hooks/use-document-content";
 import { useDocumentMetadata } from "@repo/app/documents/hooks/use-document-metadata";
+import { useDocumentVersionSignals } from "@repo/app/documents/hooks/use-document-version-signals";
 import { useEditorChrome } from "@repo/app/documents/hooks/use-editor-chrome";
 import { useEditorSession } from "@repo/app/documents/hooks/use-editor-session";
 import { useInlineEditMode } from "@repo/app/documents/hooks/use-inline-edit-mode";
+import { useRemoteVersionPublished } from "@repo/app/documents/hooks/use-remote-version-published";
 import { bodyLeadsWithTitleHeading } from "@repo/app/documents/lib/leading-title-heading";
+import { ArtifactDetailShell } from "@repo/app/shared/components/artifact-detail-shell/artifact-detail-shell";
+import { ArtifactTab } from "@repo/app/shared/components/artifact-detail-shell/artifact-tab";
+import { useArtifactDetailTabRoute } from "@repo/app/shared/components/artifact-detail-shell/use-artifact-detail-tab-route";
 import { DeleteConfirmationDialog } from "@repo/app/shared/components/delete-confirmation-dialog";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import {
+  ARTIFACT_DETAIL_TABS,
+  ArtifactDetailTab,
+} from "@repo/app/shared/lib/artifact-detail-tab";
 import { useCurrentUser } from "@repo/app/users/hooks/use-users";
+import { DocSyncRoom } from "@repo/collaboration/client/doc-sync-room";
 import { OptionalDocumentRoom } from "@repo/collaboration/client/optional-document-room";
 import { InlinePresence } from "@repo/collaboration/client/presence";
-import { scrollToAnchor } from "@repo/collaboration/client/scroll-to-anchor";
 import { InlineEditEditorShell } from "@repo/design-system/components/ui/inline-edit-editor-shell";
-import {
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@repo/design-system/components/ui/resizable";
-import { toast } from "@repo/design-system/components/ui/sonner";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
-import { RichTextToolbar } from "@repo/rich-text/rich-text-toolbar";
-import { Loader2Icon } from "lucide-react";
 import {
   type ReactNode,
   Suspense,
   useCallback,
   useEffect,
   useRef,
-  useState,
 } from "react";
 import {
   getLatestContentForAttachmentWarnings,
+  getSelectedContentForAttachmentVisibility,
   resolveActiveRoomId,
 } from "./document-editor-scaffold-helpers";
+import { DocumentSessionsTab } from "./document-sessions-tab";
+import { DocumentShellActivity } from "./document-shell-activity";
 import { VersionSelector } from "./version-selector";
 
 export type ScaffoldSlotContext = {
@@ -61,13 +70,24 @@ export type ScaffoldSlotContext = {
   actions: ReturnType<typeof useDocumentActions>;
   editMode: ReturnType<typeof useInlineEditMode>;
   chrome: ReturnType<typeof useEditorChrome>;
-  isPending: boolean;
-  showComments: boolean;
-  setShowComments: (next: boolean) => void;
+  isDetailsActive: boolean;
   versionDisplay: ReactNode;
   currentVersion: number;
-  chatEnabled: boolean;
-  feedEnabled: boolean;
+  /**
+   * The content an attachment decision must be made against: the live draft on
+   * the latest version, the saved body when reading history. Published here so a
+   * details-section slot (the issue rail's Context section) reaches the SAME
+   * derivation `AttachmentsRow` uses, instead of re-reading `latestVersionContent`
+   * and disagreeing with the row about an unsaved paste (ISS-8036).
+   */
+  latestContentForAttachmentWarnings: string;
+  /**
+   * The content whose rendered inline images the panels HIDE: the live draft on
+   * the latest version, the SELECTED version's body when reading history. Split
+   * from `latestContentForAttachmentWarnings` because the two questions have
+   * different answers on a historical view (ISS-8036 review).
+   */
+  selectedContentForAttachmentVisibility: string;
 };
 
 export type DocumentEditorScaffoldProps = {
@@ -86,14 +106,8 @@ export type DocumentEditorScaffoldProps = {
    */
   buildPermalinkUrl?: (threadId: string) => string;
 
-  /** Merged into the scaffold's isPending */
-  extraPending?: boolean;
-
   /** Passed through to useDocumentActions */
   redirectPath: string;
-
-  /** ResizablePanelGroup autoSaveId — preserves per-type panel sizes */
-  resizableAutoSaveId: string;
 
   /** FeedSidebar artifactType */
   feedArtifactType: FeedArtifactType;
@@ -125,44 +139,15 @@ export type DocumentEditorScaffoldProps = {
   emptyContentPlaceholder?: string;
 
   /**
-   * Hide the "Move..." action / dialog (ISS-4382). Org-level subtypes (DOC)
-   * cannot live in a project — the create validator rejects a `projectId` for
-   * them — so exposing Move would let the editor persist a forbidden
-   * project-plus-DOC state that then vanishes from the org Documents index.
+   * Hide the "Move..." action / dialog (ISS-4382). The DOC editor sets it: the
+   * API files a DOC into a project since ISS-12858, and whether its header
+   * offers Move is ISS-12859's Details work.
    */
   hideMoveAction?: boolean;
 
   /** Render-prop slots */
   renderHeader: (ctx: ScaffoldSlotContext) => ReactNode;
   detailsSections: (ctx: ScaffoldSlotContext) => ReactNode;
-  /** Optional chat tab inside FeedSidebar when feed flag is on */
-  renderChatTab?: (ctx: ScaffoldSlotContext) => ReactNode;
-  /**
-   * Optional legacy right-rail chat panel, rendered inside the scaffold's
-   * ResizablePanelGroup when the feed flag is off but chat is on. The panel is
-   * an app-only surface (it reaches into the `apps/app` chat stack), so it is
-   * injected as a render-prop rather than imported here — keeping this shared
-   * scaffold free of app-local coupling. Adapters gate visibility off the same
-   * `chatEnabled`/`feedEnabled` context they receive.
-   */
-  renderChatPanel?: (ctx: ScaffoldSlotContext) => ReactNode;
-  /** Type-specific floating modals/pickers */
-  floatingChildren?: (ctx: ScaffoldSlotContext) => ReactNode;
-  /**
-   * Optional stand-in for the editor body while the artifact's latest version
-   * has nothing to read.
-   *
-   * The scaffold decides WHEN it may appear (latest version, empty body, not
-   * being edited, not viewing history); the caller decides WHETHER it has
-   * anything to say by returning null. That split keeps this shared scaffold
-   * free of app-local coupling, the same way `renderChatPanel` is injected
-   * rather than imported.
-   *
-   * The editor is HIDDEN, not unmounted, while this shows: unmounting would
-   * drop the Liveblocks room and the content controller mid-run, and the
-   * moment content lands the editor has to be there already.
-   */
-  renderEmptyContent?: (ctx: ScaffoldSlotContext) => ReactNode;
 };
 
 export function DocumentEditorScaffold({
@@ -170,9 +155,7 @@ export function DocumentEditorScaffold({
   currentVersion,
   onVersionChange,
   buildPermalinkUrl,
-  extraPending = false,
   redirectPath,
-  resizableAutoSaveId,
   feedArtifactType,
   hideRepositoriesInMetadataBar = false,
   deleteDialogTitle,
@@ -182,40 +165,39 @@ export function DocumentEditorScaffold({
   hideMoveAction = false,
   renderHeader,
   detailsSections,
-  renderChatTab,
-  renderChatPanel,
-  floatingChildren,
-  renderEmptyContent,
 }: Readonly<DocumentEditorScaffoldProps>) {
   // Gate the Liveblocks room connection on the user/org context being ready
-  // (FEA-2404). The parent CollaborationProviderWrapper mounts a *minimal*
-  // LiveblocksProvider while `/me` is still loading; if a document's room
-  // connects during that window, its auth callback fires before Clerk/org has
-  // hydrated and can exhaust Liveblocks' hardcoded 10s auth timeout, surfacing
-  // as a real-prod "Authentication failed: Timed out during auth" RUM error.
-  // Deferring the room until `currentUser` resolves means the room connects
-  // exactly once, under the full provider, with context ready. `useCurrentUser`
-  // is already fetched by the wrapper, so TanStack Query dedupes this call.
+  // (FEA-2404). The parent CollaborationProviderWrapper's LiveblocksProvider
+  // is already mounted before `/me` resolves; if a document's room connects
+  // before then, its auth callback fires before Clerk/org has hydrated and can
+  // exhaust Liveblocks' hardcoded 10s auth timeout, surfacing as a real-prod
+  // "Authentication failed: Timed out during auth" RUM error. Deferring the
+  // room until `currentUser` resolves means the room connects exactly once,
+  // with context ready. `useCurrentUser` is already fetched by the wrapper, so
+  // TanStack Query dedupes this call.
   const { data: currentUser, isLoading: isUserLoading } = useCurrentUser();
+  const route = useArtifactDetailTabRoute(DOCUMENT_ARTIFACT_ROUTE_CONFIG);
   const searchParams = useSearchParamsValue();
   const commentThreadId = searchParams?.get("thread") ?? undefined;
-  const chatEnabled = useFeatureFlagEnabled("interactive-chat");
-  const feedEnabled = useFeatureFlagEnabled("comments-v2-feed-sidebar");
-
-  const [showComments, setShowComments] = useState(true);
-
-  // High-water mark of the newest version this client has already acted on —
-  // either by publishing it locally or by handling a remote broadcast. Used to
-  // suppress the publisher's own `document-version-published` echo: the saving
-  // tab's mutation onSuccess already reseeds and toasts, but the broadcast can
-  // round-trip back before the parent's `useDocument` refetch advances
-  // `document.latestVersion`, so we cannot rely on the prop alone to recognize
-  // a self-published version.
-  const acknowledgedVersionRef = useRef(document.latestVersion);
+  // PLN-2189 T-3.2: the editor tree's read of the transport switch (the route
+  // prewarm reads it separately). Descendants branch on the mounted
+  // `DocSyncRoom`, never on the flag.
+  const docSyncEditorEnabled = useFeatureFlagEnabled(DOC_SYNC_EDITOR_FLAG_KEY);
 
   const session = useEditorSession({
     artifact: document,
     currentVersion,
+  });
+  const { acknowledgeVersion, handleRemoteVersionPublished } =
+    useRemoteVersionPublished({
+      document,
+      currentVersion,
+      onVersionChange,
+      setEditorContent: session.setEditorContent,
+    });
+  useDocumentVersionSignals({
+    document,
+    onRemoteVersionPublished: handleRemoteVersionPublished,
   });
   // Only connect the collaborative room once the user/org context is ready.
   // Until then treat the document as room-less — an already-supported state
@@ -239,16 +221,17 @@ export function DocumentEditorScaffold({
     isLatestVersion: currentVersion === document.latestVersion,
     setEditorContent: session.setEditorContent,
     onVersionCreated: (updated) => {
-      acknowledgedVersionRef.current = Math.max(
-        acknowledgedVersionRef.current,
-        updated.version.version
-      );
+      acknowledgeVersion(updated.version.version);
       onVersionChange(updated.version.version);
     },
   });
   const metadata = useDocumentMetadata({ artifact: document });
 
-  const actions = useDocumentActions({ artifact: document, redirectPath });
+  const hostDeleteRedirectPath = useDocumentHostDeleteRedirectPath();
+  const actions = useDocumentActions({
+    artifact: document,
+    redirectPath: hostDeleteRedirectPath ?? redirectPath,
+  });
   // A brand-new DOC lands on its latest version with empty content; open it
   // straight into edit mode with a placed cursor so the blank page is usable
   // immediately, instead of a read-only near-blank screen (ISS-4382). Gated on
@@ -259,6 +242,7 @@ export function DocumentEditorScaffold({
   const editMode = useInlineEditMode({
     readOnly: session.isViewingHistorical,
     editor: session.editor,
+    isEditorReady: session.isEditorReady,
     initialEditing:
       startInEditModeWhenEmpty && isLatestVersion && isContentEmpty,
   });
@@ -273,56 +257,8 @@ export function DocumentEditorScaffold({
     !editMode.isEditing &&
     bodyLeadsWithTitleHeading(contentController.content, document.title);
 
-  // React to remote version publishes: when another client publishes a new
-  // version (or a server generation pipeline completes), `resetDocumentRoom`
-  // clears the Y.Doc and broadcasts `document-version-published`. If the
-  // current user was viewing the previous latest, advance them to the new
-  // one and reseed the editor with the refetched content.
-  const handleRemoteVersionPublished = useCallback(
-    (updated: DocumentDetail) => {
-      // Ignore anything not newer than what this client already knows about —
-      // the artifact's current latest or a version we published/handled
-      // ourselves. This is what keeps the publishing tab from re-toasting its
-      // own save once the broadcast echoes back.
-      const knownVersion = Math.max(
-        document.latestVersion,
-        acknowledgedVersionRef.current
-      );
-      if (updated.latestVersion <= knownVersion) {
-        return;
-      }
-      acknowledgedVersionRef.current = updated.latestVersion;
-      const wasViewingLatest = currentVersion === document.latestVersion;
-      if (wasViewingLatest) {
-        onVersionChange(updated.latestVersion);
-        session.setEditorContent(updated.version.content ?? "");
-      }
-      toast(`A new version was published (v${updated.latestVersion}).`);
-    },
-    [
-      currentVersion,
-      document.latestVersion,
-      onVersionChange,
-      session.setEditorContent,
-    ]
-  );
-
-  // Auto-reveal comments when threads reappear after being fully resolved.
-  // Edge-triggered only (0 -> >0) so we don't override the user's manual toggle.
-  const prevThreadCount = useRef(session.openThreadCount);
-  useEffect(() => {
-    if (prevThreadCount.current === 0 && session.openThreadCount > 0) {
-      setShowComments(true);
-    }
-    prevThreadCount.current = session.openThreadCount;
-  }, [session.openThreadCount]);
-
   const isPending =
-    contentController.isSaving ||
-    metadata.isUpdating ||
-    actions.isDeleting ||
-    actions.isRenaming ||
-    extraPending;
+    contentController.isSaving || metadata.isUpdating || actions.isDeleting;
 
   const versionDisplay = (
     <VersionSelector
@@ -332,9 +268,14 @@ export function DocumentEditorScaffold({
     />
   );
 
-  const activityMetadata = getDocumentActivityMetadata(document);
   const latestContentForAttachmentWarnings =
     getLatestContentForAttachmentWarnings({
+      currentVersion,
+      document,
+      latestDraftContent: contentController.content,
+    });
+  const selectedContentForAttachmentVisibility =
+    getSelectedContentForAttachmentVisibility({
       currentVersion,
       document,
       latestDraftContent: contentController.content,
@@ -343,13 +284,16 @@ export function DocumentEditorScaffold({
   // Card click → scroll the document editor to the thread's anchor for
   // anchored threads. No-op for floating / artifact-level threads — the
   // card's own composer-open behavior still runs regardless.
+  const revealAnchor = useAnchorRevealWhenEditorReady(session.isEditorReady);
   const onCommentClick = useCallback(
     (thread: Parameters<typeof deriveAnchorStatus>[0]) => {
       if (deriveAnchorStatus(thread) === "anchored") {
-        scrollToAnchor(thread.id);
+        route.selectTabThenReveal(ArtifactDetailTab.Artifact, () => {
+          revealAnchor(thread.id);
+        });
       }
     },
-    []
+    [route.selectTabThenReveal, revealAnchor]
   );
 
   // Force the metadata panel open on initial mount when a permalink is
@@ -377,184 +321,197 @@ export function DocumentEditorScaffold({
     actions,
     editMode,
     chrome,
-    isPending,
-    showComments,
-    setShowComments,
+    isDetailsActive: route.activeTab === ArtifactDetailTab.Details,
     versionDisplay,
     currentVersion,
-    chatEnabled,
-    feedEnabled,
+    latestContentForAttachmentWarnings,
+    selectedContentForAttachmentVisibility,
   };
 
-  // Gated here rather than at the call site so every editor gets the same rule:
-  // only the latest version, only a genuinely empty body, never while editing
-  // or reading history. The caller still returns null when it has nothing to
-  // show, so a quiet artifact falls straight through to the editor.
-  const emptyContentStandIn =
-    isLatestVersion &&
-    isContentEmpty &&
-    !(editMode.isEditing || session.isViewingHistorical)
-      ? renderEmptyContent?.(ctx)
-      : null;
+  const roomBody = (
+    <>
+      {activeRoomId ? (
+        <DocumentRoomEventListener
+          documentId={document.id}
+          onRemoteVersionPublished={handleRemoteVersionPublished}
+        />
+      ) : null}
+      <ArtifactDetailShell
+        activeTab={route.activeTab}
+        comments={
+          <CommentPermalinkProvider
+            buildPermalinkUrl={buildPermalinkUrl}
+            scrollToThreadId={commentThreadId}
+          >
+            <DocumentFeedRail
+              artifactType={feedArtifactType}
+              currentVersion={currentVersion}
+              documentId={document.id}
+              documentType={document.type}
+              enabled={!!activeRoomId}
+              isViewingHistorical={session.isViewingHistorical}
+              latestVersion={document.latestVersion}
+              onClose={chrome.toggleMetadataPanel}
+              onCommentClick={onCommentClick}
+              organizationId={document.organizationId}
+              visible={chrome.showMetadataPanel}
+            />
+          </CommentPermalinkProvider>
+        }
+        keepMountedTabs={[
+          ArtifactDetailTab.Artifact,
+          ArtifactDetailTab.Details,
+        ]}
+        key={document.id}
+        onActivePanelReady={route.onActivePanelReady}
+        onActiveTabChange={route.setActiveTab}
+        panels={{
+          [ArtifactDetailTab.Artifact]: (
+            <ArtifactTab
+              canvas={
+                <div className="min-w-0 flex-1">
+                  <EditorBodyStatusRegion
+                    hasTimedOut={session.hasEditorReadyTimedOut}
+                    isEditorReady={session.isEditorReady}
+                  />
+
+                  <div className={editorBodyClassName(session.isEditorReady)}>
+                    <InlineEditEditorShell
+                      expanded={
+                        editMode.isEditing || session.isViewingHistorical
+                      }
+                      toolbar={
+                        <EditorToolbarRow
+                          leftContent={
+                            <DocumentRichTextToolbar
+                              className="border-0 bg-transparent p-0"
+                              editor={session.editor}
+                              hasLiveblocksExtension={
+                                editorUsesLiveblocksContent
+                              }
+                              onPasteMarkdown={session.setEditorContent}
+                              readOnly={!editMode.isEditing}
+                            />
+                          }
+                          rightContent={
+                            <>
+                              {editorUsesLiveblocksContent && (
+                                <Suspense fallback={null}>
+                                  <InlinePresence />
+                                </Suspense>
+                              )}
+                              {versionDisplay}
+                              <VersionActionsToolbar
+                                canRestoreVersion={true}
+                                canSaveVersion={isLatestVersion}
+                                hasUnsavedChanges={
+                                  contentController.hasUnsavedChanges
+                                }
+                                isRestoring={isPending}
+                                isSaving={contentController.isSaving}
+                                onRestoreVersion={
+                                  contentController.restoreVersion
+                                }
+                                onSaveVersion={() =>
+                                  contentController.saveContent(
+                                    undefined,
+                                    false,
+                                    editMode.exitEditMode
+                                  )
+                                }
+                              />
+                            </>
+                          }
+                        />
+                      }
+                    >
+                      <CollaborativeEditorBody
+                        currentVersion={currentVersion}
+                        documentId={document.id}
+                        editorUsesLiveblocksContent={
+                          editorUsesLiveblocksContent
+                        }
+                        externalToolbar
+                        headerContent={
+                          <div className="space-y-4 px-5 pt-10">
+                            <EditableDocumentTitle
+                              documentId={document.id}
+                              initialTitle={document.title}
+                            />
+                          </div>
+                        }
+                        hideLeadingTitleHeading={hideLeadingTitleHeading}
+                        key={currentVersion}
+                        liveblocksRoomId={activeRoomId}
+                        onBodyClick={editMode.enterEditMode}
+                        onChange={contentController.updateContent}
+                        onContentReady={session.handleEditorReady}
+                        onEditorInstance={session.handleEditorInstance}
+                        placeholder={emptyContentPlaceholder}
+                        readOnly={!editMode.isEditing}
+                        showComments={editMode.isEditing}
+                        value={contentController.content}
+                      />
+                    </InlineEditEditorShell>
+                  </div>
+                </div>
+              }
+            />
+          ),
+          [ArtifactDetailTab.Sessions]: (
+            <DocumentSessionsTab document={document} />
+          ),
+          [ArtifactDetailTab.Details]: (
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <DocumentEditorDetails
+                active={route.activeTab === ArtifactDetailTab.Details}
+                documentId={document.id}
+              >
+                <DocumentMetadataBar
+                  documentId={document.id}
+                  documentType={document.type}
+                  metadata={metadata}
+                  showRepositories={!hideRepositoriesInMetadataBar}
+                  tags={document.tags}
+                />
+                <AttachmentsRow
+                  active={ctx.isDetailsActive}
+                  documentId={document.id}
+                  latestContent={latestContentForAttachmentWarnings}
+                  renderedContent={selectedContentForAttachmentVisibility}
+                />
+                {detailsSections(ctx)}
+              </DocumentEditorDetails>
+            </div>
+          ),
+          [ArtifactDetailTab.Activity]: (
+            <DocumentShellActivity document={document} />
+          ),
+        }}
+        tabs={ARTIFACT_DETAIL_TABS}
+      />
+    </>
+  );
 
   return (
     <>
       {renderHeader(ctx)}
 
-      <ResizablePanelGroup
-        autoSaveId={resizableAutoSaveId}
-        direction="horizontal"
+      <OptionalDocumentRoom
+        readOnly={session.isViewingHistorical}
+        roomId={activeRoomId}
       >
-        <ResizablePanel defaultSize={75} minSize={50}>
-          <div className="flex h-full overflow-hidden bg-background">
-            <OptionalDocumentRoom
-              readOnly={session.isViewingHistorical}
-              roomId={activeRoomId}
-            >
-              {activeRoomId ? (
-                <DocumentRoomEventListener
-                  documentId={document.id}
-                  onRemoteVersionPublished={handleRemoteVersionPublished}
-                />
-              ) : null}
-              <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
-                {emptyContentStandIn}
-                <div
-                  className={editorLoaderClassName(
-                    session.isEditorReady,
-                    Boolean(emptyContentStandIn)
-                  )}
-                >
-                  <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
-                </div>
-
-                <div
-                  className={editorBodyClassName(
-                    session.isEditorReady,
-                    Boolean(emptyContentStandIn)
-                  )}
-                >
-                  <InlineEditEditorShell
-                    expanded={editMode.isEditing || session.isViewingHistorical}
-                    toolbar={
-                      <EditorToolbarRow
-                        leftContent={
-                          <RichTextToolbar
-                            className="border-0 bg-transparent p-0"
-                            editor={session.editor}
-                            hasLiveblocksExtension={editorUsesLiveblocksContent}
-                            onPasteMarkdown={session.setEditorContent}
-                            readOnly={!editMode.isEditing}
-                          />
-                        }
-                        rightContent={
-                          <>
-                            {editorUsesLiveblocksContent && (
-                              <Suspense fallback={null}>
-                                <InlinePresence />
-                              </Suspense>
-                            )}
-                            {versionDisplay}
-                            <VersionActionsToolbar
-                              canRestoreVersion={true}
-                              canSaveVersion={isLatestVersion}
-                              hasUnsavedChanges={
-                                contentController.hasUnsavedChanges
-                              }
-                              isRestoring={isPending}
-                              isSaving={contentController.isSaving}
-                              onRestoreVersion={
-                                contentController.restoreVersion
-                              }
-                              onSaveVersion={() =>
-                                contentController.saveContent(
-                                  undefined,
-                                  false,
-                                  editMode.exitEditMode
-                                )
-                              }
-                              onToggleComments={setShowComments}
-                              openThreadCount={session.openThreadCount}
-                              showComments={showComments}
-                              showCommentToggle={!feedEnabled}
-                            />
-                          </>
-                        }
-                      />
-                    }
-                  >
-                    <CollaborativeEditorBody
-                      currentVersion={currentVersion}
-                      documentId={document.id}
-                      editorUsesLiveblocksContent={editorUsesLiveblocksContent}
-                      externalToolbar
-                      hasFeedSidebar={feedEnabled}
-                      headerContent={
-                        <div className="space-y-4 px-5 pt-10">
-                          <EditableDocumentTitle
-                            documentId={document.id}
-                            initialTitle={document.title}
-                          />
-                          <DocumentMetadataBar
-                            documentId={document.id}
-                            documentType={document.type}
-                            metadata={metadata}
-                            showRepositories={!hideRepositoriesInMetadataBar}
-                            tags={document.tags}
-                          />
-                          <AttachmentsRow
-                            documentId={document.id}
-                            latestContent={latestContentForAttachmentWarnings}
-                          />
-                        </div>
-                      }
-                      hideLeadingTitleHeading={hideLeadingTitleHeading}
-                      key={currentVersion}
-                      liveblocksRoomId={activeRoomId}
-                      onBodyClick={editMode.enterEditMode}
-                      onChange={contentController.updateContent}
-                      onContentReady={session.handleEditorReady}
-                      onEditorInstance={session.handleEditorInstance}
-                      onOpenThreadCountChange={session.handleThreadCountChange}
-                      placeholder={emptyContentPlaceholder}
-                      readOnly={!editMode.isEditing}
-                      showComments={editMode.isEditing && showComments}
-                      value={contentController.content}
-                    />
-                  </InlineEditEditorShell>
-                </div>
-
-                <DocumentEditorDetails
-                  activity={activityMetadata}
-                  documentId={document.id}
-                >
-                  {detailsSections(ctx)}
-                </DocumentEditorDetails>
-              </div>
-              <CommentPermalinkProvider
-                buildPermalinkUrl={buildPermalinkUrl}
-                scrollToThreadId={commentThreadId}
-              >
-                <DocumentFeedRail
-                  artifactType={feedArtifactType}
-                  chatPanel={chatEnabled ? renderChatTab?.(ctx) : undefined}
-                  currentVersion={currentVersion}
-                  documentId={document.id}
-                  enabled={feedEnabled && !!activeRoomId}
-                  isViewingHistorical={session.isViewingHistorical}
-                  latestVersion={document.latestVersion}
-                  onClose={chrome.toggleMetadataPanel}
-                  onCommentClick={onCommentClick}
-                  organizationId={document.organizationId}
-                  visible={chrome.showMetadataPanel}
-                />
-              </CommentPermalinkProvider>
-            </OptionalDocumentRoom>
-          </div>
-        </ResizablePanel>
-
-        {!feedEnabled && chatEnabled ? renderChatPanel?.(ctx) : null}
-      </ResizablePanelGroup>
+        {docSyncEditorEnabled && activeRoomId ? (
+          <DocSyncRoom
+            readOnly={session.isViewingHistorical}
+            roomId={activeRoomId}
+          >
+            {roomBody}
+          </DocSyncRoom>
+        ) : (
+          roomBody
+        )}
+      </OptionalDocumentRoom>
 
       <DeleteConfirmationDialog
         isPending={isPending}
@@ -573,38 +530,8 @@ export function DocumentEditorScaffold({
           teamId={moveDialogTeamId ?? undefined}
         />
       )}
-
-      {floatingChildren ? floatingChildren(ctx) : null}
     </>
   );
 }
 
-/**
- * The loading spinner shows only while the editor is still coming up AND
- * nothing has taken the content region -- a stand-in already explains the wait,
- * so a second spinner underneath it is noise.
- */
-export function editorLoaderClassName(
-  isEditorReady: boolean,
-  hasStandIn: boolean
-): string {
-  if (hasStandIn || isEditorReady) {
-    return "hidden";
-  }
-  return "flex flex-1 items-center justify-center py-24";
-}
-
-/**
- * The editor is hidden rather than unmounted behind a stand-in, so the
- * Liveblocks room and content controller survive the run and the editor is
- * already mounted the moment content lands.
- */
-export function editorBodyClassName(
-  isEditorReady: boolean,
-  hasStandIn: boolean
-): string | undefined {
-  if (hasStandIn || !isEditorReady) {
-    return "invisible h-0 overflow-hidden";
-  }
-  return undefined;
-}
+const DOCUMENT_ARTIFACT_ROUTE_CONFIG = { tabs: ARTIFACT_DETAIL_TABS };

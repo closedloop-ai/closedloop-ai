@@ -128,8 +128,6 @@ export function formatSourceLabel(
       return "Usage endpoint";
     case "statusline":
       return "Statusline";
-    case "rate_limit_event":
-      return "Rate-limit event";
     default: {
       // Exhaustive over `SessionLimitSource`: a new producer variant must add a
       // label here rather than silently rendering nothing (CLAUDE.md

@@ -32,23 +32,26 @@ describe("createExternalGitHubAuthorResolutionCache", () => {
   it.each([
     ["missing", undefined],
     ["unknown", GitHubActorType.Unknown],
-  ])("re-resolves when %s evidence is followed by a known type", async (_label, initialActorType) => {
-    const resolve = createExternalGitHubAuthorResolutionCache(
-      {} as never,
-      "org-1"
-    );
+  ])(
+    "re-resolves when %s evidence is followed by a known type",
+    async (_label, initialActorType) => {
+      const resolve = createExternalGitHubAuthorResolutionCache(
+        {} as never,
+        "org-1"
+      );
 
-    await resolve(githubAuthor(initialActorType), SOURCE);
-    await resolve(githubAuthor(GitHubActorType.Bot), SOURCE);
+      await resolve(githubAuthor(initialActorType), SOURCE);
+      await resolve(githubAuthor(GitHubActorType.Bot), SOURCE);
 
-    expect(externalAuthorMocks.resolve).toHaveBeenCalledTimes(2);
-    expect(externalAuthorMocks.resolve).toHaveBeenLastCalledWith(
-      expect.any(Object),
-      expect.objectContaining({
-        author: expect.objectContaining({ actorType: GitHubActorType.Bot }),
-      })
-    );
-  });
+      expect(externalAuthorMocks.resolve).toHaveBeenCalledTimes(2);
+      expect(externalAuthorMocks.resolve).toHaveBeenLastCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          author: expect.objectContaining({ actorType: GitHubActorType.Bot }),
+        })
+      );
+    }
+  );
 
   it("reuses a known resolution when later evidence is missing", async () => {
     const resolve = createExternalGitHubAuthorResolutionCache(

@@ -1,0 +1,16 @@
+-- ISS-9617 (FEA-4358b) review: the routine run cursor needs a TIE-BREAKER.
+--
+-- `runs_cursor` alone is `scheduled_task_runs.started_at`, which is NOT unique:
+-- crewd writes a run's `started_at` from the scheduler tick, so a task that
+-- fires several runs in the same millisecond (a catch-up sweep, a manual
+-- multi-fire) stores them all under one value. The run page selects
+-- `started_at > runs_cursor` STRICTLY, so a page that ended in the middle of a
+-- tied group filtered the remaining siblings out on the next pass, the next
+-- (empty) ack retired the outbox row, and those runs never reached the cloud.
+--
+-- `runs_cursor_id` carries the `scheduled_task_runs.id` of that same newest
+-- acked run, so the page resumes at `(started_at, id)` and a tie is walked
+-- through rather than skipped. Nullable: a cursor written before this column
+-- existed, or one that has acked no run at all, has no id to resume from and
+-- falls back to the strict `started_at` compare.
+ALTER TABLE "routine_sync_cursors" ADD COLUMN "runs_cursor_id" TEXT;

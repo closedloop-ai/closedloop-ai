@@ -1,7 +1,7 @@
 import { DocumentTableToolbar } from "@repo/app/documents/components/table/document-table-toolbar";
+import { render } from "@repo/app/shared/test-fixtures/render-with-nav";
 import { cleanup, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render } from "./render-with-nav";
 
 /**
  * ISS-4682 item 2 — the search box gets to say what it actually searches.

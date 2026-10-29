@@ -1,9 +1,9 @@
 import {
+  CommentSurface,
+  CommentTargetType,
   ThreadStatus,
   type TraceComment,
   TraceCommentKind,
-  TraceCommentSurface,
-  TraceCommentTargetType,
 } from "@repo/api/src/types/comment";
 import { ApiError } from "@repo/app/shared/api/api-error";
 import {
@@ -38,7 +38,7 @@ describe("readBranchCommentCollections", () => {
     const collections = Array.from({ length: 9 }, (_, index) => ({
       target: {
         id: `session-${index}`,
-        type: TraceCommentTargetType.Session,
+        type: CommentTargetType.Session,
       },
     }));
 
@@ -125,7 +125,7 @@ describe("readBranchCommentCollections", () => {
       {
         target: {
           id: "session-1",
-          type: TraceCommentTargetType.Session,
+          type: CommentTargetType.Session,
         },
       },
     ]);
@@ -139,7 +139,7 @@ function sessionCollections(count: number) {
   return Array.from({ length: count }, (_unused, index) => ({
     target: {
       id: `session-${index}`,
-      type: TraceCommentTargetType.Session,
+      type: CommentTargetType.Session,
     },
   }));
 }
@@ -187,8 +187,8 @@ function makeComment(sessionId: string): TraceComment {
     resolvedById: null,
     resolvedByName: null,
     status: ThreadStatus.Open,
-    surface: TraceCommentSurface.SessionDetail,
-    target: { id: sessionId, type: TraceCommentTargetType.Session },
+    surface: CommentSurface.SessionDetail,
+    target: { id: sessionId, type: CommentTargetType.Session },
     threadId: `thread-${sessionId}`,
     updatedAt: timestamp,
   };

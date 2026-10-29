@@ -5,29 +5,43 @@
  * and the two module-local values only they use.
  *
  * Extracted from `sessions-summary-cards.tsx` (ISS-5842 follow-up, whitlockk review
- * on #4907) under the root AGENTS.md file-size discipline: that file is a
- * grandfathered over-ceiling module, and a substantive change to one must leave
- * it meaningfully smaller rather than adding to it. The seam is a real
- * responsibility boundary, not a line-count slice — this card owns the FEA-3574
- * three-state auth machine (signed out / failed read / signed-in empty) that the
- * always-available cards do not have, and nothing outside it reads
- * `resolveDeliveryDeltaPlaceholder` or `UNAVAILABLE_DETAIL`.
+ * on #4907) under the root AGENTS.md file-size discipline, so this card lives in
+ * a sibling rather than growing an already-large file. The seam is a real
+ * responsibility boundary, not a line-count slice — this card owns the gating
+ * ladder (gated / failed read / empty) that the always-available cards do not
+ * have, and nothing outside it reads `resolveDeliveryDeltaPlaceholder` or
+ * `UNAVAILABLE_DETAIL`.
  */
 
+// Cross-slice on purpose (ISS-7869), the same way this file already reaches
+// into insights for `KpiDeltaPlaceholder`: `ConnectGitHubIndicator` is the ONE
+// connect affordance Branches, the Insights grid and the Dashboard stats row
+// all render. Declaring a sessions-local variant is exactly how this strip
+// drifted into having no ask at all.
+import { ConnectGitHubIndicator } from "@repo/app/branches/components/connect-github-indicator";
+import type { GitHubConnectTarget } from "@repo/app/github/lib/github-connect-target";
 import { KpiDeltaPlaceholder } from "@repo/app/insights/components/kpi-delta-placeholder";
+import { GatedMetricIndicatorVariant } from "@repo/app/shared/components/gated-metric-indicator";
+import { KPI_NO_VALUE } from "@repo/app/shared/lib/format-utils";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
 import type { MetricDeltaTreatment } from "@repo/design-system/components/ui/primitives/metric-polarity";
 import type { ReactNode } from "react";
 import type { SessionSummaryDeltas } from "../../lib/session-summary-deltas";
-import { SessionsSignInIndicator } from "./sessions-sign-in-indicator";
-import type { SessionsDeltaSlotProps } from "./sessions-summary-delta-slots";
+import {
+  type SessionsDeltaSlotProps,
+  SUMMARY_COMPARISON_PENDING,
+} from "./sessions-summary-delta-slots";
 
 /**
- * A cloud-only delivery card (PRs Shipped / LOC / $ — FEA-4126 removed
- * Median PR Size from this bar) with the FEA-3574 three-state auth machine. The
- * local SQLite folds never set
- * these metrics, so `value` is `undefined` on the local producer and a nullable
- * number on the cloud producer.
+ * A cloud-only delivery card (PRs Shipped / LOC / $ — FEA-4126 removed Median
+ * PR Size from this bar). The local SQLite folds never set these metrics, so
+ * `value` is `undefined` on the local producer and a nullable number on the
+ * cloud producer.
+ *
+ * Both gated states — signed out, and signed in with no GitHub connection —
+ * render the one `ConnectGitHubIndicator` ask over a withdrawn value, matching
+ * the Dashboard, the Insights grid and Branches (ISS-7866). They stay separate
+ * branches only because they rank differently against a value already in hand.
  */
 export function DeliveryMetricCard({
   label,
@@ -38,12 +52,13 @@ export function DeliveryMetricCard({
   cardClassName,
   isError,
   signedOut,
-  perCardIndicatorSuppressed,
-  onSignIn,
-  signInError,
   deltaProps,
   deltaPlaceholder,
   deltaTreatment,
+  deliveryNoDataEnabled,
+  unavailableReason,
+  githubDisconnected = false,
+  githubConnect,
 }: {
   label: string;
   value: number | null | undefined;
@@ -53,22 +68,16 @@ export function DeliveryMetricCard({
   cardClassName: string;
   isError: boolean;
   /**
-   * Signed-out (state 2) — a data-honesty gate that OUTRANKS `hasValue`. When
-   * signed out these cloud-only cards can't vouch for merged-PR data we can't
-   * see, so they render the neutral dash with NO scope caption regardless of any
-   * `value` still in hand (whitlockk review).
+   * Signed-out — a data-honesty gate that OUTRANKS `hasValue`. When signed out
+   * these cloud-only cards can't vouch for merged-PR data we can't see, so they
+   * withdraw the value regardless of any `value` still in hand (whitlockk review).
+   *
+   * ISS-7866: this state renders the SAME connect ask as `githubDisconnected`
+   * below — not a sign-in ask of its own. It keeps a separate branch only
+   * because the two rank differently against `hasValue`, which is a statement
+   * about how far we can trust a value in hand, not about what to ask for.
    */
   signedOut: boolean;
-  /**
-   * The single ask was hoisted into the banner above the row (or the shell owns
-   * it), so drop the per-card sign-in affordance — the dash stays caption-less.
-   * When `false` and signed out, the per-card `SessionsSignInIndicator` renders
-   * (a live CTA with a handler, else informational copy: the "no ask to hoist"
-   * degrade).
-   */
-  perCardIndicatorSuppressed: boolean;
-  onSignIn?: () => void;
-  signInError?: string | null;
   /**
    * FEA-4202: this card's period-over-period movement, already resolved by
    * `deltaSlotProps` (empty when there is no honest comparison).
@@ -110,30 +119,120 @@ export function DeliveryMetricCard({
    * by construction, and lets the parent resolve the flag ONCE for the pair.
    */
   deltaTreatment: MetricDeltaTreatment;
+  /**
+   * ISS-7845: dash through `MetricCard`'s own no-data treatment — muted, normal
+   * weight — instead of handing it the em dash as a VALUE, which leaves `noData`
+   * false and paints the dash semibold at full foreground beside three cards
+   * that already dash the other way (ISS-5401 put them there).
+   *
+   * Resolved by the caller for the PAIR, like `deltaTreatment` above and for the
+   * same reason: a card must not derive its absent-value treatment from its own
+   * render state, and the two delivery cards must flip together or the row shows
+   * one absent value two ways — which is the defect, one card narrower.
+   */
+  deliveryNoDataEnabled: boolean;
+  /**
+   * ISS-7705: a reason this card must DECLINE to state its value even though a
+   * finite one is in hand — the producer measured the number but cannot stand
+   * behind it.
+   *
+   * Distinct from `isError` (the read failed and there is no number) and from
+   * the signed-in empty (there is genuinely nothing to show). It outranks
+   * `hasValue` deliberately: a value that survived an incomplete denominator is
+   * exactly the confidently-wrong number the gate exists to suppress, so
+   * checking it after the value gate would render the inflated figure whenever
+   * one happened to exist.
+   *
+   * The sentence is rendered in TEXT beside the `Unavailable` caption, never
+   * carried by the `muted` dim alone (WCAG 1.4.1): the dim is a second, visual
+   * statement of a fact the caption already makes in words.
+   */
+  unavailableReason?: string | null;
+  /**
+   * ISS-7869: signed in, but the account has no GitHub connection through
+   * EITHER source — so this card has nothing to state AND the reader has an
+   * action that would fix it.
+   *
+   * Resolved by the caller, which owns both the connection read and the
+   * closed-by-default gate, so this component stays flag-agnostic. It is
+   * deliberately NOT `!connected`: an unknown connection state (still loading,
+   * or a failed read) is not a disconnection and must never produce an ask.
+   *
+   * Ranks BELOW `hasValue` on purpose. A cloud value can outlive the personal
+   * grant that produced it (or arrive via an org App installation), and
+   * withdrawing a real merged-PR count to show an ask would trade away data the
+   * reader can use for a prompt they did not need.
+   */
+  githubDisconnected?: boolean;
+  /** What the connect CTA does on this surface (href on web, handler on desktop). */
+  githubConnect?: GitHubConnectTarget;
 }) {
-  // Signed-out (state 2) OUTRANKS an available value: the card must show the
-  // neutral dash — never a real number captioned with a scope claim — because
-  // signed out we can't see the cloud merged-PR layer these describe (whitlockk).
-  if (signedOut) {
-    // No `availableDetail` caption on the dash: a "merged in range" / "per merged
-    // PR in these sessions" line under a `—` is a claim about data we can't see.
-    // The detail is the per-card sign-in affordance, unless the ask was hoisted
-    // into the single banner above the row (then the dash is caption-less).
-    const signedOutDetail: ReactNode =
-      perCardIndicatorSuppressed ? undefined : (
-        <SessionsSignInIndicator
-          onSignIn={onSignIn}
-          signInError={signInError}
+  // ISS-7866 review: ONE renderer for BOTH gated states — signed out, and
+  // signed in with GitHub not connected. They stay separate BRANCHES because
+  // they rank differently against a value in hand, but what they render is
+  // identical, and two copies is how a fix to one silently misses the other.
+  //
+  // The ask is Connect GitHub, the same one the dashboard shows in this state.
+  // It used to be a per-card "Sign in" indicator, which meant one user at one
+  // moment met two different verbs for one wall depending on which screen they
+  // were on. No `availableDetail` caption either: a "merged in range" line under
+  // a withdrawn value is a claim about data we can't see.
+  // Supporting sentence: ISS-12638 operator instruction, matching the
+  // dashboard's gated cards.
+  const renderGatedCard = () => (
+    <MetricCard
+      className={cardClassName}
+      deltaTreatment={deltaTreatment}
+      detail={
+        <ConnectGitHubIndicator
+          connect={githubConnect}
+          variant={GatedMetricIndicatorVariant.Card}
+          withSupportingCopy
         />
-      );
+      }
+      info={info}
+      label={label}
+      value={null}
+    />
+  );
+
+  // Signed out OUTRANKS an available value: the card must withdraw the number
+  // — never a real figure captioned with a scope claim — because signed out we
+  // can't see the cloud merged-PR layer these describe (whitlockk).
+  if (signedOut) {
+    return renderGatedCard();
+  }
+
+  // ISS-7858: ONE spelling of the dash for the three UNGATED empty branches
+  // below, and the only one in this file: the glyph is `MetricCard`'s to own
+  // (`KPI_NO_VALUE`, the same one the three cards beside these render), not a
+  // literal re-typed per branch. Flag OFF this is that literal and the render is
+  // byte-for-byte today's; flag ON it is `null`, which is what routes the card
+  // to the primitive's muted no-data slot. Either way the glyph is identical —
+  // only weight and colour move.
+  //
+  // The two gated states withdraw the value outright and never reach here, so
+  // they take neither the literal nor the flag: a gate is not an empty, and
+  // ISS-7866 gave it its own settled treatment (`value={null}` with the
+  // primitive's "No data", the ask in the caption).
+  const dashValue = deliveryNoDataEnabled ? null : KPI_NO_VALUE;
+
+  // ISS-7705: the producer measured a number it cannot stand behind. Checked
+  // BEFORE the value gate — see the prop docs — and rendered with the same
+  // `muted` + `Unavailable` treatment a failed read gets, because to the reader
+  // both mean "this figure is not available", plus the reason in words so an
+  // uncovered ratio is never mistaken for a measured one.
+  if (!isError && unavailableReason) {
     return (
       <MetricCard
         className={cardClassName}
         deltaTreatment={deltaTreatment}
-        detail={signedOutDetail}
+        detail={`${UNAVAILABLE_DETAIL} — ${unavailableReason}`}
         info={info}
         label={label}
-        value="—"
+        muted
+        value={dashValue}
+        valueUnavailableLabel={KPI_NO_VALUE}
       />
     );
   }
@@ -163,9 +262,9 @@ export function DeliveryMetricCard({
   }
 
   // Error (a failed read) reads differently from an honest empty (FEA-3574
-  // review): dim the card and caption it "Unavailable" — matching Branches'
-  // `BranchKpiCard` — so a broken usage read never reads as a real "no PRs
-  // merged in range" empty. The `muted` dim carries NO "Sample" badge (that
+  // review): dim the card and caption it "Unavailable" — the treatment the
+  // Branches list card carried until ISS-9961 removed it — so a broken usage
+  // read never reads as a real "no PRs merged in range" empty. The `muted` dim carries NO "Sample" badge (that
   // means demo-data-pending, not "couldn't load"). An error is authenticated-
   // agnostic and never routes to the sign-in CTA.
   if (isError) {
@@ -177,16 +276,35 @@ export function DeliveryMetricCard({
         info={info}
         label={label}
         muted
-        value="—"
+        value={dashValue}
+        valueUnavailableLabel={KPI_NO_VALUE}
       />
     );
   }
 
-  // Signed-in empty (state 3): authenticated but the metric is absent (out of
-  // range, offline, or GitHub not connected — FEA-3159 keeps that here, NOT a
-  // connect CTA). Dash the value and keep the plain `availableDetail` scope
-  // caption with no CTA, so state 3 never reads as the signed-out state 2 (which
-  // is handled above the value gate and never reaches here).
+  // ISS-7869: authenticated, nothing to state, and we KNOW there is no GitHub
+  // connection — the one case in state 3 the reader can actually act on. Renders
+  // the same per-card affordance Branches rendered for its own gated KPIs
+  // before ISS-9961 (`value={null}` → the muted "No data" glyph, ask in the
+  // caption slot), so the four GitHub-truth surfaces finally answer this state
+  // the same way. FEA-3159's modal is untouched and still owns the proactive ask.
+  if (githubDisconnected) {
+    return renderGatedCard();
+  }
+
+  // Signed-in empty (state 3): authenticated but the metric is absent for a
+  // reason connecting GitHub would not fix — out of range, offline, or a
+  // connection state we could not read. Dash the value and keep the plain
+  // `availableDetail` scope caption with no CTA, so state 3 never reads as the
+  // signed-out state 2 (handled above the value gate and never reaching here).
+  //
+  // ISS-9749 ruled this card OUT of `metric-card-hide-unavailable`, and it is
+  // this branch's own comment that rules it out: "offline, or a connection state
+  // we could not read" is a failed read arriving in the shape of an empty. The
+  // two branches above that DO know they failed say so with `muted` and are
+  // already protected; this one cannot, so hiding it would retire a card whose
+  // number may simply not have arrived. The gated branches are out for the
+  // separate ISS-7866 reason — they carry an ask the reader can act on.
   return (
     <MetricCard
       className={cardClassName}
@@ -194,7 +312,8 @@ export function DeliveryMetricCard({
       detail={availableDetail}
       info={info}
       label={label}
-      value="—"
+      value={dashValue}
+      valueUnavailableLabel={KPI_NO_VALUE}
     />
   );
 }
@@ -227,17 +346,31 @@ export function DeliveryMetricCard({
  */
 export function resolveDeliveryDeltaPlaceholder(
   deltas: SessionSummaryDeltas | undefined,
-  reason?: string
+  reason?: string,
+  honestLoadingEnabled = false
 ): ReactNode {
   if (!deltas) {
     return undefined;
+  }
+  // ISS-7422: a pending read has no verdict yet, and `KpiDeltaPlaceholder`'s
+  // sentence is a verdict ("no prior-period comparison IS available for this
+  // range") — settled-sounding on a card whose comparison is still arriving.
+  //
+  // A card carrying its own `reason` is exempt by construction, not by a second
+  // call-site guard: that reason is the ISS-4995 never-computed case (LOC / $),
+  // an absence with no pending state at all because no amount of waiting
+  // produces the comparison. Tying the exemption to the argument keeps a card
+  // that genuinely cannot be compared from ever shimmering as though it might.
+  if (honestLoadingEnabled && deltas.pending && reason === undefined) {
+    return SUMMARY_COMPARISON_PENDING;
   }
   return <KpiDeltaPlaceholder reason={reason} />;
 }
 
 /**
  * The caption for a delivery card whose read FAILED (FEA-3574 review) —
- * distinct from an honest authenticated-empty, matching Branches' `BranchKpiCard`
- * "Unavailable" treatment so a broken read never reads as a real zero.
+ * distinct from an honest authenticated-empty, matching the "Unavailable"
+ * treatment the Branches list card carried until ISS-9961 so a broken read
+ * never reads as a real zero.
  */
 const UNAVAILABLE_DETAIL = "Unavailable";

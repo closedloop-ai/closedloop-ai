@@ -24,9 +24,18 @@
 /** The shape Electron passes an `ipcMain.handle` callback. */
 export type IpcHandler = (event: unknown, ...args: unknown[]) => unknown;
 
-/** The `ipcMain` slice every `register*IpcHandlers` accepts. */
+/**
+ * The `ipcMain` slice every `register*IpcHandlers` accepts.
+ *
+ * `removeHandler` is part of the slice because an installer that is safe to run
+ * over already-registered channels clears each one first
+ * (`installDisabledAgentDashboardDbIpcHandlers`); without it, that installer
+ * would trip the throw-on-duplicate below for reasons that have nothing to do
+ * with the contract under test.
+ */
 export type IpcRegistrar = {
   handle: (channel: string, listener: IpcHandler) => void;
+  removeHandler: (channel: string) => void;
 };
 
 export type IpcRegistrarHarness = {
@@ -77,6 +86,12 @@ export function createIpcRegistrar(): IpcRegistrarHarness {
         }
         handlers.set(channel, listener);
         order.push(channel);
+      },
+      removeHandler: (channel) => {
+        if (!handlers.delete(channel)) {
+          return;
+        }
+        order.splice(order.indexOf(channel), 1);
       },
     },
     channels: () => [...order],
