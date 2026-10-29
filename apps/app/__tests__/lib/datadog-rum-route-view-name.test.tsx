@@ -109,6 +109,7 @@ beforeEach(() => {
   nextjsPlugin().onInit({
     publicApi: datadogRum,
     initConfiguration: { applicationId: "app", clientToken: "token" },
+    registerAssembleEventHook: vi.fn(),
   });
 });
 
