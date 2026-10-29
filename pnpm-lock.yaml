@@ -579,8 +579,8 @@ importers:
         specifier: ^7.16.1
         version: 7.16.1
       '@datadog/browser-rum-nextjs':
-        specifier: ^7.2.0
-        version: 7.2.0(@datadog/browser-rum@7.16.1)(next@16.4.1(@babel/core@7.29.7(supports-color@8.1.1))(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(@types/node@25.9.1)(babel-plugin-macros@3.1.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.9(react@19.2.9))(react@19.2.9))(react@19.2.9)
+        specifier: ^7.16.1
+        version: 7.16.1(@datadog/browser-rum@7.16.1)(next@16.4.1(@babel/core@7.29.7(supports-color@8.1.1))(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(@types/node@25.9.1)(babel-plugin-macros@3.1.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.9(react@19.2.9))(react@19.2.9))(react@19.2.9)
       '@dnd-kit/core':
         specifier: ^6.3.1
         version: 6.3.1(react-dom@19.2.9(react@19.2.9))(react@19.2.9)
@@ -4154,17 +4154,11 @@ packages:
   '@datadog/browser-core@7.16.1':
     resolution: {integrity: sha512-a/ShIFh9OvdznEL6tM0AIzqj5ZkIUPb8jPPpkChT6AUF4GKbPQMtK0M8yeXsluHlzXlcoTImyYYWxmSTa8aa1A==}
 
-  '@datadog/browser-core@7.2.0':
-    resolution: {integrity: sha512-/KOJiLyLP149qZTMs8W8P8MBKxmbrYYramChTDAplhbIXR+nBE+g97RRbluIBDec4GngnA1j13JWDEXBmT0AJw==}
-
   '@datadog/browser-rum-core@7.16.1':
     resolution: {integrity: sha512-ammzIkfu3xfyrDTqkpB+Rq3icCcNCqC4zw1KZPVNKAyqgeifF4IRpyYXJ7ntLmsdnAl6BBgUOu2BwVsfoH35CA==}
 
-  '@datadog/browser-rum-core@7.2.0':
-    resolution: {integrity: sha512-xYgKmBzgpPdXNWxGKBGgJc/EUq6387USzM3Tq22kSD843QTzgzG2jYWkBZZ1FAel1T/0hF2FMJ8Mxo5BwxpoJQ==}
-
-  '@datadog/browser-rum-nextjs@7.2.0':
-    resolution: {integrity: sha512-T0zB4izupHAQYxaCQ14X0KchOYszoSBzNlWx5aRrzGJM4T0WlBSaS0iJ5SEFWY+tjoc6h0RCfMoSbzXZIFj4Kg==}
+  '@datadog/browser-rum-nextjs@7.16.1':
+    resolution: {integrity: sha512-8SvXkugraSyb/QwTpmP0dPtQw9m7Nqvr5oJqXojow0S64pl4MP91f8/xdOcrnes8LT0JyveL5WPJIaptNh+Dlg==}
     peerDependencies:
       next: 16.4.1
       react: 19.2.9
@@ -4174,14 +4168,14 @@ packages:
       react:
         optional: true
 
-  '@datadog/browser-rum-react@7.2.0':
-    resolution: {integrity: sha512-cz7cb3/lQ1vhc1/34JizU+wuHhdYrZqaLiUs8ppGt4qn72/gxwgrGcNScZnNfelcF4T36lVE5q6yvY5i8Ae6IQ==}
+  '@datadog/browser-rum-react@7.16.1':
+    resolution: {integrity: sha512-Hepsk/pj/VdnyLfb1UKiQRrdvtPee8sPdWdEvX2iywrUg5cXJh2t5wbi/n8YPwGnaZJf3hjehZ4cY6q4mt9tyw==}
     peerDependencies:
       '@datadog/browser-rum': '*'
       '@datadog/browser-rum-slim': '*'
       '@tanstack/react-router': '>=1.64.0 <2'
       react: 19.2.9
-      react-router: 6 || 7
+      react-router: 6 || 7 || 8
       react-router-dom: 6 || 7
     peerDependenciesMeta:
       '@datadog/browser-rum':
@@ -16524,22 +16518,17 @@ snapshots:
     dependencies:
       '@datadog/js-core': 0.0.18
 
-  '@datadog/browser-core@7.2.0': {}
-
   '@datadog/browser-rum-core@7.16.1':
     dependencies:
       '@datadog/browser-core': 7.16.1
       '@datadog/js-core': 0.0.18
 
-  '@datadog/browser-rum-core@7.2.0':
+  '@datadog/browser-rum-nextjs@7.16.1(@datadog/browser-rum@7.16.1)(next@16.4.1(@babel/core@7.29.7(supports-color@8.1.1))(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(@types/node@25.9.1)(babel-plugin-macros@3.1.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.9(react@19.2.9))(react@19.2.9))(react@19.2.9)':
     dependencies:
-      '@datadog/browser-core': 7.2.0
-
-  '@datadog/browser-rum-nextjs@7.2.0(@datadog/browser-rum@7.16.1)(next@16.4.1(@babel/core@7.29.7(supports-color@8.1.1))(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(@types/node@25.9.1)(babel-plugin-macros@3.1.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.9(react@19.2.9))(react@19.2.9))(react@19.2.9)':
-    dependencies:
-      '@datadog/browser-core': 7.2.0
-      '@datadog/browser-rum-core': 7.2.0
-      '@datadog/browser-rum-react': 7.2.0(@datadog/browser-rum@7.16.1)(react@19.2.9)
+      '@datadog/browser-core': 7.16.1
+      '@datadog/browser-rum-core': 7.16.1
+      '@datadog/browser-rum-react': 7.16.1(@datadog/browser-rum@7.16.1)(react@19.2.9)
+      '@datadog/js-core': 0.0.18
     optionalDependencies:
       next: 16.4.1(@babel/core@7.29.7(supports-color@8.1.1))(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(@types/node@25.9.1)(babel-plugin-macros@3.1.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.9(react@19.2.9))(react@19.2.9)
       react: 19.2.9
@@ -16550,10 +16539,11 @@ snapshots:
       - react-router
       - react-router-dom
 
-  '@datadog/browser-rum-react@7.2.0(@datadog/browser-rum@7.16.1)(react@19.2.9)':
+  '@datadog/browser-rum-react@7.16.1(@datadog/browser-rum@7.16.1)(react@19.2.9)':
     dependencies:
-      '@datadog/browser-core': 7.2.0
-      '@datadog/browser-rum-core': 7.2.0
+      '@datadog/browser-core': 7.16.1
+      '@datadog/browser-rum-core': 7.16.1
+      '@datadog/js-core': 0.0.18
     optionalDependencies:
       '@datadog/browser-rum': 7.16.1
       react: 19.2.9
