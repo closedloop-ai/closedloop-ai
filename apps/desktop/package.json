@@ -90,7 +90,7 @@
     "react": "19.2.9",
     "react-day-picker": "^9.14.0",
     "react-dom": "19.2.9",
-    "react-grid-layout": "^2.2.3",
+    "react-grid-layout": "^2.3.0",
     "react-hook-form": "^7.76.1",
     "react-resizable": "^3.2.0",
     "react-resizable-panels": "^4.12.4",

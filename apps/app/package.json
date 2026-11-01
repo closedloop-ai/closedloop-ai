@@ -61,7 +61,7 @@
     "react": "19.2.9",
     "react-diff-viewer-continued": "^4.4.0",
     "react-dom": "19.2.9",
-    "react-grid-layout": "^2.2.3",
+    "react-grid-layout": "^2.3.0",
     "react-hook-form": "^7.71.1",
     "react-markdown": "^10.1.0",
     "react-resizable": "^3.2.0",
