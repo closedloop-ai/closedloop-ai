@@ -54,7 +54,7 @@
     "@repo/realtime-server": "workspace:*",
     "@repo/shared-platform": "workspace:@closedloop-ai/shared-platform@*",
     "@t3-oss/env-nextjs": "^0.13.11",
-    "@vercel/functions": "^3.4.3",
+    "@vercel/functions": "^3.10.3",
     "@vercel/oidc": "^3.8.9",
     "adm-zip": "^0.6.1",
     "cron-parser": "^4.9.0",
