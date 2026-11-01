@@ -89,7 +89,7 @@
     "fast-xml-parser": ">=5.7.0",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "typescript6": "npm:@typescript/typescript6@6.0.2",
-    "uuid": "^14.0.0",
+    "uuid": "^14.0.3",
     "vitest": "^5.0.2",
     "vitest-mock-extended": "^5.1.1",
     "yaml": ">=2.8.3"
